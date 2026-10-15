@@ -1,0 +1,140 @@
+// TeslaMate 手机客户端 API 服务（只读）
+// 从 TeslaMate PostgreSQL 读取数据，输出手机友好的 JSON。
+// 鉴权：除 /healthz 外全部要求 Authorization: Bearer $API_TOKEN
+package main
+
+import (
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"log"
+	"mime"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type config struct {
+	port     string
+	apiToken string
+	timezone string // 用于按本地日/月聚合，默认 Asia/Shanghai
+}
+
+func loadConfig() config {
+	return config{
+		port:     getenv("PORT", "8090"),
+		apiToken: getenv("API_TOKEN", ""),
+		timezone: getenv("TZ_NAME", "Asia/Shanghai"),
+	}
+}
+
+func getenv(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+var db *pgxpool.Pool
+
+func main() {
+	// APK 必须以 Android 包类型下发：alpine 容器没有 mime 数据库，
+	// FileServer 会按内容嗅探把 APK（本质是 zip 容器）标成 application/zip，
+	// 手机浏览器就会把它当压缩包下载而拒绝安装。
+	_ = mime.AddExtensionType(".apk", "application/vnd.android.package-archive")
+
+	cfg := loadConfig()
+	if cfg.apiToken == "" {
+		log.Fatal("必须设置 API_TOKEN 环境变量")
+	}
+	poolCfg, err := pgxpool.ParseConfig("postgres://" + getenv("DATABASE_USER", "teslamate") +
+		":" + getenv("DATABASE_PASS", "") + "@" + getenv("DATABASE_HOST", "database") +
+		":" + getenv("DATABASE_PORT", "5432") + "/" + getenv("DATABASE_NAME", "teslamate") +
+		"?sslmode=" + getenv("DATABASE_SSL_MODE", "disable"))
+	if err != nil {
+		log.Fatalf("数据库连接串无效: %v", err)
+	}
+	poolCfg.MaxConns = 4
+	poolCfg.MaxConnLifetime = time.Hour
+	db, err = pgxpool.NewWithConfig(context.Background(), poolCfg)
+	if err != nil {
+		log.Fatalf("无法创建连接池: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.Ping(ctx); err != nil {
+		log.Fatalf("数据库连接失败: %v", err)
+	}
+	// AMAP_KEY 启动时软校验：缺则只警告（不退出），staticmap 端点会返回 500
+	amapKey := getenv("AMAP_KEY", "")
+	if amapKey == "" {
+		log.Printf("⚠️  AMAP_KEY 未配置：/api/v1/app/staticmap 端点将不可用")
+	}
+	log.Printf("API 服务就绪，端口 %s，时区 %s", cfg.port, cfg.timezone)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", handleHealth)
+	mux.HandleFunc("GET /api/v1/cars", auth(handleCars))
+	mux.HandleFunc("GET /api/v1/cars/{id}/status", auth(handleStatus))
+	mux.HandleFunc("GET /api/v1/cars/{id}/drives", auth(handleDrives))
+	mux.HandleFunc("GET /api/v1/drives/{id}/track", auth(handleTrack))
+	mux.HandleFunc("GET /api/v1/cars/{id}/charges", auth(handleCharges))
+	mux.HandleFunc("GET /api/v1/charges/{id}/curve", auth(handleChargeCurve))
+	mux.HandleFunc("GET /api/v1/cars/{id}/stats", auth(handleStats))
+	mux.HandleFunc("GET /api/v1/cars/{id}/battery", auth(handleBattery))
+	mux.HandleFunc("GET /api/v1/app/latest", auth(handleAppLatest))
+	mux.HandleFunc("GET /api/v1/app/staticmap", auth(handleStaticMap))
+	// APK 静态服务（不加 auth：DownloadManager 无法塞自定义 header；Tailscale 隧道已加密）
+	mux.Handle("/apk/", http.StripPrefix("/apk/", http.FileServer(http.Dir("/apk"))))
+
+	srv := &http.Server{
+		Addr:         ":" + cfg.port,
+		Handler:      recoverLogger(mux),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
+}
+
+func recoverLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("PANIC %s %s: %v", r.Method, r.URL.Path, rec)
+				writeErr(w, http.StatusInternalServerError, "internal error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+		log.Printf("%s %s -> %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+	})
+}
+
+func auth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		h := r.Header.Get("Authorization")
+		const prefix = "Bearer "
+		if !strings.HasPrefix(h, prefix) ||
+			subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(h, prefix)), []byte(getenv("API_TOKEN", ""))) != 1 {
+			writeErr(w, http.StatusUnauthorized, "token 无效")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func writeErr(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+func pathID(r *http.Request) (int, error) {
+	return strconv.Atoi(r.PathValue("id"))
+}

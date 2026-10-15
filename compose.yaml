@@ -1,0 +1,96 @@
+name: teslamate
+
+services:
+  database:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - ./database:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    command: ["mosquitto", "-c", "/mosquitto/config/mosquitto.conf"]
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
+  teslamate:
+    image: teslamate/teslamate:latest
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    env_file:
+      - teslamate.env
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./import:/opt/app/import
+
+  # 手机客户端只读 API（项目：api/，鉴权：Bearer $API_TOKEN）
+  api:
+    build: ./api
+    restart: unless-stopped
+    depends_on:
+      database:
+        condition: service_healthy
+    environment:
+      - API_TOKEN=${API_TOKEN}
+      - TZ_NAME=Asia/Shanghai
+      - DATABASE_USER=${POSTGRES_USER}
+      - DATABASE_PASS=${POSTGRES_PASSWORD}
+      - DATABASE_NAME=${POSTGRES_DB}
+      - DATABASE_HOST=database
+      - DATABASE_PORT=5432
+      - DATABASE_SSL_MODE=disable
+      - APP_VERSION_CODE=${APP_VERSION_CODE}
+      - APP_VERSION_NAME=${APP_VERSION_NAME}
+      - APP_APK_URL=${APP_APK_URL}
+      - APP_RELEASE_NOTES=${APP_RELEASE_NOTES}
+      - APP_MANDATORY=${APP_MANDATORY}
+      - AMAP_KEY=${AMAP_KEY}
+      # 铭牌（出厂标称）电池容量 kWh —— 电池健康度的分母。
+      # 本车 = 小鹏/特斯拉 Model 3 LR AWD Performance (P74D)，铭牌 76.8 kWh。
+      # 换车只需改这里，不用改代码。
+      - NOMINAL_BATTERY_KWH=${NOMINAL_BATTERY_KWH}
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./apk:/apk:ro
+
+  grafana:
+    # 中文仪表盘版（https://github.com/wjsall/teslamate-chinese-dashboards）
+    # 原官方镜像：teslamate/grafana:latest（回滚见 compose.yaml.bak.*）
+    image: ghcr.io/wjsall/teslamate-chinese-dashboards:latest
+    restart: unless-stopped
+    depends_on:
+      - teslamate
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - DATABASE_USER=${POSTGRES_USER}
+      - DATABASE_PASS=${POSTGRES_PASSWORD}
+      - DATABASE_NAME=${POSTGRES_DB}
+      - DATABASE_HOST=database
+      - DATABASE_PORT=5432
+      - DATABASE_SSL_MODE=disable
+    ports:
+      - "3000:3000"
+    volumes:
+      # 中文仪表盘内置于镜像 /dashboards 与 /dashboards_internal，不要从宿主机挂载覆盖
+      - ./grafana/data:/var/lib/grafana

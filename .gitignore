@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════════════════
+# TeslaMate 私有部署项目 .gitignore
+# 原则：密钥不进库、运行数据不进库、大二进制不进库、外部仓库不进库
+# ═══════════════════════════════════════════════════════════
+
+# ── 密钥与环境（P0：绝不能进版本历史）──
+.env
+teslamate.env
+compose.yaml.bak.*
+*.pem
+*.key
+
+# ── 运行数据（大且可再生/备份走 backups/）──
+database/              # PostgreSQL PGDATA ~300MB
+grafana/data/          # Grafana sqlite
+mosquitto/data/
+mosquitto/log/
+backups/               # pg_dump 产物 ~189MB
+import/
+
+# ── 二进制产物（发版走 apk/，由 API 容器分发）──
+apk/*.apk
+*.log
+
+# ── 外部仓库克隆（有自己的 .git 与上游）──
+teslamate-chinese-dashboards/
+
+# ── 工具沙箱残留 ──
+.zcode/
+.mimosa/
+.claude/
+.cursor/
+
+# ── Android / Go 构建产物 ──
+app-android/**/build/
+app-android/.gradle/
+app-android/.kotlin/
+app-android/local.properties
+*.apk
+*.aab
+
+# ── IDE / OS ──
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+.DS_Store
