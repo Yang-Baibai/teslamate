@@ -53,13 +53,30 @@
 - 方案：构建目录 `C:\tm-app\teslamate-app`（纯 ASCII），`GRADLE_USER_HOME=C:\gradle\gradle-home`；构建成功后源码副本同步回工作区 `app-android/`（不含 build 产物）。
 
 ### 2.7 网络/镜像源事实
-| 资源 | 状态 | 方案 |
-|---|---|---|
-| github.com / raw / API | 直连不通 | 前缀 `https://ghfast.top/`（备用 gh-proxy.com） |
-| ghcr.io、Docker Hub | 可用 | Docker Desktop 配 USTC 源，偶发 EOF 重试即可 |
-| Gradle 分发包 | 慢 | 腾讯镜像 `mirrors.cloud.tencent.com/gradle/` |
-| Maven 依赖 | 慢 | 阿里云 `maven.aliyun.com`（settings.gradle.kts 已配） |
-| Go 模块 | 慢 | `goproxy.cn`（api/Dockerfile 已配） |
+
+> **2026-10-16 实测复核**。此前记的「github.com 直连不通」**已过时**——现在直连正常。
+> 但**镜像仓库仍然必须走代理**，这决定了 Clash 不能关。
+
+| 资源 | 直连 | 经 Clash | 方案 |
+|---|---|---|---|
+| github.com | ✅ 200 | 200 | 已可直连，`ghfast.top` 前缀不再必需（备用保留） |
+| raw.githubusercontent.com | ✅ 301 | 301 | 同上 |
+| ghcr.io（镜像仓库） | ❌ 000 | ✅ 401 | **必须经代理**（401 是 registry 正常未授权响应 = 可达） |
+| Docker Hub（镜像仓库） | ❌ 000 | ✅ 401 | **必须经代理**；另配 USTC 源 |
+| goproxy.cn（Go 模块） | ✅ 200 | 200 | 直连可用（api/Dockerfile 已配） |
+| maven.aliyun.com（Maven） | ✅ 404* | 404 | 直连可用（settings.gradle.kts 已配） |
+| mirrors.ustc.edu.cn | ✅ 200 | 200 | 直连可用 |
+
+\* 404 是请求的路径不存在，属正常响应，说明域名可达。
+
+**结论：Clash（系统代理 `127.0.0.1:7897`）不能关。**
+关掉后 App、API、Gradle 构建、Go 构建都不受影响，但 `docker compose pull` 会全部失败——
+Grafana 用的 `ghcr.io/wjsall/teslamate-chinese-dashboards`，以及 postgres / mosquitto / teslamate
+三个核心镜像都拉不下来，等于**再也无法升级整套栈**。
+
+**但关 Clash 也解决不了 Tailscale 外出断连**——实测清空代理环境变量后
+`tailscale netcheck` 的 DERP 结果一模一样（详见 operations.md §8.5）。
+Tailscale 的 DERP 探测走直连 UDP（Clash 未开 TUN 抓不到），高延迟是宽带到 DERP 的真实网络状况。
 
 ## 3. 数据流与数据口径
 

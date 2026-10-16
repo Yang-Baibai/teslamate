@@ -241,9 +241,26 @@ MappingVariesByDestIP: false  ← 这项是好的，NAT 不是对称型
 ### 两个叠加的根因
 
 1. **DERP 选到了洛杉矶**（人在深圳）。Tailscale 控制面流量走了本机 Clash 代理
-   （`127.0.0.1:7897`），可能影响了区域判定。DERP 178ms 本就只是慢的兜底路径。
-2. **直连打洞失败**。路由器无端口映射（`PortMapping` 为空），手机又在运营商 NAT 后
-   （10.22.51.x），双方都不暴露端口时打洞成功率低 → 退化成 DERP → 而 DERP 那条也超时了。
+   （`127.0.0.1:7897`），但**这不是原因**——实测清空 `HTTP_PROXY`/`HTTPS_PROXY` 后重跑
+   `netcheck`，Nearest DERP 仍是 San Francisco、延迟数值几乎不变。
+   原因在于 Tailscale 的 DERP 探测走**直连 UDP**（Clash 未开 TUN，抓不到它），
+   这些 160~230ms 是宽带到 DERP 服务器的**真实网络状况**，东京比旧金山慢也符合走美国出口的形状。
+2. **直连打洞失败**（这才是主因）。路由器无端口映射（`PortMapping` 为空），
+   手机又在运营商 NAT 后（10.22.51.x），双方都不暴露端口时打洞失败 → 退化成 DERP → 而 DERP 那条也超时。
+
+### ⚠️ 不要为解决本问题去关 Clash
+
+实测结论：**关掉 Clash 对外出断连零帮助，却会砸掉 Docker 镜像升级能力**。
+
+| 用途 | 关 Clash 后 |
+|---|---|
+| App / API / 本地通信 | 不受影响 |
+| Gradle 构建（阿里云 Maven） | 不受影响（直连可用） |
+| Go 构建（goproxy.cn） | 不受影响（直连可用） |
+| git clone / push（github.com） | 不受影响（现在直连已通） |
+| **`docker compose pull`** | **全部失败**（ghcr.io 与 Docker Hub 直连均为 000） |
+
+关掉它等于**再也无法升级 Grafana 中文仪表盘和三个核心镜像**。详见 architecture.md §2.7。
 
 ### 附带坑：网络切换后 Tailscale 会卡死
 
