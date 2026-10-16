@@ -155,9 +155,11 @@ curl -sI http://localhost:8090/apk/teslamate-app.apk | grep -iE "HTTP|content-ty
 ## 5. 待办与已知风险（按优先级）
 
 1. **`database/` 位于 OneDrive 同步目录**：Docker 直接读写 PGDATA 有文件锁/同步冲突风险（当前运行正常）。建议择期把 `database/` 迁移到非 OneDrive 路径（改 compose volume 指向 + 迁移数据）。
-2. **弱密码**：`.env` 中 `***REMOVED***` / `***REMOVED***`。家庭局域网内可接受；若暴露面变化必须先改（改法见 §6）。
+2. ~~**弱密码**：`.env` 中 `***REMOVED***` / `***REMOVED***`。~~ ⏸️ **2026-10-16 决定维持现状**：局域网自用可接受，暂不轮换。
+   ⚠️ 但要注意：**这两个口令的字面值已随本文件进入 git 历史**（`docs/operations.md` 曾直接写出它们），所以它们**不再构成秘密边界**。真正的安全边界是——**绝不把 8090 / 3000 / 4000 端口映射到公网**。若将来暴露面变化（公网访问、开放给他人、换到不可信网络），必须先按 §6 轮换口令。
+   > 该行的口令字面值已按用户要求保留原文，未做脱敏改写——这是刻意决定，不是疏漏。
 3. **Grafana 匿名 Admin**：`GF_AUTH_ANONYMOUS_ENABLED=true` 且角色 Admin。局域网便利性优先；若需收紧，置 false 并用 admin 账号登录。
-4. **无自动备份**：建议用 Windows 任务计划每月跑 §2.1 备份命令。
+4. ~~**无自动备份**~~ ✅ **2026-10-16 已解决**：Windows 计划任务 `TeslaMate-WeeklyDBBackup`，每周日 03:00 自动执行 `scripts/backup-weekly.sh`（备份 + 轮转 + 写日志）。详见 §9。手动补备份仍用 §2.1 的 `backup-db.sh`。
 5. **API 明文 HTTP**：限定局域网 + Tailscale 内使用；严禁将 8090/3000/4000 直接端口映射到公网。
 
 ## 6. 改密钥操作指南（如需）
@@ -196,3 +198,52 @@ docker compose up -d        # 让 teslamate/grafana/api 拿到新密码
  ```
 
  撤销：`rmdir C:\tm-ws`（仅删 junction，原中文路径不受影响）。也可用于本项目的源码同步脚本（见 `app-android/README.md`）。
+
+## 9. 自动备份（Windows 计划任务）
+
+> 2026-10-16 建立。此前从 10-12 基线之后一直没再备份，而数据库是本项目**唯一有状态资产**。
+
+### 9.1 现状
+| 项 | 值 |
+|---|---|
+| 任务名 | `TeslaMate-WeeklyDBBackup` |
+| 触发 | 每周日 03:00 |
+| 实际执行 | `"C:\Program Files\Git\bin\bash.exe" -c "cd /c/tm-ws && bash scripts/backup-weekly.sh"` |
+| 产物 | `backups/db-YYYYMMDD.sql`，保留最近 8 份 |
+| 日志 | `backups/backup.log`（每次运行追加） |
+
+`backup-weekly.sh` = 跑一次 `backup-db.sh` + 轮转清理 + 写日志。它会在开始前检查 `docker` 是否可用、`teslamate-database-1` 是否在跑，不满足直接记失败退出（计划任务的输出默认被系统丢弃，没有日志就等于黑盒）。
+
+### 9.2 为什么要走 `C:\tm-ws`
+计划任务的命令行由 Task Scheduler 解析，中文路径会踩 §8 那个坑。junction 路径全 ASCII，一次绕开。
+
+### 9.3 轮转的 baseline 保护
+轮转只匹配 `backups/db-[0-9]*.sql`，**`db-baseline-*` 不匹配**（`db-` 后面是字母 `b` 不是数字），因此基线种子文件永远不会因轮转被删。改脚本时别把这个 glob 改成 `db-*.sql`。
+
+### 9.4 常用操作
+```bash
+# 手动跑一次（和计划任务完全一致，含轮转）
+bash scripts/backup-weekly.sh
+
+# 只补一份备份、不轮转（动数据库前用）
+bash scripts/backup-db.sh
+```
+
+```powershell
+# 查看任务状态 / 上次结果码（0 = 成功）
+schtasks /Query /TN "TeslaMate-WeeklyDBBackup" /FO LIST /V
+
+# 立刻触发一次（验证用，不等周日）
+schtasks /Run /TN "TeslaMate-WeeklyDBBackup"
+
+# 改触发时间（示例：改成周六 04:00）
+schtasks /Change /TN "TeslaMate-WeeklyDBBackup" /ST 04:00
+
+# 删除自动备份（改回手动）
+schtasks /Delete /TN "TeslaMate-WeeklyDBBackup" /F
+```
+
+### 9.5 已知限制
+- **电脑关机或 Docker Desktop 没启动时会失败**（`execvpe`/容器未运行）。脚本会写日志并以非 0 退出，**不会**产出半截文件——`backup-db.sh` 内置了 10KB 体积校验，失败即删。
+- 备份落在 OneDrive 同步目录内（与 `database/` 同问题，见 §5.1），属于已知可接受风险。
+- 磁盘占用：8 × ~195MB ≈ 1.6GB。超过就开始轮转删旧的。

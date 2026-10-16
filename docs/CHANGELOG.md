@@ -5,7 +5,54 @@
 
 ---
 
-## 2026-10-15（项目基建审计与文档体系补全）
+## 2026-10-16（自动备份上线 + 三个方向决策固化）
+
+### P0：数据库每周自动备份
+
+**问题**：10-12 建基线后一直没再备份，到 10-16 整整 4 天。而 `database/` 是本项目**唯一有状态资产**——误删 = 所有车况数据永久丢失（git 只存代码，不存数据）。期间 DB 已从 189MB 涨到 243MB。
+
+**处理**：
+1. 先手动补一份 `backups/db-20261016.sql`（193MB），校验文件尾为 `PostgreSQL database dump complete`，结构完整。
+2. 新建 `scripts/backup-weekly.sh`：跑 `backup-db.sh` + 轮转 + 写日志。
+   - **必须有日志**：计划任务的 stdout/stderr 默认被系统丢弃，失败时无处可查。
+   - **前置检查**：先确认 `docker` 可用且 `teslamate-database-1` 在跑，不满足直接失败退出，避免刷一堆无意义错误。
+3. 注册 Windows 计划任务 `TeslaMate-WeeklyDBBackup`，每周日 03:00，命令 `"C:\Program Files\Git\bin\bash.exe" -c "cd /c/tm-ws && bash scripts/backup-weekly.sh"`。
+4. `operations.md` 新增 §9（现状 / 为什么走 junction / 轮转规则 / 常用操作 / 已知限制）。
+
+**轮转的关键设计**：只匹配 `backups/db-[0-9]*.sql`，`db-baseline-*` 因 `db-` 后是字母 `b` 而**天然不匹配**，基线种子文件永不被轮转删除。保留最近 8 份（≈1.6GB），避开 OneDrive 无限堆积。改脚本时**别把这个 glob 放宽成 `db-*.sql`**。
+
+**验证**：`schtasks /Run` 实测触发 → 日志确认完整跑通 pg_dump（193MB）→ `上次结果: 0`。baseline 保护逻辑用 `KEEP=1` 模拟验证，确认 baseline 不在删除清单内。
+
+### P1：修 README 承诺的「5 分钟上手」实际跑不通
+
+**问题**：README/CONTRIBUTING/architecture/docs 共 10 处写 `bash scripts/smoke.sh`，但**本机 `bash` 解析到 `C:\WINDOWS\system32\bash.exe`（WSL 垫片），而 WSL 没装 `/bin/bash`** → `execvpe(/bin/bash) failed: No such file or directory`。只有 `operations.md` 一处注明了「Git Bash」。照 README 走的人必定卡在第 2 步，也就是整个上手路径的第一道关。
+
+**处理**：README 快速上手加显式警告 + PowerShell 替代调用；`CONTRIBUTING.md` §4 验证纪律加同等提示；README 30 分钟路径标注必须用 Git Bash。
+
+**教训**：与 `operations.md` §8 的中文路径 junction 是**同一类 Windows 环境陷阱**，只是记在了另一份文档里。文档分裂本身就是缺陷——同类坑应该收在一处。
+
+### 决策固化（用户 2026-10-16 确认）
+
+| 决策 | 结论 | ADR |
+|---|---|---|
+| 数据库/Grafana 弱口令 | **维持现状不轮换**。已在 `operations.md` §5 标注：口令字面值已随该文档进入 git 历史，**不再构成秘密边界**；真正的边界是绝不把 8090/3000/4000 暴露公网 | #18 |
+| 项目定位 | **长期单用户自用（一台车 + 家人）**。API 已天然按 `car_id` 分层，将来加车无需重构；但**当前刻意不提前抽象**多租户/限流/只读数据库角色——单用户场景下那全是无人使用的复杂度 | #17 |
+| 备份周期 | **每 7 天**（非每月） | #19 |
+
+### 本次复核结论（审计报告的验证）
+
+对 10-15 基建审计的每条断言做了独立复核，全部属实：2 次提交 / 工作区 clean / 74 跟踪文件 / 7 个敏感路径 `tracked=0` / 真实 `API_TOKEN`(48位) 与 `AMAP_KEY`(32位) 在**全部 git 历史对象**中 HIT=0 / `smoke.sh` 用 Git Bash 实跑 12 过 0 败 / CHANGELOG 12 段 / `.gitignore` 无行尾注释。
+
+补充扫描发现 `POSTGRES_PASSWORD` / `GF_SECURITY_ADMIN_PASSWORD` 在历史中各有 2 处命中，定位于 `operations.md:158` —— 该行本身在声明弱口令是已知风险，非密钥泄漏，但确实把口令字面值从「仅存在于被忽略的 `.env`」变成了「版本历史里明文可读」。已按用户决定保留原文并补充说明。
+
+### 仍待处理
+
+- `database/` 位于 OneDrive 同步目录，PGDATA 直接读写有损坏风险，**需停机窗口**迁移。
+- Grafana 匿名 Admin 角色开放（局域网可接受）。
+- `handlers.go` 有死代码：`showMarkers` 算完即丢弃（`_ = showMarkers`），`markers=0` 参数无效；`v.Set("paths", ...)` 重复调用两次（331 行与 338 行）。实测两种请求返回字节完全一致，无功能影响，仅影响代码整洁。
+
+---
+
 
 > 交接负责人时做的全面基建审计。目标：任何人接手，不靠翻代码和猜，就能重建整个项目状态。
 

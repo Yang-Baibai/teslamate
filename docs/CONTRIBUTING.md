@@ -68,6 +68,9 @@
 
 ## 4. 验证纪律
 
+> ⚠️ 下面所有 `bash scripts/*.sh` 命令都**必须在 Git Bash 里执行**。本机 `bash` 指向 WSL 垫片且 WSL 未装 `/bin/bash`，在 PowerShell/CMD 里直接敲会报 `execvpe(/bin/bash) failed`。
+> PowerShell 中可改用：`& "C:\Program Files\Git\bin\bash.exe" -c "cd /c/tm-ws && bash scripts/smoke.sh"`
+
 1. **改 API → 必须 `bash scripts/smoke.sh` 全过**（12 项断言）。
 2. **改 UI → 必须真机看截图**。编译过 ≠ 显示对。曾经的"地图修复"就是编译通过、代码正确，但真机因为瓦片源被默认覆盖而完全没生效（logcat `Using tile source: Mapnik` 才发现）。
 3. **抓真实证据**：

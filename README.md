@@ -10,12 +10,23 @@
 
 ## 快速上手（3 条命令）
 
+> ⚠️ **必须用 Git Bash**，不是 PowerShell、不是 CMD。
+> 本机 `bash` 解析到 `C:\WINDOWS\system32\bash.exe`（WSL 垫片），而 WSL 没装 `/bin/bash`，
+> 直接敲 `bash scripts/smoke.sh` 会报 `execvpe(/bin/bash) failed: No such file or directory`。
+> 打开 Git Bash（开始菜单搜 "Git Bash"）后再执行下面的命令。
+
 ```bash
 cd "C:/Users/<用户名>/OneDrive/文档/teslamate"
 
 docker compose up -d      # 启动全部 5 个服务
 bash scripts/smoke.sh     # 验证一切正常（12 项断言）
 docker compose ps         # 看状态
+```
+
+已装好 Git Bash 的话，也可以从任意终端直接调用：
+
+```powershell
+& "C:\Program Files\Git\bin\bash.exe" -c "cd /c/tm-ws && bash scripts/smoke.sh"
 ```
 
 | 服务 | 地址 | 用途 |
@@ -155,7 +166,8 @@ teslamate/                          ← 项目根（Docker Compose 工作区）
 ## 接手者的 30 分钟路径
 
 1. 读本 README（5 分钟）
-2. `docker compose up -d && bash scripts/smoke.sh`（5 分钟）确认环境活着
+2. **Git Bash** 里跑 `docker compose up -d && bash scripts/smoke.sh`（5 分钟）确认环境活着
+   —— 注意不能用 PowerShell/CMD，原因见「快速上手」开头的警告
 3. 浏览器开 http://localhost:3000 看仪表盘；`adb shell screencap` 看 App（10 分钟）
 4. 读 `docs/CONTRIBUTING.md` + `docs/data-dictionary.md`（10 分钟）
 5. 要改代码：先读 `docs/CHANGELOG.md` 对应版本了解历史坑，再看 `api/README.md` 或 `app-android/README.md`
