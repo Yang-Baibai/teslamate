@@ -257,6 +257,44 @@ adb shell monkey -p com.tailscale.ipn -c android.intent.category.LAUNCHER 1
 
 **判断是否卡死**：`adb shell ping -c 3 <tailscale IP>` —— 有包=通，100% 丢包=卡死了。
 
+### ⚠️ 未完全解决：约 1 小时后再次卡死
+
+**长时间观察实测（2026-10-16，蜂窝网下连续监测 80 分钟）**：
+
+```
+300s  ~ 2400s   IPv6 直连   请求 2    ← 稳定 40 分钟 ✓
+2700s           IPv6 直连   请求 1    ← 开始衰减
+3000s ~ 3300s   直连(v4)   请求 4/6  ← 退化为非 IPv6 直连
+3600s           中继       请求 0    ← 掉线
+3900s ~ 4800s   卡死       请求 0    ← 彻底卡死
+```
+
+**PC 侧端口映射全程有效**（`PortMapping: UPnP, NAT-PMP, PCP` 始终在），
+所以不是租约过期，也不是 UPnP 配置问题。
+
+**最可能的原因**：手机在移动网络上拿到的 **IPv6 地址是有寿命的**（运营商侧临时地址按小时
+分配，跨基站时前缀还会变）。约一小时后地址变化 → Tailscale 缓存的直连端点失效
+→ 退化成 IPv4 打洞 → 再退化到中继 → 卡死。
+
+两次卡死的时间点都对得上：**一次是网络切换时，一次是移动网络地址自然轮换后**。
+
+**实际影响**：出门可用，但**约每小时可能需要重启一次 Tailscale**。
+相比修复前「外出完全连不上」已是根本性改善。
+
+**解法**（亲测有效，每次都能立刻恢复到 IPv6 直连）：
+
+```bash
+adb shell am force-stop com.tailscale.ipn
+adb shell monkey -p com.tailscale.ipn -c android.intent.category.LAUNCHER 1
+```
+
+手工的话：下拉通知栏 → 关掉 Tailscale → 再打开。
+
+**判断是否卡死**：`adb shell ping -c 3 <tailscale IP>` —— 有包=通，100% 丢包=卡死了。
+
+**下次出门前建议**：先打开 App 确认能刷出数据；若显示的是几分钟前的旧数据，
+就是卡死了，重启 Tailscale 即可。
+
 ### ⚠️ 不要为解决这个问题去关 Clash
 
 实测：**关掉 Clash 对外出断连零帮助，却会砸掉 Docker 镜像升级能力**。
