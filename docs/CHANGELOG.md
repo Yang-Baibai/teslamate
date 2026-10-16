@@ -5,6 +5,89 @@
 
 ---
 
+## 2026-10-16 晚间（App 两项改进 + 模拟器无法启动的根因）
+
+### ⚠️ 未发版：以下改动**未做真机验收**
+
+用户明确要求「不能一直插着 USB 调试，要我先自行验证再反馈」。
+**编译与打包已通过，但运行期验收未完成**（原因见下方根因排查）。
+改动已提交，但**没有升版本号、没有部署 APK**——请勿直接使用，等真机确认后再发版。
+
+### 改动 1：15 秒轮询跟随界面生命周期
+
+- **问题**：`StatusScreen` 里 `LaunchedEffect { while(isActive) { load(); delay(15_000) } }`，
+  而全项目 grep 不到任何 `Lifecycle` / `repeatOnLifecycle` / `DisposableEffect`。
+  切 Tab 会停（`AnimatedContent` 移除旧内容），但**App 退到后台不会停**——
+  Activity `onStop` 时 Compose 树仍存活，协程继续跑，后台白耗电白耗流量。
+- **处理**：套 `lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED)`。
+  前台跑、后台停、回来再跑，回到前台时立刻刷一次。
+- **验证程度**：编译通过 ✓；**运行行为未在设备上验证** ✗
+
+### 改动 2：网络错误翻译成中文（5 个页面全部受益）
+
+- **问题**：`Api.get()` 把响应塞进 `IOException(msg)` 抛出，页面直接显示 `it.message`。
+  于是 OkHttp 原文会原样甩给用户：`Failed to connect to /<局域网IP>x:8090`、`timeout`。
+  本 App 定位是「一台车 + 家人」（ADR #17），家属看到这种报错等于看天书。
+- **处理**：新增 `UserFacingException`，**在 `Api.get()` 内部统一分类**——
+  因此 5 个页面自动受益，无需逐页改：
+
+  | 场景 | 现在的文案 |
+  |---|---|
+  | 401 | 访问令牌无效，请到「设置」页重新填写 |
+  | 403 / 404 / 5xx | 服务端中文优先，否则按状态码兜底 |
+  | UnknownHost | 找不到服务器，请检查「设置」里的地址是否正确 |
+  | SocketTimeout | 连接超时，请确认手机和服务器在同一个网络 |
+  | ConnectException | 连不上服务器，请确认服务已启动、手机与它在同一网络 |
+  | 其他 IOException | 网络异常，请稍后重试 |
+
+- **验证程度**：编译通过 ✓；dex 中确认含 `UserFacingException` ✓；
+  服务端 401 行为已验证 ✓；**真机文案未验证** ✗
+
+### 模拟器无法启动的根因排查（9 次尝试，均单独验证非猜测）
+
+| 变量 | 尝试 | 结果 |
+|---|---|---|
+| 旧 AVD `teslamate_test` | headless + swiftshader | qemu 起，0.2s CPU 挂死 |
+| 陈旧锁文件 | 改名 `multiinstance.lock` 后重启 | qemu 立即退出 |
+| 全新 AVD `tm_emu` | headless + swiftshader | 同样挂死 → **排除 AVD 状态** |
+| GPU 后端 | `-gpu off` / `swiftshader_indirect` | 显式指定后确实切到 `swiftshader`（非 `lavapipe`），仍挂死 → **排除 GPU 后端** |
+| 加速器 | `-accel whpx`（非法值）/ `on` / `off`（纯 TCG） | **纯软件模拟也是 0.2s CPU** → **排除虚拟化** |
+| 路径 | AVD 挪到 ASCII 路径 `C:\avd` | 同样挂死 → **排除中文路径** |
+| 交互提示 | `-no-metrics`（确实消除了 ACTION REQUIRED 横幅） | 卡点不变 → **排除 stdin 阻塞** |
+| headless vs 窗口 | 去掉 `-no-window` | **100 秒内 adb 连上**，但进程随后消失 |
+
+**共同现象**：所有失败都停在 `Windows Hypervisor Platform accelerator is operational` 之后，
+qemu 占 220MB 内存但 CPU 恒为 0.2~0.7s，Windows 事件日志无任何崩溃记录。
+`-accel off` 纯软件模拟同样是 0.2s CPU——**软件模拟必然烧 CPU，这证明它根本没进入 vCPU 循环**。
+
+**结论**：环境层面 WHPX 自检通过、兼容性四项检查全 Ok（hypervisor / system / disk / 无需 GPU），
+但 qemu 在初始化后、启动 vCPU 前被阻塞，且不产生任何错误输出。
+**不是代码问题，也不像 GPU 后端问题；更像 WHPX 与 VBS 共存时的宿主侧阻塞**
+（本机 `HypervisorPresent=True`、`VirtualizationBasedSecurityStatus=2`）。
+此前 CHANGELOG 记的「SwiftShader Vulkan 卡住」是**误判**——SwiftShader 只是表象。
+
+**待验证的下一步**（都需重启/停机窗口，未擅自执行）：
+1. 关闭 VBS（内存完整性）后重试——当前最可疑变量
+2. BIOS 关闭 AMD SVM 或调整 IOMMU
+3. 装 `google_apis` 系统镜像（当前 `default` 镜像不支持 guest rendering）
+
+**遗留物**：为排查创建了 `tm_emu` 和 `asciiemu` 两个 AVD（后者在 `C:\avd`），可自行删除。
+
+### 复核更正：OneDrive 风险不成立
+
+本日早些时候误判「`database/` 在 OneDrive 同步目录有损坏风险」并建议迁移。
+用户指出本机并未启用 OneDrive，实测确认：
+
+- `OneDrive.Sync.Service` 进程在跑，但**同步日志中 `teslamate` / `database` 零命中**
+- 1388 个数据库文件属性**全部是 `Archive`**，零占位符
+- Business1 账户配置最后写入停在 2025-12-11，Personal 停在 2026-01-07
+
+**结论：`database/` 未被同步，迁移待办作废。**
+**教训**：不能从文件夹名叫 `OneDrive` 就推断它在同步。当时自己的实测数据（零占位符）
+已经在反驳这个假设，却找了个台阶绕了过去。中文路径 junction（`C:\tm-ws`）那条仍然有效，与 OneDrive 无关。
+
+---
+
 ## 2026-10-16（自动备份上线 + 三个方向决策固化）
 
 ### P0：数据库每周自动备份

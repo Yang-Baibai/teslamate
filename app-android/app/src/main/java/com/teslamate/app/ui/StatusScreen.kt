@@ -41,9 +41,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.teslamate.app.ActiveCharge
 import com.teslamate.app.AppSettings
 import com.teslamate.app.CarStatus
@@ -83,10 +86,17 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
         }
     }
 
-    LaunchedEffect(settings) {
-        while (isActive) {
-            load()
-            delay(15_000)
+    // 15 秒自动刷新，但必须跟随界面生命周期：
+    // 原写法 `while (isActive)` 在 Activity onStop 时并不会被取消（Compose 树仍存活），
+    // 于是 App 一旦退到后台就继续每 15 秒打一次 API，白耗电白耗流量。
+    // repeatOnLifecycle(STARTED) 保证：前台跑、后台停、回来再跑，且首次进入立刻刷一次。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner, settings) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (isActive) {
+                load()
+                delay(15_000)
+            }
         }
     }
 

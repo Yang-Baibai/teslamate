@@ -11,8 +11,25 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+
+/**
+ * 面向用户的中文错误。
+ *
+ * 为什么需要它：这个 App 的定位是「一台车 + 家人」（见 docs/adr.md #17），
+ * 但 OkHttp 抛出的异常原文是给开发者看的——
+ *   "Failed to connect to /192.168.1.7:8090"
+ *   "timeout"
+ * 直接显示给家人等于让人家看天书。
+ *
+ * 约定：所有 [get] 抛出的异常都是这个类型，message 一定是可直接展示的中文。
+ * 页面侧统一用 `it.message` 展示即可，不需要再做二次翻译。
+ */
+class UserFacingException(message: String) : IOException(message)
 
 // Instant <-> ISO-8601 字符串（API 统一返回 UTC，如 2026-10-11T13:13:14.590Z）
 object InstantSer : KSerializer<Instant> {
@@ -251,14 +268,36 @@ class Api private constructor(private val base: String, private val token: Strin
             .url(base + path)
             .header("Authorization", "Bearer $token")
             .build()
-        client.newCall(req).execute().use { resp ->
-            val body = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) {
-                val msg = runCatching { json.decodeFromString<ApiError>(body).error }
-                    .getOrNull() ?: "HTTP ${resp.code}"
-                throw IOException(msg)
+        try {
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    // 服务端返回的业务错误（Go 那边全是中文）优先沿用；
+                    // 只有服务端没给出可读文案时才按状态码兜底。
+                    val serverMsg = runCatching { json.decodeFromString<ApiError>(body).error }
+                        .getOrNull()?.takeIf { it.isNotBlank() }
+                    throw UserFacingException(
+                        when (resp.code) {
+                            401 -> "访问令牌无效，请到「设置」页重新填写"
+                            403 -> "没有访问权限"
+                            404 -> serverMsg ?: "找不到该数据"
+                            in 500..599 -> serverMsg ?: "服务器暂时不可用，请稍后再试"
+                            else -> serverMsg ?: "请求失败（HTTP ${resp.code}）"
+                        }
+                    )
+                }
+                return json.decodeFromString(body)
             }
-            return json.decodeFromString(body)
+        } catch (e: UserFacingException) {
+            throw e // 已经是中文文案，原样上抛
+        } catch (e: UnknownHostException) {
+            throw UserFacingException("找不到服务器，请检查「设置」里的地址是否正确")
+        } catch (e: SocketTimeoutException) {
+            throw UserFacingException("连接超时，请确认手机和服务器在同一个网络")
+        } catch (e: ConnectException) {
+            throw UserFacingException("连不上服务器，请确认服务已启动、手机与它在同一网络")
+        } catch (e: IOException) {
+            throw UserFacingException("网络异常，请稍后重试")
         }
     }
 
