@@ -5,6 +5,71 @@
 
 ---
 
+## 2026-10-15（项目基建审计与文档体系补全）
+
+> 交接负责人时做的全面基建审计。目标：任何人接手，不靠翻代码和猜，就能重建整个项目状态。
+
+### P0：版本控制从零建立
+
+**审计发现**：git 仓库**零提交**，19 项全部 untracked；无 `.gitignore`。
+**风险**：误删误改无法回溯；若有人 `git add .`，`.env`（API_TOKEN/AMAP_KEY 明文）直接进版本历史 = 密钥永久泄漏；299MB `database/` + 189MB `backups/` 撑爆仓库。
+
+**处理**：
+1. 新建 `.gitignore`：排除密钥（`.env`/`teslamate.env`/`compose.yaml.bak.*`）、运行数据（`database/`/`grafana/data/`/`mosquitto/data|log/`/`backups/`/`import/`）、二进制（`apk/*.apk`/`*.log`）、外部克隆（`teslamate-chinese-dashboards/`）、工具沙箱（`.zcode/`/`.mimosa/`）、Android/Go 构建产物。
+2. **提交前密钥扫描**（关键步骤）：逐个比对 `.env` 中真实值是否出现在暂存区。**首次扫描即抓到 2 处泄漏**——
+   - `docs/CHANGELOG.md` 引用了真实 AMAP_KEY
+   - `docs/手机客户端使用说明.md` 把真实 API_TOKEN 当「示例值」写进了手册
+   已全部替换为占位描述，复扫干净后才提交。
+   **教训**：文档里「顺手贴一下真实值」是密钥泄漏的经典路径。
+3. 首次提交 `1ebbb42`：43 个文件（api 源码 + app-android 源码镜像 + 6 份文档 + compose + .gitignore）。
+
+### P0：建立回归测试基线
+
+**审计发现**：**零测试**。开发期间积累的 20+ 条手工 curl 验证全部只存在于对话记录里，随时可能丢失。
+
+**处理**：新建 `scripts/smoke.sh`，固化 **12 项断言**（首次运行 12/12 全过）：
+健康检查 · 鉴权拒绝无 token · 车辆列表 · status 含 tpms 字段 · charges 含 loss_percent · stats week/month/year 三档 · 电池铭牌口径校验（读 `.env` 断言 nominal 一致且健康度 ∈ (50,100]）· 静态图返回 PNG 且 >10KB · APK Content-Type 必须是 Android 包 · 自更新元数据。
+配套 `scripts/release.sh` 已把发版与冒烟串联，「冒烟不过禁止发版」。
+
+### P1：补齐缺失文档
+
+| 新增 | 解决什么 |
+|---|---|
+| `docs/data-dictionary.md` | **数据口径单一事实源**。此前能耗/快充/电池容量公式散落三处易打架。现统一，并专章记录「占位值陷阱」（V/A=2V/0A 实为特斯拉握手占位、`<invalid>` 字符串、高德 200+JSON 错） |
+| `docs/adr.md` | **16 条架构决策索引**，含「否决了哪些替代方案 + 为什么」。此前「为什么弃 osmdroid」只埋在 CHANGELOG 流水里 |
+| `docs/CONTRIBUTING.md` | **开发约定**：改动流程、什么改动必须同步哪份文档、API/App 代码约束、验证纪律、发版顺序、Git 约定、环境限制 |
+| `docs/README.md` | 文档索引——按「我现在要干什么」导航，不必通读 |
+| `api/README.md` | 4 个 Go 文件的职责与改动频率、11 个端点速查、6 条设计约束 |
+| `scripts/backup-db.sh` | 备份从文档文字变成可执行脚本，带失败检测（<10KB 自动删） |
+| `scripts/release.sh` | 一键发版：构建 → 部署 APK → 同步源码 → 升 `.env` → 重启 API → 冒烟验证 |
+
+### P1：重写 README 为完整项目说明
+
+旧 README 只有目录树。新版包含：3 条命令快速上手、ASCII 架构图（标注「手机从不直连数据库」「Key 只存服务端」）、带图例的完整目录结构（含 🔒 勿提交标记）、「两个 Android 目录」辨析表、关键配置表（改完要做什么）、8 份文档索引、**「接手者的 30 分钟路径」**、已知限制。
+
+### 文档分工固化（docs/README.md）
+
+| 文档 | 性质 | 更新频率 |
+|---|---|---|
+| architecture.md | 说「为什么这么搭」 | 低 |
+| data-dictionary.md | 口径单一事实源 | 改公式时必改 |
+| api-spec.md | API 契约 | 加删改接口时 |
+| adr.md | 决策索引 | 架构决策时 |
+| operations.md / CONTRIBUTING.md | 说「怎么做」 | 加流程/约束时 |
+| CHANGELOG.md | 变更流水 | 每次改动 |
+| 手机客户端使用说明.md | 端用户手册 | 用户可见行为变化时 |
+
+三条规矩：① 口径改动三方同步（dictionary + api-spec + CHANGELOG）；② 改完必跑 smoke.sh；③ 决策不埋在流水里。
+
+### 仍待处理（非文档类，见 operations.md §5）
+
+- `database/` 位于 OneDrive 同步目录，PGDATA 直接读写有损坏风险，建议迁出。
+- `.env` 中 ChangeMe 弱密码 ×2（Postgres / Grafana）。
+- Grafana 匿名 Admin 角色开放。
+- 模拟器 headless 启动不稳（SwiftShader Vulkan），真机 USB 调试更可靠。
+
+---
+
 ## 2026-10-14（v0.3.0 地图架构换为高德静态图 API）
 
 ### 修复：地图背景从空白 → 高德真底图

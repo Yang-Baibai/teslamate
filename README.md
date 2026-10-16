@@ -1,95 +1,172 @@
-# TeslaMate 私有部署 + 手机客户端项目
+# TeslaMate 私有部署 + 手机客户端
 
-> 目标：在自家电脑上完整私有化运行 [TeslaMate](https://github.com/teslamate-org/teslamate/)（特斯拉行车数据记录），
+> 在自家电脑上私有化运行 [TeslaMate](https://github.com/teslamate-org/teslamate/)（特斯拉行车数据记录），
 > 使用 [teslamate-chinese-dashboards](https://github.com/wjsall/teslamate-chinese-dashboards) 中文仪表盘，
-> 并配套一个自研的小米 Android 手机客户端，随时随地查看车况。
+> 并配套自研的小米 Android 客户端，随时随地查看车况。
+>
+> **当前版本**：App v0.5.2（versionCode 12） · 仪表盘 v1.11.0（SQL rev 14） · 最后更新 2026-10-15
 
-## 项目结构
+---
+
+## 快速上手（3 条命令）
+
+```bash
+cd "C:/Users/<用户名>/OneDrive/文档/teslamate"
+
+docker compose up -d      # 启动全部 5 个服务
+bash scripts/smoke.sh     # 验证一切正常（12 项断言）
+docker compose ps         # 看状态
+```
+
+| 服务 | 地址 | 用途 |
+|---|---|---|
+| **grafana** | http://localhost:3000 | 49 个中文仪表盘（浏览器看车况） |
+| **api** | http://localhost:8090 | 手机客户端专用只读 API |
+| teslamate | http://localhost:4000 | 数据采集主程序（首次登录特斯拉账号用） |
+| database | 内部 5432 | PostgreSQL 18，**唯一数据源** |
+| mosquitto | 内部 1883 | MQTT（teslamate 内部） |
+
+停止：`docker compose stop`
+
+---
+
+## 整体架构（一图看懂）
 
 ```
-teslamate/                          ← 本目录（Docker Compose 项目根）
-├── compose.yaml                    ← 5 个服务：database / mosquitto / teslamate / grafana / api
-├── .env                            ← Compose 密钥与配置（API_TOKEN / AMAP_KEY / NOMINAL_BATTERY_KWH）※勿外传
-├── teslamate.env                   ← teslamate 应用容器专属环境变量
-├── database/                       ← PostgreSQL 18 数据（PGDATA，勿动）
-├── grafana/
-│   ├── data/                       ← Grafana 运行数据（sqlite 库）
-│   └── dashboards*/                ← 旧版官方英文仪表盘存档（已不再挂载，仅备份）
-├── mosquitto/                      ← MQTT broker 配置与数据
-├── api/                            ← 自研手机 API 服务源码（Go，只读查库）
-├── apk/                            ← 发版目录：teslamate-app.apk 由 API 容器挂载并对外提供下载
-├── app-android/                    ← Android 客户端源码副本（**不是构建目录**，见下）
-├── teslamate-chinese-dashboards/   ← 中文仪表盘仓库克隆（v1.11.0，含 SQL 脚本与升级工具）
-├── backups/                        ← 数据库基线备份（pg_dump）
-├── docs/                           ← 项目文档（本次交付核心）
-│   ├── CHANGELOG.md                ← 变更日志（做了什么/为什么/怎么回滚）
-│   ├── architecture.md             ← 系统架构与设计决策
-│   ├── api-spec.md                 ← 手机 API 接口文档
-│   ├── operations.md               ← 运维手册（启动/备份/升级/回滚/故障排查）
-│   └── 手机客户端使用说明.md         ← 端用户视角：安装/配置/字段口径
-├── compose.yaml.bak.20261012-*     ← 切换中文镜像前的 compose 备份
-├── setup-android-sdk.sh            ← Android 构建环境一键安装脚本（幂等）
+                      特斯拉云 API
+                          │
+             ┌────────────▼─────────────┐
+             │  teslamate (4000)       │  拉取 + 流式接收车辆数据
+             └──────┬──────────┬────────┘
+                    │          │
+             ┌──────▼───┐  ┌───▼──────┐
+             │mosquitto │  │          │
+             └──────────┘  │          │
+                    ┌──────▼──────────▼────────┐
+                    │ database (postgres:18)   │  唯一的持久化数据源
+                    └──────┬──────────┬────────┘
+                           │只读 SQL   │只读 SQL
+                  ┌────────▼──┐   ┌───▼──────────────┐
+                  │ grafana   │   │ api (8090, Go)   │  Bearer 鉴权 + LRU 缓存
+                  │ 3000 中文字幕│   │ 静态图中转 / APK │  Key 只存服务端
+                  └───────────┘   └───────┬──────────┘
+                                          │
+                              Tailscale 加密隧道
+                                          │
+                              ┌───────────▼───────────┐
+                              │ Android App (爱车车况) │
+                              │ 车况/充电/行程/统计/设置 │
+                              └───────────────────────┘
+```
+
+**要点**：
+- 手机**从不直连数据库**，只经 API 容器；API 只做 SELECT，不写库。
+- 高德地图 Key、APK 下载地址等敏感配置只在服务端 `.env`，**永不出服务端**。
+- 手机端支持**启动自动检查更新**（版本号比对 → 弹窗 → 系统下载 → 跳安装）。
+
+---
+
+## 目录结构
+
+```
+teslamate/                          ← 项目根（Docker Compose 工作区）
+├── compose.yaml                    ← 5 服务编排（database/mosquitto/teslamate/grafana/api）
+├── .env                            ← 🔒 密钥与配置（API_TOKEN/AMAP_KEY/铭牌容量/版本号）
+├── teslamate.env                   ← 🔒 teslamate 应用容器环境变量
+├── database/                       ← PGDATA（~300MB，勿动，勿提交）
+├── grafana/data/                   ← Grafana sqlite
+├── mosquitto/                      ← MQTT 配置与数据
+├── import/                         ← teslamate 导入目录
+├── backups/                        ← pg_dump 备份（勿提交）
+│
+├── api/                            ← 🔧 手机 API 服务源码（Go，只读查库）
+│   ├── README.md                   ←    代码导览 + 设计约束 + 冒烟示例
+│   ├── main.go handlers.go queries.go models.go
+│   └── Dockerfile
+│
+├── apk/teslamate-app.apk           ← 发版产物（勿提交；由 API 容器对外分发）
+│
+├── app-android/                    ← 📱 App 源码镜像（只读，不在此构建）
+│   ├── README.md                   ←    源码结构 / 构建方法 / 版本历史
+│   └── app/src/main/java/...        （4 个根类 + 11 个 ui/）
+│
+├── teslamate-chinese-dashboards/   ← 中文仪表盘仓库克隆（外部 .git，不提交）
+├── scripts/                        ← 🔧 运维脚本
+│   ├── smoke.sh                    ←    12 项冒烟测试（改完必跑）
+│   ├── backup-db.sh                ←    数据库备份
+│   └── release.sh                  ←    一键发版（构建+部署+升版本+冒烟）
+│
+├── docs/                           ← 📖 文档（先看 docs/README.md 索引）
+├── compose.yaml.bak.*              ← 历史备份（勿提交）
+├── setup-android-sdk.sh            ← Android 构建环境一键安装（幂等）
 └── dev-env.sh                      ← source 它获得 JDK/SDK 环境变量
 ```
 
-## ⚠️ Android 源码的两个目录（容易搞混）
+### ⚠️ 两个 Android 目录（最容易搞混）
 
 | 目录 | 角色 |
 |---|---|
-| `C:\tm-app\teslamate-app` | **canonical 构建目录**，Gradle 在这里跑，APK 产物在这里 |
-| `./app-android/` | **只读源码镜像**，用于版本管理与交接；构建完从 canonical 同步过来 |
+| `C:\tm-app\teslamate-app` | **canonical 构建目录**，Gradle 在此跑，APK 在此产出 |
+| `./app-android/` | **只读源码镜像**，用于版本管理与交接 |
 
-同步命令（排除 build 产物）：
-```bash
-robocopy C:\tm-app\teslamate-app\app\src\main ./app-android/app/src\main /E /XD build .gradle .kotlin
-```
-放在 `C:\tm-app` 而不是工作区的原因：工作区路径含中文用户名且在 OneDrive 同步目录内，Gradle 会在构建时遇到文件锁与编码问题。
+原因见 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) §0：工作区路径含中文用户名且在 OneDrive 内，Gradle 在此构建会锁死。同步用 `scripts/release.sh` 第 3 步。
 
-## 服务一览
+---
 
-| 服务 | 端口 | 用途 |
-|---|---|---|
-| teslamate | http://localhost:4000 | 数据采集主程序（车辆登录/设置） |
-| grafana | http://localhost:3000 | 49 个中文仪表盘（v1.11.0） |
-| api | http://localhost:8090 | 手机客户端专用只读 REST API |
-| database | 内部 5432 | PostgreSQL 18（唯一数据源） |
-| mosquitto | 内部 1883 | MQTT（teslamate 内部使用） |
+## 关键配置（都在 `.env`，🔒 不入库）
 
-## 手机 App 配置所需
+| 变量 | 当前值 | 作用 | 改完要做 |
+|---|---|---|---|
+| `API_TOKEN` | 48 位随机串 | App 访问 API 的令牌 | `up -d api` + App 设置页同步改 |
+| `AMAP_KEY` | 高德 Web 服务 Key | 地图底图 | `up -d api` |
+| `NOMINAL_BATTERY_KWH` | `76.8` | **铭牌电池容量**，健康度分母 | `up -d api` |
+| `APP_VERSION_CODE/NAME` | `12` / `0.5.2` | App 自更新比对依据 | `up -d api` |
+| `APP_APK_URL` | `http://<tailscale IP>:8090/apk/teslamate-app.apk` | 更新包地址 | 通常不变 |
 
-| 项目 | 值 |
+---
+
+## 文档体系
+
+先读 [`docs/README.md`](docs/README.md) 的索引，再按需深入：
+
+| 文档 | 讲什么 |
 |---|---|
-| 服务器地址 | 家里 WiFi：`http://<电脑IP>:8090`；外出：`http://<电脑Tailscale主机名或IP>:8090` |
+| [`docs/architecture.md`](docs/architecture.md) | 系统怎么搭的、为什么这么搭 |
+| [`docs/data-dictionary.md`](docs/data-dictionary.md) | **数据口径单一事实源**（能耗/快充/电池容量怎么算） |
+| [`docs/api-spec.md`](docs/api-spec.md) | API 契约（字段级） |
+| [`docs/adr.md`](docs/adr.md) | 16 条架构决策索引（含否决的方案与原因） |
+| [`docs/operations.md`](docs/operations.md) | 运维手册（启停/备份/升级/发版/排查） |
+| [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | **开发约定**（改代码前必读） |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 变更流水（v0.1.0 → v0.5.2，每条含根因/回滚） |
+| [`docs/手机客户端使用说明.md`](docs/手机客户端使用说明.md) | 端用户手册（给家人看的） |
+
+---
+
+## 手机端连接
+
+| 项 | 值 |
+|---|---|
+| 服务器地址 | 家里 WiFi：`http://<电脑IP>:8090`；外出：`http://<主机名>:8090`（Tailscale 主机名） |
 | 访问令牌 | `.env` 里 `API_TOKEN=` 的值 |
-| 当前版本 | v0.5.2（App 内「设置 → 关于」也能看到） |
+| 更新方式 | App 启动自动检查，有新版本弹窗点「立即更新」 |
 
-App 支持**启动时自动检查更新**：有新版本会弹窗，点「立即更新」→ 系统下载 → 跳安装。发版见 [docs/operations.md §3.5](docs/operations.md)。
+---
 
-## 关键配置项（都在 .env）
+## 接手者的 30 分钟路径
 
-| 变量 | 当前值 | 作用 |
-|---|---|---|
-| `API_TOKEN` | 48 位随机串 | App 访问 API 的令牌，**换手机/改设置时要同步** |
-| `AMAP_KEY` | 高德 Web 服务 Key | 行程/位置地图的底图（只存在服务端，App 不持有） |
-| `NOMINAL_BATTERY_KWH` | `76.8` | **铭牌电池容量**，电池健康度的分母。换车改这里 |
-| `APP_VERSION_CODE` / `APP_VERSION_NAME` | `12` / `0.5.2` | 发版时递增，App 靠它判断有无新版本 |
-| `APP_APK_URL` | `http://<tailscale IP>:8090/apk/teslamate-app.apk` | 新版本下载地址 |
-| `APP_RELEASE_NOTES` | 变更说明 | 弹窗里显示 |
+1. 读本 README（5 分钟）
+2. `docker compose up -d && bash scripts/smoke.sh`（5 分钟）确认环境活着
+3. 浏览器开 http://localhost:3000 看仪表盘；`adb shell screencap` 看 App（10 分钟）
+4. 读 `docs/CONTRIBUTING.md` + `docs/data-dictionary.md`（10 分钟）
+5. 要改代码：先读 `docs/CHANGELOG.md` 对应版本了解历史坑，再看 `api/README.md` 或 `app-android/README.md`
 
-## 交接必读（按顺序）
+---
 
-1. [docs/CHANGELOG.md](docs/CHANGELOG.md) —— 这个项目经历过什么（含每个 bug 的根因与教训）
-2. [docs/architecture.md](docs/architecture.md) —— 系统怎么设计的、为什么这么设计
-3. [docs/operations.md](docs/operations.md) —— 日常怎么管（备份/升级/发版/回滚/故障排查）
-4. [docs/api-spec.md](docs/api-spec.md) —— 手机 API 契约与数据口径
-5. [app-android/README.md](app-android/README.md) —— App 源码结构、构建方法、完整版本历史
-6. [docs/手机客户端使用说明.md](docs/手机客户端使用说明.md) —— 端用户视角：安装/配置/字段含义/常见问题
+## 已知限制与注意事项
 
-## 已知注意事项
-
-- 电脑需保持开机，栈跑在本机 Docker Desktop 上；关机后手机 App 显示离线。
-- `.env` / `teslamate.env` / `compose.yaml.bak.*` 都含密钥（API_TOKEN、AMAP_KEY、数据库密码），**不要**提交到任何公开仓库。
-- `database/` 目录在 OneDrive 同步范围内，Docker 直接读写它有损坏风险（当前能跑，但建议后续迁移出 OneDrive，见 operations.md）。
-- Grafana 匿名访问当前开启（Admin 权限、仅局域网），如需收紧见 operations.md。
-- 本机直连 GitHub 不通，克隆/拉取需走 `ghfast.top` 代理前缀。
-- **中文路径技巧（2026-10-13 新增）**：写含本项目根的 `.cmd` 脚本请走 `C:\tm-ws` junction，而不是 `C:\Users\<用户名>\OneDrive\文档\teslamate`。详见 [docs/operations.md §8](docs/operations.md#8-windows-中文路径应对junction-速查)。
+- **电脑需保持开机**，服务跑在本机 Docker Desktop；关机后 App 显示离线。
+- `.env` / `teslamate.env` / `compose.yaml.bak.*` 含密钥，**不要提交到任何公开仓库**（`.gitignore` 已保护）。
+- `database/` 在 OneDrive 同步目录内，Docker 直接读写 PGDATA 有损坏风险（当前正常，建议后续迁出，见 `operations.md`）。
+- 本机直连 GitHub 不通，克隆走 `https://ghfast.top/` 前缀。
+- cmd 含中文路径的脚本请走 `C:\tm-ws` junction（见 `operations.md` §8）。
+- 本项目为**单用户自用**，无多租户/高可用设计；升级前请先 `bash scripts/backup-db.sh`。

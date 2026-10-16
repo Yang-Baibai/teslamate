@@ -67,22 +67,47 @@
 特斯拉云 → teslamate（拉取+流式 API）→ PostgreSQL（positions/drives/charging_processes/charges/states 等表）+ MQTT（实时主题，本栈内 mosquitto）。
 
 ### 3.2 关键计算口径（API 与仪表盘共用）
+> 完整口径与"占位值"陷阱见 [`data-dictionary.md`](data-dictionary.md)，本表为速查。
+
 | 指标 | 公式 | 出处 |
 |---|---|---|
 | 行车能耗 | `(start_rated_range_km - end_rated_range_km) × cars.efficiency` | 官方 drives 仪表盘 |
 | 百公里能耗 | 上式 ×1000 ÷ distance | 同上 |
 | 直流快充判定 | `charger_phases` 为空/0 且 `fast_charger_type != 'ACSingleWireCAN'` | 官方超充统计 |
 | 电池可用容量 | `rated_battery_range_km × efficiency × 100 ÷ usable_battery_level`（取充电至 ≥90% 的会话） | 官方电池健康仪表盘 |
-| 电池健康度 | 最近容量 ÷ 历史最佳容量 | 中文仪表盘口径 |
+| **电池健康度** | 最近容量 ÷ **铭牌容量**（`NOMINAL_BATTERY_KWH` 环境变量） | **v0.5.0 修正**，见下 |
+| 充电损耗率 | `(energy_used - energy_added) ÷ energy_used × 100` | v0.5.0 新增 |
 | 位置命名 | 命中 geofence（半径内）否则 300m 最近地址 | Grafana 常用做法 |
 | 本车 efficiency | 0.146 kWh/km（cars 表，TeslaMate 依车型维护） | — |
+
+**⚠️ 健康度分母不能用"历史最大值"**（v0.4.0 及以前的错误，v0.5.0 修正）：
+历史最大值本身是衰减后的测量值，随时间漂移 → 车越老分母越小 → 比值永远逼近 100%。
+也不能用"满电续航 × efficiency"（车机按当前衰减上报，本车 454.59×0.146=66.37 ≠ 铭牌 76.8）。
+正确分母是铭牌容量：65.41 / 76.8 = **85.2%**（此前误报 98%）。配置在 `.env` 的 `NOMINAL_BATTERY_KWH`。
 
 ### 3.3 时区约定
 - PostgreSQL 全部 `timestamp without time zone`，**存 UTC**。
 - API 出参 ISO-8601 带 Z（UTC）；App 端 `Instant` + 系统时区显示。
 - 按日/按月聚合在 SQL 内用 `AT TIME ZONE 'UTC' → AT TIME ZONE 'Asia/Shanghai'`（API 环境变量 `TZ_NAME`）。
 
+### 3.4 客户端渲染方案演进（2026-10-14，重要）
+
+| 版本 | 方案 | 结局 |
+|---|---|---|
+| v0.1.x–v0.2.x | App 内嵌 **osmdroid** + 高德 GCJ-02 瓦片源 | ❌ 失败。logcat 证实 `Using tile source: Mapnik`——osmdroid 6.x 在 Compose `AndroidView` 重建时回落默认 Mapnik，而 OSM 在国内被 GFW 屏蔽（全部 404）→ 灰色网格。且瓦片源在 `factory` 设置、`update` 未重设，Compose 重组即失效 |
+| v0.3.0 起 | **高德静态图 API**（`/v3/staticmap`）+ 服务端中转 + Coil 加载 | ✅ 当前方案。服务端合成 PNG（含底图+路线），App 只当图片显示。彻底绕开客户端地图 SDK 的兼容性与可达性风险 |
+
+取舍详见 [`adr.md`](adr.md) #6。副作用：地图为静态图，**无手势缩放/拖动**。
+
+### 3.5 验证策略（2026-10-15 建立）
+
+- **API 改动** → `bash scripts/smoke.sh`：12 项断言（健康/鉴权/字段存在性/统计三档/电池口径/静态图 PNG/APK Content-Type/更新元数据）。任一失败禁止发版。
+- **UI 改动** → 真机 `adb shell screencap -p` 看实际渲染。**编译通过 ≠ 显示正确**（地图那次就是编译通过、代码无误，真机才发现瓦片源被覆盖）。
+- **历史教训**：v0.2.0→v0.5.2 期间积累的 20+ 条手工 curl 验证已全部固化为冒烟脚本，避免改一处 SQL 不知有没有弄坏别处。
+
 ## 4. 安全模型与遗留风险
 - API：Bearer Token（constant-time 比对）、错误信息不带堆栈、数据库只读账号权限（复用 teslamate 账号，未来可收紧为只读角色）。
+- 高德 Key / API Token / 铭牌容量等敏感配置只在 `.env`，永不出服务端；已加 `.gitignore` + 提交前密钥扫描。
 - 明文 HTTP 的边界：局域网（家庭 WiFi，可接受）+ Tailscale 隧道（WireGuard 加密，可接受）。**不要**把 8090/3000/4000 端口直接映射到公网。
-- 遗留（见 operations.md 待办）：`.env` 中 ChangeMe 弱密码×2、Grafana 匿名 Admin、`database/` 在 OneDrive 目录内。
+- APK 下载端点 `/apk/` 免鉴权（DownloadManager 无法加 header），依赖 Tailscale 隧道隔离；若将来暴露公网需改为带签名 URL。
+- 遗留（见 operations.md §5）：`.env` 中 ChangeMe 弱密码×2、Grafana 匿名 Admin、`database/` 在 OneDrive 目录内、模拟器 headless 启动不稳。
