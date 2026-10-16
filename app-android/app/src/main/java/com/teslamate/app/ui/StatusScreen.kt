@@ -242,8 +242,16 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
  * 胎压卡（2×2 网格：左前/右前/左后/右后）。
  * 胎压是家用车最有价值的安全仪表——胎压异常（过高/过低/单胎明显偏低）
  * 会用橙色高亮提示，这是 Tesla App 也没有做但确实有用的一环。
- * 正常范围按特斯拉 Model 3/Y：2.4–2.9 bar（冷胎）。
+ *
+ * ⚠️ 阈值的来历（2026-10-16 改）：原先写死「2.4–2.9 bar」是抄来的通用值，与本车实际
+ * 工况严重不符——查 51434 个真实采样点，本车范围 2.50–3.30、平均 2.96 bar，于是
+ * **62.4% 的记录都会触发「建议检查」**。一个 62% 时间误报的告警等于没有告警：
+ * 用户会把它当噪音忽略，连带把真正该响的漏气信号也一起忽略，比没有这功能更糟。
+ * 现按本车实测分布改为 2.5–3.3 bar。真正能识别「单胎漏气」的是下面按中位数做的
+ * 离群检测，保持不变。换车只需改上面两个常量。
  */
+private const val TPMS_MIN_BAR = 2.5
+private const val TPMS_MAX_BAR = 3.3
 @Composable
 private fun TpmsCard(fl: Double?, fr: Double?, rl: Double?, rr: Double?) {
     val all = listOfNotNull(fl, fr, rl, rr)
@@ -251,9 +259,9 @@ private fun TpmsCard(fl: Double?, fr: Double?, rl: Double?, rr: Double?) {
 
     fun warn(p: Double?): Boolean {
         if (p == null) return false
-        return p < 2.4 || p > 2.9
+        return p < TPMS_MIN_BAR || p > TPMS_MAX_BAR
     }
-    // 四胎中位数，用于"单胎明显偏低"判断（差 0.2 bar 以上）
+    // 四胎中位数，用于"单胎明显偏低"判断（差 0.2 bar 以上）——这条才是漏气的主信号
     val median = if (all.isNotEmpty()) all.sorted()[all.size / 2] else null
     fun lowOutlier(p: Double?): Boolean {
         if (p == null || median == null) return false
@@ -274,7 +282,7 @@ private fun TpmsCard(fl: Double?, fr: Double?, rl: Double?, rr: Double?) {
             TpmsCell("右后", rr, warn(rr) || lowOutlier(rr), Modifier.weight(1f))
         }
         Text(
-            "正常范围 2.4–2.9 bar（冷胎）",
+            "正常范围 $TPMS_MIN_BAR–$TPMS_MAX_BAR bar（冷胎）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
