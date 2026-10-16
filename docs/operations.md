@@ -183,7 +183,7 @@ docker compose up -d        # 让 teslamate/grafana/api 拿到新密码
 | 新增 api 服务 | compose 删掉 api 段落 + `docker compose up -d`（SQL/数据无影响） |
 | 数据库动过（SQL/回算） | `cat backups/db-*.sql \| docker exec -i teslamate-database-1 psql -U teslamate -d teslamate`（整库恢复） |
 
- ## 8. Windows 中文路径应对（junction 速查）
+## 8. Windows 中文路径应对（junction 速查）
 
  主项目根路径含中文（`OneDrive\文档\...`），`cmd.exe` 在解析含该路径的 `.cmd` 脚本时容易把 `文档` 解析为命令分隔符并触发 `'<x>' is not recognized` 错误。`chcp 65001 > nul` 加在脚本首行无效——码页切换发生在脚本解析完成之后。
 
@@ -201,6 +201,76 @@ docker compose up -d        # 让 teslamate/grafana/api 拿到新密码
  ```
 
  撤销：`rmdir C:\tm-ws`（仅删 junction，原中文路径不受影响）。也可用于本项目的源码同步脚本（见 `app-android/README.md`）。
+
+## 8.5 远程访问（Tailscale）—— ⚠️ 外出场景当前不可用
+
+> 2026-10-16 实测。核心需求是「在家和外出都要能用」，**外出那一半目前是坏的**。
+
+### App 连的是什么
+
+手机上 App 的服务器地址是 `http://<主机名>:8090` —— **Tailscale MagicDNS 主机名**，
+解析到 `<tailscale IP>`。因此 **Tailscale 是当前的必要条件**：关掉它主机名就解析不了。
+
+（局域网 IP `<局域网IP>:8090` 从手机 TCP 可达，但只在家里有效，出门就废。
+既然核心需求是「外出也能用」，**不要**改成局域网 IP。）
+
+### 实测结果
+
+| 场景 | 结果 |
+|---|---|
+| 家里 WiFi | ✅ 直连（`direct <局域网IP>`），ping 37~105ms |
+| **切到蜂窝网（模拟外出）** | ❌ **断连** |
+
+切到蜂窝网后的现象：
+
+```
+tailscale status → active; relay "lax"     ← 掉到洛杉矶 DERP 中继
+tailscale ping  → timed out
+服务端 API      → 零请求（App 显示的是断网前的缓存数据）
+```
+
+`tailscale netcheck`：
+
+```
+Nearest DERP: San Francisco 162.5ms / Los Angeles 178.8ms / Tokyo 219.6ms
+tshttpproxy: using proxy "http://127.0.0.1:7897"   ← 本机 Clash 代理
+PortMapping: （空）        ← 路由器没有 UPnP/NAT-PMP 端口映射
+MappingVariesByDestIP: false  ← 这项是好的，NAT 不是对称型
+```
+
+### 两个叠加的根因
+
+1. **DERP 选到了洛杉矶**（人在深圳）。Tailscale 控制面流量走了本机 Clash 代理
+   （`127.0.0.1:7897`），可能影响了区域判定。DERP 178ms 本就只是慢的兜底路径。
+2. **直连打洞失败**。路由器无端口映射（`PortMapping` 为空），手机又在运营商 NAT 后
+   （10.22.51.x），双方都不暴露端口时打洞成功率低 → 退化成 DERP → 而 DERP 那条也超时了。
+
+### 附带坑：网络切换后 Tailscale 会卡死
+
+从 WiFi 切到蜂窝、再切回 WiFi 之后，Tailscale 停在 `idle`——**tun0 接口还在、VPN 显示
+「已连接」、路由表也正常，但就是不通**。App 会一直显示旧数据，日志里零请求。
+
+**解法**（亲测有效）：重启手机端 Tailscale
+
+```bash
+adb shell am force-stop com.tailscale.ipn
+adb shell monkey -p com.tailscale.ipn -c android.intent.category.LAUNCHER 1
+```
+
+手工的话：下拉通知栏 → 关掉 Tailscale → 再打开。
+
+**判断是否卡死**：`adb shell ping -c 3 <tailscale IP>` —— 有包=通，100% 丢包=卡死了。
+
+### 待办（都没做，需要你决定）
+
+| 方案 | 预期效果 | 代价 |
+|---|---|---|
+| 路由器开 UPnP，或手动把 UDP 端口转发到本机 | 直连打洞成功率大幅提升，从根上解决 | 需改路由器配置 |
+| 排查 Clash 代理对 Tailscale 控制流量的影响 | DERP 区域可能纠正到亚洲 | 中等 |
+| 自建中国境内 DERP 中继节点 | 兜底延迟从 178ms 降到 30~50ms | 需一台境内服务器 |
+| 手机 Tailscale 设为「忽略电池优化」 | 减少被系统杀掉导致的断连 | 一项系统设置 |
+
+---
 
 ## 9. 自动备份（Windows 计划任务）
 
