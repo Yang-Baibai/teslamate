@@ -50,6 +50,9 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.teslamate.app.ActiveCharge
 import com.teslamate.app.AppSettings
 import com.teslamate.app.CarStatus
+import com.teslamate.app.TPMS_MAX_BAR
+import com.teslamate.app.TPMS_MIN_BAR
+import com.teslamate.app.TpmsReading
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtShort
 import kotlinx.coroutines.Dispatchers
@@ -57,6 +60,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Duration
+import java.time.Instant
 
 /** 车况首页：大标题折叠栏 + 下拉刷新 + 15 秒自动刷新 */
 @Composable
@@ -141,6 +146,19 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
+
+                        // 数据新鲜度：让「车睡着了（正常）」和「数据不新」不再长得一样。
+                        // 连不上服务器的情况由上面的 ErrorBanner 负责（那是请求失败）；
+                        // 这里说明的是「请求成功了，但车本身很久没上报」——多半是车停着不动。
+                        val staleHours = Duration.between(st.updated_at, Instant.now()).toHours()
+                        if (staleHours >= 24) {
+                            NoticeBanner(
+                                "车辆已 ${staleHours} 小时没有上报数据。" +
+                                    "车停着不动属正常；若你人在外地，也可能是网络不通，请留意上方是否有红色提示。"
+                            )
+                        } else if (staleHours >= 6) {
+                            NoticeBanner("车辆已离线约 ${staleHours} 小时，数据可能不是最新的。")
                         }
 
                         Row(
@@ -243,43 +261,24 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
  * 胎压是家用车最有价值的安全仪表——胎压异常（过高/过低/单胎明显偏低）
  * 会用橙色高亮提示，这是 Tesla App 也没有做但确实有用的一环。
  *
- * ⚠️ 阈值的来历（2026-10-16 改）：原先写死「2.4–2.9 bar」是抄来的通用值，与本车实际
- * 工况严重不符——查 51434 个真实采样点，本车范围 2.50–3.30、平均 2.96 bar，于是
- * **62.4% 的记录都会触发「建议检查」**。一个 62% 时间误报的告警等于没有告警：
- * 用户会把它当噪音忽略，连带把真正该响的漏气信号也一起忽略，比没有这功能更糟。
- * 现按本车实测分布改为 2.5–3.3 bar。真正能识别「单胎漏气」的是下面按中位数做的
- * 离群检测，保持不变。换车只需改上面两个常量。
+ * 判定逻辑与阈值统一放在 [com.teslamate.app.TpmsReading]，
+ * 车况页与后台通知共用同一套口径，避免两处算法漂移。
  */
-private const val TPMS_MIN_BAR = 2.5
-private const val TPMS_MAX_BAR = 3.3
 @Composable
 private fun TpmsCard(fl: Double?, fr: Double?, rl: Double?, rr: Double?) {
-    val all = listOfNotNull(fl, fr, rl, rr)
-    if (all.isEmpty()) return // 一个都没有就不占版面
-
-    fun warn(p: Double?): Boolean {
-        if (p == null) return false
-        return p < TPMS_MIN_BAR || p > TPMS_MAX_BAR
-    }
-    // 四胎中位数，用于"单胎明显偏低"判断（差 0.2 bar 以上）——这条才是漏气的主信号
-    val median = if (all.isNotEmpty()) all.sorted()[all.size / 2] else null
-    fun lowOutlier(p: Double?): Boolean {
-        if (p == null || median == null) return false
-        return median - p > 0.2
-    }
-    val anyWarn = warn(fl) || warn(fr) || warn(rl) || warn(rr) ||
-        lowOutlier(fl) || lowOutlier(fr) || lowOutlier(rl) || lowOutlier(rr)
+    val t = TpmsReading(fl, fr, rl, rr)
+    if (t.values.isEmpty()) return // 一个都没有就不占版面
 
     SectionCard(
-        title = if (anyWarn) "轮胎胎压 · 建议检查" else "轮胎胎压",
+        title = if (t.anyAlert) "轮胎胎压 · 建议检查" else "轮胎胎压",
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            TpmsCell("左前", fl, warn(fl) || lowOutlier(fl), Modifier.weight(1f))
-            TpmsCell("右前", fr, warn(fr) || lowOutlier(fr), Modifier.weight(1f))
+            TpmsCell("左前", fl, t.isAlerting(fl), Modifier.weight(1f))
+            TpmsCell("右前", fr, t.isAlerting(fr), Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            TpmsCell("左后", rl, warn(rl) || lowOutlier(rl), Modifier.weight(1f))
-            TpmsCell("右后", rr, warn(rr) || lowOutlier(rr), Modifier.weight(1f))
+            TpmsCell("左后", rl, t.isAlerting(rl), Modifier.weight(1f))
+            TpmsCell("右后", rr, t.isAlerting(rr), Modifier.weight(1f))
         }
         Text(
             "正常范围 $TPMS_MIN_BAR–$TPMS_MAX_BAR bar（冷胎）",

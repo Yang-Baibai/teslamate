@@ -68,6 +68,25 @@ fun ErrorBanner(text: String, modifier: Modifier = Modifier) {
     }
 }
 
+/** 提示横幅（tonal，中性提醒）——用于「数据不是最新的」这类非错误信息 */
+@Composable
+fun NoticeBanner(text: String, modifier: Modifier = Modifier) {
+    Surface(
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        shape = RoundedCornerShape(16.dp),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("ⓘ ", color = MaterialTheme.colorScheme.onTertiaryContainer)
+            Text(
+                text,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
 @Composable
 fun LoadingBox(modifier: Modifier = Modifier) {
     Box(

@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 后台发本地通知（充电完成 / 胎压异常 / 数据过期）。Android 13+ 需运行时申请 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 启动 APK 安装意图（App 内一键更新需要） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <queries>

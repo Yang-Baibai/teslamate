@@ -2,6 +2,8 @@
 
 package com.teslamate.app.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -22,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -45,6 +48,8 @@ import com.teslamate.app.Api
 import com.teslamate.app.AppSettings
 import com.teslamate.app.BuildConfig
 import com.teslamate.app.Car
+import com.teslamate.app.Notifier
+import com.teslamate.app.WatchWorker
 import com.teslamate.app.saveSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -58,16 +63,33 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
     var url by remember(settings) { mutableStateOf(settings.serverUrl) }
     var token by remember(settings) { mutableStateOf(settings.token) }
     var carId by remember(settings) { mutableStateOf(settings.carId) }
+    var notifyOn by remember(settings) { mutableStateOf(settings.notifyEnabled) }
     var cars by remember { mutableStateOf<List<Car>>(emptyList()) }
     var showToken by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
     var testOk by remember { mutableStateOf<Boolean?>(null) }
     var testMsg by remember { mutableStateOf<String?>(null) }
     var savedHint by remember { mutableStateOf(false) }
+    var notifyHint by remember { mutableStateOf<String?>(null) }
 
     fun save() {
-        scope.launch { ctx.saveSettings(AppSettings(url, token, carId)) }
+        scope.launch { ctx.saveSettings(AppSettings(url, token, carId, notifyOn)) }
         savedHint = true
+    }
+
+    // 通知权限必须在「用户主动开启」时申请——系统不允许在启动时静默弹窗
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            notifyOn = true
+            notifyHint = "通知已开启，正在安排后台检查…"
+            save()
+            WatchWorker.runNow(ctx)
+        } else {
+            notifyOn = false
+            notifyHint = "未授予通知权限，后台监听可以开启但不会弹出通知。"
+        }
     }
 
     LaunchedEffect(settings) {
@@ -186,6 +208,60 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                             }
                         }
                         TextButton(onClick = { save() }) { Text("保存车辆选择") }
+                    }
+                }
+            }
+
+            item {
+                SectionCard("车况通知", Modifier.animateItem()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("后台监听与通知", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "每 15 分钟检查一次车况。以下情况推送通知：开始充电、充电完成、" +
+                                    "胎压异常、数据超过 24 小时未更新。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = notifyOn,
+                            onCheckedChange = { on ->
+                                if (!on) {
+                                    notifyOn = false
+                                    notifyHint = null
+                                    save()
+                                } else if (Notifier.canNotify(ctx)) {
+                                    notifyOn = true
+                                    notifyHint = "正在安排后台检查…"
+                                    save()
+                                    WatchWorker.runNow(ctx)
+                                } else {
+                                    permLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                                }
+                            },
+                        )
+                    }
+                    notifyHint?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (notifyOn) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            OutlinedButton(onClick = { WatchWorker.runNow(ctx) }) {
+                                Text("立即检查")
+                            }
+                        }
+                        Text(
+                            "提示：国产系统（小米/华为等）会限制后台任务。若很久才收到通知，" +
+                                "请到「设置 → 应用设置 → 应用管理 → 爱车车况 → 电池」" +
+                                "把「省电策略」改为「无限制」，否则后台检查可能被推迟很久。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

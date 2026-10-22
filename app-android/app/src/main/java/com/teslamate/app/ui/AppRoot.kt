@@ -45,6 +45,8 @@ import androidx.compose.ui.unit.Density
 import com.teslamate.app.AppLatest
 import com.teslamate.app.AppSettings
 import com.teslamate.app.BuildConfig
+import com.teslamate.app.Notifier
+import com.teslamate.app.WatchWorker
 import com.teslamate.app.settingsFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -81,6 +83,15 @@ fun TeslaMateApp() {
             }
         }
         // 静默失败：网络抖动不打扰用户，下次启动再查
+    }
+
+    // 通知渠道 + 后台监听调度（随设置变化自动生效）
+    // 注意：只在「已配置服务器 + 用户主动开启通知」时才排任务，
+    // 否则会白跑轮询也发不出通知。
+    LaunchedEffect(settings?.notifyEnabled, settings?.configured) {
+        val s = settings ?: return@LaunchedEffect
+        Notifier.ensureChannels(ctx)
+        WatchWorker.schedule(ctx, s.notifyEnabled && s.configured)
     }
 
     TeslaMateTheme {
