@@ -45,10 +45,12 @@ fun TrackMap(
 ) {
     if (points.isEmpty()) return
 
-    // 服务端中转 URL：复用 settings.serverUrl（确保 Tailscale 隧道）
+    // 服务端中转 URL：复用 settings.serverUrl（确保走 Tailscale 隧道）
+    // 兜底用 MagicDNS 主机名而非硬编码 IP —— Tailscale 的 IP 可能变，
+    // 主机名是稳定的（.env 的 APP_APK_URL 也已统一改成主机名）。
     val ctx = LocalContext.current
     val baseUrl = settings?.serverUrl?.takeIf { it.isNotBlank() }
-        ?: "http://<tailscale IP>:8090"
+        ?: "http://<主机名>:8090"
     val token = settings?.token.orEmpty()
 
     // 路线在 App 端先降采到 ≤ 100 点（服务端限 200，留余量）。1500 个原坐标
