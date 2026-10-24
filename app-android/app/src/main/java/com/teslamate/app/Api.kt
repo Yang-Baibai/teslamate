@@ -116,6 +116,41 @@ data class CarStatus(
     val locked: Boolean? = null,
     /** 锁车状态的采集时刻（用于判断新鲜度） */
     @Serializable(with = InstantSer::class) val locked_at: Instant? = null,
+    /**
+     * **实时胎压**（bar，来源 Tesla Fleet API 的 `vehicle_state`）。
+     *
+     * ⚠️ 与上面的 [tpms_fl] 等是**两个来源，不要互相覆盖**：
+     * - [tpms_fl] 等 = **TeslaMate 的稀疏采样**：车开动/充电时才记，数小时才有一条，还可能是几小时前的旧值
+     * - [tpms_live_fl] 等 = **Fleet API 的实时值**：车醒着时每 2 分钟一条，明显更鲜
+     *
+     * **优先级：有 live 就用 live，没有才回退 [tpms_fl] 等。**
+     *
+     * - `null` = 没读到（未配置 Fleet API 凭据 / 车休眠 / 还没拉到）
+     *
+     * ⚠️ null 不能当 0 —— 0 bar 是不可能值。
+     */
+    val tpms_live_fl: Double? = null,
+    val tpms_live_fr: Double? = null,
+    val tpms_live_rl: Double? = null,
+    val tpms_live_rr: Double? = null,
+    /** 实时胎压这批数据的采集时刻（用于判断新鲜度；null = 从来没拿到过数据） */
+    @Serializable(with = InstantSer::class) val tpms_live_at: Instant? = null,
+    /**
+     * 实时胎压的告警判定（服务端算好，App 不自己算阈值）。
+     *
+     * - `true` = 有异常（Tesla 硬告警，或超出正常范围）
+     * - `false` = 已知正常
+     * - **null = 未知**（没读到实时数据）
+     *
+     * ⚠️ Kotlin 里用 `== true` 判断，别写成 `if (tpms_live_alert)`。
+     */
+    val tpms_live_alert: Boolean? = null,
+    /** 异常轮次，如 `["左后"]` */
+    val tpms_live_alert_wheels: List<String> = emptyList(),
+    /** 异常轮次读数描述，如 `"左后 2.80 bar"` */
+    val tpms_live_alert_detail: String = "",
+    /** 接近阈值的轮次（Tesla 的软告警），如 `["右前"]` */
+    val tpms_live_warn_wheels: List<String> = emptyList(),
     val data_age_hours: Int = 0,
     val data_stale: Boolean = false,
     val active_charge: ActiveCharge? = null,

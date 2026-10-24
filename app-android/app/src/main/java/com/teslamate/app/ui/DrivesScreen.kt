@@ -61,7 +61,12 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 @Composable
-fun DrivesScreen(settings: AppSettings, modifier: Modifier) {
+fun DrivesScreen(
+    settings: AppSettings,
+    modifier: Modifier,
+    /** v0.8.5：false = 嵌在「记录」页里（顶栏与「近 30 天」汇总统一收敛） */
+    showHeader: Boolean = true,
+) {
     val api = remember(settings) { settings.api() }
     var list by remember { mutableStateOf<List<Drive>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -86,7 +91,7 @@ fun DrivesScreen(settings: AppSettings, modifier: Modifier) {
         label = "driveDetail",
     ) { sel ->
         Box(Modifier.fillMaxSize()) {
-            if (sel == null) DriveList(list, loading, error, settings, onSelect = { selected = it })
+            if (sel == null) DriveList(list, loading, error, settings, showHeader = showHeader, onSelect = { selected = it })
             else DriveDetail(sel, api, settings) { selected = null }
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
@@ -99,13 +104,16 @@ private fun DriveList(
     loading: Boolean,
     error: String?,
     settings: AppSettings,
+    showHeader: Boolean = true,
     onSelect: (Drive) -> Unit,
 ) {
 
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { ScreenTitle("行程") },
-        )
+        if (showHeader) {
+            TopAppBar(
+                title = { ScreenTitle("行程") },
+            )
+        }
         when {
             error != null -> Column(Modifier.padding(16.dp)) { ErrorBanner(error!!) }
             loading -> ListSkeleton(items = 7)
@@ -120,13 +128,15 @@ private fun DriveList(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    item(key = "summary") {
-                        RecentSummaryCard(settings = settings, fallback = {
-                            Text(
-                                "共 ${list.size} 次行程",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        })
+                    if (showHeader) {
+                        item(key = "summary") {
+                            RecentSummaryCard(settings = settings, fallback = {
+                                Text(
+                                    "共 ${list.size} 次行程",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            })
+                        }
                     }
                     groups.forEach { (month, drives) ->
                         item(key = "h-$month") {

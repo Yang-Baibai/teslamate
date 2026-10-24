@@ -66,7 +66,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 @Composable
-fun ChargesScreen(settings: AppSettings, modifier: Modifier) {
+fun ChargesScreen(
+    settings: AppSettings,
+    modifier: Modifier,
+    /**
+     * v0.8.5：false = 嵌在「记录」页里（RecordsScreen 已提供顶栏与段控件，
+     * 且「近 30 天」汇总数据统一收敛到「用量」页 —— 同一份 stats 不该被抓两次）。
+     */
+    showHeader: Boolean = true,
+) {
     val api = remember(settings) { settings.api() }
     var list by remember { mutableStateOf<List<Charge>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -95,7 +103,7 @@ fun ChargesScreen(settings: AppSettings, modifier: Modifier) {
         label = "chargeDetail",
     ) { sel ->
         Box(Modifier.fillMaxSize()) {
-            if (sel == null) ChargeList(list, stats, loading, error, settings, onSelect = { selected = it })
+            if (sel == null) ChargeList(list, stats, loading, error, settings, showHeader = showHeader, onSelect = { selected = it })
             else ChargeDetail(sel, api, stats) { selected = null }
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
@@ -109,13 +117,16 @@ private fun ChargeList(
     loading: Boolean,
     error: String?,
     settings: AppSettings,
+    showHeader: Boolean = true,
     onSelect: (Charge) -> Unit,
 ) {
 
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(
-            title = { ScreenTitle("充电") },
-        )
+        if (showHeader) {
+            TopAppBar(
+                title = { ScreenTitle("充电") },
+            )
+        }
         when {
             error != null -> Column(Modifier.padding(16.dp)) { ErrorBanner(error!!) }
             loading -> ListSkeleton(items = 7)
@@ -130,13 +141,15 @@ private fun ChargeList(
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    item(key = "summary") {
-                        RecentSummaryCard(settings = settings, fallback = {
-                            Text(
-                                "共 ${list.size} 次 · 充入 ${totalKwh.fmt(1)} kWh",
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                        })
+                    if (showHeader) {
+                        item(key = "summary") {
+                            RecentSummaryCard(settings = settings, fallback = {
+                                Text(
+                                    "共 ${list.size} 次 · 充入 ${totalKwh.fmt(1)} kWh",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            })
+                        }
                     }
                     groups.forEach { (month, charges) ->
                         item(key = "h-$month") {

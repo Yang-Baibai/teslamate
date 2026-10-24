@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.QueryStats
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Settings
@@ -63,11 +64,26 @@ import dev.chrisbanes.haze.haze
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/**
+ * 底部导航的 4 个 Tab。
+ *
+ * ⚠️ v0.8.5：**5 → 4**。
+ *
+ * IA 复核找到一处硬伤：「近 30 天」这份数据在**充电页顶、行程页顶、统计页**出现
+ * **3 次**，还带着**两个不同的名字**（「最近 30 天」/「月 汇总」）——
+ * 同一份数据被抓三次、被叫两个名字，这不是"信息丰富"，是**信息自相矛盾**。
+ *
+ * 合并「充电 + 行程 → 记录」的理由不是"Tab 太多"（M3 官方支持 5 项），
+ * 而是它们**本来就是同一种东西**：按月分组的历史事件列表 + 详情推入。
+ * 段控件（充电 | 行程）比两个平级 Tab 更诚实地表达了它们的从属关系。
+ *
+ * 「用量」改名（统计 → 用量）：它下面装的是里程/能耗/充入量这些**量**，
+ * 而「记录」装的是**事件**。原来的「统计」和「记录」在语义上会打架。
+ */
 enum class Tab(val label: String, val icon: ImageVector) {
     STATUS("车况", Icons.Filled.DirectionsCar),
-    CHARGES("充电", Icons.Filled.BatteryChargingFull),
-    DRIVES("行程", Icons.Filled.Route),
-    STATS("统计", Icons.Filled.QueryStats),
+    RECORDS("记录", Icons.Filled.History),
+    USAGE("用量", Icons.Filled.QueryStats),
     SETTINGS("设置", Icons.Filled.Settings),
 }
 
@@ -220,9 +236,8 @@ private fun MainScaffold(settings: AppSettings) {
         ) { current ->
             when (current) {
                 Tab.STATUS -> StatusScreen(settings, Modifier.fillMaxSize(), statusStore)
-                Tab.CHARGES -> ChargesScreen(settings, Modifier.fillMaxSize())
-                Tab.DRIVES -> DrivesScreen(settings, Modifier.fillMaxSize())
-                Tab.STATS -> StatsScreen(settings, Modifier.fillMaxSize())
+                Tab.RECORDS -> RecordsScreen(settings, Modifier.fillMaxSize())
+                Tab.USAGE -> StatsScreen(settings, Modifier.fillMaxSize())
                 Tab.SETTINGS -> SettingsScreen(settings, Modifier.fillMaxSize())
             }
         }
