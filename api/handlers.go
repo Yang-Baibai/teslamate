@@ -82,7 +82,17 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			writeErr(w, http.StatusNotFound, "车辆不存在或还没有位置数据")
+			// ⚠️ v0.9.0：区分「这台车还没数据」与「根本没这台车」。
+			// 原来两种情况都是同一个 404「车辆不存在或还没有位置数据」，
+			// App 只能一律渲染成红色错误条 —— 但「车还没开过第一次」是**正常状态**，
+			// 不该看起来像故障（可靠性复核：「正常状态被渲染成错误」）。
+			if carExists(id) {
+				writeErrCode(w, http.StatusNotFound,
+					"这台车还没有任何数据（可能还没开过，或采集器还没上报）", "no_data")
+			} else {
+				writeErrCode(w, http.StatusNotFound,
+					"找不到这台车，请在「设置」页确认车辆编号", "no_car")
+			}
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -111,6 +121,13 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	age := EvaluateDataAge(s.UpdatedAt)
 	s.DataAgeHours = age.Hours
 	s.DataStale = age.Stale
+	s.DataWarn = age.Warn
+
+	// ⚠️ v0.9.0：Fleet API 后台轮询的健康状态。
+	// 轮询失败时我们**保留**上次已知的锁车/胎压（见 tesla.go），
+	// 这里把失败原因与「最后一次成功」的时刻一并交给 App，
+	// 让它能说清「这会儿没取到，显示的是 X 分钟前的数据」。
+	s.FleetError, s.FleetLastOK = teslaFleetStatus()
 
 	// 锁车状态来自 Tesla Fleet API 的后台轮询缓存（api/tesla.go）。
 	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。
@@ -841,6 +858,16 @@ func summarize(buckets []*StatsBucket) *StatsBucket {
 		s.WhPerKm = &v
 	}
 	return s
+}
+
+// carExists 这台车在 cars 表里存不存在。
+//
+// 用于区分「车存在但还没有任何位置数据」（正常状态）与「根本没有这台车」
+// （配置错误）。两者原来都是同一个 404，App 无法区分。
+func carExists(id int) bool {
+	var one int
+	err := db.QueryRow(context.Background(), `SELECT 1 FROM cars WHERE id = $1`, id).Scan(&one)
+	return err == nil
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

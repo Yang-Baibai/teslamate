@@ -83,7 +83,21 @@ type CarStatus struct {
 	TpmsMinBar      float64  `json:"tpms_min_bar"`      // 正常范围下限（供 App 展示，避免两边各写一份）
 	TpmsMaxBar      float64  `json:"tpms_max_bar"`      // 正常范围上限
 	DataAgeHours    int      `json:"data_age_hours"`    // 数据距今多少小时
-	DataStale       bool     `json:"data_stale"`        // 数据是否已过期
+	DataStale       bool     `json:"data_stale"`        // 数据是否已过期（超过 DataStaleHours）
+	// ⚠️ v0.9.0：新增「注意」级阈值。
+	// 原来 App 自己按 6 小时 / 24 小时两档判断，而服务端 DataStaleHours=24
+	// 才是唯一事实源 —— 两边各写一份阈值，改一边就打架。
+	// 现在两档都在服务端算（DataWarnHours / DataStaleHours），App 只读结果。
+	DataWarn bool `json:"data_warn"` // 数据已超过「注意」阈值（未过期）
+
+	// ⚠️ v0.9.0：Fleet API 后台轮询的健康状态。
+	//   FleetError  非空 = 轮询失败原因（空 = 正常）
+	//   FleetLastOK 最近一次成功拉取的时刻
+	// App 用它区分「车真没锁」和「这会儿没取到数据」——
+	// 失败时我们**保留**上次已知的锁车状态（宁可给一个带时间戳的旧值，
+	// 也不给「未知」），并把原因告诉用户。
+	FleetError  string     `json:"fleet_error"`
+	FleetLastOK *time.Time `json:"fleet_last_ok"`
 
 	ActiveCharge *ActiveCharge `json:"active_charge,omitempty"`
 	ActiveDrive  *ActiveDrive  `json:"active_drive,omitempty"`

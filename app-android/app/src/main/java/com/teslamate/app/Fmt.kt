@@ -5,18 +5,52 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-private val zone: ZoneId = ZoneId.systemDefault()
+/**
+ * 时区**动态**取。
+ *
+ * ⚠️ v0.9.0：原来 `Fmt.kt` 顶部是
+ * ```kotlin
+ * private val zone: ZoneId = ZoneId.systemDefault()
+ * private val dtf = DateTimeFormatter.ofPattern(...).withZone(zone)
+ * ```
+ * —— 顶层 `val` 在**进程启动时求值一次**。用户改系统时区（出国出差、
+ * 自动换区、跨时区出差回来）之后，App 仍然按**旧时区**显示所有绝对时间，
+ * 直到进程被杀。这在「经常出国的车主」身上是实打实的显示错误。
+ *
+ * 现在：每次格式化时重新读 `ZoneId.systemDefault()`，
+ * 只在时区**真的变了**时才重建 formatter（重建本身有开销，不能每次都做）。
+ *
+ * ⚠️ 另一个**已知未修**的差异：服务端的日/月聚合用 `TZ_NAME=Asia/Shanghai`，
+ * 而 App 的「按月分组」用**手机**时区。跨时区时两者可能对不上
+ * （例如手机在纽约时差出 12 小时，月初/月末会被分到不同月份）。
+ * 要彻底修需要服务端下发 `server_timezone` 并让 App 统一以服务端为准 ——
+ * 那是比这一条更大的改动，本轮先记在这里，不静默留下。
+ */
+private class ZoneFormatter(private val pattern: String) {
+    private var lastZone: ZoneId? = null
+    private var fmt: DateTimeFormatter? = null
 
-private val dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm", Locale.CHINA).withZone(zone)
-private val dtfShort = DateTimeFormatter.ofPattern("MM-dd HH:mm", Locale.CHINA).withZone(zone)
-private val df = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.CHINA).withZone(zone)
-private val mf = DateTimeFormatter.ofPattern("yyyy年M月", Locale.CHINA).withZone(zone)
+    fun format(instant: Instant): String {
+        val z = ZoneId.systemDefault()
+        var f = fmt
+        if (f == null || lastZone != z) {
+            f = DateTimeFormatter.ofPattern(pattern, Locale.CHINA).withZone(z)
+            fmt = f
+            lastZone = z
+        }
+        return f.format(instant)
+    }
+}
+
+private val dtf = ZoneFormatter("yyyy-MM-dd HH:mm")
+private val dtfShort = ZoneFormatter("MM-dd HH:mm")
+private val df = ZoneFormatter("yyyy-MM-dd")
+private val mf = ZoneFormatter("yyyy年M月")
 
 fun Instant?.fmtFull(): String = this?.let { dtf.format(it) } ?: "—"
 fun Instant?.fmtShort(): String = this?.let { dtfShort.format(it) } ?: "—"
 fun Instant?.fmtDate(): String = this?.let { df.format(it) } ?: "—"
 fun Instant?.fmtMonth(): String = this?.let { mf.format(it) } ?: "—"
-
 fun Double?.fmt(digits: Int = 1, suffix: String = ""): String =
     this?.let { String.format(Locale.CHINA, "%.${digits}f%s", it, suffix) } ?: "—"
 

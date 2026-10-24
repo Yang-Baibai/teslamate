@@ -16,6 +16,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.Column
@@ -44,9 +45,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -67,6 +71,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -198,9 +205,24 @@ fun navBarBottom(): androidx.compose.ui.unit.Dp =
     androidx.compose.foundation.layout.WindowInsets.navigationBars
         .asPaddingValues().calculateBottomPadding()
 
-/** 错误横幅（tonal） */
+/**
+ * 错误横幅（tonal）。
+ *
+ * ⚠️ **v0.9.0：加「行动按钮」**。
+ * 原来只有「图标 + 一句话」，用户看完不知道下一步该干什么。
+ * 令牌失效时文案写着「请到「设置」页重新填写」，但「设置」在**第 4 个 Tab** ——
+ * 说了等于没说（可靠性复核：「这是功能缺失，不是文案问题」）。
+ * 现在横幅本身可以带一个出口按钮：
+ * - 令牌问题 → 「前往设置」（直接切到设置页）
+ * - 网络问题 → 「重试」（不用等 15 秒自动轮询）
+ */
 @Composable
-fun ErrorBanner(text: String, modifier: Modifier = Modifier) {
+fun ErrorBanner(
+    text: String,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
     Surface(
         color = MaterialTheme.colorScheme.errorContainer,
         shape = RoundedCornerShape(16.dp),
@@ -218,7 +240,22 @@ fun ErrorBanner(text: String, modifier: Modifier = Modifier) {
                 text,
                 color = MaterialTheme.colorScheme.onErrorContainer,
                 style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
             )
+            if (actionLabel != null && onAction != null) {
+                Spacer(Modifier.width(4.dp))
+                TextButton(
+                    onClick = onAction,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                    Text(
+                        actionLabel,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
         }
     }
 }
@@ -486,6 +523,41 @@ fun KV(k: String, v: String) {
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
         )
+    }
+}
+
+/**
+ * 可折叠的「更多信息」区。
+ *
+ * ⚠️ v0.9.0（新手车主复核）：新手完全看不懂「峰值电压 / 峰值电流 / 相数」这类 jargon，
+ * 但它们恰恰是老手进阶后真正想看的（换桩、算效率、排查桩的问题）。
+ *
+ * 折起来 = 新手不被术语干扰；展开 = **数据一点没丢**。
+ * 这比「删掉」好，也比「平铺着显示」好 —— 平铺会让新手以为自己漏看了什么。
+ */
+@Composable
+fun CollapsibleSection(
+    label: String,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(modifier) {
+        Text(
+            text = if (expanded) "$label ▾" else "$label ▸",
+            style = MaterialTheme.typography.labelSmall,
+            // ⚠️ v0.9.0：不用 primary（品牌红）—— 本 App 里红色只表示告警/品牌点缀，
+            // 一个折叠链接是红的看起来像出错了。可点性由 ▸/▾ 表达。
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clickable { expanded = !expanded }
+                .semantics {
+                    contentDescription = if (expanded) "收起$label" else "展开$label"
+                },
+        )
+        if (expanded) {
+            content()
+        }
     }
 }
 
@@ -767,6 +839,13 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier, charging: Boolean = false)
  *     深浅两模式都 ≥4.5:1。
  *  2. 轨道 `chartTrack` 深色下只有 1.39:1 —— 提到 ≥3:1，否则"满格量程"读不出来。
  *  3. 加 `contentDescription`：Canvas 画的条对屏幕阅读器完全不可达（IA 专家实测）。
+ *
+ * ⚠️ **v0.9.0：目标刻度线加文字标签**（新手车主复核）。
+ * 车主原话：「能量条上那根竖线没有任何标签。我盯着看了三秒，
+ * 不知道是'目标电量'还是'上次充到这'。这是最典型的'看不懂就跳过'。」
+ *
+ * 现在竖线正上方写着「目标 80%」—— 一眼知道那根线是什么，
+ * 能量条也就不再是「电量环的重复」：环给数字，条给**目标**。
  */
 @Composable
 fun EnergyBar(
@@ -791,10 +870,11 @@ fun EnergyBar(
         label = "energyBar",
     )
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val textMeasurer = rememberTextMeasurer()
     Box(
         modifier
             .fillMaxWidth()
-            .height(height.dp)
             .semantics {
                 contentDescription = buildString {
                     append("电量 ${soc ?: "未知"}%")
@@ -803,13 +883,26 @@ fun EnergyBar(
                 }
             }
     ) {
-        Canvas(Modifier.fillMaxSize()) {
-            val r = androidx.compose.ui.geometry.CornerRadius(size.height / 2f)
-            drawRoundRect(color = track, cornerRadius = r)
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height((height + 13).dp)
+        ) {
+            val labelH = 13.dp.toPx()
+            val barTop = labelH
+            val barH = size.height - labelH
+            val r = androidx.compose.ui.geometry.CornerRadius(barH / 2f)
+            drawRoundRect(
+                color = track,
+                topLeft = Offset(0f, barTop),
+                size = androidx.compose.ui.geometry.Size(size.width, barH),
+                cornerRadius = r,
+            )
             if (animated > 0f) {
                 drawRoundRect(
                     color = fill,
-                    size = androidx.compose.ui.geometry.Size(size.width * animated, size.height),
+                    topLeft = Offset(0f, barTop),
+                    size = androidx.compose.ui.geometry.Size(size.width * animated, barH),
                     cornerRadius = r,
                 )
             }
@@ -817,10 +910,26 @@ fun EnergyBar(
                 val x = size.width * (t / 100f)
                 drawLine(
                     color = tickColor,
-                    start = Offset(x, 0f),
-                    end = Offset(x, size.height),
+                    start = Offset(x, barTop),
+                    end = Offset(x, barTop + barH),
                     strokeWidth = 2.dp.toPx(),
                     cap = StrokeCap.Round,
+                )
+                // ⚠️ v0.9.0：竖线上方写清楚「目标 80%」。
+                // 不写的话这根线就是一根没人认识的竖线（新手车主实测「盯了三秒」）。
+                val txt = "目标 $t%"
+                val layout = textMeasurer.measure(
+                    text = txt,
+                    style = TextStyle(fontSize = 9.sp, color = labelColor),
+                )
+                drawText(
+                    textLayoutResult = layout,
+                    topLeft = Offset(
+                        // 标签居中对齐刻度线，但左右不越界（目标 100% 时会超出右边缘）
+                        x = (x - layout.size.width / 2f)
+                            .coerceIn(0f, (size.width - layout.size.width).coerceAtLeast(0f)),
+                        y = 0f,
+                    ),
                 )
             }
         }

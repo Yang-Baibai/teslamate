@@ -71,6 +71,12 @@ var teslaRegions = map[string]teslaEndpoints{
 // 不把它降级成「未知」，否则车一停就是一片 null，功能等于没有。
 var errVehicleUnavailable = errors.New("车辆当前不可用（多半在休眠）")
 
+// errTeslaAuth Fleet API 凭据失效（401 / 403）。
+//
+// 凭据坏了不代表车解锁了 —— 它只代表我们读不到。所以它**同样不清空**已知的锁车状态，
+// 只是把「读不到」这件事记下来告诉 App。
+var errTeslaAuth = errors.New("Tesla 凭据已失效")
+
 // teslaConfig 全部来自环境变量，一个都没配也能启动（降级成「未知」）。
 type teslaConfig struct {
 	clientID     string
@@ -103,6 +109,14 @@ type teslaClient struct {
 	locked   *bool
 	lockedAt *time.Time
 	liveTPMS TeslaTPMS // 实时胎压快照（来源 Fleet API 的 vehicle_state）
+
+	// ⚠️ v0.9.0：轮询健康状态。
+	//   fleetErr    非空 = 轮询失败时的原因（空 = 正常）
+	//   fleetLastOK 最近一次**成功**拉取的时刻
+	// 有了这两个，App 才能区分「车真没锁」和「这会儿没取到数据」——
+	// 而「锁没锁」是车主第一诉求，把它降级成「未知」比显示一个旧值伤害大得多。
+	fleetErr    string
+	fleetLastOK *time.Time
 }
 
 // TeslaTPMSWheel 一只轮胎的实时读数与 Tesla 服务端的告警位。
@@ -148,6 +162,39 @@ func teslaLiveTPMS() TeslaTPMS {
 		return TeslaTPMS{}
 	}
 	return tesla.TPMS()
+}
+
+// teslaFleetStatus 返回后台轮询的健康状态：失败原因 + 最近一次成功的时刻。
+//
+// 没配凭据时两者都是空 —— 那不是「故障」，是「没装这个功能」。
+func teslaFleetStatus() (string, *time.Time) {
+	if tesla == nil {
+		return "", nil
+	}
+	return tesla.FleetStatus()
+}
+
+// FleetStatus 返回轮询健康状态（读侧不加锁排队）。
+func (c *teslaClient) FleetStatus() (string, *time.Time) {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.fleetErr, c.fleetLastOK
+}
+
+// setFleetError 记下本轮失败的原因。
+func (c *teslaClient) setFleetError(msg string) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.fleetErr = msg
+}
+
+// markFleetOK 轮询成功：清掉错误、记下成功时刻。
+func (c *teslaClient) markFleetOK() {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.fleetErr = ""
+	now := time.Now().UTC()
+	c.fleetLastOK = &now
 }
 
 // loadTeslaConfig 从环境变量读配置。缺什么都不报错——缺了就是「未知」。
@@ -253,8 +300,17 @@ func (c *teslaClient) setLiveTPMS(t TeslaTPMS) {
 
 // clearVehicleState 降级成「未知」。
 //
-// 锁车与实时胎压来自同一次请求，成败一起 —— 一个留着旧值一个清空，
-// 反而会让 App 拼出「新的胎压 + 旧的锁车状态」这种自相矛盾的组合。
+// ⚠️ v0.9.0：**这个函数不再被调用**。
+//
+// 原来只要轮询失败（哪怕只是 Tesla 侧一次 429 限流）就调它，把锁车与实时胎压
+// 一起清成 null。后果是：
+//   - Tesla 侧抖动 30 秒 → App 的锁车变「未知」、胎压卡整块消失
+//   - 用户无法区分「车真没锁」和「这会儿没取到数据」
+//   - 而「锁没锁」是车主第一诉求 —— 把它降级成「未知」，
+//     比显示一个**带时间戳的旧值**伤害大得多（后者至少是诚实的事实）。
+//
+// 现在的策略：**任何失败都保留上次已知结果**，只把失败原因记进 fleetErr，
+// 由 App 显示「暂时没取到，原因是 X」。真正从没拿到过数据时状态本来就是 null。
 func (c *teslaClient) clearVehicleState() {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
@@ -263,40 +319,84 @@ func (c *teslaClient) clearVehicleState() {
 	c.liveTPMS = TeslaTPMS{}
 }
 
+// shortFleetError 把内部错误压成一句**能直接给用户看**的话。
+//
+// 原则：这句话会原样出现在 App 的横幅上，所以
+//   - 不能带内部细节（URL、令牌片段、状态码堆栈）
+//   - 必须说清「显示的是最后一次成功获取的数据」——
+//     否则用户会以为那是实时值。
+func shortFleetError(err error) string {
+	const tail = "锁车与胎压显示的是最后一次成功获取的数据"
+	switch {
+	case errors.Is(err, errTeslaAuth):
+		return "Tesla 授权已失效，需要重新授权；" + tail
+	case strings.Contains(err.Error(), "429"):
+		return "Tesla 云端限流中，稍后自动重试；" + tail
+	case strings.Contains(err.Error(), "vehicle_data 返回 5"):
+		return "Tesla 云端暂时不可用，稍后自动重试；" + tail
+	case strings.Contains(err.Error(), "刷新 access_token 失败"):
+		return "Tesla 授权刷新失败，稍后自动重试；" + tail
+	case strings.Contains(err.Error(), "获取车辆列表失败"):
+		return "读不到 Tesla 车辆列表，稍后自动重试；" + tail
+	default:
+		return "暂时连不上 Tesla 云端，稍后自动重试；" + tail
+	}
+}
+
 // Run 后台轮询循环。ctx 取消即退出。
 //
 // 节奏：正常每 teslaPollInterval 拉一次 vehicle_data；
 // 失败按指数退避（30s → 15min 封顶），别把 API 打爆。
 func (c *teslaClient) Run(ctx context.Context) {
 	backoff := teslaBackoffInit
+	var wait time.Duration
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		err := c.pollOnce(ctx)
-		wait := c.cfg.pollInterval
-		switch {
-		case err == nil:
-			backoff = teslaBackoffInit
-		case errors.Is(err, errVehicleUnavailable):
-			// 车睡着了：保留上次已知结果（锁车 + 实时胎压），只提示一次，别刷屏
-			log.Printf("ℹ️  Tesla 车辆当前不可用（多半休眠）：锁车与实时胎压保留上次结果")
-			backoff = teslaBackoffInit
-		default:
-			// 真失败：锁车与实时胎压一起降级成「未知」，退避重试
-			c.clearVehicleState()
-			wait = backoff
-			backoff *= 2
-			if backoff > teslaBackoffMax {
-				backoff = teslaBackoffMax
-			}
-			log.Printf("⚠️  Tesla Fleet API 轮询失败：%v；%s 后重试", err, wait)
-		}
+		wait, backoff = c.handlePollResult(err, backoff)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(wait):
 		}
+	}
+}
+
+// handlePollResult 处理一轮轮询的结果：更新状态、记错误、决定等多久再试。
+//
+// ⚠️ v0.9.0 抽出来是为了**可测**：
+// 原来这些分支散在 Run 的循环体里，只能靠跑整个循环来验证 ——
+// 而「失败时到底会不会清掉锁车状态」恰恰是最该测的一条（见 tesla_test.go）。
+//
+// 返回（本次等多久，下次失败时的退避基数）。
+func (c *teslaClient) handlePollResult(err error, backoff time.Duration) (time.Duration, time.Duration) {
+	switch {
+	case err == nil:
+		c.markFleetOK()
+		return c.cfg.pollInterval, teslaBackoffInit
+
+	case errors.Is(err, errVehicleUnavailable):
+		// 车睡着了：这不是故障。保留上次已知结果（锁车 + 实时胎压），
+		// 只提示一次别刷屏，也不要在 App 上挂错误横幅。
+		log.Printf("ℹ️  Tesla 车辆当前不可用（多半休眠）：锁车与实时胎压保留上次结果")
+		c.setFleetError("")
+		return c.cfg.pollInterval, teslaBackoffInit
+
+	default:
+		// ⚠️ v0.9.0：**不再清空**锁车与实时胎压（见 clearVehicleState 的注释）。
+		// 失败只做两件事：记下原因（App 会显示）+ 退避重试。
+		// 「锁没锁」是车主第一诉求 —— 显示一个带时间戳的旧值
+		// 比显示「未知」有用得多，也不误导（App 会写明这是什么时候的数据）。
+		c.setFleetError(shortFleetError(err))
+		wait := backoff
+		next := backoff * 2
+		if next > teslaBackoffMax {
+			next = teslaBackoffMax
+		}
+		log.Printf("⚠️  Tesla Fleet API 轮询失败：%v；%s 后重试（保留上次已知结果）", err, wait)
+		return wait, next
 	}
 }
 
@@ -619,6 +719,11 @@ func (c *teslaClient) fetchVehicleState(ctx context.Context, vehicleID string) (
 	}
 	if code == http.StatusRequestTimeout { // 408：车睡着了
 		return teslaVehicleState{}, errVehicleUnavailable
+	}
+	// ⚠️ v0.9.0：401/403 单独识别。
+	// 凭据坏了 ≠ 车解锁了，所以它同样**不清空**已知状态，只把原因记给 App。
+	if code == http.StatusUnauthorized || code == http.StatusForbidden {
+		return teslaVehicleState{}, fmt.Errorf("%w: vehicle_data 返回 %d", errTeslaAuth, code)
 	}
 	if code != http.StatusOK {
 		return teslaVehicleState{}, fmt.Errorf("vehicle_data 返回 %d: %s", code, maskSecretText(truncate(string(body), 300)))

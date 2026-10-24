@@ -58,6 +58,7 @@ import com.teslamate.app.AppLatest
 import com.teslamate.app.AppSettings
 import com.teslamate.app.BuildConfig
 import com.teslamate.app.Haptics
+import com.teslamate.app.StatusCache
 import com.teslamate.app.settingsFlow
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
@@ -92,6 +93,11 @@ fun TeslaMateApp() {
     val ctx = LocalContext.current
     var settings by remember { mutableStateOf<AppSettings?>(null) }
     var updateInfo by remember { mutableStateOf<AppLatest?>(null) }
+    // ⚠️ v0.9.0：Tab 状态提到 App 级。
+    // 原因：令牌失效时，车况页的错误横幅要给一个「前往设置」按钮 ——
+    // 而设置页是第 4 个 Tab，横幅在第 1 个 Tab 里，
+    // 不把这个状态提上来就没法跳过去（可靠性复核：「401 无出口」）。
+    var tab by remember { mutableStateOf(Tab.STATUS) }
 
     LaunchedEffect(Unit) {
         ctx.settingsFlow().collect { settings = it }
@@ -143,7 +149,16 @@ fun TeslaMateApp() {
                         CircularProgressIndicator()
                     }
                 } else {
-                    MainScaffold(s)
+                    MainScaffold(
+                        settings = s,
+                        tab = tab,
+                        onTabChange = { t ->
+                            if (t != tab) {
+                                Haptics.selection(ctx)
+                                tab = t
+                            }
+                        },
+                    )
                     updateInfo?.let { info ->
                         UpdateDialog(
                             info = info,
@@ -159,12 +174,20 @@ fun TeslaMateApp() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun MainScaffold(settings: AppSettings) {
-    var tab by remember { mutableStateOf(Tab.STATUS) }
+private fun MainScaffold(
+    settings: AppSettings,
+    tab: Tab,
+    onTabChange: (Tab) -> Unit,
+) {
     val ctx = LocalContext.current
     // 车况数据提到 App 级：切 Tab 时页面会被 AnimatedContent 销毁，
     // 数据放在页面里就会连同骨架屏一起重放一次（等于重新开一次 App）。
-    val statusStore = remember { StatusStore() }
+    //
+    // ⚠️ v0.9.0：这里同步把**落盘缓存**也填上（hydrate）——
+    // 冷启动第一帧就有数字，不闪骨架屏；服务器挂着的时候也还能看到上次已知。
+    val statusStore = remember {
+        StatusStore(StatusCache(ctx)).apply { hydrate() }
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Bottom),
@@ -189,12 +212,7 @@ private fun MainScaffold(settings: AppSettings) {
                         Tab.entries.forEach { t ->
                             NavigationBarItem(
                                 selected = tab == t,
-                                onClick = {
-                                    if (tab != t) {
-                                        Haptics.selection(ctx)
-                                        tab = t
-                                    }
-                                },
+                                onClick = { onTabChange(t) },
                                 icon = {
                                     // contentDescription = null：可见的文字标签已提供可访问名称，
                                     // 再给图标一份会导致 TalkBack 念「车况,车况」（WCAG 2.5.3）
@@ -235,7 +253,13 @@ private fun MainScaffold(settings: AppSettings) {
             label = "tabSwitch",
         ) { current ->
             when (current) {
-                Tab.STATUS -> StatusScreen(settings, Modifier.fillMaxSize(), statusStore)
+                Tab.STATUS -> StatusScreen(
+                    settings = settings,
+                    modifier = Modifier.fillMaxSize(),
+                    store = statusStore,
+                    // 令牌失效时给用户一个直达设置的出口（见 ApiErrorKind.AUTH）
+                    onOpenSettings = { onTabChange(Tab.SETTINGS) },
+                )
                 Tab.RECORDS -> RecordsScreen(settings, Modifier.fillMaxSize())
                 Tab.USAGE -> StatsScreen(settings, Modifier.fillMaxSize())
                 Tab.SETTINGS -> SettingsScreen(settings, Modifier.fillMaxSize())

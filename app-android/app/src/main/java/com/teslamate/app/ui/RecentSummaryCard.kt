@@ -102,7 +102,7 @@ private fun SummaryContent(s: StatsBucket) {
     SectionCard("最近 30 天") {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             Stat("里程", "${s.km.fmt(0)} km", Modifier.weight(1f))
-            Stat("充入", "${s.charge_kwh.fmt(0)} kWh", Modifier.weight(1f))
+            Stat("充入", "${s.charge_kwh.fmt(0)} 度", Modifier.weight(1f))
         }
         Spacer(Modifier.padding(top = 10.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {

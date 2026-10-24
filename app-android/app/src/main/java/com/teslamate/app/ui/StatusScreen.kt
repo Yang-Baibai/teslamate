@@ -55,6 +55,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -78,7 +80,18 @@ import kotlinx.coroutines.withContext
 
 /** 车况首页：大标题折叠栏 + 下拉刷新 + 15 秒自动刷新 */
 @Composable
-fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore = remember { StatusStore() }) {
+fun StatusScreen(
+    settings: AppSettings,
+    modifier: Modifier,
+    store: StatusStore = remember { StatusStore() },
+    /**
+     * 「前往设置」的出口（v0.9.0）。
+     *
+     * 令牌失效时错误横幅上会挂一个「前往设置」按钮 —— 「设置」在第 4 个 Tab，
+     * 光在文案里写「请到「设置」页重新填写」等于没给路。
+     */
+    onOpenSettings: () -> Unit = {},
+) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
     // 数据存在 App 级 store 里：切 Tab 回来时旧数据还在，
@@ -112,7 +125,15 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
         }
         runCatching { withContext(Dispatchers.IO) { api.status(settings.carId) } }
             .onSuccess { store.update(it) }
-            .onFailure { store.fail(it.message ?: "网络错误") }
+            .onFailure { e ->
+                // ⚠️ v0.9.0：保留**分级**，界面才能给出不同的反应
+                // （令牌问题 → 跳设置；网络问题 → 重试）。
+                // 注意这里**不清空** store.status —— 服务器挂掉时用户还能看到上次已知。
+                store.fail(
+                    e as? com.teslamate.app.UserFacingException
+                        ?: com.teslamate.app.UserFacingException(e.message ?: "出错了")
+                )
+            }
     }
 
     fun refresh() {
@@ -171,7 +192,32 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                     ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                error?.let { ErrorBanner(it) }
+                error?.let { err ->
+                    // ⚠️ v0.9.0：错误横幅**带出口**。
+                    //   令牌问题 → 「前往设置」（直达第 4 个 Tab）
+                    //   其它     → 「重试」（不用干等 15 秒自动轮询）
+                    // 而「这台车还没数据」是**正常状态**，不该用红条报错 ——
+                    // 走一个中性的引导块。
+                    if (err.kind == com.teslamate.app.ApiErrorKind.NO_DATA) {
+                        NoticeBanner(
+                            err.message ?: "这台车还没有任何数据。可能还没开过，或采集器还没上报。"
+                        )
+                    } else {
+                        ErrorBanner(
+                            err.message ?: "出错了",
+                            actionLabel = if (err.kind == com.teslamate.app.ApiErrorKind.AUTH) {
+                                "前往设置"
+                            } else {
+                                "重试"
+                            },
+                            onAction = if (err.kind == com.teslamate.app.ApiErrorKind.AUTH) {
+                                onOpenSettings
+                            } else {
+                                { refresh() }
+                            },
+                        )
+                    }
+                }
 
                 val st = status
                 when {
@@ -202,7 +248,20 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                             Text(
                                 // ⚠️ v0.7.1：绝对时间看不出隔了多久，改相对时间
                                 // （「更新于 3 分钟前」），超过一周才回落到绝对时间。
-                                "更新于 ${st.updated_at.relTime()}",
+                                //
+                                // ⚠️ v0.9.0：显示的这份数据如果是**落盘缓存**里的，
+                                // 必须说清楚「这是上次读到的」——
+                                // 一个会撒谎的缓存比没有缓存更糟。
+                                // ⚠️ v0.9.0（新手车主复核）：两个时间戳挨着会以为是同一个。
+                                // 车主原话：「'更新于 3 分钟前'旁边又挂了锁车的时间戳，
+                                // 两个时间戳挨着，我以为是同一个」。
+                                // 现在右边这句明确是**车况**（TeslaMate 上报）的，
+                                // 左边锁车那颗自带的是 **Tesla 云端**的时间 —— 各自有主语。
+                                if (store.cachedAt != null) {
+                                    "上次读到 · ${store.cachedAt!!.relTime()}"
+                                } else {
+                                    "车况 · ${st.updated_at.relTime()}"
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -211,16 +270,66 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                         // 数据新鲜度：让「车睡着了（正常）」和「连不上服务器」不再长得一样。
                         // 连不上服务器的情况由上面的 ErrorBanner 负责（那是请求失败）；
                         // 这里说明的是「请求成功了，但车本身很久没上报」——多半是车停着不动。
-                        // ⚠️ 措辞用「数据未更新」而不是「离线」——「离线」在状态胶囊里指的是
-                        //    车辆离线，两个意思混用会让人张冠李戴。
+                        //
+                        // ⚠️ v0.9.0：阈值改用**服务端**的 data_warn / data_stale。
+                        // 原来 App 自己写 6 小时 / 24 小时两档，而服务端 DataStaleHours=24
+                        // 才是唯一事实源 —— 两边各写一份，改一边就打架。
+                        //
+                        // ⚠️ v0.9.0（新手车主复核）：措辞改成「车没上报」而不是「数据未更新」。
+                        // 车主原话：「车停着不动是常态，这句话像系统在报警。」
                         val staleHours = st.data_age_hours
-                        if (staleHours >= 24) {
+                        if (st.data_stale) {
+                            val days = staleHours / 24
                             NoticeBanner(
-                                "数据已 $staleHours 小时未更新。车停着不动属正常；" +
-                                    "若你人在外地，也可能是网络不通，请留意上方是否有红色提示。"
+                                if (days >= 1) {
+                                    "车已经 $days 天没上报数据了 —— 停着不动时属正常。" +
+                                        "若你人在外地，也可能是网络不通。"
+                                } else {
+                                    "车已经 $staleHours 小时没上报数据了 —— 停着不动时属正常。"
+                                }
                             )
-                        } else if (staleHours >= 6) {
-                            NoticeBanner("数据已 $staleHours 小时未更新，可能不是最新的。")
+                        } else if (st.data_warn) {
+                            NoticeBanner("车 $staleHours 小时没上报数据了 —— 停着不动时属正常。")
+                        }
+
+                        // ⚠️ v0.9.0：Fleet API 出问题时**说清原因**。
+                        // 服务端现在**保留**上次已知的锁车状态（不再清成 null），
+                        // 所以这里显示的可能是一个**旧值** —— 必须告诉用户它有多旧、为什么旧。
+                        //
+                        // 而「锁车状态未知」本身会让人焦虑（新手车主原话：
+                        // 「到底锁没锁？？能锁吗？」），所以要先给一句宽心话：
+                        // **没取到，不等于没锁。**
+                        if (st.locked == null || st.fleet_error.isNotBlank()) {
+                            NoticeBanner(
+                                buildString {
+                                    if (st.locked == null) {
+                                        append("暂时没取到锁车状态 —— 不代表车没锁。")
+                                    }
+                                    if (st.fleet_error.isNotBlank()) {
+                                        if (isNotEmpty()) append(" ")
+                                        append(st.fleet_error)
+                                    }
+                                    st.fleet_last_ok?.let {
+                                        append("（最后一次成功获取：${it.relTime()}）")
+                                    }
+                                }
+                            )
+                        }
+
+                        // ⚠️ v0.9.0：保养 / 换胎提醒。
+                        // 只有**需要行动**时（超期或 2000 km 内到期）才在顶部挂横幅 ——
+                        // 信号优先，平时不制造噪音。完整数字在页面底部的卡片里。
+                        val reminders = remember(st.odometer, settings) {
+                            maintenanceReminders(st.odometer, settings)
+                        }
+                        reminders.firstOrNull { it.needsAction }?.let { r ->
+                            // ⚠️ 超期是**该行动**的事（红色），快到了只是提醒（中性）。
+                            // 两者都挂横幅，但力度不同 —— 用同一种样式会让「超期」显得像例行公事。
+                            if (r.overdue) {
+                                ErrorBanner("${r.label}已超期 ${kotlin.math.abs(r.remainingKm).roundToInt()} 公里")
+                            } else {
+                                NoticeBanner("${r.label}还有 ${r.remainingKm.roundToInt()} 公里到期")
+                            }
                         }
 
                         Row(
@@ -259,35 +368,57 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                                 )
                                 BigStat(
                                     (trueRange ?: ratedRange)?.fmt(0) ?: "—",
-                                    if (trueRange != null) "真实可达 (km)" else "标定续航 (km)",
+                                    // ⚠️ v0.9.0（新手车主复核）：「真实可达 (km)」是术语。
+                                    // 车主原话：「'可达'太书面」「我真正要的是一句话：
+                                    // '现在能开 206 公里，高速算的，够你回家'」。
+                                    // 大数字 + 这行小字，读起来就是「现在能开 206 公里」。
+                                    if (trueRange != null) "现在能开（公里）" else "官方标称（公里）",
                                 )
                                 Spacer(Modifier.height(4.dp))
+                                // ⚠️ v0.9.0（新手车主复核）：**假设链收进可展开区**。
+                                //
+                                // 原来主数字下面明晃晃挂着三行参数
+                                // （「标定 312 km 的 66%」+「按 132 km/h 巡航 · 28°C · 实测 183 Wh/km」），
+                                // 车主的反应是：
+                                //   「屏幕上同时出现 206 和 312，我脑子里变成'官方说 312，
+                                //     App 说 206，我到底该信哪个？' 两个数字打架，
+                                //     比只给一个数字更让我拿不准。」
+                                //   「多出来的信息不是让我更有信心，是让我更慌。」
+                                //
+                                // 现在：主数字**只给答案**，怎么算的收在一行「怎么算的 ▸」里，
+                                // 点开才展开 —— 规划长途时它是关键，平时它是干扰。
+                                var showExplain by remember { mutableStateOf(false) }
+                                val explainText = buildString {
+                                    if (ratedRange != null && ratedRange > 0) {
+                                        append("官方标称 ${ratedRange.fmt(0)} 公里")
+                                    }
+                                    if (trueRange != null) {
+                                        append(" · 按平时 ${refSpeed.roundToInt()} km/h 估算")
+                                        st.outside_temp?.let { append(" · ${it.roundToInt()}°C") }
+                                        whBucket?.let { append(" · 实测 ${it.whPerKm.fmt(0)} Wh/km") }
+                                        append(" · 已留 10% 余量")
+                                    }
+                                }
                                 Text(
-                                    // ⚠️ v0.8.5（效率车主复核）：原来副行是三段话
-                                    // 「标定 446 km · 按你的实测 187 Wh/km 折算 · 已留 10% 余量」，
-                                    // 在 165dp 宽的列里折三四行，而且逼着用户「在 308 和 446 里挑一个」。
-                                    // 现在：**主数字只给答案**（308 = 够不够开），
-                                    // 副行只说比例（标定的 69%），怎么折算的收进下一行小字。
-                                    if (trueRange != null && ratedRange != null && ratedRange > 0) {
-                                        "标定 ${ratedRange.fmt(0)} km 的 " +
-                                            "${(trueRange / ratedRange * 100).roundToInt()}%"
-                                    } else {
-                                        "EPA 标定值（非动态预估）"
-                                    },
+                                    text = if (showExplain) "怎么算的 ▾" else "怎么算的 ▸",
                                     style = MaterialTheme.typography.labelSmall,
+                                    // ⚠️ v0.9.0：不用 primary（品牌红）。
+                                    // 本 App 里红色只表示告警/品牌点缀 —— 一个折叠链接是红的，
+                                    // 看起来像出错了。可点性由 ▸/▾ 本身表达（iOS 就是这么做的）。
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                if (trueRange != null) {
-                                    // ⚠️ v0.8.6（长途自驾党复核）：把**假设链**写出来。
-                                    // 他原话：「308 背后的假设（巡航车速、温度）不显示，
-                                    // 我判断不出它按市区还是高速算的」。
-                                    // 一个规划用的数，不交代前提就只是个数字。
-                                    Text(
-                                        buildString {
-                                            append("按 ${refSpeed.roundToInt()} km/h 巡航")
-                                            st.outside_temp?.let { append(" · ${it.roundToInt()}°C") }
-                                            whBucket?.let { append(" · 实测 ${it.whPerKm.fmt(0)} Wh/km") }
+                                    modifier = Modifier
+                                        .clickable { showExplain = !showExplain }
+                                        .semantics {
+                                            contentDescription = if (showExplain) {
+                                                "收起续航计算方式"
+                                            } else {
+                                                "展开续航计算方式"
+                                            }
                                         },
+                                )
+                                if (showExplain) {
+                                    Text(
+                                        explainText.ifBlank { "暂无足够数据估算" },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -349,6 +480,11 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                         //    usable_battery_level），本车实测 100/100 恒等 —— 纯重复
                         // 省下 74dp，胎压卡就能完整露出首屏（现在要滑 170dp 才看得到四个胎压值）。
                         TpmsCard(st)
+
+                        // 保养 / 轮胎卡片（配过基准才出现）
+                        if (reminders.isNotEmpty()) {
+                            MaintenanceCard(reminders)
+                        }
                     }
                 }
             }
@@ -451,7 +587,19 @@ private fun LocationCard(
 ) {
     val lat = st.map_lat ?: st.lat
     val lng = st.map_lng ?: st.lng
-    if (lat == null || lng == null) return
+    if (lat == null || lng == null) {
+        // ⚠️ v0.9.0：没有位置时**不再整卡消失**（原来直接 return）。
+        // 「少了位置」和「车在地下车库」看起来一样，用户无从判断。
+        // 给一行灰字说明，比凭空消失诚实。
+        SectionCard(title = "位置") {
+            Text(
+                "暂无位置数据。车辆位置需要 TeslaMate 采集到定位信息后才会出现。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
     val accents = LocalAccentColors.current
     Surface(
         shape = RoundedCornerShape(20.dp),
@@ -539,7 +687,21 @@ private fun TpmsCard(st: CarStatus) {
     val fr = st.tpms_live_fr ?: st.tpms_fr
     val rl = st.tpms_live_rl ?: st.tpms_rl
     val rr = st.tpms_live_rr ?: st.tpms_rr
-    if (fl == null && fr == null && rl == null && rr == null) return // 一个都没有就不占版面
+
+    // ⚠️ v0.9.0：四轮全空时**不再整卡消失**。
+    // 原来直接 `return`，用户看到的是「少了一块」—— 不知道是坏了、没配、
+    // 还是本来就没数据。改成显示一行灰字说明，数据照常占位。
+    if (fl == null && fr == null && rl == null && rr == null) {
+        SectionCard(title = "轮胎胎压") {
+            Text(
+                "暂无胎压数据。实时胎压需要配置 Tesla Fleet API；" +
+                    "未配置时显示的是 TeslaMate 的稀疏采样（车开动或充电时才记）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        return
+    }
 
     // 告警轮次：实时源的判定（Tesla 自己的 hard/soft warning）优先
     val alertWheels = (st.tpms_live_alert_wheels + st.tpms_alert_wheels).toSet()
@@ -580,7 +742,62 @@ private fun TpmsCard(st: CarStatus) {
             }
         }
         Text(
-            "正常范围 ${st.tpms_min_bar}–${st.tpms_max_bar} bar（冷胎）",
+            // ⚠️ v0.9.0（新手车主复核）：新手「完全不懂 bar」。
+            // 补一句「超出会怎样」，让它变成一个**能据此行动**的信息，
+            // 而不是一个需要背下来的单位。
+            "正常 ${st.tpms_min_bar}–${st.tpms_max_bar} bar（冷胎）· 超出这个范围需要检查",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * 保养与轮胎卡片。
+ *
+ * ⚠️ v0.9.0（新手车主复核）：「上次保养是什么时候 / 什么时候该换胎」——
+ * 之前全项目 0 命中，是车主清单里的第一条。
+ *
+ * 放在页面**末尾**（胎压卡下面）而不是顶部：
+ * 它是**参考信息**而不是「现在要动手」的信息 ——
+ * 真的要动手时，顶部会另挂一条横幅（见 StatusScreen）。
+ */
+@Composable
+private fun MaintenanceCard(reminders: List<MaintenanceReminder>) {
+    val accents = LocalAccentColors.current
+    SectionCard(title = "保养与轮胎") {
+        reminders.forEach { r ->
+            val color = when {
+                r.overdue -> MaterialTheme.colorScheme.error
+                r.dueSoon -> accents.warnAmber
+                else -> MaterialTheme.colorScheme.onSurface
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (r.overdue) {
+                    Icon(
+                        Icons.Filled.WarningAmber,
+                        contentDescription = "已超期",
+                        tint = color,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(
+                    r.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(44.dp),
+                )
+                Text(
+                    r.describe(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = color,
+                )
+            }
+        }
+        Text(
+            "基准与间隔可在「设置」页修改",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -691,7 +908,7 @@ private fun ChargeNowCard(c: ActiveCharge) {
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 InfoTile("功率", "${c.charger_power_kw ?: "—"} kW", Modifier.weight(1f))
-                InfoTile("已充入", c.energy_added_kwh?.fmt(1, " kWh") ?: "—", Modifier.weight(1f))
+                InfoTile("已充入", c.energy_added_kwh?.fmt(1, " 度") ?: "—", Modifier.weight(1f))
                 InfoTile("当前电量", "${c.battery_level ?: "—"}%", Modifier.weight(1f))
             }
         }

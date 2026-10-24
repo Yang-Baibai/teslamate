@@ -473,7 +473,7 @@ fun batteryChartDescription(b: com.teslamate.app.BatteryHealth): String {
     return "电池可用容量曲线：共 ${valid.size} 个满充记录，" +
         "从 ${first.capacity_kwh!!.fmt(1)} kWh 到 ${last.capacity_kwh!!.fmt(1)} kWh，" +
         "最高 ${maxV.fmt(1)} kWh" +
-        (nominal?.let { "，铭牌容量 ${it.fmt(1)} kWh，当前健康度 ${b.health_percent?.fmt(1) ?: "未知"}%" } ?: "") +
+        (nominal?.let { "，新电池标称容量 ${it.fmt(1)} kWh，当前健康度 ${b.health_percent?.fmt(1) ?: "未知"}%" } ?: "") +
         "。"
 }
 
@@ -571,7 +571,6 @@ fun PowerProfileChart(
             if (samples.size < 2) return@Canvas
             val maxPos = samples.maxOf { it.powerKw }.coerceAtLeast(0.0)
             val maxNeg = -samples.minOf { it.powerKw }.coerceAtLeast(0.0)
-            val maxAbs = maxOf(maxPos, maxNeg).coerceAtLeast(1.0)
             val plotTop = 0f
             val plotBottom = size.height - xLabelHeight
             val plotHeight = plotBottom - plotTop
@@ -580,19 +579,39 @@ fun PowerProfileChart(
             val totalKm = samples.last().km.coerceAtLeast(0.001)
 
             // 零线位置**按实际正负范围自适应**，不是固定居中。
-            // ⚠️ v0.8.1：固定居中时，纯耗电行程（无回收）会浪费下半张图，
-            // 而且下方的 -maxAbs 刻度显示的是一个数据里根本不存在的值。
-            // 现在：没有回收时零线贴底（图形占满可用高度），没有耗电时贴顶。
-            val negRatio = if (maxNeg <= 0.001) 0f else (maxNeg / (maxNeg + maxPos)).toFloat()
-            val zeroY = plotTop + plotHeight * negRatio
-            val upH = plotBottom - zeroY
-            val downH = zeroY - plotTop
+            //
+            // ⚠️ **v0.9.0 修一个真 bug**（这行从 v0.8.1 起就一直是错的）：
+            //
+            //   原式：negRatio = maxNeg / (maxNeg + maxPos)
+            //         zeroY   = plotTop + plotHeight * negRatio
+            //         upH     = plotBottom - zeroY      // 零线**上方**的空间
+            //         downH   = zeroY - plotTop         // 零线**下方**的空间
+            //
+            //   问题：`zeroY = plotTop + downH` 意味着「零线上方的空间」= downH，
+            //   而 downH 又 ∝ maxNeg —— **上下两块的比例是反的**。
+            //   后果：当回收比耗电小（最常见的情况，实测 maxPos=90 / maxNeg=61），
+            //   零线只落在图高的 40% 处，而「上方空间」被算成了 60%，
+            //   于是 yAt(maxPos) = zeroY − upH = **画布上方之外** ——
+            //   **整条耗电曲线画到了画布外，图看起来几乎是空的。**
+            //   （实测：drive 498 的 maxPos=90 kW 那一段完全不可见。）
+            //
+            //   现在：零线上方的空间 ∝ maxPos，下方 ∝ maxNeg —— 与几何一致。
+            val posRatio = if (maxPos <= 0.001) {
+                0f
+            } else {
+                (maxPos / (maxNeg + maxPos)).toFloat()
+            }
+            val zeroY = plotTop + plotHeight * posRatio
+            val upH = zeroY - plotTop
+            val downH = plotBottom - zeroY
 
             fun xAt(km: Double) = plotLeft + (km / totalKm).toFloat() * plotWidth
+            // ⚠️ 上下**各自**用自己的极值做标定（原来两边都用 maxAbs）：
+            //   上面按 maxPos、下面按 maxNeg，曲线才能分别顶到轴的两端。
             fun yAt(p: Double) = if (p >= 0) {
-                zeroY - (p / maxAbs).toFloat() * upH
+                zeroY - (p / maxPos.coerceAtLeast(0.001)).toFloat() * upH
             } else {
-                zeroY + (-p / maxAbs).toFloat() * downH
+                zeroY + (-p / maxNeg.coerceAtLeast(0.001)).toFloat() * downH
             }
 
             // 网格线：+max / 0 / -max（只有存在负值时才画下半区）
@@ -683,6 +702,176 @@ fun PowerProfileChart(
                 drawText(
                     textLayoutResult = layout,
                     topLeft = Offset(x.coerceIn(0f, size.width - layout.size.width), plotBottom + 4.dp.toPx()),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * **电量下降条**（SOC strip）—— 功率剖面正下方的第二条曲线。
+ *
+ * ## 为什么是「下方一条」而不是「右侧第二根 Y 轴」
+ *
+ * ⚠️ v0.9.0（长途自驾党复核）：
+ * 「功率剖面只有功率没有电量，我看不到还能撑到哪个服务区。
+ * 建议加一条电量曲线，或者在图上标出'到达 20% 时走了多少公里'。」
+ *
+ * 两根 Y 轴叠在一张图上是仪表盘的经典做法，但**极易误读**：
+ * 功率的零线是自适应居中的（下面 PowerProfileChart 有说明），
+ * 电量的 0% 在底部 —— 两个尺度共用一根竖轴，读者会把功率的高度
+ * 当成电量的高度。这里改成**上下两块、共享同一条里程横轴**：
+ *
+ * ```
+ * ┌──────────────────────────────┐  功率 (kW)
+ * │  ╱╲    ╱╲___                 │
+ * ├──────────────────────────────┤  ← 同一条里程轴
+ * │ 100%╲                        │
+ * │      ╲___ 20% ┄┄┄┄ 10% ┄┄┄   │  电量 (%)
+ * └──────────────────────────────┘
+ * ```
+ *
+ * 好处：横轴完全对齐（同一公里在两条线上是同一列），
+ * 电量轴**固定 0~100%**（20% 与 10% 的位置固定，跨行程可比），
+ * 而且「到达 20% @ N 公里」可以**直接标在曲线上**。
+ */
+@Composable
+fun SocStrip(
+    samples: List<PowerSample>,
+    modifier: Modifier = Modifier,
+    milestones: SocMilestones = samples.socMilestones(),
+    contentDescription: String = "",
+) {
+    val textMeasurer = rememberTextMeasurer()
+    val accents = LocalAccentColors.current
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val density = LocalDensity.current
+    // 右侧留给「电量」刻度（100% / 0%），左侧不占 —— 与上方功率图的左边距对齐
+    val rightLabelWidth = with(density) { 30.dp.toPx() }
+    val bottomLabelHeight = with(density) { 13.dp.toPx() }
+
+    Box(
+        modifier = modifier.semantics {
+            if (contentDescription.isNotBlank()) this.contentDescription = contentDescription
+        }
+    ) {
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(96.dp)
+        ) {
+            val withSoc = samples.filter { it.soc != null }
+            if (withSoc.size < 2) return@Canvas
+
+            val plotTop = 0f
+            val plotBottom = size.height - bottomLabelHeight
+            val plotHeight = plotBottom - plotTop
+            val plotRight = size.width - rightLabelWidth
+            val plotWidth = plotRight
+            val totalKm = samples.last().km.coerceAtLeast(0.001)
+
+            fun xAt(km: Double) = (km / totalKm).toFloat() * plotWidth
+            // 电量轴**固定 0~100%**：20% 与 10% 的位置固定，跨行程才能比
+            fun yAtSoc(soc: Int) = plotBottom - (soc.coerceIn(0, 100) / 100f) * plotHeight
+
+            // 20% / 10% 参考线（虚线）
+            listOf(
+                20 to accents.warnAmber,
+                10 to accents.danger,
+            ).forEach { (lvl, color) ->
+                val y = yAtSoc(lvl)
+                val dash = 5.dp.toPx()
+                var x = 0f
+                while (x < plotRight) {
+                    drawLine(
+                        color = color.copy(alpha = 0.55f),
+                        start = Offset(x, y),
+                        end = Offset(minOf(x + dash, plotRight), y),
+                        strokeWidth = 1.dp.toPx(),
+                    )
+                    x += dash * 2
+                }
+                val layout = textMeasurer.measure(
+                    text = "$lvl%",
+                    style = TextStyle(fontSize = 9.sp, color = color),
+                )
+                drawText(
+                    textLayoutResult = layout,
+                    topLeft = Offset(2.dp.toPx(), y - layout.size.height / 2f),
+                )
+            }
+
+            // 0% / 100% 边界
+            drawLine(
+                color = gridColor,
+                start = Offset(0f, plotBottom),
+                end = Offset(plotRight, plotBottom),
+                strokeWidth = 1.dp.toPx(),
+            )
+
+            // 电量曲线
+            val path = Path()
+            withSoc.forEachIndexed { i, s ->
+                val p = Offset(xAt(s.km), yAtSoc(s.soc!!))
+                if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
+            }
+            drawPath(
+                path,
+                color = accents.energyBlue,
+                style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+            )
+
+            // 「到达 20% @ N 公里」标注
+            fun mark(km: Double?, text: String, color: Color) {
+                if (km == null) return
+                val x = xAt(km)
+                val dot = 3.5.dp.toPx()
+                drawCircle(color = color, radius = dot, center = Offset(x, yAtSoc(20)))
+                val layout = textMeasurer.measure(
+                    text = text,
+                    style = TextStyle(fontSize = 10.sp, color = color, fontWeight = FontWeight.SemiBold),
+                )
+                // 标签放在点的**上方**（电量在降，上方是「还有电」的方向）；
+                // 靠右时改为下方，避免出界。
+                val above = yAtSoc(20) - layout.size.height - 5.dp.toPx()
+                val ty = if (above >= 0f) above else yAtSoc(20) + 5.dp.toPx()
+                val tx = (x - layout.size.width / 2f)
+                    .coerceIn(0f, (size.width - layout.size.width).coerceAtLeast(0f))
+                drawText(textLayoutResult = layout, topLeft = Offset(tx, ty))
+            }
+            mark(milestones.kmAt20, "到达 20% @ ${milestones.kmAt20?.roundToInt()} km", accents.warnAmber)
+            mark(milestones.kmAt10, "到达 10% @ ${milestones.kmAt10?.roundToInt()} km", accents.danger)
+
+            // 右侧电量刻度（第二 Y 轴）
+            listOf(100 to "100%", 0 to "0%").forEach { (lvl, txt) ->
+                val layout = textMeasurer.measure(
+                    text = txt,
+                    style = TextStyle(fontSize = 9.sp, color = labelColor),
+                )
+                drawText(
+                    textLayoutResult = layout,
+                    topLeft = Offset(
+                        x = plotRight + 3.dp.toPx(),
+                        y = yAtSoc(lvl) - layout.size.height / 2f,
+                    ),
+                )
+            }
+
+            // 底部：起始 / 结束电量
+            val firstSoc = withSoc.first().soc
+            val lastSoc = withSoc.last().soc
+            if (firstSoc != null && lastSoc != null) {
+                val layout = textMeasurer.measure(
+                    text = "${firstSoc}% → ${lastSoc}%",
+                    style = TextStyle(fontSize = 9.sp, color = labelColor),
+                )
+                drawText(
+                    textLayoutResult = layout,
+                    topLeft = Offset(
+                        x = 0f,
+                        y = plotBottom + 2.dp.toPx(),
+                    ),
                 )
             }
         }

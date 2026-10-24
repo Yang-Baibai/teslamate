@@ -140,9 +140,24 @@ func auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
+	writeErrCode(w, code, msg, "")
+}
+
+// writeErrCode 带**机器可读错误码**的 JSON 错误响应。
+//
+// 为什么要错误码：App 需要区分
+//   - no_data：这台车还没数据 —— **正常状态**，该走空状态引导，不该是红色错误条
+//   - no_car ：根本没这台车 —— 配置错了，该提示去检查设置
+// 光看 HTTP 状态码（都是 404）App 只能靠中文文案做字符串匹配 —— 那种做法
+// 脆得很（改一个字就失效），而且对非中文文案完全失效。
+func writeErrCode(w http.ResponseWriter, code int, msg, errCode string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	body := map[string]string{"error": msg}
+	if errCode != "" {
+		body["error_code"] = errCode
+	}
+	json.NewEncoder(w).Encode(body)
 }
 
 func pathID(r *http.Request) (int, error) {

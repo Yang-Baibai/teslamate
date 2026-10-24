@@ -3,6 +3,7 @@ package com.teslamate.app.ui
 import com.teslamate.app.TrackPoint
 import kotlin.math.asin
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -31,7 +32,58 @@ data class PowerSample(
     val km: Double,
     /** 电池净功率（kW），正=耗电，负=回收 */
     val powerKw: Double,
+    /**
+     * 该分箱处的电量百分比（null = 这一箱没采到电量）。
+     *
+     * ⚠️ v0.9.0 新增：长途自驾党要的是「我会在哪一公里掉到 20%」，
+     * 光有功率曲线答不了 —— 得把**电量**这条线也画出来。
+     */
+    val soc: Int? = null,
 )
+
+/**
+ * 电量下降过程中的两个关键里程点。
+ *
+ * ⚠️ v0.9.0：长途自驾党的原话是
+ * 「图上只有功率没有电量，我看不到'还能撑到哪个服务区'」。
+ * 这两个点就是他在高速服务区规划时要读的数。
+ */
+data class SocMilestones(
+    /** 掉到 20% 的里程（null = 整趟没掉到 20%） */
+    val kmAt20: Double? = null,
+    /** 掉到 10% 的里程（null = 整趟没掉到 10%） */
+    val kmAt10: Double? = null,
+)
+
+/**
+ * 算「掉到 20% / 10% 分别在第几公里」。
+ *
+ * 用**线性插值**而不是「第一个低于阈值的采样点」——
+ * 后者会把「在 142 公里时掉到 21%，143 公里时掉到 19%」说成 143，
+ * 而真实答案在 142.5。长途规划差半公里无所谓，但**口径要诚实**：
+ * 报出来的就是插值出来的那个点。
+ */
+fun List<PowerSample>.socMilestones(): SocMilestones {
+    fun cross(target: Int): Double? {
+        var prev: PowerSample? = null
+        for (s in this) {
+            val soc = s.soc ?: continue
+            if (soc <= target) {
+                val p = prev
+                return if (p != null && p.soc != null && p.soc > target) {
+                    val span = (p.soc - soc).toDouble()
+                    val frac = if (span <= 0.0) 0.0 else (p.soc - target) / span
+                    p.km + (s.km - p.km) * frac.coerceIn(0.0, 1.0)
+                } else {
+                    s.km
+                }
+            }
+            prev = s
+        }
+        return null
+    }
+    return SocMilestones(cross(20), cross(10))
+}
 
 /**
  * 把采样点转成「累计里程 → 功率」剖面，并按 1 km 分箱取平均。
@@ -43,18 +95,20 @@ fun List<TrackPoint>.toPowerProfile(binKm: Double = 1.0): List<PowerSample> {
     if (size < 2) return emptyList()
     var acc = 0.0
     val raw = ArrayList<PowerSample>(size)
-    raw += PowerSample(0.0, first().power?.toDouble() ?: 0.0)
+    raw += PowerSample(0.0, first().power?.toDouble() ?: 0.0, first().battery_level)
     for (i in 1 until size) {
         acc += haversineKm(this[i - 1], this[i])
-        raw += PowerSample(acc, this[i].power?.toDouble() ?: 0.0)
+        raw += PowerSample(acc, this[i].power?.toDouble() ?: 0.0, this[i].battery_level)
     }
     if (raw.size < 4) return raw
 
     // 按里程分箱取平均（抗混叠）
     val bins = HashMap<Int, MutableList<Double>>()
+    val socBins = HashMap<Int, MutableList<Int>>()
     raw.forEach { s ->
         val bin = (s.km / binKm).toInt()
         bins.getOrPut(bin) { mutableListOf() }.add(s.powerKw)
+        s.soc?.let { v -> socBins.getOrPut(bin) { mutableListOf() }.add(v) }
     }
     return bins.entries
         .sortedBy { it.key }
@@ -62,6 +116,8 @@ fun List<TrackPoint>.toPowerProfile(binKm: Double = 1.0): List<PowerSample> {
             PowerSample(
                 km = (bin + 0.5) * binKm,
                 powerKw = list.average(),
+                // ⚠️ v0.9.0：同一箱里的电量取平均（同样抗混叠）
+                soc = socBins[bin]?.average()?.roundToInt(),
             )
         }
 }

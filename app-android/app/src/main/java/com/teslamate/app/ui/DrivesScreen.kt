@@ -36,11 +36,13 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +61,7 @@ import com.teslamate.app.firstSegment
 import com.teslamate.app.fmtShort
 import com.teslamate.app.minutesFmt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
@@ -70,21 +73,27 @@ fun DrivesScreen(
     showHeader: Boolean = true,
 ) {
     val api = remember(settings) { settings.api() }
+    val scope = rememberCoroutineScope()
     var list by remember { mutableStateOf<List<Drive>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
+    var refreshing by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Drive?>(null) }
 
-    LaunchedEffect(settings) {
+    // ⚠️ v0.9.0：抽成可复用的 load() —— 原来只有一次性加载，
+    // 网络一断就再也不请求，用户必须「切走再切回」才能重试。
+    suspend fun load() {
         if (api == null) {
             error = if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页"
             loading = false
-            return@LaunchedEffect
+            return
         }
         runCatching { withContext(Dispatchers.IO) { api.drives(settings.carId, 200) } }
             .onSuccess { list = it; error = null; loading = false }
             .onFailure { error = it.message; loading = false }
     }
+
+    LaunchedEffect(settings) { load() }
 
     AnimatedContent(
         targetState = selected,
@@ -93,7 +102,22 @@ fun DrivesScreen(
         label = "driveDetail",
     ) { sel ->
         Box(Modifier.fillMaxSize()) {
-            if (sel == null) DriveList(list, loading, error, settings, showHeader = showHeader, onSelect = { selected = it })
+            if (sel == null) DriveList(
+                list = list,
+                loading = loading,
+                error = error,
+                settings = settings,
+                showHeader = showHeader,
+                refreshing = refreshing,
+                onRefresh = {
+                    scope.launch {
+                        refreshing = true
+                        load()
+                        refreshing = false
+                    }
+                },
+                onSelect = { selected = it },
+            )
             else DriveDetail(sel, api, settings) { selected = null }
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
@@ -107,6 +131,8 @@ private fun DriveList(
     error: String?,
     settings: AppSettings,
     showHeader: Boolean = true,
+    refreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     onSelect: (Drive) -> Unit,
 ) {
 
@@ -116,41 +142,48 @@ private fun DriveList(
                 title = { ScreenTitle("行程") },
             )
         }
-        when {
-            error != null -> Column(Modifier.padding(16.dp)) { ErrorBanner(error!!) }
-            loading -> ListSkeleton(items = 7)
-            list.isEmpty() -> Column(Modifier.padding(16.dp)) { SectionCard { Text("暂无行程记录") } }
-            else -> {
-                val groups = remember(list) { list.groupBy { it.start_date.fmtMonth() } }
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    // 与充电页保持一致：固定 padding，不用 systemBars。
-                    // systemBars 含 top inset，会在 TopAppBar 下方重复加一次状态栏高度，
-                    // 表现为标题与列表之间多出一块空白。
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (showHeader) {
-                        item(key = "summary") {
-                            RecentSummaryCard(settings = settings, fallback = {
+        // ⚠️ v0.9.0：加下拉刷新（原来失败后只能切 Tab 重试）。
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when {
+                error != null -> Column(Modifier.fillMaxSize().padding(16.dp)) { ErrorBanner(error!!) }
+                loading -> ListSkeleton(items = 7)
+                list.isEmpty() -> Column(Modifier.padding(16.dp)) { SectionCard { Text("暂无行程记录") } }
+                else -> {
+                    val groups = remember(list) { list.groupBy { it.start_date.fmtMonth() } }
+                    LazyColumn(
+                        Modifier.fillMaxSize(),
+                        // 与充电页保持一致：固定 padding，不用 systemBars。
+                        // systemBars 含 top inset，会在 TopAppBar 下方重复加一次状态栏高度，
+                        // 表现为标题与列表之间多出一块空白。
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (showHeader) {
+                            item(key = "summary") {
+                                RecentSummaryCard(settings = settings, fallback = {
+                                    Text(
+                                        "共 ${list.size} 次行程",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                })
+                            }
+                        }
+                        groups.forEach { (month, drives) ->
+                            item(key = "h-$month") {
                                 Text(
-                                    "共 ${list.size} 次行程",
-                                    style = MaterialTheme.typography.bodyMedium,
+                                    month,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 8.dp).animateItem(),
                                 )
-                            })
-                        }
-                    }
-                    groups.forEach { (month, drives) ->
-                        item(key = "h-$month") {
-                            Text(
-                                month,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 8.dp).animateItem(),
-                            )
-                        }
-                        items(drives, key = { it.id }) { d ->
-                            DriveItem(d, Modifier.animateItem()) { onSelect(d) }
+                            }
+                            items(drives, key = { it.id }) { d ->
+                                DriveItem(d, Modifier.animateItem()) { onSelect(d) }
+                            }
                         }
                     }
                 }
@@ -215,7 +248,7 @@ private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Un
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                InlineMetric("耗电", "${d.energy_kwh?.fmt(1) ?: "—"} kWh")
+                InlineMetric("耗电", "${d.energy_kwh?.fmt(1) ?: "—"} 度")
                 InlineMetric("能耗", "${d.wh_per_km?.fmt(0) ?: "—"} Wh/km")
                 // ⚠️ v0.8.6（长途自驾党复核）：把**到站电量**放进列表行。
                 // 他的 18 次长途停靠，到达电量中位数只有 14%、5 次 ≤10% ——
@@ -300,7 +333,7 @@ private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose:
                 )
             }
             Text(
-                "轨迹（${track.size} 个采样点）",
+                "轨迹记录点（${track.size} 个）",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -326,7 +359,7 @@ private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose:
             // 下次跑同一条高速就会主动避开。
             if (powerProfile.size >= 2) {
                 item {
-                    SectionCard("功率剖面 (kW · 对应里程)", Modifier.animateItem()) {
+                    SectionCard("用电曲线 (kW · 对应里程)", Modifier.animateItem()) {
                         val peakUp = powerProfile.maxOf { it.powerKw }
                         val peakDown = powerProfile.minOf { it.powerKw }
                         PowerProfileChart(
@@ -337,11 +370,51 @@ private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose:
                                 "最深回收 ${kotlin.math.abs(peakDown).roundToInt()} 千瓦",
                         )
                         Text(
-                            "正值 = 耗电（蓝）· 负值 = 能量回收（绿）" +
+                            "正值 = 耗电（蓝）· 负值 = 刹车回收（绿）" +
                                 (drive.wh_per_km?.let { " · 本程 ${it.fmt(0)} Wh/km" } ?: ""),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        // ⚠️ v0.9.0（长途自驾党复核）：加**电量下降条**。
+                        // 他原话：「图上只有功率没有电量，我看不到还能撑到哪个服务区。
+                        // 建议加一条电量曲线，或者在图上标出'到达 20% 时走了多少公里'。」
+                        //
+                        // 功率图答的是「为什么」，电量条答的是「还能撑多远」——
+                        // 共享同一条里程横轴，两块图上下对齐，同一公里是同一列。
+                        val milestones = remember(powerProfile) { powerProfile.socMilestones() }
+                        if (powerProfile.any { it.soc != null }) {
+                            Spacer(Modifier.height(10.dp))
+                            SocStrip(
+                                samples = powerProfile,
+                                milestones = milestones,
+                                contentDescription = buildString {
+                                    append("电量随里程下降曲线")
+                                    milestones.kmAt20?.let { append("，第 ${it.roundToInt()} 公里降到 20%") }
+                                    milestones.kmAt10?.let { append("，第 ${it.roundToInt()} 公里降到 10%") }
+                                },
+                            )
+                            // ⚠️ v0.9.0：图上已经标了「到达 20% @ N km」，
+                            // 这里再给一行**纯文字**的结论 ——
+                            // 很多长途行程压根掉不到 20%（比如 82% → 70%），
+                            // 那时图上不会有标记，但「全程最低多少」依然是个有用的答案。
+                            val lowestSoc = powerProfile.minOf { it.soc ?: Int.MAX_VALUE }
+                                .let { if (it == Int.MAX_VALUE) null else it }
+                            Text(
+                                buildString {
+                                    append("电量 (%) · 同一横轴 = 同一公里")
+                                    milestones.kmAt20?.let {
+                                        append(" · 到达 20% 在第 ${it.roundToInt()} 公里")
+                                    } ?: lowestSoc?.let {
+                                        append(" · 全程最低 $it%（未到 20%）")
+                                    }
+                                    milestones.kmAt10?.let {
+                                        append(" · 到达 10% 在第 ${it.roundToInt()} 公里")
+                                    }
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -358,7 +431,7 @@ private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose:
             }
             item {
                 SectionCard("能耗", Modifier.animateItem()) {
-                    KV("行车用电", drive.energy_kwh?.fmt(2, " kWh") ?: "—")
+                    KV("行车用电", drive.energy_kwh?.fmt(2, " 度") ?: "—")
                     KV("百公里能耗", drive.wh_per_km?.let { "${it.fmt(0)} Wh/km" } ?: "—")
                     val odo = drive.odometer_end?.let { drive.odometer_start?.let { s -> it - s } }
                     if (odo != null && drive.energy_kwh != null && odo > 0) {

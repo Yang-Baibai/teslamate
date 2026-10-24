@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -332,21 +333,94 @@ func TestVehicleStateCacheKeepsLastValueWhenVehicleAsleep(t *testing.T) {
 	}
 }
 
-// TestClearVehicleStateClearsTPMS 真失败要连胎压一起降级成「未知」。
-func TestClearVehicleStateClearsTPMS(t *testing.T) {
+// TestVehicleStateCacheKeepsLastValueOnRealFailure 真失败（429/5xx）也**保留**上次已知值。
+//
+// ⚠️ v0.9.0 改的语义。原来这里失败会调 clearVehicleState() 把锁车与胎压清成 null，
+// 于是「Tesla 侧抖一下」= 「锁车状态未知」+ 「胎压卡整块消失」，
+// 用户无法区分「车真没锁」和「这会儿没取到数据」。
+//
+// 「锁没锁」是车主第一诉求 —— 显示一个**带时间戳的旧值**远比「未知」有用，
+// 也不误导（App 会写明这是最后一次成功获取的数据）。
+func TestVehicleStateCacheKeepsLastValueOnRealFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"error":"too many requests"}`)
+	}))
+	defer srv.Close()
+
 	c := newTeslaClient(teslaConfig{})
+	c.fleetURL = srv.URL
+	c.mu.Lock()
+	c.accessToken = "tok"
+	c.tokenExpiry = time.Now().Add(8 * time.Hour)
+	c.vehicleID = "123"
+	c.mu.Unlock()
+
+	// 模拟上一轮成功采集到的结果
 	fl := 2.95
 	at := time.Now().UTC()
 	c.setLiveTPMS(TeslaTPMS{FL: TeslaTPMSWheel{Pressure: &fl}, At: &at})
 	c.setLockState(true, at)
+	c.markFleetOK()
 
-	c.clearVehicleState()
-
-	if got := c.TPMS(); got.FL.Pressure != nil || got.At != nil {
-		t.Fatalf("降级后实时胎压应为空，实际 %+v", got)
+	err := c.pollOnce(context.Background())
+	if err == nil {
+		t.Fatal("429 应当算失败")
 	}
-	if locked, _ := c.LockState(); locked != nil {
-		t.Fatalf("降级后锁车状态应为空，实际 %v", locked)
+	if errors.Is(err, errVehicleUnavailable) {
+		t.Fatalf("429 不应被当成车休眠：%v", err)
+	}
+
+	// 走一遍「处理结果」这一步（Run 循环里的判定逻辑）
+	c.handlePollResult(err, teslaBackoffInit)
+
+	// 关键断言：状态**没有被清空**
+	if got := c.TPMS(); got.FL.Pressure == nil || *got.FL.Pressure != 2.95 {
+		t.Fatalf("真失败后实时胎压应保留上次结果，实际 %v", got.FL.Pressure)
+	}
+	if locked, _ := c.LockState(); locked == nil || !*locked {
+		t.Fatalf("真失败后锁车状态应保留上次结果，实际 %v", locked)
+	}
+
+	// 但**必须**记下失败原因，让 App 能说清「为什么现在读不到」
+	fleetErr, lastOK := c.FleetStatus()
+	if fleetErr == "" {
+		t.Fatal("失败后应记下 fleetErr，App 要靠它说明原因")
+	}
+	if !strings.Contains(fleetErr, "最后一次成功获取") {
+		t.Fatalf("fleetErr 必须说明显示的是旧数据，实际 %q", fleetErr)
+	}
+	if lastOK == nil {
+		t.Fatal("失败前的成功时刻应保留（App 用它显示数据有多旧）")
+	}
+}
+
+// TestShortFleetError 不泄露内部细节，且必须说清「显示的是旧数据」。
+func TestShortFleetError(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		expect string
+	}{
+		{"授权失效", fmt.Errorf("%w: vehicle_data 返回 401", errTeslaAuth), "授权已失效"},
+		{"限流", errors.New("vehicle_data 返回 429: rate limited"), "限流"},
+		{"服务端错误", errors.New("vehicle_data 返回 503: oops"), "云端暂时不可用"},
+		{"网络错误", errors.New("Get \"https://x\": dial tcp: timeout"), "连不上"},
+	}
+	for _, c := range cases {
+		got := shortFleetError(c.err)
+		if !strings.Contains(got, c.expect) {
+			t.Errorf("%s: shortFleetError = %q, 期望包含 %q", c.name, got, c.expect)
+		}
+		if !strings.Contains(got, "最后一次成功获取") {
+			t.Errorf("%s: 必须说明显示的是旧数据，实际 %q", c.name, got)
+		}
+		// 不能泄露内部细节
+		for _, leak := range []string{"vehicle_data 返回", "dial tcp", "https://", "Authorization"} {
+			if strings.Contains(got, leak) {
+				t.Errorf("%s: 泄露了内部细节 %q：%q", c.name, leak, got)
+			}
+		}
 	}
 }
 

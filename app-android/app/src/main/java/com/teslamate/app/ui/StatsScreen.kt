@@ -20,12 +20,14 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,12 +43,14 @@ import com.teslamate.app.StatsBucket
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtDate
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** 统计：周/月/年 里程、能耗、充电、电池健康 */
 @Composable
 fun StatsScreen(settings: AppSettings, modifier: Modifier) {
     val api = remember(settings) { settings.api() }
+    val scope = rememberCoroutineScope()
     /**
      * v0.8.5：3 段 → 4 段。
      *
@@ -74,11 +78,14 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
     var stats by remember { mutableStateOf<Stats?>(null) }
     var battery by remember { mutableStateOf<BatteryHealth?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var refreshing by remember { mutableStateOf(false) }
 
-    LaunchedEffect(settings, apiPeriod) {
+    // ⚠️ v0.9.0：抽成可复用的 load() —— 原来只有一次性加载，
+    // 网络一断就再也不请求，用户必须「切走再切回」才能重试。
+    suspend fun load() {
         if (api == null) {
             error = if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页"
-            return@LaunchedEffect
+            return
         }
         runCatching {
             withContext(Dispatchers.IO) {
@@ -91,6 +98,8 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
         }.onFailure { error = it.message }
     }
 
+    LaunchedEffect(settings, apiPeriod) { load() }
+
 
     Column(modifier) {
         TopAppBar(
@@ -99,6 +108,29 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             title = { ScreenTitle("用量") },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         )
+        // ⚠️ v0.9.0（新手车主复核）：加一行副标题说清这一页装什么。
+        // 车主原话：「『记录』和『用量』两个 Tab，我第一次点进去不知道哪个是'历史'
+        // 哪个是'统计'，试了两遍才明白」。
+        // 「记录」页下面就是「充电 | 行程」分段控件，本身已经自解释；
+        // 而「用量」这个词本身不直观 —— 补一行「里程 · 能耗 · 费用」就够了。
+        Text(
+            "里程 · 能耗 · 费用",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 2.dp),
+        )
+        // ⚠️ v0.9.0：加下拉刷新（原来失败后只能切 Tab 重试）。
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = {
+                scope.launch {
+                    refreshing = true
+                    load()
+                    refreshing = false
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        ) {
         LazyColumn(
             Modifier.fillMaxSize(),
             // ⚠️ v0.7.1：原来只有 bottom padding，SectionCard 又是 fillMaxWidth
@@ -141,9 +173,16 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             item {
                 SectionCard("$periodLabel 汇总", Modifier.animateItem()) {                    if (sum != null) {
                         KV("总里程", "${sum.km.fmt(1)} km")
-                        KV("行车用电", "${sum.kwh_used.fmt(1)} kWh")
-                        KV("充入电量", "${sum.charge_kwh.fmt(1)} kWh（快充 ${sum.dc_kwh.fmt(1)} / 慢充 ${sum.ac_kwh.fmt(1)}）")
+                        KV("行车用电", "${sum.kwh_used.fmt(1)} 度")
+                        KV("充入电量", "${sum.charge_kwh.fmt(1)} 度（快充 ${sum.dc_kwh.fmt(1)} / 慢充 ${sum.ac_kwh.fmt(1)}）")
                         KV("充电费用", if (sum.cost > 0) "${sum.cost.fmt(2)} 元" else "未记录")
+                        // ⚠️ v0.9.0（新手车主复核）：补「每公里花多少钱」。
+                        // 车主原话：「每公里花多少钱（充 60 度跑 400 公里 = 0.15 元/公里）
+                        // ——没有，我只看到总数和每度电」。
+                        // 总费用除以总里程，是唯一一个能直接横向比较「这趟值不值」的数。
+                        if (sum.cost > 0 && sum.km > 0.1) {
+                            KV("每公里成本", "${(sum.cost / sum.km).fmt(2)} 元")
+                        }
                         sum.wh_per_km?.let { KV("平均能耗", "${it.fmt(0)} Wh/km") }
                         KV("行程 / 充电次数", "${sum.drive_count} 次 / ${sum.charge_count} 次")
                     }
@@ -171,7 +210,7 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             }
 
             item {
-                SectionCard("充入电量 (kWh)", Modifier.animateItem()) {
+                SectionCard("充入电量 (度)", Modifier.animateItem()) {
                     ChartLegend(
                         listOf(
                             "直流快充" to MaterialTheme.colorScheme.primary,
@@ -200,7 +239,7 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             }
 
             item {
-                SectionCard("行驶耗电 (kWh)", Modifier.animateItem()) {
+                SectionCard("行驶耗电 (度)", Modifier.animateItem()) {
                     StackedBarChart(
                         series = listOf(
                             ChartSeries(
@@ -223,29 +262,33 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                     if (b == null || b.current_capacity_kwh == null) {
                         Text("暂无足够数据（需要 ≥90% 的完整充电记录）", style = MaterialTheme.typography.bodySmall)
                     } else {
-                        KV("当前可用容量", "${b.current_capacity_kwh?.fmt(1)} kWh")
-                        KV("历史最佳容量", "${b.max_capacity_kwh?.fmt(1)} kWh")
-                        b.nominal_capacity_kwh?.let { KV("铭牌容量", "${it.fmt(1)} kWh") }
+                        // ⚠️ v0.9.0（新手车主复核）：「铭牌容量」是术语。
+                        // 车主原话：「'铭牌'是出厂标称；健康度＝还剩多少」，
+                        // 建议写法：「新电池能装 66 度，现在还能装 65.4 度（97%）」。
+                        KV("现在还能装", "${b.current_capacity_kwh?.fmt(1)} 度")
+                        KV("历史最好时", "${b.max_capacity_kwh?.fmt(1)} 度")
+                        b.nominal_capacity_kwh?.let { KV("新电池标称", "${it.fmt(1)} 度") }
                         b.health_percent?.let { KV("健康度", "${it.fmt(1)}%") }
                         val series = b.series.map { it.capacity_kwh?.toFloat() }
                         if (series.count { it != null } >= 2) {
-                            // ⚠️ 关键：把「铭牌容量」作为基准线画出来。
+                            // ⚠️ 关键：把「新电池标称容量」作为基准线画出来。
                             //   原来 Y 轴各自归一化到自己的峰值，66.0 → 65.4 kWh 的
                             //   真实衰减画出来是一条几乎水平的直线——衰减 1% 和 10% 看起来一样平。
-                            //   锚定到铭牌容量的 1.3 倍后，衰减趋势一眼可见。
+                            //   锚定到标称容量的 1.3 倍后，衰减趋势一眼可见。
                             LineChart(
                                 values = series,
                                 color = MaterialTheme.colorScheme.secondary,
                                 yUnit = "kWh",
                                 xLabels = bucketAxisLabels(b.series.map { it.date.fmtDate() }),
                                 referenceValue = b.nominal_capacity_kwh?.toFloat(),
-                                referenceLabel = "铭牌",
+                                referenceLabel = "新电池标称",
                                 contentDescription = batteryChartDescription(b),
                             )
                         }
                     }
                 }
             }
+        }
         }
     }
 }

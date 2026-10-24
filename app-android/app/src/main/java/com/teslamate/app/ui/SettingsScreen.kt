@@ -58,6 +58,11 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
     var url by remember(settings) { mutableStateOf(settings.serverUrl) }
     var token by remember(settings) { mutableStateOf(settings.token) }
     var carId by remember(settings) { mutableStateOf(settings.carId) }
+    // ⚠️ v0.9.0：保养 / 换胎提醒的基准值
+    var serviceOdo by remember(settings) { mutableStateOf(settings.serviceOdoKm) }
+    var serviceInterval by remember(settings) { mutableStateOf(settings.serviceIntervalKm.toString()) }
+    var tireOdo by remember(settings) { mutableStateOf(settings.tireOdoKm) }
+    var tireInterval by remember(settings) { mutableStateOf(settings.tireIntervalKm.toString()) }
     var cars by remember { mutableStateOf<List<Car>>(emptyList()) }
     var showToken by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
@@ -66,7 +71,20 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
     var savedHint by remember { mutableStateOf(false) }
 
     fun save() {
-        scope.launch { ctx.saveSettings(AppSettings(url, token, carId)) }
+        scope.launch {
+            ctx.saveSettings(
+                AppSettings(
+                    serverUrl = url,
+                    token = token,
+                    carId = carId,
+                    // ⚠️ 空串 = 不填 = 不启用提醒（0 表示未设置）
+                    serviceOdoKm = serviceOdo,
+                    serviceIntervalKm = serviceInterval.trim().toIntOrNull() ?: 20000,
+                    tireOdoKm = tireOdo,
+                    tireIntervalKm = tireInterval.trim().toIntOrNull() ?: 40000,
+                )
+            )
+        }
         savedHint = true
     }
 
@@ -187,6 +205,68 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                         }
                         TextButton(onClick = { save() }) { Text("保存车辆选择") }
                     }
+                }
+            }
+
+            item {
+                // ⚠️ v0.9.0（新手车主复核）：
+                // 「上次保养是什么时候 / 什么时候该换胎 —— 全项目 0 命中。这是我最想要的。」
+                //
+                // 为什么放在**设置**里而不是服务端：
+                // 保养是车主的线下行为，没有任何机器能自动知道。
+                // 让车主填一个基准（上次保养时的里程表）+ 一个间隔，
+                // App 用里程表一减就得到「还剩多少公里」——
+                // 这正是车主真正想知道的那句话。
+                SectionCard("保养与轮胎提醒", Modifier.animateItem()) {
+                    Text(
+                        "填「上次做的时候里程表是多少」和一个间隔，" +
+                            "App 用现在的里程表算出还剩多少公里。留空 = 不提醒。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = if (serviceOdo > 0) serviceOdo.toLong().toString() else "",
+                        onValueChange = {
+                            serviceOdo = it.trim().toDoubleOrNull() ?: 0.0
+                            savedHint = false
+                        },
+                        label = { Text("上次保养时的里程（km）") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = serviceInterval,
+                        onValueChange = { serviceInterval = it.filter { c -> c.isDigit() }; savedHint = false },
+                        label = { Text("保养间隔（km）") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = if (tireOdo > 0) tireOdo.toLong().toString() else "",
+                        onValueChange = {
+                            tireOdo = it.trim().toDoubleOrNull() ?: 0.0
+                            savedHint = false
+                        },
+                        label = { Text("上次换胎时的里程（km）") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = tireInterval,
+                        onValueChange = { tireInterval = it.filter { c -> c.isDigit() }; savedHint = false },
+                        label = { Text("轮胎更换间隔（km）") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TextButton(onClick = { save() }) { Text("保存提醒设置") }
                 }
             }
 

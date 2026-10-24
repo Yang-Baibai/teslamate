@@ -30,6 +30,13 @@ const (
 
 	// 数据多少小时未更新算「过期」。
 	DataStaleHours = 24
+
+	// 数据多少小时未更新算「该提醒一下了」（还不算过期）。
+	//
+	// ⚠️ v0.9.0：这个阈值原来**只存在于 App 里**（StatusScreen 自己写 6 小时），
+	// 而服务端 DataStaleHours=24 才是唯一事实源 —— 两边各写一份，改一边就打架。
+	// 现在两档都在服务端算，App 只读结果。
+	DataWarnHours = 6
 )
 
 // TpmsAlertResult 胎压判定结果。
@@ -103,7 +110,8 @@ func trimFloat(v float64) string {
 // DataAge 数据新鲜度。
 type DataAge struct {
 	Hours int  // 数据距今多少小时（向下取整）
-	Stale bool // 是否超过 DataStaleHours
+	Stale bool // 是否超过 DataStaleHours（过期）
+	Warn  bool // 是否超过 DataWarnHours（该提醒，但还没过期）
 }
 
 // EvaluateDataAge 计算数据新鲜度。
@@ -112,5 +120,5 @@ func EvaluateDataAge(updatedAt time.Time) DataAge {
 	if h < 0 {
 		h = 0
 	}
-	return DataAge{Hours: h, Stale: h >= DataStaleHours}
+	return DataAge{Hours: h, Stale: h >= DataStaleHours, Warn: h >= DataWarnHours}
 }

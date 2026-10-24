@@ -42,11 +42,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +67,7 @@ import com.teslamate.app.firstSegment
 import com.teslamate.app.fmtShort
 import com.teslamate.app.minutesFmt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
@@ -78,24 +81,32 @@ fun ChargesScreen(
     showHeader: Boolean = true,
 ) {
     val api = remember(settings) { settings.api() }
+    val scope = rememberCoroutineScope()
     var list by remember { mutableStateOf<List<Charge>>(emptyList()) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
+    var refreshing by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<Charge?>(null) }
     // 该站历史统计（按地点聚合）：回答「这个桩快不快、我要等多久」。
     // 这是决定「进不进这个服务区」的唯一信息，单次充电的峰值/平均功率给不了。
     val stats = remember(list) { buildStationStats(list) }
 
-    LaunchedEffect(settings) {
+    // ⚠️ v0.9.0：抽成可复用的 load() ——
+    // 原来只有 LaunchedEffect 里的**一次性**加载，网络一断就再也不请求了，
+    // 用户必须「切走再切回」才能重试（可靠性复核：列表页没有下拉刷新）。
+    // 现在：初次加载 + 下拉刷新都走这一条路径。
+    suspend fun load() {
         if (api == null) {
             error = if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页"
             loading = false
-            return@LaunchedEffect
+            return
         }
         runCatching { withContext(Dispatchers.IO) { api.charges(settings.carId, 200) } }
             .onSuccess { list = it; error = null; loading = false }
             .onFailure { error = it.message; loading = false }
     }
+
+    LaunchedEffect(settings) { load() }
 
     // 列表 ⇄ 详情：iOS 式 push（新页推入，旧页 30% 视差退让 + 左缘投影）
     AnimatedContent(
@@ -105,7 +116,23 @@ fun ChargesScreen(
         label = "chargeDetail",
     ) { sel ->
         Box(Modifier.fillMaxSize()) {
-            if (sel == null) ChargeList(list, stats, loading, error, settings, showHeader = showHeader, onSelect = { selected = it })
+            if (sel == null) ChargeList(
+                list = list,
+                stats = stats,
+                loading = loading,
+                error = error,
+                settings = settings,
+                showHeader = showHeader,
+                refreshing = refreshing,
+                onRefresh = {
+                    scope.launch {
+                        refreshing = true
+                        load()
+                        refreshing = false
+                    }
+                },
+                onSelect = { selected = it },
+            )
             else ChargeDetail(sel, api, stats) { selected = null }
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
@@ -120,6 +147,8 @@ private fun ChargeList(
     error: String?,
     settings: AppSettings,
     showHeader: Boolean = true,
+    refreshing: Boolean = false,
+    onRefresh: () -> Unit = {},
     onSelect: (Charge) -> Unit,
 ) {
 
@@ -129,42 +158,50 @@ private fun ChargeList(
                 title = { ScreenTitle("充电") },
             )
         }
-        when {
-            error != null -> Column(Modifier.padding(16.dp)) { ErrorBanner(error!!) }
-            loading -> ListSkeleton(items = 7)
-            list.isEmpty() -> Column(Modifier.padding(16.dp)) { SectionCard { Text("暂无充电记录") } }
-            else -> {
-                val groups = remember(list) { list.groupBy { it.start_date.fmtMonth() } }
-                val totalKwh = list.sumOf { it.energy_added_kwh ?: 0.0 }
-                val totalCost = list.sumOf { it.cost ?: 0.0 }
-                val dcCount = list.count { it.is_dc }
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (showHeader) {
-                        item(key = "summary") {
-                            RecentSummaryCard(settings = settings, fallback = {
+        // ⚠️ v0.9.0：加下拉刷新。
+        // 原来这个页只有一次性加载 —— 网络抖一下失败后，只能「切走再切回」才重试。
+        PullToRefreshBox(
+            isRefreshing = refreshing,
+            onRefresh = onRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when {
+                error != null -> Column(Modifier.fillMaxSize().padding(16.dp)) { ErrorBanner(error!!) }
+                loading -> ListSkeleton(items = 7)
+                list.isEmpty() -> Column(Modifier.padding(16.dp)) { SectionCard { Text("暂无充电记录") } }
+                else -> {
+                    val groups = remember(list) { list.groupBy { it.start_date.fmtMonth() } }
+                    val totalKwh = list.sumOf { it.energy_added_kwh ?: 0.0 }
+                    val totalCost = list.sumOf { it.cost ?: 0.0 }
+                    val dcCount = list.count { it.is_dc }
+                    LazyColumn(
+                        Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (showHeader) {
+                            item(key = "summary") {
+                                RecentSummaryCard(settings = settings, fallback = {
+                                    Text(
+                                        "共 ${list.size} 次 · 充入 ${totalKwh.fmt(1)} 度",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                })
+                            }
+                        }
+                        groups.forEach { (month, charges) ->
+                            item(key = "h-$month") {
                                 Text(
-                                    "共 ${list.size} 次 · 充入 ${totalKwh.fmt(1)} kWh",
-                                    style = MaterialTheme.typography.bodyMedium,
+                                    month,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(top = 8.dp).animateItem(),
                                 )
-                            })
-                        }
-                    }
-                    groups.forEach { (month, charges) ->
-                        item(key = "h-$month") {
-                            Text(
-                                month,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 8.dp).animateItem(),
-                            )
-                        }
-                        items(charges, key = { it.id }) { c ->
-                            val stat = stats[(c.place ?: "").firstSegment() ?: ""]
-                            ChargeItem(c, stat, Modifier.animateItem()) { onSelect(c) }
+                            }
+                            items(charges, key = { it.id }) { c ->
+                                val stat = stats[(c.place ?: "").firstSegment() ?: ""]
+                                ChargeItem(c, stat, Modifier.animateItem()) { onSelect(c) }
+                            }
                         }
                     }
                 }
@@ -232,7 +269,7 @@ private fun ChargeItem(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                InlineMetric("充入", "${c.energy_added_kwh?.fmt(1) ?: "—"} kWh")
+                InlineMetric("充入", "${c.energy_added_kwh?.fmt(1) ?: "—"} 度")
                 InlineMetric("电量", "${c.start_soc ?: "—"}→${c.end_soc ?: "—"}%")
                 if (c.cost != null) {
                     InlineMetric(
@@ -376,10 +413,14 @@ private fun ChargeDetail(
 
             item {
                 SectionCard("能量", Modifier.animateItem()) {
-                    KV("充入电量", charge.energy_added_kwh?.fmt(2, " kWh") ?: "—")
-                    KV("表计用电", charge.energy_used_kwh?.fmt(2, " kWh") ?: "—")
+                    // ⚠️ v0.9.0（新手车主复核）：「表计用电 vs 充入电量」两个名字
+                    // 新手完全分不清（"两个都像'用了多少电'"）。
+                    // 改成**说清是什么**：一个是真正进到电池里的，一个是桩上计的账，
+                    // 两者的差额就是损耗。
+                    KV("充进电池的电", charge.energy_added_kwh?.fmt(2, " 度") ?: "—")
+                    KV("桩上计的账", charge.energy_used_kwh?.fmt(2, " 度") ?: "—")
                     charge.loss_percent?.let {
-                        KV("充电损耗率", "${it.fmt(1)}%")
+                        KV("充电损耗", "${it.fmt(1)}%（多出来的部分）")
                     }
                 }
             }
@@ -416,23 +457,28 @@ private fun ChargeDetail(
                     if (cableCn != null) {
                         KV("充电桩类型", cableCn)
                     }
-                    KV("峰值电压", charge.peak_voltage?.let { "$it V" } ?: "—")
-                    KV("平均电压", charge.avg_voltage?.let { "$it V" } ?: "—")
-                    KV("峰值电流", charge.peak_current?.let { "$it A" } ?: "—")
-                    KV("平均电流", charge.avg_current?.let { "$it A" } ?: "—")
-                    val phase = charge.charger_phases
-                    val v = charge.charger_voltage
-                    val a = charge.charger_current
-                    if (phase != null && phase > 0) {
-                        KV("相数", "$phase 相（当前 ${v ?: "—"}V / ${a ?: "—"}A）")
-                    } else if (v != null && v > 0) {
-                        KV("当前电压/电流", "$v V / $a A（直流）")
-                    } else if (charge.is_dc) {
-                        Text(
-                            "本充电桩（直流快充）未上报电压与电流，仅记录功率。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    // ⚠️ v0.9.0（新手车主复核）：电压/电流/相数是纯 jargon，
+                    // 新手「完全不懂，纯 jargon」—— 但老手进阶后真的想看。
+                    // 折进「电气细节」：新手不被干扰，老手数据一点没丢。
+                    CollapsibleSection("电气细节") {
+                        KV("峰值电压", charge.peak_voltage?.let { "$it V" } ?: "—")
+                        KV("平均电压", charge.avg_voltage?.let { "$it V" } ?: "—")
+                        KV("峰值电流", charge.peak_current?.let { "$it A" } ?: "—")
+                        KV("平均电流", charge.avg_current?.let { "$it A" } ?: "—")
+                        val phase = charge.charger_phases
+                        val v = charge.charger_voltage
+                        val a = charge.charger_current
+                        if (phase != null && phase > 0) {
+                            KV("相数", "$phase 相（当前 ${v ?: "—"}V / ${a ?: "—"}A）")
+                        } else if (v != null && v > 0) {
+                            KV("当前电压/电流", "$v V / $a A（直流）")
+                        } else if (charge.is_dc) {
+                            Text(
+                                "本充电桩（直流快充）未上报电压与电流，仅记录功率。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
