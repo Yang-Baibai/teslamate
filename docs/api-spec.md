@@ -54,6 +54,19 @@
 ### /drives 列表项
 `id` `start_date` `end_date` `duration_min` `distance_km` `start_place`/`end_place`（geofence 优先） `start_soc`/`end_soc` `energy_kwh` `wh_per_km` `speed_max` `outside_temp_avg` `odometer_start/end`
 
+| 字段 | 类型 | 含义 |
+|---|---|---|
+| `has_supercharger` | bool | 这趟行程的终点附近有**直流快充**记录 |
+| `charge_after_trip` | bool | 这趟行程的终点附近有**任何**充电记录（含交流慢充） |
+
+> **v0.7.1 修正：充电与行程改用里程关联，不用时间窗。**
+> 旧判据 `charges.date BETWEEN drives.start_date AND drives.end_date` 恒为 false——
+> 充电发生在行程**结束之后**（到达服务区 → 结束行程 → 开始充电），
+> 导致最近 200 条行程的 `has_supercharger` 全是 false。
+> 现按 `|充电起始里程 − 行程结束里程| < 2 km` 关联
+> （`charging_processes.position_id` → `positions.odometer` 对 `drives.end_km`）。
+> 直流/交流的判定复用 `/charges` 的 `is_dc` 同一条判据，两个接口口径一致。
+
 ### /drives/{id}/track 点
 `date` `lat` `lng` `map_lat` `map_lng` `speed` `power` `battery_level` `elevation`
 

@@ -119,17 +119,49 @@ LEFT JOIN ad ON true
 CROSS JOIN loc`
 
 const sqlDrives = `
-WITH drive_sc AS (
-  -- 每个 drive 期间是否出现过超级充电（1=是）
-  SELECT d.id AS drive_id, EXISTS(
-    SELECT 1 FROM charging_processes cp
-    JOIN charges ch ON ch.charging_process_id = cp.id
-    WHERE cp.car_id = d.car_id
-      AND ch.date >= d.start_date AND ch.date <= d.end_date
-      AND NULLIF(ch.charger_phases, 0) IS NULL
-      AND ch.fast_charger_type <> 'ACSingleWireCAN'
-  ) AS has_supercharger
+WITH charge_link AS (
+  -- 每个充电会话的「起始里程」+ 是否直流快充。
+  -- TeslaMate 的 charging_processes 没有 start_odo 列，
+  -- 起始里程取 cp.position_id 指向的那条 positions.odometer。
+  SELECT cp.id AS charge_id,
+         cp.car_id,
+         sp.odometer::float8 AS start_odo,
+         -- 与 sqlCharges.is_dc 用同一条判据，两个接口口径必须一致：
+         -- 直流桩不报相数（charger_phases 为 NULL）且不是 ACSingleWireCAN
+         COALESCE(bool_or(
+           NULLIF(ch.charger_phases, 0) IS NULL
+           AND ch.fast_charger_type <> 'ACSingleWireCAN'
+         ), false) AS is_dc
+  FROM charging_processes cp
+  JOIN positions sp ON sp.id = cp.position_id
+  LEFT JOIN charges ch ON ch.charging_process_id = cp.id
+  WHERE cp.car_id = $1
+  GROUP BY cp.id, cp.car_id, sp.odometer
+), drive_sc AS (
+  -- 把「行程」和「充电」按里程关联起来。
+  -- ⚠️ 不能用时间窗关联：充电发生在行程结束之后
+  --    （到达服务区 → 结束行程 → 开始充电），
+  --    旧判据 ch.date BETWEEN d.start_date AND d.end_date 因此恒为 false，
+  --    has_supercharger 在最近 200 条行程里全是 false。
+  -- 里程判据：|充电起始里程 − 行程结束里程| < 2 km 视为同一地点。
+  --   实测 17 次长途充电全部唯一命中，误差 ≤ 1 km。
+  SELECT d.id AS drive_id,
+         -- 终点附近有直流快充 → has_supercharger（保留旧字段名与布尔语义）
+         EXISTS (
+           SELECT 1 FROM charge_link cl
+           WHERE cl.car_id = d.car_id AND cl.is_dc
+             AND cl.start_odo IS NOT NULL AND d.end_km IS NOT NULL
+             AND abs(cl.start_odo - d.end_km) < 2
+         ) AS has_supercharger,
+         -- 终点附近有过充电（不限快慢充）→ charge_after_trip
+         EXISTS (
+           SELECT 1 FROM charge_link cl
+           WHERE cl.car_id = d.car_id
+             AND cl.start_odo IS NOT NULL AND d.end_km IS NOT NULL
+             AND abs(cl.start_odo - d.end_km) < 2
+         ) AS charge_after_trip
   FROM drives d
+  WHERE d.car_id = $1
 )
 SELECT d.id, d.start_date, d.end_date, d.duration_min, d.distance,
        COALESCE(sg.name, sa.display_name) AS start_place,
@@ -147,7 +179,8 @@ SELECT d.id, d.start_date, d.end_date, d.duration_min, d.distance,
        d.start_rated_range_km::float8, d.end_rated_range_km::float8,
        d.start_ideal_range_km::float8, d.end_ideal_range_km::float8,
        sg.name, eg.name,
-       COALESCE(sc.has_supercharger, false) AS has_supercharger
+       COALESCE(sc.has_supercharger, false) AS has_supercharger,
+       COALESCE(sc.charge_after_trip, false) AS charge_after_trip
 FROM drives d
 JOIN cars c ON c.id = d.car_id
 LEFT JOIN addresses sa ON sa.id = d.start_address_id

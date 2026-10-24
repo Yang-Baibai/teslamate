@@ -106,6 +106,9 @@ type Drive struct {
 	StartGeofence    *string  `json:"start_geofence"`
 	EndGeofence      *string  `json:"end_geofence"`
 	HasSupercharger  bool     `json:"has_supercharger"`
+	// v0.7.1 新增：行程终点附近是否发生过充电（含交流慢充）。
+	// has_supercharger 只表示「终点附近有直流快充」，两者语义不同，别混用。
+	ChargeAfterTrip bool `json:"charge_after_trip"`
 }
 
 type TrackPoint struct {

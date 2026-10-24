@@ -5,6 +5,48 @@
 
 ---
 
+## 2026-10-24（API 修复：行程「超充经过」判据恒为 false）
+
+### 背景
+
+App「行程详情 → 地点与归属」的 `has_supercharger` 恒为 false，最近 200 条行程全是 false。
+根因在 `api/queries.go` 的 `sqlDrives`：用**时间窗**关联充电与行程——
+`charges.date BETWEEN drives.start_date AND drives.end_date`。
+但充电发生在行程**结束之后**（到达服务区 → 结束行程 → 开始充电），
+这条判据永远命中不了。实测本车 8/8 长途行程的 `charges_inside` 均为 0。
+
+### 改动
+
+- `sqlDrives` 改用**里程关联**：`|充电起始里程 − 行程结束里程| < 2 km`
+  - 充电起始里程：`charging_processes.position_id → positions.odometer`
+    （`charging_processes` **没有** `start_odo` 列）
+  - 行程结束里程：`drives.end_km`
+    （`drives` **没有** `odometer_start/odometer_end` 列，
+    `start_km`/`end_km` 本身就是里程表读数）
+- `has_supercharger` 保留字段名与布尔语义，含义收紧为「**终点附近有直流快充**」：
+  里程关联命中后，再按 `sqlCharges.is_dc` 同一条判据过滤直流
+  （`charger_phases` 为空/0 且 `fast_charger_type ≠ 'ACSingleWireCAN'`，
+  **不用** `fast_charger_brand`——本车 86.7% 是 `'<invalid>'`，判不出快慢充）。
+- 新增字段 `charge_after_trip`（bool）：终点附近有**任何**充电记录（含交流慢充），
+  把「是否充电」和「是否直流快充」拆成两个字段。
+- 同步更新 `docs/data-dictionary.md`（§2 口径表）、`docs/api-spec.md`（/drives 字段）、
+  `api/README.md`（设计约束 7/8）；`scripts/smoke.sh` 加一条冒烟断言。
+
+### 影响
+
+- `/api/v1/cars/{id}/drives` 最近 200 条里 `has_supercharger` 为 true：**0 → 52 条**；
+  `charge_after_trip` 为 true：**0 → 55 条**（其中 3 条是交流慢充）。
+- 字段名未变，App 侧不依赖改代码即可受益；新字段是纯增量，
+  App 的 `Json { ignoreUnknownKeys = true }` 不会因未知字段崩。
+- 实测校验：行程 #405（343.5 km）→「G210 车河镇 南丹县」13%→87% 49 分钟；
+  行程 #392（315.2 km）→「合江荔乡服务区」8%→50% 16 分钟，与预期一致。
+- 冒烟测试 14/14 通过。
+
+### 回滚
+
+`git revert` 本次提交后 `docker compose up -d api` 即恢复旧口径；
+旧口径只是恒 false，不影响其他字段。
+
 ## 2026-10-24（车况提醒接入 Hermes，App 退回纯查看）
 
 ### 背景

@@ -46,6 +46,17 @@ GET /apk/…                         APK 下载（免鉴权，DownloadManager �
    data type`。聚合一律用 CTE + JOIN（见 `sqlCharges` 的 `ch_agg`）。
 6. **占位值清洗**：非超充直流桩的电压/电流是特斯拉 API 的握手占位（2V/0A），
    `sanitizeCharge` 把 V<10、A<1 归 nil，App 显示"—"。**绝不向客户端返回疑似错误的真值。**
+7. **充电发生在行程结束之后**：到达服务区 → 结束行程 → 开始充电。
+   所以「这趟行程有没有去充电」**不能用时间窗关联**（`charges.date` 落在
+   `drives.start_date..end_date` 之间），那条判据恒为 false。
+   现在 `sqlDrives` 按里程关联：`|充电起始里程 − 行程结束里程| < 2 km`。
+   取里程的路径是 `charging_processes.position_id → positions.odometer`
+   （`charging_processes` **没有** `start_odo` 列），
+   对面是 `drives.end_km`（`drives` 也**没有** `odometer_start/end` 列，
+   `start_km`/`end_km` 本身就是里程表读数）。
+8. **快慢充判定别用品牌**：本机 `charges.fast_charger_brand` 86.7% 是 `'<invalid>'`，
+   判直流要看 `charger_phases`（直流为 NULL）+ `fast_charger_type`，
+   且必须与 `sqlCharges.is_dc` 用同一条判据，否则两个接口会打架。
 
 ## 构建与部署
 

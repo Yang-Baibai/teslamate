@@ -141,7 +141,7 @@ func handleDrives(w http.ResponseWriter, r *http.Request) {
 			&d.StartRatedKm, &d.EndRatedKm,
 			&d.StartIdealKm, &d.EndIdealKm,
 			&d.StartGeofence, &d.EndGeofence,
-			&d.HasSupercharger,
+			&d.HasSupercharger, &d.ChargeAfterTrip,
 		); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return

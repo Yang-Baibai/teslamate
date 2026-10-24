@@ -47,6 +47,22 @@ CH=$(curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charges?li
 echo "$CH" | python -c "import json,sys;d=json.load(sys.stdin);assert len(d)>0 and 'loss_percent' in d[0]" 2>/dev/null \
   && ok "charges 含 loss_percent" || fail "charges 含 loss_percent"
 
+# 5b. v0.7.1：行程的充电关联字段（里程口径，不是时间窗）
+# 旧口径 charges.date BETWEEN drives.start_date AND drives.end_date 恒为 false，
+# 这里断言至少有一条行程能关联到充电，防止判据再次退化成恒 false。
+DR=$(curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/drives?limit=200")
+echo "$DR" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert len(d) > 0, 'empty drives'
+for k in ('has_supercharger','charge_after_trip'):
+    assert k in d[0], 'missing '+k
+    assert isinstance(d[0][k], bool), k+' must be bool'
+assert any(x['has_supercharger'] for x in d), 'no drive matched a DC charge'
+assert any(x['charge_after_trip'] for x in d), 'no drive matched a charge'
+" 2>/dev/null \
+  && ok "drives 含充电关联字段（里程口径）" || fail "drives 含充电关联字段（里程口径）"
+
 # 6. 统计三档都出 summary
 for p in week month year; do
   curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/stats?period=$p" \

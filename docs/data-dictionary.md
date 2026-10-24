@@ -22,7 +22,8 @@
 |---|---|---|
 | 行车能耗 | `(start_rated_range_km − end_rated_range_km) × cars.efficiency` | 用 rated（标定）续航，不用 ideal |
 | 百公里能耗 | 能耗 × 1000 ÷ distance | distance ≥ 0.1 才计入 |
-| 直流快充判定 | 存在采样满足 `charger_phases` 为空/0 **且** `fast_charger_type ≠ 'ACSingleWireCAN'` | ACSingleWireCAN 是车载交流充电机的伪装值 |
+| 直流快充判定 | 存在采样满足 `charger_phases` 为空/0 **且** `fast_charger_type ≠ 'ACSingleWireCAN'` | ACSingleWireCAN 是车载交流充电机的伪装值。⚠️ **不要用 `fast_charger_brand`**：本车 86.7% 是 `'<invalid>'`，判不出快慢充 |
+| **行程 ↔ 充电关联** | `abs(充电起始里程 − 行程结束里程) < 2 km` | 充电起始里程 = `charging_processes.position_id → positions.odometer`；行程结束里程 = `drives.end_km`（`drives` 没有 `odometer_end` 列，`start_km`/`end_km` 本身就是里程表读数）。⚠️ **不能用时间窗**：充电发生在行程**结束之后**（到达服务区 → 结束行程 → 开始充电），旧口径 `charges.date BETWEEN drives.start_date AND drives.end_date` 恒为 false |
 | 充电损耗率 | `(energy_used − energy_added) / energy_used × 100` | 仅当 added ≤ used 且结果 ∈ [0,60) 才输出；慢充 ~10%，快充 ~5% |
 | 电池当前容量 | `rated_battery_range_km × efficiency × 100 ÷ usable_battery_level` | 仅取充至 ≥90% 的会话，取该会话最后一条采样 |
 | **电池健康度** | `当前容量 ÷ NOMINAL_BATTERY_KWH × 100` | **分母是铭牌容量（.env 配置），不是历史最大值**——历史最大值本身随衰减漂移，用它健康度虚高（本项目曾 98% vs 实际 85.2%） |
@@ -89,7 +90,7 @@ API 返回：`tpms_alert`(bool) / `tpms_alert_wheels`(字符串数组) / `tpms_a
 
 | 表/字段 | 状态 | 影响 |
 |---|---|---|
-| `geofences` | 0 行 | 「起点/终点围栏名」「超充经过」基本不命中 |
+| `geofences` | 0 行 | 「起点/终点围栏名」不命中（「超充经过」已改里程关联，不依赖 geofence） |
 | `tou_rates` | 0 行 | 分时电价统计不可用；充电费用全 NULL（App 已隐藏该字段） |
 | `positions.elevation` | 深圳平原常为 null | 海拔显示"—"属正常 |
 | `charging_processes.cost` | 65 条全 NULL | 配置 tou_rates 后可恢复显示 |
