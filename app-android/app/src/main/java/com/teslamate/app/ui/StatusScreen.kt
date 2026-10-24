@@ -68,6 +68,8 @@ import com.teslamate.app.fmt
 import com.teslamate.app.fmtShort
 import com.teslamate.app.fmtThousands
 import com.teslamate.app.relTime
+import java.time.Instant
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -192,11 +194,10 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                             // 「车停着不动还会变」的信息），并在后面附上车离线标记；
                             // 只有锁车数据未知（没配 Fleet API / 取不到）时，
                             // 才退回显示原来的状态胶囊。
-                            if (st.locked != null) {
-                                LockStateChip(st.locked, st.state)
-                            } else {
-                                StateChip(st.state)
-                            }
+                            // ⚠️ v0.8.5：三态**都显式呈现**（含「锁车状态未知」），
+                            // 不再在拿不到数据时悄悄退回「在线/休眠/离线」胶囊 ——
+                            // 那样等于把「没取到」伪装成「没这功能」。
+                            LockStateChip(st.locked, st.locked_at)
                             Spacer(Modifier.weight(1f))
                             Text(
                                 // ⚠️ v0.7.1：绝对时间看不出隔了多久，改相对时间
@@ -255,16 +256,28 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                                 )
                                 Spacer(Modifier.height(4.dp))
                                 Text(
-                                    if (trueRange != null) {
-                                        "标定 ${ratedRange?.fmt(0) ?: "—"} km" +
-                                            (whBucket?.let { " · 按你的实测 ${it.whPerKm.fmt(0)} Wh/km 折算" } ?: "") +
-                                            " · 已留 10% 余量"
+                                    // ⚠️ v0.8.5（效率车主复核）：原来副行是三段话
+                                    // 「标定 446 km · 按你的实测 187 Wh/km 折算 · 已留 10% 余量」，
+                                    // 在 165dp 宽的列里折三四行，而且逼着用户「在 308 和 446 里挑一个」。
+                                    // 现在：**主数字只给答案**（308 = 够不够开），
+                                    // 副行只说比例（标定的 69%），怎么折算的收进下一行小字。
+                                    if (trueRange != null && ratedRange != null && ratedRange > 0) {
+                                        "标定 ${ratedRange.fmt(0)} km 的 " +
+                                            "${(trueRange / ratedRange * 100).roundToInt()}%"
                                     } else {
                                         "EPA 标定值（非动态预估）"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                if (trueRange != null) {
+                                    Text(
+                                        (whBucket?.let { "按你最近 ${consumption?.sampleCount ?: 0} 次行程实测 ${it.whPerKm.fmt(0)} Wh/km 折算" } ?: "")
+                                            .ifBlank { "按实测能耗折算" },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                                 Spacer(Modifier.height(12.dp))
                                 // ⚠️ 原来里程表也是 34sp Bold，与续航**同级** —— 一屏两个主角。
                                 // 降级为一行小字：信息一点没丢，但视觉上只剩续航是主角。
@@ -316,18 +329,11 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                             InfoTile("车外温度", st.outside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
                             InfoTile("功率", st.power?.let { "$it kW" } ?: "—", Modifier.weight(1f))
                         }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            InfoTile(
-                                "海拔",
-                                st.elevation?.let { "${it} m" } ?: "—",
-                                Modifier.weight(1f),
-                            )
-                            InfoTile(
-                                "可用电量",
-                                st.usable_battery_level?.let { "$it%" } ?: "—",
-                                Modifier.weight(1f),
-                            )
-                        }
+                        // ⚠️ v0.8.5（效率车主复核）删掉「海拔 | 可用电量」两块：
+                        //  · 海拔一年用一次，且 data-dictionary 自己写着「深圳平原常为 null」
+                        //  · 「可用电量」和电量环是同一个数的两半（battery_level vs
+                        //    usable_battery_level），本车实测 100/100 恒等 —— 纯重复
+                        // 省下 74dp，胎压卡就能完整露出首屏（现在要滑 170dp 才看得到四个胎压值）。
                         TpmsCard(st)
                     }
                 }
@@ -347,8 +353,29 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
  * ⚠️ 未知**绝不能显示成「已上锁」或「未上锁」** —— 那是在编造一个安全相关的状态。
  * 未取到数据就说没取到。
  */
+/**
+ * 锁车状态标签。
+ *
+ * 三态，且**不靠颜色单独表达**（WCAG 1.4.1）：
+ * - `true`  → 锁形图标 + 「已上锁」+ 中性灰
+ * - `false` → 开锁图标 + 「未上锁」+ 琥珀（图标和文字同时变化，色觉障碍用户也读得出）
+ * - `null`  → 问号图标 + 「锁车状态未知」+ 中性灰
+ *
+ * ⚠️ v0.8.5 三处修正（效率型车主复核）：
+ *
+ * 1. **`null` 不再退回「在线/休眠/离线」胶囊**。
+ *    车主原话：「锁是我第一诉求，null 就该直说『锁：未知』」。
+ *    之前把 null 悄悄换成状态胶囊，等于**把「没取到」伪装成「没这功能」**。
+ *    现在三态都显式呈现。
+ * 2. **锁车状态带自己的时间戳**。
+ *    右边那个「更新于 3 分钟前」是 **TeslaMate 车端上报**的时间，
+ *    锁车来自 **Fleet API 自己的 `locked_at`** —— 两个数据源、两个时钟。
+ *    并排放会让人以为锁车也是 3 分钟前的。所以锁车后面跟**它自己**的时间。
+ * 3. **删掉「· 离线」后缀**。车停着不动时 TeslaMate 天天报 offline（这是常态，
+ *    不是异常），挂着它只会让人以为锁车状态有问题。
+ */
 @Composable
-private fun LockStateChip(locked: Boolean, vehicleState: String?) {
+private fun LockStateChip(locked: Boolean?, lockedAt: Instant?) {
     val accents = LocalAccentColors.current
     val icon: androidx.compose.ui.graphics.vector.ImageVector
     val text: String
@@ -364,10 +391,12 @@ private fun LockStateChip(locked: Boolean, vehicleState: String?) {
             text = "未上锁"
             tint = accents.warnAmber
         }
+        null -> {
+            icon = Icons.Filled.HelpOutline
+            text = "锁车状态未知"
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        }
     }
-    // 车离线时补一个标记：「车停着不动」和「车真失联」是两回事，
-    // 但锁车状态本身是陈旧的，所以必须让用户看见这一点。
-    val suffix = if (vehicleState == "offline") " · 离线" else ""
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             icon,
@@ -377,10 +406,19 @@ private fun LockStateChip(locked: Boolean, vehicleState: String?) {
         )
         Spacer(Modifier.width(5.dp))
         Text(
-            "$text$suffix",
+            text,
             style = MaterialTheme.typography.labelMedium,
             color = tint,
         )
+        // 锁车状态的新鲜度用**它自己的**采集时刻
+        if (locked != null && lockedAt != null) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                lockedAt.relTime(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

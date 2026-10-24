@@ -66,7 +66,9 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             "近 12 个月" to ("year" to 12),
         )
     }
-    var periodIndex by remember { mutableIntStateOf(2) }   // 默认「近 30 天」
+    // ⚠️ v0.8.5（效率车主复核）：默认从「近 30 天」改「近 7 天」。
+    // 30 根柱子密到看不出形状；7 根能看出工作日/周末的节奏。
+    var periodIndex by remember { mutableIntStateOf(1) }
     val apiPeriod = periods[periodIndex].second.first
     val bucketCount = periods[periodIndex].second.second
     var stats by remember { mutableStateOf<Stats?>(null) }
