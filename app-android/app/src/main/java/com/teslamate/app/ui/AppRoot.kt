@@ -45,6 +45,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -62,9 +63,11 @@ import com.teslamate.app.BuildConfig
 import com.teslamate.app.Haptics
 import com.teslamate.app.StatusCache
 import com.teslamate.app.settingsFlow
+import com.teslamate.app.saveSettings
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -104,6 +107,37 @@ fun TeslaMateApp() {
     //   - 切 Tab 再回来，详情页**不会凭空消失**（iOS：每个 Tab 持有自己的导航栈）；
     //   - 「点当前 Tab = 回到根」才有地方可复位。
     var recordSelection by remember { mutableStateOf<RecordSelection?>(null) }
+
+    // ⚠️ v0.16.0（车队运营评审 P0-2）：**车辆列表提到 App 级**。
+    //
+    // 原来只有设置页会拉车辆列表，其它页面根本不知道「有几台车、
+    // 现在看的是哪台」—— 于是「记录」页顶栏只有「记录」两个字，
+    // 用户可能以为在看 A 车、实际是 B 车（读错数据的风险）。
+    //
+    // 现在顶栏放一颗切换芯片（仅多车时出现），列表在这里拉一次、全 App 共用。
+    var cars by remember { mutableStateOf<List<com.teslamate.app.Car>>(emptyList()) }
+    LaunchedEffect(settings?.configured) {
+        val s = settings ?: return@LaunchedEffect
+        if (!s.configured) return@LaunchedEffect
+        val api = s.api() ?: return@LaunchedEffect
+        runCatching { withContext(Dispatchers.IO) { api.cars() } }
+            .onSuccess { cars = it }
+            .onFailure { /* 车辆列表拿不到就不显示芯片，不影响主流程 */ }
+    }
+
+    // ⚠️ v0.16.0：切车。
+    //
+    // ① 保存新的 carId（三个页面的 LaunchedEffect(settings) 会自动重新加载数据）；
+    // ② **清空记录页的选中态** —— 否则在 A 车的行程详情页切到 B 车，
+    //    标题还写着 A 车那条行程，数据张冠李戴。
+    val scope = rememberCoroutineScope()
+    val onCarChange: (Int) -> Unit = { id ->
+        val s = settings
+        if (s != null && s.carId != id) {
+            recordSelection = null
+            scope.launch { ctx.saveSettings(s.copy(carId = id)) }
+        }
+    }
 
     LaunchedEffect(Unit) {
         ctx.settingsFlow().collect { settings = it }
@@ -157,6 +191,8 @@ fun TeslaMateApp() {
                         tab = tab,
                         recordSelection = recordSelection,
                         onRecordSelectionChange = { recordSelection = it },
+                        cars = cars,
+                        onCarChange = onCarChange,
                         onTabChange = { t ->
                             // ⚠️ v0.13.0（iOS 交互评审 P0-2）：**点当前已选中的 Tab = 回到根**。
                             //
@@ -197,6 +233,8 @@ private fun MainScaffold(
     tab: Tab,
     recordSelection: RecordSelection?,
     onRecordSelectionChange: (RecordSelection?) -> Unit,
+    cars: List<com.teslamate.app.Car> = emptyList(),
+    onCarChange: (Int) -> Unit = {},
     onTabChange: (Tab) -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -320,6 +358,9 @@ private fun MainScaffold(
                         store = statusStore,
                         // 令牌失效时给用户一个直达设置的出口（见 ApiErrorKind.AUTH）
                         onOpenSettings = { onTabChange(Tab.SETTINGS) },
+                        // ⚠️ v0.16.0：顶栏车切换芯片
+                        cars = cars,
+                        onCarChange = onCarChange,
                     )
                     Tab.RECORDS -> RecordsScreen(
                         settings = settings,
@@ -329,11 +370,16 @@ private fun MainScaffold(
                         // ⚠️ v0.14.0：令牌失效时给「前往设置」的出口
                         // （原来只有车况页有，停在记录页会无限次点「重试」）。
                         onOpenSettings = { onTabChange(Tab.SETTINGS) },
+                        // ⚠️ v0.16.0：顶栏车切换芯片
+                        cars = cars,
+                        onCarChange = onCarChange,
                     )
                     Tab.USAGE -> StatsScreen(
                         settings,
                         Modifier.fillMaxSize(),
                         onOpenSettings = { onTabChange(Tab.SETTINGS) },
+                        cars = cars,
+                        onCarChange = onCarChange,
                     )
                     Tab.SETTINGS -> SettingsScreen(settings, Modifier.fillMaxSize())
                 }

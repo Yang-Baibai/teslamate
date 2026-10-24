@@ -88,10 +88,16 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
     var token by remember(settings) { mutableStateOf(settings.token) }
     var carId by remember(settings) { mutableStateOf(settings.carId) }
     // ⚠️ v0.9.0：保养 / 换胎提醒的基准值
-    var serviceOdo by remember(settings) { mutableStateOf(settings.serviceOdoKm) }
-    var serviceInterval by remember(settings) { mutableStateOf(settings.serviceIntervalKm.toString()) }
-    var tireOdo by remember(settings) { mutableStateOf(settings.tireOdoKm) }
-    var tireInterval by remember(settings) { mutableStateOf(settings.tireIntervalKm.toString()) }
+    //
+    // ⚠️ v0.16.0（车队运营评审 P0-3）：基准**按车隔离** ——
+    // 这里读写的是**当前车**那套（`settings.currentBaselines`），
+    // 不再是全局单值。家人那台车 30,000 公里的表，
+    // 不能用我的 79,000 基准去套。
+    val curBase = settings.currentBaselines
+    var serviceOdo by remember(settings) { mutableStateOf(curBase.serviceOdoKm) }
+    var serviceInterval by remember(settings) { mutableStateOf(curBase.serviceIntervalKm.toString()) }
+    var tireOdo by remember(settings) { mutableStateOf(curBase.tireOdoKm) }
+    var tireInterval by remember(settings) { mutableStateOf(curBase.tireIntervalKm.toString()) }
     var cars by remember { mutableStateOf<List<Car>>(emptyList()) }
     var showToken by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
@@ -101,16 +107,33 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
 
     fun save() {
         scope.launch {
+            // ⚠️ v0.16.0：写进**当前车**的那一套基准。
+            //
+            // 旧字段也一起写（保留回滚安全），但 `perCar` 才是新的事实源 ——
+            // `baselinesFor()` 只在「该车没配过」时才回落到旧字段。
+            val b = com.teslamate.app.CarBaselines(
+                // ⚠️ 空串 = 不填 = 不启用提醒（0 表示未设置）
+                serviceOdoKm = serviceOdo,
+                serviceIntervalKm = serviceInterval.trim().toIntOrNull() ?: 20000,
+                tireOdoKm = tireOdo,
+                tireIntervalKm = tireInterval.trim().toIntOrNull() ?: 40000,
+            )
+            val next = settings.perCar.toMutableMap()
+            if (b.serviceOdoKm > 0 || b.tireOdoKm > 0) {
+                next[carId] = b
+            } else {
+                next.remove(carId)
+            }
             ctx.saveSettings(
                 AppSettings(
                     serverUrl = url,
                     token = token,
                     carId = carId,
-                    // ⚠️ 空串 = 不填 = 不启用提醒（0 表示未设置）
-                    serviceOdoKm = serviceOdo,
-                    serviceIntervalKm = serviceInterval.trim().toIntOrNull() ?: 20000,
-                    tireOdoKm = tireOdo,
-                    tireIntervalKm = tireInterval.trim().toIntOrNull() ?: 40000,
+                    serviceOdoKm = b.serviceOdoKm,
+                    serviceIntervalKm = b.serviceIntervalKm,
+                    tireOdoKm = b.tireOdoKm,
+                    tireIntervalKm = b.tireIntervalKm,
+                    perCar = next,
                 )
             )
         }
@@ -340,7 +363,12 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                 // 让车主填一个基准（上次保养时的里程表）+ 一个间隔，
                 // App 用里程表一减就得到「还剩多少公里」——
                 // 这正是车主真正想知道的那句话。
-                SectionCard("保养与轮胎提醒", Modifier.animateItem()) {
+                SectionCard(
+                    // ⚠️ v0.16.0：标清是**哪台车**的基准（基准已按车隔离）。
+                    "保养与轮胎提醒" +
+                        (cars.firstOrNull { it.id == carId }?.name?.let { " · $it" } ?: ""),
+                    Modifier.animateItem(),
+                ) {
                     Text(
                         "填「上次做的时候里程表是多少」和一个间隔，" +
                             "App 用现在的里程表算出还剩多少公里。留空 = 不提醒。",
@@ -385,6 +413,14 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                     Button(
                         onClick = { save() },
                         shape = RoundedCornerShape(12.dp),
+                        // ⚠️ v0.16.0：**中性**，不是品牌红。
+                        // 红色在这个 App 的语义里只表示**告警** ——
+                        // 一个「保存提醒」的按钮用红块，是在把例行操作伪装成警报。
+                        // （v0.15.0 把「测试连接」改中性时漏了这一个。）
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                        ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(44.dp),
@@ -396,12 +432,32 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
 
             item {
                 SectionCard("怎么找到地址和令牌？", Modifier.animateItem()) {
-                    Text(
-                        "• 家里 WiFi：地址填 http://<电脑局域网IP>:8090（电脑上 ipconfig 可查 IP）\n" +
-                            "• 外出使用：电脑和手机都装 Tailscale 并登录同一账号后，地址改填 http://<电脑的Tailscale名称或IP>:8090\n" +
-                            "• 令牌在电脑项目目录的 .env 文件中 API_TOKEN= 一行",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    // ⚠️ v0.16.0（苹果 HIG P2）：**悬挂缩进** ——
+                    // 原来三条挤在一个 Text 里，项目符号后面的换行顶格对齐卡片内边距，
+                    // 读起来像三段各说各话，而不是一个列表。
+                    //
+                    // 现在每条一行 Row：项目符号占固定宽度，文字在右边自己换行 ——
+                    // 续行自然与文字起始处对齐（真正的悬挂缩进）。
+                    listOf(
+                        "家里 WiFi：地址填 http://<电脑局域网IP>:8090（电脑上 ipconfig 可查 IP）",
+                        "外出使用：电脑和手机都装 Tailscale 并登录同一账号后，地址改填 http://<电脑的Tailscale名称或IP>:8090",
+                        "令牌在电脑项目目录的 .env 文件中 API_TOKEN= 一行",
+                    ).forEach { line ->
+                        Row(Modifier.padding(bottom = 6.dp)) {
+                            Text(
+                                "•",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.width(14.dp),
+                            )
+                            Text(
+                                line,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
                 }
             }
 

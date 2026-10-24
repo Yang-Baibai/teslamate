@@ -54,6 +54,10 @@ fun StatsScreen(
     modifier: Modifier,
     /** ⚠️ v0.14.0：令牌失效时错误横幅的「前往设置」出口。 */
     onOpenSettings: () -> Unit = {},
+    /** ⚠️ v0.16.0：车辆列表（顶栏车切换芯片，仅多车时出现）。 */
+    cars: List<com.teslamate.app.Car> = emptyList(),
+    /** ⚠️ v0.16.0：切换当前车辆。 */
+    onCarChange: (Int) -> Unit = {},
 ) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
@@ -145,6 +149,14 @@ fun StatsScreen(
             //（里程/能耗/充入量），而「记录」页装的是**事件**。
             title = { ScreenTitle("用量") },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
+            // ⚠️ v0.16.0：顶栏车切换芯片（仅多车时出现）
+            actions = {
+                CarChip(
+                    cars = cars,
+                    currentId = settings.carId,
+                    onSelect = onCarChange,
+                )
+            },
         )
         // ⚠️ v0.9.0（新手车主复核）：加一行副标题说清这一页装什么。
         // 车主原话：「『记录』和『用量』两个 Tab，我第一次点进去不知道哪个是'历史'

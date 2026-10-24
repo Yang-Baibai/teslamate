@@ -47,13 +47,16 @@ data class MaintenanceReminder(
  */
 fun maintenanceReminders(odometerKm: Double?, settings: AppSettings): List<MaintenanceReminder> {
     if (odometerKm == null || odometerKm <= 0) return emptyList()
+    // ⚠️ v0.16.0（车队运营评审 P0-3）：基准**按车隔离** ——
+    // 家人那台车 30,000 km 的表，用我的 79,000 基准去套是**假告警**。
+    val b = settings.currentBaselines
     val out = ArrayList<MaintenanceReminder>(2)
-    if (settings.serviceReminderOn) {
-        val due = settings.serviceOdoKm + settings.serviceIntervalKm
+    if (b.serviceOdoKm > 0) {
+        val due = b.serviceOdoKm + b.serviceIntervalKm
         out += MaintenanceReminder("保养", due - odometerKm, due)
     }
-    if (settings.tireReminderOn) {
-        val due = settings.tireOdoKm + settings.tireIntervalKm
+    if (b.tireOdoKm > 0) {
+        val due = b.tireOdoKm + b.tireIntervalKm
         out += MaintenanceReminder("轮胎", due - odometerKm, due)
     }
     return out

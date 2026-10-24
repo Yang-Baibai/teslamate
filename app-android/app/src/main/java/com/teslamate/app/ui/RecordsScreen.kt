@@ -148,6 +148,10 @@ fun RecordsScreen(
     onSelectionChange: (RecordSelection?) -> Unit = {},
     /** ⚠️ v0.14.0：令牌失效时错误横幅的「前往设置」出口。 */
     onOpenSettings: () -> Unit = {},
+    /** ⚠️ v0.16.0：车辆列表（顶栏车切换芯片，仅多车时出现）。 */
+    cars: List<com.teslamate.app.Car> = emptyList(),
+    /** ⚠️ v0.16.0：切换当前车辆。 */
+    onCarChange: (Int) -> Unit = {},
 ) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
@@ -217,6 +221,15 @@ fun RecordsScreen(
                 null -> Column(Modifier.fillMaxSize()) {
                     TopAppBar(
                         title = { ScreenTitle("记录") },
+                        // ⚠️ v0.16.0：顶栏车切换芯片（仅多车时出现）。
+                        // 原来这里只有「记录」两个字 —— 看不出数据属于哪台车。
+                        actions = {
+                            CarChip(
+                                cars = cars,
+                                currentId = settings.carId,
+                                onSelect = onCarChange,
+                            )
+                        },
                     )
                     // ⚠️ v0.9.0：加下拉刷新（原来只有一次性加载，网络一断就再也不请求）
                     PullToRefreshBox(

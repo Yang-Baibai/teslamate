@@ -39,7 +39,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
@@ -47,8 +49,10 @@ import androidx.compose.material.icons.filled.PowerOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -639,6 +643,122 @@ fun SegmentedTabs(
                         fontWeight = if (fontWeight > 0.5f) FontWeight.SemiBold else FontWeight.Normal,
                         color = textColor,
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * ⚠️ v0.16.0（车队运营评审 P0-2）：**顶栏车切换芯片**。
+ *
+ * 原来「记录」页顶栏只有「记录」两个字 —— **看不出数据属于哪台车**。
+ * 用户可能以为在看 A 车，实际是 B 车。
+ * 评审原话：「这是**读错数据的风险**，不是体验问题。」
+ *
+ * 现在：标题右侧一颗胶囊芯片，显示当前车短名；
+ * **仅当 cars.size > 1 时出现**（单车时完全隐藏、零留白）。
+ * 点开是底部弹层，每行 = 车名 + 型号，当前车打勾；选中即关 + 触感。
+ *
+ * ⚠️ 切车后**必须清空记录页的选中态** —— 否则在 A 车的行程详情页切到 B 车，
+ * 标题还写着 A 车那条行程，数据张冠李戴（这由 AppRoot 的 onCarChange 负责）。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CarChip(
+    cars: List<com.teslamate.app.Car>,
+    currentId: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // 单车时不出现 —— 零留白
+    if (cars.size <= 1) return
+    val accents = LocalAccentColors.current
+    val ctx = LocalContext.current
+    var sheetOpen by remember { mutableStateOf(false) }
+    val current = cars.firstOrNull { it.id == currentId }
+
+    Box(modifier) {
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = accents.cardInset,
+            modifier = Modifier
+                .clickable {
+                    Haptics.selection(ctx)
+                    sheetOpen = true
+                }
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    current?.name?.substringBefore(" · ")?.trim()?.ifBlank { "选车" } ?: "选车",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.width(3.dp))
+                Icon(
+                    Icons.Filled.ExpandMore,
+                    contentDescription = "切换车辆",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+        if (sheetOpen) {
+            ModalBottomSheet(
+                onDismissRequest = { sheetOpen = false },
+                containerColor = accents.cardSurface,
+                dragHandle = null,
+            ) {
+                Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
+                    Text(
+                        "切换车辆",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    cars.forEach { c ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    Haptics.selection(ctx)
+                                    onSelect(c.id)
+                                    sheetOpen = false
+                                }
+                                .padding(vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    c.name,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                val sub = listOfNotNull(
+                                    c.marketing_name?.takeIf { it.isNotBlank() },
+                                    c.model?.takeIf { it.isNotBlank() },
+                                ).joinToString(" · ")
+                                if (sub.isNotBlank()) {
+                                    Text(
+                                        sub,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            if (c.id == currentId) {
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = "已选中",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -105,6 +105,10 @@ fun StatusScreen(
      * 光在文案里写「请到「设置」页重新填写」等于没给路。
      */
     onOpenSettings: () -> Unit = {},
+    /** ⚠️ v0.16.0：车辆列表（顶栏车切换芯片，仅多车时出现）。 */
+    cars: List<com.teslamate.app.Car> = emptyList(),
+    /** ⚠️ v0.16.0：切换当前车辆。 */
+    onCarChange: (Int) -> Unit = {},
 ) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
@@ -189,6 +193,13 @@ fun StatusScreen(
             // 现在顶部栏透明，与底部玻璃统一为「内容在上、材质在下」的一套语言。
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
             actions = {
+                // ⚠️ v0.16.0：顶栏车切换芯片（仅多车时出现）
+                CarChip(
+                    cars = cars,
+                    currentId = settings.carId,
+                    onSelect = onCarChange,
+                )
+                Spacer(Modifier.width(4.dp))
                 // ⚠️ v0.9.2（iOS 交互评审 P1-7）：刷新按钮原来点了**零反馈** ——
                 // 图标不转、按钮不禁用（刷新中再点会并发再发一次请求）、也没有触感。
                 // 用户点完刷新，屏幕上什么变化都看不到。
@@ -535,7 +546,11 @@ fun StatusScreen(
 
                         // 保养 / 轮胎卡片（配过基准才出现）
                         if (reminders.isNotEmpty()) {
-                            MaintenanceCard(reminders)
+                            MaintenanceCard(
+                                reminders = reminders,
+                                carName = cars.firstOrNull { it.id == settings.carId }?.name,
+                                onOpenSettings = onOpenSettings,
+                            )
                         }
                     }
                 }
@@ -1001,8 +1016,15 @@ private fun TpmsCard(st: CarStatus) {
  * 真的要动手时，顶部会另挂一条横幅（见 StatusScreen）。
  */
 @Composable
-private fun MaintenanceCard(reminders: List<MaintenanceReminder>) {
+private fun MaintenanceCard(
+    reminders: List<MaintenanceReminder>,
+    /** ⚠️ v0.16.0：当前车名（基准是按车隔离的，得说清是哪台车）。 */
+    carName: String?,
+    /** ⚠️ v0.16.0：点这行去「设置」页改基准。 */
+    onOpenSettings: () -> Unit,
+) {
     val accents = LocalAccentColors.current
+    val ctx = LocalContext.current
     SectionCard(title = "保养与轮胎") {
         reminders.forEach { r ->
             val color = when {
@@ -1034,11 +1056,38 @@ private fun MaintenanceCard(reminders: List<MaintenanceReminder>) {
                 )
             }
         }
-        Text(
-            "基准与间隔可在「设置」页修改",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // ⚠️ v0.16.0（车队运营评审 P0-3 + IA 评审 P1-3）：
+        // **整行可点**，并说清是哪台车的基准。
+        //
+        // 原来这是一行纯文字 —— 用户看不出它可点，
+        // 而且多车之后「基准」是**按车隔离**的，不说是哪台车就会张冠李戴。
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable {
+                    Haptics.selection(ctx)
+                    onOpenSettings()
+                }
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                buildString {
+                    append("基准与间隔")
+                    carName?.let { append("（$it）") }
+                    append(" · 点这里修改")
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(3.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
+            )
+        }
     }
 }
 
