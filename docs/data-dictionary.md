@@ -22,12 +22,14 @@
 |---|---|---|
 | 行车能耗 | `(start_rated_range_km − end_rated_range_km) × cars.efficiency` | 用 rated（标定）续航，不用 ideal |
 | 百公里能耗 | 能耗 × 1000 ÷ distance | distance ≥ 0.1 才计入 |
+| **行程轨迹累计里程**（App 端口径，`app-android` 的 `ui/PowerProfile.kt`） | 哈弗森公式逐点累加 `haversine(前一点, 当前点)`，坐标取 `lat`/`lng`（WGS-84） | **不能**用 `map_lat`/`map_lng`（那是 GCJ-02 偏移后的坐标，仅用于国内地图显示，混用偏 ~500 m）。服务端 track 是「每 N 个取 1 个」的朴素降采样，直接连线会**混叠**（把高频抖动画成大起大落），因此**按 1 km 分箱取平均**后再绘制 |
 | 直流快充判定 | 存在采样满足 `charger_phases` 为空/0 **且** `fast_charger_type ≠ 'ACSingleWireCAN'` | ACSingleWireCAN 是车载交流充电机的伪装值。⚠️ **不要用 `fast_charger_brand`**：本车 86.7% 是 `'<invalid>'`，判不出快慢充 |
 | **行程 ↔ 充电关联** | `abs(充电起始里程 − 行程结束里程) < 2 km` | 充电起始里程 = `charging_processes.position_id → positions.odometer`；行程结束里程 = `drives.end_km`（`drives` 没有 `odometer_end` 列，`start_km`/`end_km` 本身就是里程表读数）。⚠️ **不能用时间窗**：充电发生在行程**结束之后**（到达服务区 → 结束行程 → 开始充电），旧口径 `charges.date BETWEEN drives.start_date AND drives.end_date` 恒为 false |
 | 充电损耗率 | `(energy_used − energy_added) / energy_used × 100` | 仅当 added ≤ used 且结果 ∈ [0,60) 才输出；慢充 ~10%，快充 ~5% |
 | 电池当前容量 | `rated_battery_range_km × efficiency × 100 ÷ usable_battery_level` | 仅取充至 ≥90% 的会话，取该会话最后一条采样 |
 | **电池健康度** | `当前容量 ÷ NOMINAL_BATTERY_KWH × 100` | **分母是铭牌容量（.env 配置），不是历史最大值**——历史最大值本身随衰减漂移，用它健康度虚高（本项目曾 98% vs 实际 85.2%） |
 | **真实可达续航**（App 端口径，`app-android` 的 `ConsumptionModel.kt`） | `标定续航 × 146 ÷ 实测 Wh/km × 温度修正 × 爬升修正 × 0.9` | `146` = 本车 `cars.efficiency`（0.146 kWh/km）。实测 Wh/km 由 App 自己按**车速分桶取中位数**算（数据源 `/drives?limit=200`）。温度修正只做热的：`× (1 + 0.006 × max(0, 气温 − 22))`，上限 +10%；爬升 ≥200m：`× 1.05`。**这是展示口径，不是数据库字段**：服务端 `est_battery_range_km` 全库仅 0.085% 有值，`ideal_battery_range_km` 与 `rated_battery_range_km` 逐行相同，实际显示的一直是 EPA 标定值（夏季高速乐观 25%~40%）。样本不足时回退显示标定续航 |
+| **电池可用容量（反推值）**（App 端口径，`app-android` 的 `ui/ChargeStats.kt`） | `充入 kWh ÷ ΔSOC% × 100`，每次充电各算一个再取**中位数** | TeslaMate 不直接提供可用容量字段，只能从充电会话反推。合理区间 **30~120 kWh**（本车实测约 65.9 kWh）—— 写成「kWh per 1% SOC」的 `0.3~1.2` 会把全部样本滤掉。用途：折算「充到 80% 要多久」（v0.8.2 充电站历史）；并作为**「真实可达续航」的交叉校验**（反推 65.89 kWh vs `标定续航 448.30 km × 0.146 = 65.45 kWh`，误差 0.7%）。⚠️「真实可达续航」的**输入**是标定续航与实测 Wh/km，本行不是它的入参 |
 | 位置命名 | geofence 命中（半径内）→ 否则 300m 内最近 address | Haversine，acos 参数已做 [-1,1] 钳制 |
 
 ## 3. 特殊值与占位符（"看起来是数据，其实不是"）
