@@ -215,7 +215,9 @@ private fun ChargeItem(
                     InlineMetric(
                         "费用",
                         "¥${c.cost.fmt(2)}",
-                        valueColor = MaterialTheme.colorScheme.primary,
+                        // ⚠️ v0.8.3：原来用 primary（红）。红色在本 App 只表示告警，
+                        // 费用不是告警 —— 与里程数字同理，去掉这层廉价感。
+                        valueColor = MaterialTheme.colorScheme.onSurface,
                     )
                 }
             }

@@ -182,7 +182,11 @@ private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Un
                 Text(
                     "${d.distance_km?.fmt(1) ?: "—"} km",
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold,
+                    // ⚠️ v0.8.3：原来用 primary（特斯拉红）。列表里重复几十次的红色数字
+                    // 是「一眼看出是套模板」的廉价感来源 —— 红色在本 App 的语义里只表示
+                    // 告警/品牌点缀，不该用来标里程。
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
             }
             Text(
@@ -203,6 +207,8 @@ private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Un
 private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose: () -> Unit) {
     var track by remember { mutableStateOf<List<TrackPoint>>(emptyList()) }
     var err by remember { mutableStateOf<String?>(null) }
+    // 充电记录：用来关联「这趟行程到达时充的是哪一次电」
+    var charges by remember { mutableStateOf<List<com.teslamate.app.Charge>>(emptyList()) }
 
     LaunchedEffect(drive.id) {
         if (api != null) {
@@ -210,6 +216,29 @@ private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose:
                 .onSuccess { track = it }
                 .onFailure { err = it.message }
         }
+    }
+    LaunchedEffect(drive.id, api) {
+        if (api != null) {
+            runCatching { withContext(Dispatchers.IO) { api.charges(settings.carId, 200) } }
+                .onSuccess { charges = it }
+        }
+    }
+
+    // ── 关联「到达时的充电」───────────────────────────────────
+    // ⚠️ 服务端的 `charge_after_trip` 只能告诉你「附近有过充电」，
+    // 没说**是哪一次**。长途党要的是这句话：
+    //   「这趟 343 km，你在 G210 车河镇充的电，13%→87%，停了 49 分钟。」
+    // 判据用**里程**：充电起始里程与行程结束里程相差 < 2 km 即视为同一次
+    // （实测 17 次长途充电全部唯一命中，误差 ≤ 1 km）。
+    // 时间窗判据在这里行不通 —— 充电永远发生在行程**结束之后**。
+    val linkedCharge = remember(charges, drive) {
+        val end = drive.odometer_end ?: return@remember null
+        charges
+            .filter { c ->
+                val o = c.start_odometer_km ?: return@filter false
+                kotlin.math.abs(o - end) < 2.0
+            }
+            .minByOrNull { kotlin.math.abs((it.start_odometer_km ?: 0.0) - end) }
     }
 
     // 功率剖面：把采样点转成「累计里程 → 净功率」，按 1 km 分箱取平均。
@@ -338,6 +367,20 @@ private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose:
                         KV(
                             "到达时充电",
                             if (drive.has_supercharger) "是（到达时有直流快充）" else "是（到达时有交流充电）",
+                        )
+                    }
+                    // 关联到具体哪一次充电：长途党最想复盘的就是这句
+                    linkedCharge?.let { c ->
+                        KV(
+                            "这次充电",
+                            buildString {
+                                append(c.place.firstSegment() ?: "未知地点")
+                                append(" · ")
+                                append("${c.start_soc ?: "—"}%→${c.end_soc ?: "—"}%")
+                                append(" · ")
+                                append(minutesFmt(c.duration_min))
+                                c.avg_power_kw?.let { append(" · ").append(it).append(" kW") }
+                            },
                         )
                     }
                 }
