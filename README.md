@@ -4,7 +4,7 @@
 > 使用 [teslamate-chinese-dashboards](https://github.com/wjsall/teslamate-chinese-dashboards) 中文仪表盘，
 > 并配套自研的小米 Android 客户端，随时随地查看车况。
 >
-> **当前版本**：App v0.8.1（versionCode 16）· 仪表盘 v1.11.0（SQL rev 14）· 最后更新 2026-10-24
+> **当前版本**：App v0.8.2（versionCode 17）· 仪表盘 v1.11.0（SQL rev 14）· 最后更新 2026-10-24
 
 ---
 
@@ -131,7 +131,7 @@ teslamate/                          ← 项目根（Docker Compose 工作区）
 | `API_TOKEN` | 48 位随机串 | App 访问 API 的令牌 | `up -d api` + App 设置页同步改 |
 | `AMAP_KEY` | 高德 Web 服务 Key | 地图底图 | `up -d api` |
 | `NOMINAL_BATTERY_KWH` | `76.8` | **铭牌电池容量**，健康度分母 | `up -d api` |
-| `APP_VERSION_CODE/NAME` | `16` / `0.8.1` | App 自更新比对依据 | `up -d api` |
+| `APP_VERSION_CODE/NAME` | `17` / `0.8.2` | App 自更新比对依据 | `up -d api` |
 | `APP_APK_URL` | `http://<tailscale IP>:8090/apk/teslamate-app.apk` | 更新包地址 | 通常不变 |
 
 ---
@@ -148,7 +148,7 @@ teslamate/                          ← 项目根（Docker Compose 工作区）
 | [`docs/adr.md`](docs/adr.md) | 22 条架构决策索引（含否决的方案与原因） |
 | [`docs/operations.md`](docs/operations.md) | 运维手册（启停/备份/升级/发版/排查） |
 | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) | **开发约定**（改代码前必读） |
-| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 变更流水（v0.1.0 → v0.8.1，每条含根因/回滚） |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | 变更流水（v0.1.0 → v0.8.2，每条含根因/回滚） |
 | [`docs/手机客户端使用说明.md`](docs/手机客户端使用说明.md) | 端用户手册（给家人看的） |
 
 ---

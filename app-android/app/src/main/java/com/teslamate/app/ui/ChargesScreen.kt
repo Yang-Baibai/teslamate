@@ -72,6 +72,9 @@ fun ChargesScreen(settings: AppSettings, modifier: Modifier) {
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var selected by remember { mutableStateOf<Charge?>(null) }
+    // 该站历史统计（按地点聚合）：回答「这个桩快不快、我要等多久」。
+    // 这是决定「进不进这个服务区」的唯一信息，单次充电的峰值/平均功率给不了。
+    val stats = remember(list) { buildStationStats(list) }
 
     LaunchedEffect(settings) {
         if (api == null) {
@@ -79,7 +82,7 @@ fun ChargesScreen(settings: AppSettings, modifier: Modifier) {
             loading = false
             return@LaunchedEffect
         }
-        runCatching { withContext(Dispatchers.IO) { api.charges(settings.carId, 100) } }
+        runCatching { withContext(Dispatchers.IO) { api.charges(settings.carId, 200) } }
             .onSuccess { list = it; error = null; loading = false }
             .onFailure { error = it.message; loading = false }
     }
@@ -92,8 +95,8 @@ fun ChargesScreen(settings: AppSettings, modifier: Modifier) {
         label = "chargeDetail",
     ) { sel ->
         Box(Modifier.fillMaxSize()) {
-            if (sel == null) ChargeList(list, loading, error, settings, onSelect = { selected = it })
-            else ChargeDetail(sel, api) { selected = null }
+            if (sel == null) ChargeList(list, stats, loading, error, settings, onSelect = { selected = it })
+            else ChargeDetail(sel, api, stats) { selected = null }
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
     }
@@ -102,6 +105,7 @@ fun ChargesScreen(settings: AppSettings, modifier: Modifier) {
 @Composable
 private fun ChargeList(
     list: List<Charge>,
+    stats: Map<String, StationStat>,
     loading: Boolean,
     error: String?,
     settings: AppSettings,
@@ -144,7 +148,8 @@ private fun ChargeList(
                             )
                         }
                         items(charges, key = { it.id }) { c ->
-                            ChargeItem(c, Modifier.animateItem()) { onSelect(c) }
+                            val stat = stats[(c.place ?: "").firstSegment() ?: ""]
+                            ChargeItem(c, stat, Modifier.animateItem()) { onSelect(c) }
                         }
                     }
                 }
@@ -162,9 +167,17 @@ private fun ChargeList(
  * 而这恰恰是车主最想看的两件事。
  * 现在改成三层结构：**地点（可两行）→ 时间 → 三个并排指标**，
  * 信息一条不丢，且每条都有独立视觉权重。
+ *
+ * ⚠️ **v0.8.2 新增**：第四行是该站**历史**表现（典型 kW + 充到 80% 耗时）——
+ * 这是决定「进不进这个服务区」的唯一信息，只存在于单次充电的字段里是不够的。
  */
 @Composable
-private fun ChargeItem(c: Charge, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun ChargeItem(
+    c: Charge,
+    stat: StationStat?,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
     val accents = LocalAccentColors.current
     Card(
         modifier = modifier
@@ -206,6 +219,14 @@ private fun ChargeItem(c: Charge, modifier: Modifier = Modifier, onClick: () -> 
                     )
                 }
             }
+            // 站点历史：至少 2 次才显示
+            if (stat != null && stat.sessions >= 2) {
+                Text(
+                    stat.summary(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -243,7 +264,12 @@ private fun ChargeTypeChip(isDc: Boolean) {
 }
 
 @Composable
-private fun ChargeDetail(charge: Charge, api: Api?, onClose: () -> Unit) {
+private fun ChargeDetail(
+    charge: Charge,
+    api: Api?,
+    stats: Map<String, StationStat>,
+    onClose: () -> Unit,
+) {
     var curve by remember { mutableStateOf<List<CurvePoint>>(emptyList()) }
     var err by remember { mutableStateOf<String?>(null) }
 
@@ -335,6 +361,24 @@ private fun ChargeDetail(charge: Charge, api: Api?, onClose: () -> Unit) {
 
             item {
                 SectionCard("充电路况", Modifier.animateItem()) {
+                    // 该站历史：峰值功率没有决策价值（国标直流桩典型 50~110 kW，
+                    // 峰值只出现在起步那几分钟）。真正决定「值不值得进」的是
+                    // 这个站**历史实测**的典型水平，以及你这次比中位快还是慢。
+                    val stat = stats[(charge.place ?: "").firstSegment() ?: ""]
+                    if (stat != null && stat.sessions >= 2) {
+                        Text(
+                            stat.summary(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        stat.compareTo(charge.avg_power_kw?.toDouble())?.let {
+                            Text(
+                                "本次：$it",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     KV("峰值功率", charge.peak_power_kw?.let { "$it kW" } ?: "—")
                     KV("平均功率", charge.avg_power_kw?.let { "$it kW" } ?: "—")
                     val cableCn = when (charge.cable_type) {

@@ -72,7 +72,7 @@ fun TrackMap(
                 .addHeader("Authorization", "Bearer $token")
                 .crossfade(true)
                 .build(),
-            // ⚠️ v0.8.0：原来恒为「行程轨迹地图」。但车况页展开的是**车辆位置**（单点），
+            // ⚠️ v0.8.1：原来恒为「行程轨迹地图」。但车况页展开的是**车辆位置**（单点），
             // 读屏用户听到"行程轨迹"会以为图里有一条轨迹。
             // pointTitle 参数一直存在却从未被使用 —— 正是为此准备的。
             contentDescription = if (drawLine) {
@@ -107,7 +107,7 @@ fun TrackMap(
             },
             error = {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    // ⚠️ v0.8.0 安全修正：原来这里直接输出 `"地图加载失败\n$url"`。
+                    // ⚠️ v0.8.1 安全修正：原来这里直接输出 `"地图加载失败\n$url"`。
                     // 那个 URL 里含 `points=lng,lat;…`（**车辆实时经纬度**）和
                     // 内网服务器地址 —— 一旦截图/录屏/读屏朗读，就等于泄露位置。
                     // 现在只给通用文案，不暴露任何请求细节。

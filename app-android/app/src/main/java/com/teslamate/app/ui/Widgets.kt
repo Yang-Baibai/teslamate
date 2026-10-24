@@ -432,7 +432,7 @@ fun KV(k: String, v: String) {
             v,
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.End,
-            // ⚠️ v0.8.0：2 行在大字号下会截断数值（WCAG 1.4.4 要求放大后不丢内容），
+            // ⚠️ v0.8.1：2 行在大字号下会截断数值（WCAG 1.4.4 要求放大后不丢内容），
             // 放宽到 3 行 —— 长数值如「412.35 km（+128 km）」在 1.3 倍字号下需要第三行。
             maxLines = 3,
             overflow = TextOverflow.Ellipsis,
@@ -443,7 +443,7 @@ fun KV(k: String, v: String) {
 /**
  * 页面标题。
  *
- * ⚠️ v0.8.0：加上 `heading()` 语义 —— 读屏用户（TalkBack）能按标题在页面间跳转，
+ * ⚠️ v0.8.1：加上 `heading()` 语义 —— 读屏用户（TalkBack）能按标题在页面间跳转，
  * 否则整个 App 是一张没有结构的长列表，导航全靠从头滑。
  */
 @Composable
@@ -615,7 +615,7 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier, charging: Boolean = false)
     )
     val shown = animated.roundToInt()
     // 圆环随 fontScale 一起放大 —— 否则大字号下 "100%" 会溢出圆环。
-    // ⚠️ v0.8.0：配合 AppRoot 把 fontScale 封顶从 1.15 提到 1.30，
+    // ⚠️ v0.8.1：配合 AppRoot 把 fontScale 封顶从 1.15 提到 1.30，
     // 这个环必须跟着长，否则解封的那部分字号就会在环里溢出去。
     val fontScale = LocalDensity.current.fontScale
     val ringSize = (168 * fontScale.coerceIn(1f, 1.3f)).dp
