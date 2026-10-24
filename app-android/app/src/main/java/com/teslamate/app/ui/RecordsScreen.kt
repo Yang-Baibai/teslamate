@@ -133,6 +133,14 @@ fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
     val records = remember(drives, charges) { mergeRecords(drives, charges) }
     // 该站历史统计（充电页原来用它）
     val stationStats = remember(charges) { buildStationStats(charges) }
+    // ⚠️ v0.11.0（长途自驾党 P0-1）：**线路余量表** ——
+    // 出发前 5 分钟真正要看的那张表：这条线路历史上真实发生过哪些充电、
+    // 每次到站时剩多少、充到多少、在第几公里。
+    // 数据全部来自**已经发生的**记录（行程 + 充电），不编。
+    val routePlan = remember(drives, charges, stationStats) {
+        val tpl = pickRouteTemplate(buildRouteTemplates(drives))
+        tpl?.let { buildRoutePlan(it, charges, stationStats) }
+    }
 
     // ⚠️ v0.9.0：一次拉两份数据（原来两个 Tab 各拉各的）
     suspend fun load() {
@@ -205,7 +213,7 @@ fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
                                         }
                                     },
                                 )
-                                RecordTimeline(records, stationStats, onSelect = { item ->
+                                RecordTimeline(records, stationStats, routePlan, onSelect = { item ->
                                     selected = when (item) {
                                         is RecordItem.DriveItem -> Selection.Dr(item.drive)
                                         is RecordItem.ChargeItem -> Selection.Ch(item.charge)
@@ -216,7 +224,7 @@ fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
                             records.isEmpty() -> Column(Modifier.padding(16.dp)) {
                                 SectionCard { Text("暂无充电或行程记录") }
                             }
-                            else -> RecordTimeline(records, stationStats, onSelect = { item ->
+                            else -> RecordTimeline(records, stationStats, routePlan, onSelect = { item ->
                                 selected = when (item) {
                                     is RecordItem.DriveItem -> Selection.Dr(item.drive)
                                     is RecordItem.ChargeItem -> Selection.Ch(item.charge)
@@ -237,9 +245,15 @@ fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
 private fun RecordTimeline(
     records: List<RecordItem>,
     stationStats: Map<String, StationStat>,
+    routePlan: RoutePlan? = null,
     onSelect: (RecordItem) -> Unit,
 ) {
-    TimelineList(records = records, stationStats = stationStats, onSelect = onSelect)
+    TimelineList(
+        records = records,
+        stationStats = stationStats,
+        routePlan = routePlan,
+        onSelect = onSelect,
+    )
 }
 
 /**
@@ -252,6 +266,7 @@ private fun RecordTimeline(
 private fun TimelineList(
     records: List<RecordItem>,
     stationStats: Map<String, StationStat>,
+    routePlan: RoutePlan? = null,
     onSelect: (RecordItem) -> Unit,
 ) {
     // 按月份分组，但保持整体的时间倒序
@@ -262,6 +277,14 @@ private fun TimelineList(
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // ⚠️ v0.11.0：路线余量表放在时间轴**上方** ——
+        // 它回答的是「下一次跑这条线会怎样」，是出发前 5 分钟要看的东西；
+        // 时间轴回答的是「我过去干了什么」。
+        if (routePlan != null) {
+            item(key = "route-plan") {
+                RoutePlanCard(routePlan, Modifier.animateItem())
+            }
+        }
         groups.forEach { (month, itemsInMonth) ->
             item(key = "h-$month") {
                 Text(
