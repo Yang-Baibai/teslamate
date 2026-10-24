@@ -90,8 +90,14 @@ fun List<PowerSample>.socMilestones(): SocMilestones {
  *
  * 里程用**哈弗森公式**在原始 GPS 点（`lat`/`lng`，WGS-84）上算 ——
  * 不能用 `map_lat`/`map_lng`（那是 GCJ-02 偏移后的坐标，用于国内地图显示）。
+ *
+ * @param realLengthKm 这趟行程的**真实里程**（km，通常取服务端的 `distance_km`）。
+ *   传了就把分箱中心线性拉伸到 [0, realLengthKm]；不传则保留分箱中心。
  */
-fun List<TrackPoint>.toPowerProfile(binKm: Double = 1.0): List<PowerSample> {
+fun List<TrackPoint>.toPowerProfile(
+    binKm: Double = 1.0,
+    realLengthKm: Double? = null,
+): List<PowerSample> {
     if (size < 2) return emptyList()
     var acc = 0.0
     val raw = ArrayList<PowerSample>(size)
@@ -110,7 +116,7 @@ fun List<TrackPoint>.toPowerProfile(binKm: Double = 1.0): List<PowerSample> {
         bins.getOrPut(bin) { mutableListOf() }.add(s.powerKw)
         s.soc?.let { v -> socBins.getOrPut(bin) { mutableListOf() }.add(v) }
     }
-    return bins.entries
+    val binned = bins.entries
         .sortedBy { it.key }
         .map { (bin, list) ->
             PowerSample(
@@ -120,6 +126,25 @@ fun List<TrackPoint>.toPowerProfile(binKm: Double = 1.0): List<PowerSample> {
                 soc = socBins[bin]?.average()?.roundToInt(),
             )
         }
+
+    // ⚠️ v0.14.0（口径审计 P0-2）：把分箱中心**重标定**到真实行程长度。
+    //
+    // 分箱中心 (bin + 0.5) * binKm 是「理论中心」，与行程实际长度无关：
+    // 2.28 km 的行程会得到 0.5 / 1.5 / 2.5 三个中心，最后一个已经越过了终点。
+    // 于是横轴的分母（2.5）与刻度标签的真实里程（2.28）对不上 ——
+    // 标签「1」标称 1.14 km 却画在 45.6% 处，1.5 km 的数据点却在 60% 处。
+    //
+    // 现在把整条剖面**线性拉伸**到 [0, realLengthKm]：
+    // 首点落在 0 km、末点落在真实终点，中间按比例分布。
+    // 「首点 = 起点刻度、末点 = 终点刻度」这才真正成立。
+    val realLen = realLengthKm
+    if (realLen == null || realLen <= 0.0 || binned.size < 2) return binned
+    val firstKm = binned.first().km
+    val lastKm = binned.last().km
+    val span = lastKm - firstKm
+    if (span <= 0.0001) return binned
+    val scale = realLen / span
+    return binned.map { s -> s.copy(km = (s.km - firstKm) * scale) }
 }
 
 private fun haversineKm(a: TrackPoint, b: TrackPoint): Double {

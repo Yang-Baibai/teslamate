@@ -49,6 +49,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -219,6 +220,26 @@ private fun MainScaffold(
                     .glassSurface(GlassLevel.Bar, RoundedCornerShape(0.dp), realBlur = true)
             ) {
                 Column {
+                    // ⚠️ v0.14.0（苹果 HIG P0-3 + 新手车主 P1-4）：
+                    // **栏顶渐隐** —— 内容不再被底栏「切」一刀。
+                    //
+                    // 列表的滚动视口到 Tab 栏顶边为止，被切掉一半的字看起来像
+                    // App 坏了（2.0 倍字号下尤其明显：「平均能耗 181 Wh/km」
+                    // 被拦腰切开）。iOS 的做法是在栏上方叠一段渐变，
+                    // 让内容「淡出」而不是「断掉」。
+                    //
+                    // 和 v0.13.0 给详情页顶部加的那段渐隐是同一个道理 ——
+                    // 滚动容器的两个边缘都必须软化。
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(28.dp)
+                            .background(
+                                Brush.verticalGradient(
+                                    listOf(Color.Transparent, accents.glassTint)
+                                )
+                            )
+                    )
                     // ⚠️ v0.7.1：栏顶原来**没有分割线**，页面内容直接溶进栏里，
                     // 边界不清（iOS Tab Bar 有一条 0.5px 顶部分割线）。
                     Box(

@@ -61,10 +61,13 @@ data class AccentColors(
     val warnAmber: Color,
     /** 危险红：电量 < 10%、胎压异常 */
     val danger: Color,
-    /** 直流快充 */
-    val fastCharge: Color,
-    /** 交流慢充 */
-    val slowCharge: Color,
+    // ⚠️ v0.14.0（苹果 HIG P0-2）：**删除 `fastCharge` / `slowCharge`**。
+    //
+    // 这两个 token 全项目 **0 引用**（死 token），而且 `fastCharge` 的值是
+    // 品牌红 #D70012 —— 下次有人拿它画「直流快充」，
+    // 就会在「红色只表示告警 + 品牌点缀」的语义规则上再犯一次。
+    // 直流快充的正确颜色是**能量蓝**（与图表里的直流柱同 token），
+    // 交流慢充是中性灰，两者都已有现成 token，直接用即可。
     /**
      * 图表网格线 / 轨道 / 空槽。
      *
@@ -73,7 +76,13 @@ data class AccentColors(
      * 现在提到 #5A5A5E（深 3.1:1）/ #8E8E93（浅 3.3:1）。
      */
     val chartTrack: Color,
-    /** 图表参考线（中位数/基准） */
+    /**
+     * 图表参考线（中位数/基准）。
+     *
+     * ⚠️ v0.14.0（苹果 HIG P1）：浅色原来 #9AA1A8 在白底上只有 **2.78:1** ——
+     * 参考线属于**非文字图形**，WCAG 1.4.11 要求 ≥3:1，不达标。
+     * 现在提到 #8C939B（白底 **3.31:1** ✓）。
+     */
     val chartBaseline: Color,
     /** 玻璃面（半透明底色） */
     val glassTint: Color,
@@ -109,14 +118,18 @@ private val LightAccents = AccentColors(
     chargeGreenText = Color(0xFF0F6B41),
     warnAmber = Color(0xFFB26A00),
     danger = Color(0xFFD13438),
-    fastCharge = Color(0xFFD70012),
-    slowCharge = Color(0xFF2F5FD0),
     chartTrack = Color(0xFF77777D),
-    chartBaseline = Color(0xFF9AA1A8),
+    // ⚠️ v0.14.0（苹果 HIG P1）：#9AA1A8 → #8C939B
+    // 参考线是非文字图形，WCAG 1.4.11 要求 ≥3:1；原值在白底只有 2.78:1。
+    chartBaseline = Color(0xFF8C939B),
     glassTint = Color(0x99FFFFFF),
     glassHighlight = Color(0x66FFFFFF),
-    shadowAmbient = Color(0x14000000),
-    shadowKey = Color(0x0A000000),
+    // ⚠️ v0.14.0（苹果 HIG P1）：**单光源方向写反了**。
+    // 原来 shadowAmbient(#14000000, 8%) > shadowKey(#0A000000, 4%) ——
+    // 环境光比主光还强，阴影就没有方向，正是「Material 味」的来源。
+    // 现在环境光 4%、主光 12%，光源定在左上。
+    shadowAmbient = Color(0x0A000000),
+    shadowKey = Color(0x1F000000),
     // iOS grouped 浅色三级：页面底 #F2F2F7 → 卡片面 #FFFFFF → 内凹 #EBEBF0
     cardSurface = Color(0xFFFFFFFF),
     // ⚠️ v0.9.2（苹果视觉评审 P1-3）：内凹块原来 #F2F2F4，与卡片面 #FFFFFF 的
@@ -138,8 +151,6 @@ private val DarkAccents = AccentColors(
     chargeGreenText = Color(0xFF5FD69A),
     warnAmber = Color(0xFFF5A623),
     danger = Color(0xFFE5484D),
-    fastCharge = Color(0xFFFF453A),
-    slowCharge = Color(0xFF5B8DEF),
     chartTrack = Color(0xFF5A5A5E),
     chartBaseline = Color(0xFF6E6E76),
     glassTint = Color(0x8C1C1C1E),
@@ -211,7 +222,12 @@ private val LightColors = lightColorScheme(
     surface = Color(0xFFF2F2F7),
     onSurface = Color(0xFF1C1C1E),
     surfaceVariant = Color(0xFFEBEBEE),
-    onSurfaceVariant = Color(0xFF6B6B70),
+    // ⚠️ v0.14.0（苹果 HIG P1）：#6B6B70 → **#63636A**。
+    // 原来这个值落在内凹块 cardInset(#EBEBF0) 上只有 **4.46:1**，
+    // 差一点点达不到 WCAG 文字 AA 的 4.5:1 ——
+    // 命中的是「空调」「车内温度」「车外温度」「功率」这些 labelSmall 标签。
+    // #63636A 在 #EBEBF0 上是 5.02:1，在 #FFFFFF 上是 5.96:1，都达标。
+    onSurfaceVariant = Color(0xFF63636A),
     surfaceContainerLowest = Color(0xFFFFFFFF),
     surfaceContainerLow = Color(0xFFFFFFFF),
     surfaceContainer = Color(0xFFFFFFFF),

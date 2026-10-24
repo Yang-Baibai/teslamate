@@ -35,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -309,9 +310,31 @@ private fun TimelineList(
         // ⚠️ v0.11.0：路线余量表放在时间轴**上方** ——
         // 它回答的是「下一次跑这条线会怎样」，是出发前 5 分钟要看的东西；
         // 时间轴回答的是「我过去干了什么」。
+        //
+        // ⚠️ v0.14.0（苹果 HIG P1 + 新手车主 P1-2）：**默认折叠成一行**。
+        //
+        // 原来整张卡展开放在首屏 —— 252 公里那张卡连图带站点行吃掉整整一屏，
+        // 2.0 倍字号下更是一张卡就顶满全屏，「记录」页第一条真实行程
+        // 根本看不到（车主原话：「我今天开的是龙翔大道回家，不是 252 公里的长途」）。
+        //
+        // 现在：默认只显示**一行摘要 + 结论句**（「广昆高速 → 城东路 · 到达最低 16% ▸」），
+        // 点一下才展开。既有「出发前要用的工具」的入口，又不抢历史记录的位置。
         if (routePlan != null) {
             item(key = "route-plan") {
-                RoutePlanCard(routePlan, Modifier.animateItem())
+                var expanded by rememberSaveable { mutableStateOf(false) }
+                if (expanded) {
+                    RoutePlanCard(
+                        routePlan,
+                        Modifier.animateItem(),
+                        onCollapse = { expanded = false },
+                    )
+                } else {
+                    RoutePlanSummaryRow(
+                        plan = routePlan,
+                        onClick = { expanded = true },
+                        modifier = Modifier.animateItem(),
+                    )
+                }
             }
         }
         groups.forEach { (month, itemsInMonth) ->

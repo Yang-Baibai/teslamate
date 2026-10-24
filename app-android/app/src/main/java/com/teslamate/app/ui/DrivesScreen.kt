@@ -404,7 +404,14 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
 
     // 功率剖面：把采样点转成「累计里程 → 净功率」，按 1 km 分箱取平均。
     // ⚠️ X 轴必须是里程不是时间 —— 时间轴在堵车时会骗人（原地烧电画成"省电"）。
-    val powerProfile = remember(track) { track.toPowerProfile() }
+    //
+    // ⚠️ v0.14.0（口径审计 P0-2）：把**真实里程**传进去，
+    // 让分箱中心被重标定到 [0, distance_km] ——
+    // 否则横轴的分母是分箱中心（2.28 km → 2.5），
+    // 与刻度标签的真实里程（2.28）对不上，首点不在 0、末点越过终点。
+    val powerProfile = remember(track, drive.distance_km) {
+        track.toPowerProfile(realLengthKm = drive.distance_km)
+    }
 
     BackHandler { onClose() }
 
@@ -440,7 +447,10 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                     val lat = endPt.map_lat ?: endPt.lat
                     val lng = endPt.map_lng ?: endPt.lng
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
+                        // ⚠️ v0.14.0（苹果 HIG P0-4）：圆角改胶囊、高度提到 **44dp**。
+                        // 原来整个可点区域只有约 25dp（图标 16dp + 上下 6dp 内边距），
+                        // 远低于 44pt 触控目标下限 —— 开车前单手点根本点不准。
+                        shape = RoundedCornerShape(22.dp),
                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
@@ -448,25 +458,26 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                     ) {
                         Row(
                             Modifier
+                                .height(44.dp)
                                 .clickable {
                                     val uri = Uri.parse("geo:$lat,$lng?q=$lat,$lng")
                                     runCatching {
                                         mapCtx.startActivity(Intent(Intent.ACTION_VIEW, uri))
                                     }
                                 }
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                .padding(horizontal = 16.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Icon(
                                 Icons.Filled.Place,
                                 contentDescription = "在地图里打开",
                                 tint = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(16.dp),
+                                modifier = Modifier.size(20.dp),
                             )
-                            Spacer(Modifier.width(4.dp))
+                            Spacer(Modifier.width(6.dp))
                             Text(
                                 "在地图里打开",
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
@@ -508,7 +519,15 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
             // 下次跑同一条高速就会主动避开。
             if (powerProfile.size >= 2) {
                 item {
-                    SectionCard("用电曲线（kW · 对应里程）", Modifier.animateItem()) {
+                    // ⚠️ v0.14.0（口径审计 P0-3）：标题里写清「1 km 分箱平均」。
+                    //
+                    // 原来标题只写「用电曲线（kW · 对应里程）」，
+                    // 而下面「车速与功率」卡里的「峰值功率 92 kW」是**瞬时值** ——
+                    // 同一屏出现两个功率数，量纲同名不同源：
+                    // 曲线最高只到 9 kW，卡片写 92 kW，差 10 倍。
+                    // 读者只能得出「图画错了」或「数据不对」。
+                    // 现在标题标明是分箱平均，底部卡片标明是瞬时。
+                    SectionCard("用电曲线（kW · 1 km 分箱平均 · 对应里程）", Modifier.animateItem()) {
                         val peakUp = powerProfile.maxOf { it.powerKw }
                         val peakDown = powerProfile.minOf { it.powerKw }
                         PowerProfileChart(
@@ -522,7 +541,12 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                         )
                         Text(
                             "正值 = 耗电（蓝）· 负值 = 刹车回收（绿）" +
-                                (drive.wh_per_km?.let { " · 本程 ${it.fmt(0)} Wh/km" } ?: ""),
+                                (drive.wh_per_km?.let { " · 本程 ${it.fmt(0)} Wh/km" } ?: "") +
+                                // ⚠️ v0.14.0：把「瞬时峰值」和「分箱平均」的差别**写在明面上**，
+                                // 免得同屏两个功率数打架时读者以为数据坏了。
+                                (drive.power_max_kw?.let {
+                                    " · 瞬时峰值 $it kW，图中为 1 km 分箱平均"
+                                } ?: ""),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -553,6 +577,10 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                             SocStrip(
                                 samples = powerProfile,
                                 milestones = milestones,
+                                // ⚠️ v0.14.0：与上方功率图**共用同一组里程轴**，
+                                // 否则「同一公里 = 同一列」对不上。
+                                xStartKm = 0.0,
+                                xEndKm = drive.distance_km,
                                 contentDescription = buildString {
                                     append("电量随里程下降曲线")
                                     milestones.kmAt20?.let { append("，约第 ${it.roundToInt()} 公里降到 20%") }
@@ -619,8 +647,12 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                 SectionCard("车速与功率", Modifier.animateItem()) {
                     KV("平均车速", drive.avg_speed_kph?.let { "$it km/h" } ?: "—")
                     KV("最高车速", drive.speed_max?.let { "$it km/h" } ?: "—")
-                    KV("峰值功率", drive.power_max_kw?.let { "$it kW" } ?: "—")
-                    drive.power_min_kw?.let { if (it < 0) KV("回收峰值", "${-it} kW") }
+                    // ⚠️ v0.14.0（口径审计 P0-3）：加「瞬时」二字。
+                    // 这个数是 TeslaMate 记的**瞬时**最大功率，
+                    // 与上方曲线的「1 km 分箱平均」量纲同名不同源，
+                    // 不写清楚读者会以为曲线画错了。
+                    KV("瞬时峰值功率", drive.power_max_kw?.let { "$it kW" } ?: "—")
+                    drive.power_min_kw?.let { if (it < 0) KV("瞬时回收峰值", "${-it} kW") }
                 }
             }
             item {

@@ -58,6 +58,37 @@ fun maintenanceReminders(odometerKm: Double?, settings: AppSettings): List<Maint
     return out
 }
 
-/** 提醒的一句话描述（「还有 3,200 km」/「已超期 500 km」）。 */
+/**
+ * 提醒的一句话描述（「还有 3,200 公里」/「已超期 500 公里」）。
+ *
+ * ⚠️ v0.14.0（新手车主 P0-2）：单位统一成**「公里」**。
+ * 原来这里写「km」、车况页横幅写「公里」，同一屏两种单位。
+ */
 fun MaintenanceReminder.describe(): String =
-    if (overdue) "已超期 ${abs(remainingKm).roundToInt()} km" else "还有 ${remainingKm.roundToInt()} km"
+    if (overdue) "已超期 ${abs(remainingKm).roundToInt()} 公里" else "还有 ${remainingKm.roundToInt()} 公里"
+
+/**
+ * ⚠️ v0.14.0（新手车主 P0-2）：横幅文案**消歧**。
+ *
+ * 原来写「保养已超期 2455 公里」—— 这句话在中文里有**两种读法**：
+ *   1. 已经**超出保养基准** 2455 公里（正确）
+ *   2. 上次保养之后**才开了** 2455 公里（差了两万公里）
+ *
+ * 车主原话：「我第一反应是第二种 —— 那我会以为离保养还早。」
+ * 误读方向只有一个：**太晚**。而保养超期是花钱和伤车的事。
+ *
+ * 现在把三个数一起写出来：超了多少、该在哪个里程表做、现在多少。
+ * 单看这一句就知道是「超期多少」，而不是「开了多少」。
+ */
+fun MaintenanceReminder.bannerText(currentOdoKm: Double?): String {
+    val due = dueOdoKm.roundToInt()
+    return if (overdue) {
+        buildString {
+            append("$label 超期 ${abs(remainingKm).roundToInt()} 公里")
+            append(" · 该在里程表 $due 公里时做")
+            currentOdoKm?.let { append("，现在 ${it.roundToInt()} 公里") }
+        }
+    } else {
+        "$label 还有 ${remainingKm.roundToInt()} 公里到期（该在里程表 $due 公里时做）"
+    }
+}

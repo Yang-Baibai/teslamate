@@ -135,9 +135,14 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
         // 车主原话：「『记录』和『用量』两个 Tab，我第一次点进去不知道哪个是'历史'
         // 哪个是'统计'，试了两遍才明白」。
         // 「记录」页下面就是「充电 | 行程」分段控件，本身已经自解释；
-        // 而「用量」这个词本身不直观 —— 补一行「里程 · 能耗 · 费用」就够了。
+        // 而「用量」这个词本身不直观 —— 补一行说明就够了。
+        //
+        // ⚠️ v0.14.0（新手车主 P0-4 + 长途自驾党 P2-1）：**不再承诺「费用」**。
+        // 原来写「里程 · 能耗 · 费用」，但服务端的 `cp.cost` 全库 NULL，
+        // 汇总卡里只能给出「未记录」—— 副标题承诺了却交白卷。
+        // 现在只列**一定有**的三项；费用在真有数时自己出现在汇总卡里。
         Text(
-            "里程 · 能耗 · 费用",
+            "里程 · 能耗 · 充入电量",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 2.dp),
@@ -226,8 +231,15 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                         // `charging_processes.cost` 在本机全库是 NULL（未配 tou_rates），
                         // 所以这一行现在几乎永远不出现 —— 而页面副标题却写着「费用」，
                         // 属于**承诺了却没给**。
-                        // 现在：成本为零时也**出现这一行**，说清是「没有电费数据」，
-                        // 而不是让用户以为这个数不存在。
+                        //
+                        // ⚠️ v0.14.0（新手车主 P0-4 + 口径审计 P2-3）：
+                        // 「充电费用」和「每公里成本」两行说的是**同一件事**，
+                        // 给两行「没有」比给一行更让人烦；
+                        // 而文案「充电费用未接入」也不准确 ——
+                        // API **早就接了**（`SUM(cp.cost)`），是库里的 cost 全是 NULL，
+                        // 也就是「**没填**」，不是「没接入」。
+                        //
+                        // 现在合成一行：说明没数据 + 说清怎么才能有数据。
                         if (sum.cost > 0 && sum.km > 0.1) {
                             KV(
                                 "每公里成本",
@@ -237,7 +249,10 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                                 "${(sum.cost / sum.km).fmt(2)} 元（仅含已记录电费的充电）",
                             )
                         } else {
-                            KV("每公里成本", "暂无电费数据（充电费用未接入）")
+                            // ⚠️ v0.14.0（新手车主 P0-4）：**只留一行**。
+                            // 两行「没有」比一行更让人烦，而且说的是同一件事。
+                            // 「每公里成本」这一行在有电费数据时才会出现。
+                            KV("充电费用", "未记录 —— 在 TeslaMate 网页端手填单价后才有")
                         }
                         sum.wh_per_km?.let { KV("平均能耗", "${it.fmt(0)} Wh/km") }
                         KV("行程 / 充电次数", "${sum.drive_count} 次 / ${sum.charge_count} 次")
@@ -315,7 +330,17 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                         series = listOf(
                             ChartSeries(
                                 values = buckets.map { it.kwh_used.toFloat() },
-                                color = MaterialTheme.colorScheme.secondary,
+                                // ⚠️ v0.14.0（新手车主 P1-3）：换掉 `colorScheme.secondary`。
+                                //
+                                // 那个颜色同时是上一张图里「**交流慢充**」的深灰 ——
+                                // 于是「行驶耗电」图和「交流慢充」图长得一模一样，
+                                // 扫一眼我会以为下面那张也是充电数据。
+                                // 「颜色在说假话」。
+                                //
+                                // 现在用**能量紫**（与蓝、灰都不同相），
+                                // 语义上也对：耗电是能量流出，直流快充是能量蓝，
+                                // 交流慢充是中性灰 —— 三张图三个色相。
+                                color = MaterialTheme.colorScheme.tertiary,
                                 label = "用电",
                             ),
                         ),
@@ -324,6 +349,11 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                         contentDescription = statsChartDescription("行驶耗电", buckets.map { it.start to it.kwh_used }),
                     )
                     ChartHint(buckets.map { it.kwh_used to it.start }, "度", avgLabel, avgUnit)
+                    Text(
+                        "行驶耗电 = 行车用掉的电，不含充电时充进去的",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
 

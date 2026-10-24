@@ -126,6 +126,14 @@ class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
         speedKph: Double,
         outsideTempC: Double?,
         ascentM: Int? = null,
+        /**
+         * 到站**保留电量**比例（默认 0.90 = 留 10%）。
+         *
+         * ⚠️ v0.14.0（长途自驾党 P0-3）：长途规划按 **20% 保底**算 ——
+         * 「下一个服务区在 170 公里外，我到得了吗」问的是这个数，不是「现在能开多少」。
+         * 两个数来自**同一个模型**、只是阈值不同，所以不构成「两个数字打架」。
+         */
+        reserveFactor: Double = 0.90,
     ): Double? {
         if (ratedRangeKm == null || ratedRangeKm <= 0) return null
         val bucket = whPerKm(speedKph) ?: return null
@@ -141,7 +149,7 @@ class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
         val climbFactor = if ((ascentM ?: 0) >= 200) 1.05 else 1.0
 
         // 安全余量：长途规划惯例到站留 ≥15–20%。
-        val safety = 0.90
+        val safety = reserveFactor
 
         val whEff = bucket.whPerKm * tempFactor * climbFactor
         return ratedRangeKm * EPA_WH_PER_KM / whEff * safety
@@ -178,7 +186,12 @@ class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
                     if (hi == Int.MAX_VALUE) sp >= lo else sp in lo until hi
                 }
                 if (inBucket.size < 2) continue
-                val median = inBucket.map { it.wh_per_km!! }.sorted()[inBucket.size / 2]
+                // ⚠️ v0.14.0（口径审计 P1-4）：原来取的是**上中位数**
+                // （sorted()[n/2]），与 ChargeStats 里的教科书口径不一致 ——
+                // 而这个数**直接决定界面上「实测 XXX Wh/km」的大小**，
+                // 第三方按 numpy 复算会系统性对不上。
+                // 现在全项目共用 `com.teslamate.app.medianOf` 一个实现。
+                val median = medianOf(inBucket.map { it.wh_per_km!! }) ?: continue
                 buckets += SpeedBucket(lo, hi, median, inBucket.size)
             }
             if (buckets.isEmpty()) return null
@@ -203,8 +216,9 @@ class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
             //  2. 全部行程的峰值速度中位数
             val fast = usable.filter { (it.speed_max ?: 0) >= 100 }
             val pool = if (fast.isNotEmpty()) fast else usable
-            val peaks = pool.mapNotNull { it.speed_max?.toDouble() }.filter { it > 0 }.sorted()
-            val cruise = if (peaks.isEmpty()) 60.0 else peaks[peaks.size / 2]
+            val peaks = pool.mapNotNull { it.speed_max?.toDouble() }.filter { it > 0 }
+            // ⚠️ v0.14.0（口径审计 P1-4）：同样是上中位数 → 统一到教科书口径。
+            val cruise = medianOf(peaks) ?: 60.0
 
             return ConsumptionModel(buckets, cruise)
         }

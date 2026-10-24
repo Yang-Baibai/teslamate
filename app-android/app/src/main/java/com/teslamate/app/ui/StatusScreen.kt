@@ -324,10 +324,16 @@ fun StatusScreen(
                         reminders.firstOrNull { it.needsAction }?.let { r ->
                             // ⚠️ 超期是**该行动**的事（红色），快到了只是提醒（中性）。
                             // 两者都挂横幅，但力度不同 —— 用同一种样式会让「超期」显得像例行公事。
+                            //
+                            // ⚠️ v0.14.0（新手车主 P0-2）：文案**消歧** ——
+                            // 「保养已超期 2455 公里」在中文里会被读成
+                            // 「上次保养后开了 2455 公里」，误读方向是「还早」，
+                            // 而保养超期只有一个方向：太晚。
+                            // 现在把「该在多少做 / 现在多少」一起写出来。
                             if (r.overdue) {
-                                ErrorBanner("${r.label}已超期 ${kotlin.math.abs(r.remainingKm).roundToInt()} 公里")
+                                ErrorBanner(r.bannerText(st.odometer))
                             } else {
-                                NoticeBanner("${r.label}还有 ${r.remainingKm.roundToInt()} 公里到期")
+                                NoticeBanner(r.bannerText(st.odometer))
                             }
                         }
 
@@ -363,21 +369,40 @@ fun StatusScreen(
                         // 而「锁车状态未知」本身会让人焦虑（新手车主原话：
                         // 「到底锁没锁？？能锁吗？」），所以要先给一句宽心话：
                         // **没取到，不等于没锁。**
-                        if (st.locked == null || st.fleet_error.isNotBlank()) {
-                            NoticeBanner(
-                                buildString {
+                        //
+                        // ⚠️ v0.14.0（新手车主评审 + 苹果 HIG P0-1）：
+                        // ① **横幅不再重复状态本身**；
+                        // ② **这条中性横幅下沉到主角数字之后**。
+                        //
+                        // 原来横幅写「暂时没取到锁车状态 —— 不代表车没锁。」，
+                        // 而页面顶部那行小字已经写着「锁车状态未知」——
+                        // 同一个事实说了两遍，两块灰横幅把主角数字（电量环）挤到第三屏。
+                        //
+                        // 现在分工明确：
+                        //   · 顶部那行 = **状态标签**（三态之一，和「已上锁/未上锁」同一套语言）
+                        //   · 横幅     = **宽心话 + 原因 + 这个值有多旧**（顶部那行没有的信息）
+                        //
+                        // 而它的**位置**也按 iOS 惯例调了：
+                        // 红色告警排第一（要动手的事最靠前），**中性信息后置** ——
+                        // HIG「Deference」：每屏唯一视觉锚点，其余信息让位。
+                        val fleetNotice = remember(st.locked, st.fleet_error, st.fleet_last_ok) {
+                            buildString {
+                                if (st.locked == null) {
+                                    append("没读到车机的锁车状态 —— 这不代表车没锁。")
+                                }
+                                if (st.fleet_error.isNotBlank()) {
+                                    if (isNotEmpty()) append(" ")
+                                    append(st.fleet_error)
+                                }
+                                st.fleet_last_ok?.let { ok ->
                                     if (st.locked == null) {
-                                        append("暂时没取到锁车状态 —— 不代表车没锁。")
-                                    }
-                                    if (st.fleet_error.isNotBlank()) {
-                                        if (isNotEmpty()) append(" ")
-                                        append(st.fleet_error)
-                                    }
-                                    st.fleet_last_ok?.let {
-                                        append("（最后一次成功获取：${it.relTime()}）")
+                                        append("（最后一次成功获取：${ok.relTime()}）")
+                                    } else {
+                                        // 有旧值：说清上面那个值是什么时候读到的
+                                        append(" —— 上面显示的是 ${ok.relTime()}读到的旧值。")
                                     }
                                 }
-                            )
+                            }.takeIf { it.isNotBlank() }
                         }
 
                         // ⚠️ v0.9.0：**弹性首屏** —— 大字号时电量环与续航**上下排**，
@@ -389,6 +414,15 @@ fun StatusScreen(
                         // 这条遗留项必须一起解掉，否则等于「解封了一半」。
                         //
                         // 阈值 1.5：1.5 倍时左右两栏还挤得下；再大就必须换行。
+                        //
+                        // ⚠️ v0.14.0（新手车主 P0-3）：**大字号时主角数字排最前**。
+                        //
+                        // 原来大字号是「环在上、数字在下」，环按 168dp × 1.75 = 294dp
+                        // 计算，占了屏幕近一半 —— 爸妈打开 App 想看「还能跑多少」，
+                        // 得先滚一屏才看得到那个数，而 69% 恰恰不是他们要的数。
+                        //
+                        // 现在：**大数字在上、环缩小**（120dp × 1.75 = 210dp ≤ 屏高 25%），
+                        // 「204」「现在能开」「69%」三个信息块首屏内全部可见。
                         val fontScale = LocalDensity.current.fontScale
                         if (fontScale >= 1.5f) {
                             Column(
@@ -397,9 +431,13 @@ fun StatusScreen(
                                     .padding(vertical = 8.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                SocRing(st.battery_level, charging = st.active_charge != null)
-                                Spacer(Modifier.height(16.dp))
                                 RangeAndOdometer(st, consumption, recentAscent, fallbackSpeed, Modifier.fillMaxWidth())
+                                Spacer(Modifier.height(14.dp))
+                                SocRing(
+                                    st.battery_level,
+                                    charging = st.active_charge != null,
+                                    baseSizeDp = 120,
+                                )
                             }
                         } else {
                             Row(
@@ -411,6 +449,10 @@ fun StatusScreen(
                                 RangeAndOdometer(st, consumption, recentAscent, fallbackSpeed, Modifier.weight(1f))
                             }
                         }
+
+                        // ⚠️ v0.14.0：中性横幅**下沉到主角数字之后**。
+                        // 红色告警在第一（该动手的事最靠前），中性信息让位给主角。
+                        fleetNotice?.let { NoticeBanner(it) }
 
                         // ═══ 首屏重排 ═══
                         // ⚠️ v0.8.1：原来顺序是「电量 → 能量条 → 充电卡 → 位置 → 6 个信息块」，
@@ -523,7 +565,32 @@ private fun RangeAndOdometer(
             // '现在能开 206 公里，高速算的，够你回家'」。
             // 大数字 + 这行小字，读起来就是「现在能开 206 公里」。
             if (trueRange != null) "现在能开（公里）" else "官方标称（公里）",
+            // ⚠️ v0.14.0（苹果 HIG P0-1）：**主角级** —— 44sp。
+            // 34sp 和页面标题「车况」同级，主角就不成立（每屏要有唯一视觉锚点）。
+            hero = true,
         )
+        // ⚠️ v0.14.0（长途自驾党 P0-3）：**保底余量**。
+        //
+        // 「现在能开 204 公里」里已经留了 10% 余量；
+        // 但长途规划问的是「下一个服务区在 170 公里外，我到得了吗」——
+        // 那要按 **20% 保底**算。
+        //
+        // 这**不是另一个估计值**（不跟 204 打架），
+        // 而是同一个模型换了个阈值 —— 所以用副行呈现，不抢主角。
+        val trueRangeFloor = consumption?.trueRangeKm(
+            ratedRangeKm = ratedRange,
+            speedKph = refSpeed,
+            outsideTempC = st.outside_temp,
+            ascentM = recentAscent,
+            reserveFactor = 0.80,
+        )
+        if (trueRangeFloor != null && trueRange != null) {
+            Text(
+                "留 20% 保底还能开 ${trueRangeFloor.fmt(0)} 公里",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Spacer(Modifier.height(4.dp))
         // ⚠️ v0.9.0（新手车主复核）：**假设链收进可展开区**。
         //

@@ -2,6 +2,8 @@ package com.teslamate.app.ui
 
 import com.teslamate.app.Charge
 import com.teslamate.app.firstSegment
+import com.teslamate.app.medianOf
+import com.teslamate.app.p90NearestRank
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -91,22 +93,29 @@ fun buildStationStats(charges: List<Charge>): Map<String, StationStat> {
         kwh / dsoc * 100.0
     }.filter { it in 30.0..120.0 }
     if (perPercent.isEmpty()) return emptyMap()
-    val capacity = perPercent.sorted()[perPercent.size / 2]
+    // ⚠️ v0.14.0（口径审计 P1-4）：原来这里取的是**上中位数**（sorted()[n/2]），
+    // 与同一文件里的 `median()` 不一致 —— 第三方按 numpy 复算会系统性对不上。
+    val capacity = medianOf(perPercent) ?: return emptyMap()
 
     val grouped = charges
         .filter { !it.place.isNullOrBlank() }
         .groupBy { stationKey(it) }
 
     return grouped.mapNotNull { (key, list) ->
-        if (key.isBlank() || list.size < 2) return@mapNotNull null
+        if (key.isBlank()) return@mapNotNull null
+        // ⚠️ v0.14.0（长途自驾党 P0-2）：原来 `list.size < 2` 的门槛
+        // 把**只充过 1 次的站整条丢掉** —— 而「只充过 1 次」恰恰是
+        // 长途新服务区的常态。结果：出发前最想知道的那个站，
+        // 界面上只有「到站 16%」三个字，没有 kW、没有分钟。
+        // 现在 1 次也保留，界面负责标注「仅 1 次」。
         val powers = list.mapNotNull { it.avg_power_kw }.filter { it > 1.0 }
         if (powers.isEmpty()) return@mapNotNull null
-        val typicalPower = median(powers.map { it.toDouble() })
+        val typicalPower = medianOf(powers.map { it.toDouble() }) ?: return@mapNotNull null
 
         // ⚠️ v0.9.2：直流与交流**分开统计**。
         // AC 典型约 7 kW、DC 典型约 55 kW，混在一起取中位数得到的数两边都不是。
         val dcPowers = list.filter { it.is_dc }.mapNotNull { it.avg_power_kw }.filter { it > 1.0 }
-        val typicalPowerDc = if (dcPowers.size >= 2) median(dcPowers.map { it.toDouble() }) else null
+        val typicalPowerDc = if (dcPowers.size >= 2) medianOf(dcPowers.map { it.toDouble() }) else null
 
         // 从 ≤50% 出发的充电：算充到 80% 需要多久
         val minutes = list.mapNotNull { c ->
@@ -121,8 +130,15 @@ fun buildStationStats(charges: List<Charge>): Map<String, StationStat> {
             sessions = list.size,
             typicalPowerKw = typicalPower,
             typicalPowerDcKw = typicalPowerDc,
-            typicalMinutesTo80 = if (minutes.size >= 2) minutes[minutes.size / 2] else null,
-            p90MinutesTo80 = if (minutes.size >= 5) minutes[(minutes.size * 0.9).toInt().coerceAtMost(minutes.size - 1)] else null,
+            typicalMinutesTo80 = if (minutes.size >= 2) {
+                // ⚠️ v0.14.0（口径审计 P1-4）：原来取上中位数（minutes[n/2]）。
+                medianOf(minutes.map { it.toDouble() })?.roundToInt()
+            } else {
+                null
+            },
+            // ⚠️ v0.14.0（口径审计 P1-5）：改用**最近秩法**的 P90，
+            // 样本 < 10 时不给（此时 P90 与最大值没有区别，标 P90 是误导）。
+            p90MinutesTo80 = p90NearestRank(minutes),
             batteryCapacityKwh = capacity,
         )
     }.toMap()
@@ -146,13 +162,13 @@ fun stationKey(c: Charge): String {
  * （index = n/2），而 numpy / pandas / R 的 `median()` 取两个中间值的平均 ——
  * 第三方按教科书算法复算会对不上（Wh/km 差 0.5–2%，耗时差 1 分钟）。
  * 现在改成**两个中间值的平均**，与教科书一致。
+ *
+ * ⚠️ v0.14.0（口径审计 P1-4）：实现**搬到 `com.teslamate.app.medianOf`** ——
+ * 因为 `ConsumptionModel`（另一个包）里还有两处上中位数没改，
+ * 而那两处直接决定界面上「实测 Wh/km」的大小。
+ * 全项目现在只有一份实现。
  */
-private fun median(values: List<Double>): Double {
-    if (values.isEmpty()) return 0.0
-    val s = values.sorted()
-    val n = s.size
-    return if (n % 2 == 1) s[n / 2] else (s[n / 2 - 1] + s[n / 2]) / 2.0
-}
+private fun median(values: List<Double>): Double = medianOf(values) ?: 0.0
 
 /**
  * 一句话摘要：这个桩的历史表现。

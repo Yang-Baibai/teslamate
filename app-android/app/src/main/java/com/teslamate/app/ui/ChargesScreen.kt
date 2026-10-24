@@ -578,7 +578,7 @@ internal fun ChargeDetail(
                         SectionCard("充电功率曲线 (kW)", Modifier.animateItem()) {
                             LineChart(
                                 values = curve.map { it.charger_power_kw?.toFloat() },
-                                color = MaterialTheme.colorScheme.primary,
+                                color = LocalAccentColors.current.energyBlue,
                                 yUnit = "kW",
                                 xLabels = xLabels,
                                 xWeights = timeWeights,

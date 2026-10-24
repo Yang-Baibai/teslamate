@@ -639,6 +639,39 @@ fun statsChartDescription(title: String, pairs: List<Pair<String, Double>>): Str
         "逐段：$head$tail"
 }
 
+// ⚠️ v0.14.0（口径审计 P0-1）：两张共享里程横轴的图（用电曲线 / 电量条）
+// 的**统一绘图区几何**。
+//
+// 原来两张图各算各的：
+//   · 功率图 plotLeft = 34dp·fs（左边距让给 Y 轴刻度），plotRight = 画布右缘
+//   · 电量条 plotLeft = 0，                 plotRight = 画布右缘 − 30dp·fs
+//
+// 于是「同一公里在两条线上是同一列」这个承诺**根本没成立**：
+// 1080px 屏上 x(0) 在功率图是 102px、在电量条是 0px；
+// 差值沿轴从 102px 变到 90px —— 不是常量平移，纵对齐语义彻底失效。
+// 连带后果：「约第 N 公里降到 20%」标在电量条的 x 上，
+// 而功率图里同公里的 x 在别处 —— 两个图给出的公里数无法互相校验。
+//
+// 现在两图共用同一份几何，公里 ↔ 像素的映射**逐像素一致**。
+internal const val PROFILE_Y_LABEL_DP = 34f
+internal const val PROFILE_RIGHT_LABEL_DP = 30f
+
+internal class ProfileAxis(
+    val plotLeft: Float,
+    val plotRight: Float,
+    val xStartKm: Double,
+    val xEndKm: Double,
+) {
+    val plotWidth: Float get() = plotRight - plotLeft
+
+    /** 里程 → X 像素。两张图必须用同一个函数，否则又会错开。 */
+    fun xAt(km: Double): Float {
+        val span = (xEndKm - xStartKm).coerceAtLeast(0.001)
+        val ratio = ((km - xStartKm) / span).coerceIn(0.0, 1.0)
+        return plotLeft + ratio.toFloat() * plotWidth
+    }
+}
+
 /**
  * 功率剖面图：Y 轴 = 电池净功率（kW），**零线居中**，双向填充。
  *
@@ -674,7 +707,9 @@ fun PowerProfileChart(
     // 否则大字号下刻度会压到图里（X 轴标签压住曲线、Y 轴标签被裁掉）。
     // 1.6 是上限 —— 再大刻度就该换成「自适应 Y 轴范围」而不是继续挤。
     val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
-    val yLabelWidth = with(density) { (34 * fs).dp.toPx() }
+    val yLabelWidth = with(density) { (PROFILE_Y_LABEL_DP * fs).dp.toPx() }
+    // ⚠️ v0.14.0：右边也留出与电量条**同样宽**的刻度带，两图才能逐像素对齐。
+    val rightLabelWidth = with(density) { (PROFILE_RIGHT_LABEL_DP * fs).dp.toPx() }
     val xLabelHeight = with(density) { (16 * fs).dp.toPx() }
 
     Box(
@@ -708,9 +743,21 @@ fun PowerProfileChart(
             val plotTop = 0f
             val plotBottom = size.height - xLabelHeight
             val plotHeight = plotBottom - plotTop
+            // ⚠️ v0.14.0（口径审计 P0-1）：与下方电量条**共用同一份几何**。
             val plotLeft = yLabelWidth
-            val plotWidth = size.width - plotLeft
-            val totalKm = samples.last().km.coerceAtLeast(0.001)
+            val plotRight = size.width - rightLabelWidth
+            val plotWidth = plotRight - plotLeft
+            // ⚠️ v0.14.0（口径审计 P0-2）：量程分母必须是**真实里程**，不是分箱中心。
+            //
+            // 原来用 samples.last().km —— 那是最后一个 1 km 分箱的**中心**
+            // （2.28 km 的行程 → 2.5），而 X 轴刻度标签用的是真实里程（0 / 2.28）。
+            // 于是「刻度说的公里数」和「它所在位置的公里数」不是一回事：
+            // 标签「1」标称 1.14 km 却画在 45.6% 处，1.5 km 的数据点却在 60% 处。
+            // （分箱中心现已按真实行程长度重标定，见 toPowerProfile 的 realLengthKm。）
+            val xFrom = xStartKm ?: samples.first().km
+            val xTo = xEndKm ?: samples.last().km
+            val axis = ProfileAxis(plotLeft, plotRight, xFrom, xTo)
+            val totalKm = (xTo - xFrom).coerceAtLeast(0.001)
 
             // 零线位置**按实际正负范围自适应**，不是固定居中。
             //
@@ -741,7 +788,8 @@ fun PowerProfileChart(
             val upH = zeroY - plotTop
             val downH = plotBottom - zeroY
 
-            fun xAt(km: Double) = plotLeft + (km / totalKm).toFloat() * plotWidth
+            // ⚠️ v0.14.0：改用与电量条共用的 axis，公里 ↔ 像素逐像素一致。
+            fun xAt(km: Double) = axis.xAt(km)
             // ⚠️ 上下**各自**用自己的极值做标定（原来两边都用 maxAbs）：
             //   上面按 maxPos、下面按 maxNeg，曲线才能分别顶到轴的两端。
             fun yAt(p: Double) = if (p >= 0) {
@@ -761,7 +809,7 @@ fun PowerProfileChart(
                 drawLine(
                     color = if (v == 0.0) contentColor.copy(alpha = 0.35f) else gridColor,
                     start = Offset(plotLeft, y),
-                    end = Offset(size.width, y),
+                    end = Offset(plotRight, y),
                     strokeWidth = 1.dp.toPx(),
                 )
                 val txt = if (v == 0.0) "0" else "${v.roundToInt()}"
@@ -822,8 +870,7 @@ fun PowerProfileChart(
 
             // X 轴：起点 / 中点 / 终点（里程）
             // ⚠️ v0.9.2：首尾用**真实**里程（调用方传入），不用分箱中心。
-            val xFrom = xStartKm ?: samples.first().km
-            val xTo = xEndKm ?: totalKm
+            // ⚠️ v0.14.0：xFrom / xTo 已在上方与 axis 一起算好，这里不再重复定义。
             listOf(
                 xFrom to 0,
                 (xFrom + xTo) / 2 to 1,
@@ -837,7 +884,9 @@ fun PowerProfileChart(
                 val rawX = xAt(km) - layout.size.width / 2f
                 val x = when (align) {
                     0 -> plotLeft
-                    2 -> size.width - layout.size.width
+                    // ⚠️ v0.14.0：右端标签对齐到 plotRight（不再是画布右缘），
+                    // 与电量条的绘图区右边界一致。
+                    2 -> plotRight - layout.size.width
                     else -> rawX
                 }
                 drawText(
@@ -873,14 +922,32 @@ fun PowerProfileChart(
  * ```
  *
  * 好处：横轴完全对齐（同一公里在两条线上是同一列），
- * 电量轴**固定 0~100%**（20% 与 10% 的位置固定，跨行程可比），
  * 而且「到达 20% @ N 公里」可以**直接标在曲线上**。
+ *
+ * ⚠️ v0.14.0（口径审计 + 长途自驾党）：电量轴**不再是固定 0~100%**。
+ *
+ * 原来固定全量程的理由是「20% / 10% 的位置固定，跨行程可比」——
+ * 但实测一条 82% → 70% 的 50 公里行程，曲线只占画布高度 12%，
+ * 20% / 10% 两条参考线孤零零落在下方八成空白里，整张图**读不出任何东西**。
+ * （同文件的 `LineChart` 本来就有自适应缩放，两套轴策略不一致。）
+ *
+ * 现在改成：**落差大 → 全量程（0~100%，保留参考线）；落差小 → 自适应量程**，
+ * 并且右侧刻度**照实标出当前量程**（例如 85% / 65%，而不是 100% / 0%）——
+ * 跨行程可比性靠**读刻度数字**保住，而不是靠轴上的位置。
  */
 @Composable
 fun SocStrip(
     samples: List<PowerSample>,
     modifier: Modifier = Modifier,
     milestones: SocMilestones = samples.socMilestones(),
+    /**
+     * 里程轴的真实起点与终点（km）。
+     *
+     * ⚠️ v0.14.0：必须与上方 [PowerProfileChart] 传**同一组值**，
+     * 否则两图的「同一公里 = 同一列」对不上（见 [ProfileAxis]）。
+     */
+    xStartKm: Double = 0.0,
+    xEndKm: Double? = null,
     contentDescription: String = "",
 ) {
     val textMeasurer = rememberTextMeasurer()
@@ -890,8 +957,9 @@ fun SocStrip(
     val density = LocalDensity.current
     // ⚠️ v0.9.0：刻度文字随 fontScale 放大，预留带也必须跟着放大（见 PowerProfileChart 的说明）
     val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
-    // 右侧留给「电量」刻度（100% / 0%），左侧不占 —— 与上方功率图的左边距对齐
-    val rightLabelWidth = with(density) { (30 * fs).dp.toPx() }
+    // ⚠️ v0.14.0：左右预留带与功率图**完全一致**（否则两图横向错开）。
+    val yLabelWidth = with(density) { (PROFILE_Y_LABEL_DP * fs).dp.toPx() }
+    val rightLabelWidth = with(density) { (PROFILE_RIGHT_LABEL_DP * fs).dp.toPx() }
     val bottomLabelHeight = with(density) { (13 * fs).dp.toPx() }
 
     Box(
@@ -910,22 +978,65 @@ fun SocStrip(
             val plotTop = 0f
             val plotBottom = size.height - bottomLabelHeight
             val plotHeight = plotBottom - plotTop
+            // ⚠️ v0.14.0（口径审计 P0-1）：与上方功率图**共用同一份几何** ——
+            // 「同一公里 = 同一列」这句话现在才真正成立。
+            val plotLeft = yLabelWidth
             val plotRight = size.width - rightLabelWidth
-            val plotWidth = plotRight
-            val totalKm = samples.last().km.coerceAtLeast(0.001)
+            val xFrom = xStartKm
+            val xTo = xEndKm ?: samples.last().km
+            val axis = ProfileAxis(plotLeft, plotRight, xFrom, xTo)
 
-            fun xAt(km: Double) = (km / totalKm).toFloat() * plotWidth
-            // 电量轴**固定 0~100%**：20% 与 10% 的位置固定，跨行程才能比
-            fun yAtSoc(soc: Int) = plotBottom - (soc.coerceIn(0, 100) / 100f) * plotHeight
+            fun xAt(km: Double) = axis.xAt(km)
 
-            // 20% / 10% 参考线（虚线）
+            // ⚠️ v0.14.0：电量轴**自适应量程** —— 但判据不是「落差大小」，
+            // 而是**会不会跌破 20% 保底线**（口径审计 P1-1）。
+            //
+            //   · 最低点 ≤ 20% → 保持 0~100% 全量程，20%/10% 参考线照画
+            //     （这才是长途规划要读的那条线，位置固定才有意义）
+            //   · 最低点 > 20% → 这趟根本到不了保底线，20%/10% 是**够不到的线**，
+            //     画出来只是两条悬在底部的孤线。此时改成自适应量程，
+            //     并把真实上下界标在右侧刻度上。
+            //
+            // 原来固定 0~100% 的实测后果：一条 82% → 70% 的 50 公里行程，
+            // 曲线只占画布高度 12%，整张图读不出任何东西。
+            val socLevels = withSoc.mapNotNull { it.soc }
+            val socMin = socLevels.minOrNull() ?: 0
+            val socMax = socLevels.maxOrNull() ?: 100
+            val useFullScale = socMin <= 20
+            val axisLow: Float
+            val axisHigh: Float
+            if (useFullScale) {
+                axisLow = 0f
+                axisHigh = 100f
+            } else {
+                var lo = (kotlin.math.floor((socMin - 2) / 5.0) * 5.0).toFloat()
+                var hi = (kotlin.math.ceil((socMax + 2) / 5.0) * 5.0).toFloat()
+                if (hi - lo < 10f) hi = lo + 10f
+                lo = lo.coerceAtLeast(0f)
+                hi = hi.coerceAtMost(100f)
+                if (hi - lo < 10f) lo = (hi - 10f).coerceAtLeast(0f)
+                axisLow = lo
+                axisHigh = hi
+            }
+
+            fun yAtSoc(soc: Int): Float {
+                val v = soc.coerceIn(0, 100).toFloat()
+                val span = (axisHigh - axisLow).coerceAtLeast(0.001f)
+                return plotBottom - ((v - axisLow) / span) * plotHeight
+            }
+
+            // 20% / 10% 参考线（虚线）—— 只在**落进当前量程**时画。
+            // 量程没缩放时它们是「保底线」；缩放后（全程到不了 20%）
+            // 它们够不到，画出来只会让人误以为量程没缩。
             listOf(
                 20 to accents.warnAmber,
                 10 to accents.danger,
             ).forEach { (lvl, color) ->
+                if (!useFullScale) return@forEach
                 val y = yAtSoc(lvl)
                 val dash = 5.dp.toPx()
-                var x = 0f
+                // ⚠️ v0.14.0：虚线从 plotLeft 起（与功率图绘图区左边界一致）
+                var x = plotLeft
                 while (x < plotRight) {
                     drawLine(
                         color = color.copy(alpha = 0.55f),
@@ -941,14 +1052,19 @@ fun SocStrip(
                 )
                 drawText(
                     textLayoutResult = layout,
-                    topLeft = Offset(2.dp.toPx(), y - layout.size.height / 2f),
+                    // ⚠️ v0.14.0：刻度文字放进左侧留白带（与功率图的 Y 轴刻度同位），
+                    // 不再压在绘图区上。
+                    topLeft = Offset(
+                        x = (plotLeft - layout.size.width - 4.dp.toPx()).coerceAtLeast(0f),
+                        y = y - layout.size.height / 2f,
+                    ),
                 )
             }
 
-            // 0% / 100% 边界
+            // 绘图区底边（0% / 100% 边界）
             drawLine(
                 color = gridColor,
-                start = Offset(0f, plotBottom),
+                start = Offset(plotLeft, plotBottom),
                 end = Offset(plotRight, plotBottom),
                 strokeWidth = 1.dp.toPx(),
             )
@@ -966,19 +1082,26 @@ fun SocStrip(
             )
 
             // 「到达 20% @ N 公里」标注
-            fun mark(km: Double?, text: String, color: Color) {
+            //
+            // ⚠️ v0.14.0：原来这里把标记点**写死画在 20% 线上**（yAtSoc(20)），
+            // 于是 10% 的那个点也画在 20% 的高度上 —— 两条线共用一个 y 值，
+            // 标注的点和它声称的百分比对不上。现在按各自的 level 画。
+            fun mark(km: Double?, level: Int, text: String, color: Color) {
                 if (km == null) return
+                // 参考线不在当前量程内时不标（否则点会落在图外）
+                if (level.toFloat() < axisLow || level.toFloat() > axisHigh) return
                 val x = xAt(km)
                 val dot = 3.5.dp.toPx()
-                drawCircle(color = color, radius = dot, center = Offset(x, yAtSoc(20)))
+                val y = yAtSoc(level)
+                drawCircle(color = color, radius = dot, center = Offset(x, y))
                 val layout = textMeasurer.measure(
                     text = text,
                     style = TextStyle(fontSize = 10.sp, color = color, fontWeight = FontWeight.SemiBold),
                 )
                 // 标签放在点的**上方**（电量在降，上方是「还有电」的方向）；
-                // 靠右时改为下方，避免出界。
-                val above = yAtSoc(20) - layout.size.height - 5.dp.toPx()
-                val ty = if (above >= 0f) above else yAtSoc(20) + 5.dp.toPx()
+                // 上方放不下就改放下方，避免出界。
+                val above = y - layout.size.height - 5.dp.toPx()
+                val ty = if (above >= 0f) above else y + 5.dp.toPx()
                 val tx = (x - layout.size.width / 2f)
                     .coerceIn(0f, (size.width - layout.size.width).coerceAtLeast(0f))
                 drawText(textLayoutResult = layout, topLeft = Offset(tx, ty))
@@ -986,11 +1109,15 @@ fun SocStrip(
             // ⚠️ v0.9.2（口径审计 S2-2）：措辞用「约」。
             // SOC 是整数百分比（1 个百分点 ≈ 3.65 km），加上 1 km 分箱的箱中心量化，
             // 真实不确定度约 ±2 km —— 写成精确的「第 243 公里」是把误差当成了精度。
-            mark(milestones.kmAt20, "约第 ${milestones.kmAt20?.roundToInt()} 公里降到 20%", accents.warnAmber)
-            mark(milestones.kmAt10, "约第 ${milestones.kmAt10?.roundToInt()} 公里降到 10%", accents.danger)
+            mark(milestones.kmAt20, 20, "约第 ${milestones.kmAt20?.roundToInt()} 公里降到 20%", accents.warnAmber)
+            mark(milestones.kmAt10, 10, "约第 ${milestones.kmAt10?.roundToInt()} 公里降到 10%", accents.danger)
 
-            // 右侧电量刻度（第二 Y 轴）
-            listOf(100 to "100%", 0 to "0%").forEach { (lvl, txt) ->
+            // 右侧电量刻度（第二 Y 轴）—— 标**当前量程的真实上下界**。
+            // 全量程时是 100% / 0%；缩放后是例如 85% / 65%。
+            listOf(
+                axisHigh.toInt() to "${axisHigh.toInt()}%",
+                axisLow.toInt() to "${axisLow.toInt()}%",
+            ).forEach { (lvl, txt) ->
                 val layout = textMeasurer.measure(
                     text = txt,
                     style = TextStyle(fontSize = 9.sp, color = labelColor),
@@ -1015,7 +1142,8 @@ fun SocStrip(
                 drawText(
                     textLayoutResult = layout,
                     topLeft = Offset(
-                        x = 0f,
+                        // ⚠️ v0.14.0：与绘图区左边界对齐
+                        x = plotLeft,
                         y = plotBottom + 2.dp.toPx(),
                     ),
                 )

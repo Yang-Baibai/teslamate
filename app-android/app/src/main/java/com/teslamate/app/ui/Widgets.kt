@@ -780,16 +780,32 @@ fun InfoTile(title: String, value: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** 大数字（iOS Large Title 刻度） */
+/**
+ * 大数字。
+ *
+ * ⚠️ v0.14.0（苹果 HIG P0-1 / P2）：加**主角级**样式。
+ *
+ * 原来只有一个 34sp 的刻度（iOS Large Title）。但 HIG 的「层级与强调」要求
+ * **每屏有唯一视觉锚点** —— 34sp 的大数字和页面标题（「车况」，也是 34sp）同级，
+ * 于是车况页的主角「204」和标题一样大，**主角就不成立了**。
+ * 评审原话：「视线落点顺序是 锁车状态 → 告警卡 → 说明卡 → 才是主角 204，
+ * 主角排在第 4 条带。」
+ *
+ * 现在加 hero 级：**44sp / lineHeight 48sp / tnum / 单行**。
+ * 字距也从 -1.sp 收到 **-0.4.sp**（iOS 大字号数字的跟踪量级）——
+ * 34sp Bold 上 -1.sp 偏挤，且带 tnum 时更明显。
+ */
 @Composable
-fun BigStat(value: String, label: String) {
+fun BigStat(value: String, label: String, hero: Boolean = false) {
     Column {
         Text(
             value,
-            fontSize = 34.sp,
+            fontSize = if (hero) 44.sp else 34.sp,
+            lineHeight = if (hero) 48.sp else 40.sp,
             fontWeight = FontWeight.Bold,
-            letterSpacing = (-1).sp,
+            letterSpacing = (-0.4).sp,
             style = MaterialTheme.typography.displayLarge,
+            maxLines = 1,
         )
         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -852,7 +868,19 @@ private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
  *  - 加静态刻度环（12 格）——静态细节比动画更能提升高级感
  */
 @Composable
-fun SocRing(soc: Int?, modifier: Modifier = Modifier, charging: Boolean = false) {
+fun SocRing(
+    soc: Int?,
+    modifier: Modifier = Modifier,
+    charging: Boolean = false,
+    /**
+     * 环的基础直径（dp），实际直径 = 本值 × fontScale。
+     *
+     * ⚠️ v0.14.0（新手车主 P0-3）：大字号布局需要**缩小环**。
+     * 200% 字号时按默认 168dp 算，环变成 294dp —— 占了屏幕近一半，
+     * 主角数字「现在能开 204 公里」被推到最底缘，要滚一屏才看得到。
+     */
+    baseSizeDp: Int = 168,
+) {
     val a = LocalAccentColors.current
     val track = a.chartTrack
     // 颜色语义（特斯拉设计语言）：
@@ -878,7 +906,7 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier, charging: Boolean = false)
     //   环太大就放不进屏幕宽度（393dp 屏去掉 32dp 页边距 = 361dp 可用）。
     //   1.75 → 168 × 1.75 = 294dp，仍有余量。
     val fontScale = LocalDensity.current.fontScale
-    val ringSize = (168 * fontScale.coerceIn(1f, 1.75f)).dp
+    val ringSize = (baseSizeDp * fontScale.coerceIn(1f, 1.75f)).dp
     Box(
         modifier = modifier.size(ringSize)
             // ⚠️ v0.7.1：Canvas 画的环对屏幕阅读器完全不可达，
@@ -1097,11 +1125,20 @@ fun VehicleTopView(
 ) {
     val a = LocalAccentColors.current
     val dark = MaterialTheme.colorScheme.background.luminanceIsDark()
-    // 车身：浅色用品牌红（一眼认出是特斯拉），深色用中性灰蓝分层。
-    // 描边与轮胎都用「轮廓级」灰 —— 原来浅色下轮胎是 #E6E8EB 贴在白车身上，等于隐形。
-    val bodyTop = if (dark) Color(0xFF3A3A3C) else Color(0xFFD70012)
-    val bodyBottom = if (dark) Color(0xFF242426) else Color(0xFF93000A)
-    val outline = if (dark) Color(0xFF6E6E76) else Color(0xFF8E8E93)
+    // ⚠️ v0.14.0（苹果 HIG P0-2）：**车身不再用品牌红**。
+    //
+    // 原来浅色是品牌红 #D70012 → #93000A（200dp 高的大块饱和红），
+    // 深色却是中性灰 #3A3A3C —— 同一个元素**两个颜色**（同义不同色），
+    // 而且那一大块红与任何告警都无关，
+    // 破坏了「红色 = 告警 + 品牌点缀」这条已经定了好几轮的语义规则。
+    //
+    // 现在两种模式都用**中性金属灰**：靠高光与描边表达体积，不靠颜色抢戏。
+    // （「一眼认出是台车」靠的是俯视轮廓的形状，不是颜色。）
+    val bodyTop = if (dark) Color(0xFF3A3A3C) else Color(0xFFC7C7CC)
+    val bodyBottom = if (dark) Color(0xFF242426) else Color(0xFF8E8E93)
+    // ⚠️ v0.14.0：车身改成银灰后，描边要更深一档才分得出来
+    //（原来描边 #8E8E93 和车身底色同值，下半圈会糊掉）。
+    val outline = if (dark) Color(0xFF6E6E76) else Color(0xFF636366)
     val glass = if (dark) Color(0xFF6E6E76) else Color(0xFFB8BCC2)
     val danger = a.danger
     val warn = a.warnAmber
