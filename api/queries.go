@@ -380,10 +380,30 @@ GROUP BY 1 ORDER BY 1`
 
 // 满充容量（kWh）= 满充时额定续航(km) × 车辆效率(kWh/km)；
 // 非满充会话按 usable_battery_level 折算：capacity = rated_range × eff × 100 / soc
+//
+// ⚠️ v0.22.0（电池健康专家 P0-1）：**把用了哪个常数一起下发**。
+//
+// `c.efficiency` 是车主为修 Wh/km 显示而配的**实际行驶能耗**
+// （含空调/路况/驾驶风格），与「电池容量」不是同一个 kWh/km ——
+// 把它改成 0.153，健康度会从 84.9% 跳到 88.9%。
+// 现在每个点都带上 `efficiency_used`，至少**可核对**；
+// 而真正不受它影响的健康指标是 `health_percent_of_baseline`（见 handlers.go）。
+//
+// 另外两个新列：
+//   odometer_km         —— 该次测量时的里程表（算「每万公里衰减」用）
+//   capacity_kwh_energy —— **能量反推**口径（充入 kWh ÷ ΔSOC% × 100），
+//                          完全不需要 kWh/km 常数，用来与主口径互相印证
 const sqlBattery = `
 SELECT cp.end_date,
        (ch.rated_battery_range_km::float8 * c.efficiency * 100.0 / ch.usable_battery_level) AS capacity_kwh,
-       cp.end_battery_level
+       cp.end_battery_level,
+       c.efficiency AS efficiency_used,
+       ep.odometer::float8 AS odometer_km,
+       CASE WHEN (cp.end_battery_level - cp.start_battery_level) >= 5
+             AND cp.charge_energy_added > 0
+         THEN cp.charge_energy_added * 100.0
+              / (cp.end_battery_level - cp.start_battery_level)
+       END AS capacity_kwh_energy
 FROM charging_processes cp
 JOIN cars c ON c.id = cp.car_id
 JOIN LATERAL (
@@ -393,9 +413,13 @@ JOIN LATERAL (
     AND rated_battery_range_km IS NOT NULL
   ORDER BY date DESC LIMIT 1
 ) ch ON true
+LEFT JOIN positions ep ON ep.id = (
+  SELECT id FROM positions
+  WHERE car_id = cp.car_id AND date <= cp.end_date AND odometer IS NOT NULL
+  ORDER BY date DESC LIMIT 1
+)
 WHERE cp.car_id = $1
   AND cp.end_date IS NOT NULL
   AND cp.charge_energy_added > 0.01
   AND cp.end_battery_level >= 90
-  AND ch.usable_battery_level >= 50
 ORDER BY cp.end_date`

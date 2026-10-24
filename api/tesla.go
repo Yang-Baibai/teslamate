@@ -240,21 +240,40 @@ func loadTeslaConfig() teslaConfig {
 	cfg := teslaConfig{
 		clientID:     strings.TrimSpace(getenv("TESLA_CLIENT_ID", "")),
 		clientSecret: strings.TrimSpace(getenv("TESLA_CLIENT_SECRET", "")),
-		refreshToken: strings.TrimSpace(getenv("TESLA_REFRESH_TOKEN", "")),
+		refreshToken: "",
 		region:       region,
 		vehicleID:    strings.TrimSpace(getenv("TESLA_VEHICLE_ID", "")),
 		envFile:      resolveTeslaEnvFile(),
 		stateFile:    strings.TrimSpace(getenv("TESLA_REFRESH_TOKEN_FILE", "/tmp/tesla_refresh_token")),
 		pollInterval: teslaPollInterval,
 	}
+	// ⚠️ v0.22.0（自托管运维评审 P2-1）：**优先读 .env 文件**，环境变量只作兜底。
+	//
+	// 原来优先读环境变量 —— 但中国区的 refresh_token 是**一次性**的：
+	// 每次刷新都会拿到新 token，旧的**立刻作废**，而服务端会把新值**回写 .env**。
+	// 于是运行一段时间后：
+	//   .env 里的值      = 轮换后的**新**值（有效）
+	//   环境变量里的值    = 容器启动时注入的**旧**值（**已作废**）
+	//
+	// 平时没事（内存里用的是轮换后的新 token），
+	// 但 `docker compose restart api` **不会重新注入环境变量** ——
+	// 一重启就会用已作废的旧 token，Fleet **永久失效**（一次性 token 重试也没用）。
+	//
+	// 现在反过来：文件优先（它才是会被更新的那个），环境变量兜底。
+	//
+	// ⚠️ 优先级颠倒的风险：宿主机 .env 若被手工改成旧值，
+	// 会盖掉容器里的新值 —— 但那本来就是人的操作，责任明确。
+	if cfg.envFile != "" {
+		if v := readEnvValue(cfg.envFile, teslaEnvKey); v != "" {
+			cfg.refreshToken = v
+		}
+	}
 	if cfg.refreshToken == "" {
-		// 容器里可能只挂了 .env 文件而没注入环境变量，退而从文件里读
-		if cfg.envFile != "" {
-			cfg.refreshToken = readEnvValue(cfg.envFile, teslaEnvKey)
-		}
-		if cfg.refreshToken == "" {
-			cfg.refreshToken = readTrimmedFile(cfg.stateFile)
-		}
+		cfg.refreshToken = strings.TrimSpace(getenv("TESLA_REFRESH_TOKEN", ""))
+	}
+	if cfg.refreshToken == "" {
+		// 最后兜底：兜底状态文件（容器内 /tmp，重建即失效）
+		cfg.refreshToken = readTrimmedFile(cfg.stateFile)
 	}
 	return cfg
 }

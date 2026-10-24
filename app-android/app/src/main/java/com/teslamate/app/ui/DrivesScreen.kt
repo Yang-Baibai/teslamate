@@ -374,6 +374,25 @@ internal fun DriveItem(
                 }
                 InlineMetric("最高", "${d.speed_max ?: "—"} km/h")
             }
+            // ⚠️ v0.22.0（第 13 轮充电专家 P1-5）：**速度档标注** ——
+            //
+            // 高速趟的能耗天然高于市区（实测近 30 天：
+            // 高速（均速 ≥90）17.6 vs 市区（均速 <60）16.6 kWh/100km），
+            // 不标出来的话，「我最近变费油了」会被误读成车有问题。
+            //
+            // 这是**解释性标签**，不是新的统计口径 ——
+            // 刻意**不**为高速趟单开一套平均能耗数字，
+            // 否则 App 里会多出第三个能耗数，用户对不上账。
+            //
+            // 只在 `distance >= 30` 时显示（与「能耗」那一行同一门槛）。
+            val speed = d.avg_speed_kph
+            if ((d.distance_km ?: 0.0) >= 30.0 && speed != null) {
+                Text(
+                    "均速 $speed km/h（${speedBucketLabel(speed)}档）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             // ⚠️ v0.9.2：统一电量带 —— 所有事件画在**同一条 0~100% 标尺**上，
             // 于是「85→70」和「70→55」的位置一致，能看出电在哪儿掉的、在哪儿补的。
             if (d.start_soc != null && d.end_soc != null) {

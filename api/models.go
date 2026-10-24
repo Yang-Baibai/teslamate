@@ -269,18 +269,70 @@ type Stats struct {
 	ServerTimezone string `json:"server_timezone"`
 }
 
-type BatteryPoint struct {
-	Date        time.Time `json:"date"`
-	CapacityKwh *float64  `json:"capacity_kwh"`
-	EndSoc      *int      `json:"end_soc"`
-}
-
 type BatteryHealth struct {
 	CurrentCapacityKwh *float64 `json:"current_capacity_kwh"` // 最近一次满充实测容量
 	MaxCapacityKwh     *float64 `json:"max_capacity_kwh"`     // 记录中的最大实测值（仅供趋势参考，不是基准）
 	NominalCapacityKwh *float64 `json:"nominal_capacity_kwh"` // 铭牌（出厂标称）容量，来自 NOMINAL_BATTERY_KWH；健康度的分母
 	HealthPercent      *float64 `json:"health_percent"`       // 当前实测 / 基准 × 100
 	Series             []*BatteryPoint `json:"series"`
+
+	// ⚠️ v0.22.0（电池健康专家 P0-1 / P0-2 / P1-1 / P1-5 / P0-3）。
+	//
+	// 原来的 `health_percent` 有两个硬伤：
+	//   ① **分母口径不同**：分子是「可用容量」（实测），分母是「铭牌毛容量」（出厂），
+	//      两者不是同一个量 —— 它回答的是「可用容量占铭牌多少」，
+	//      **不是「电池衰减了多少」**。界面上却叫它「健康度」。
+	//   ② **依赖一个车主可改的常数**：容量公式里的 `cars.efficiency` 是车主为修
+	//      Wh/km 显示而配的**实际行驶能耗**（含空调/路况/风格），
+	//      与「电池容量」不是同一个 kWh/km。实测把它从 0.146 改成 0.153，
+	//      健康度会从 84.9% 跳到 88.9% —— 一次改配置就改了 4 个百分点。
+	//
+	// 下面是**不受该常数影响**的一组新指标。
+	//
+	// **相对首测**：分母取**首测**容量（不是历史最大值 —— 历史最大值会随衰减漂移，
+	// ADR #11 已否决用它当基准）。
+	// 分子分母同比例缩放，所以 `cars.efficiency` 改多少，这个数都**不变**。
+	// 这才是「电池比刚开始测的时候差了多少」的直接答案。
+	BaselineCapacityKwh     *float64 `json:"baseline_capacity_kwh"`      // 首测容量（取前 3 次的中位数，抗首测锚歪）
+	HealthPercentOfBaseline *float64 `json:"health_percent_of_baseline"` // 当前 ÷ 首测 × 100
+
+	// ⚠️ P1-5：严格档 —— 只取**充到 100%** 的测量点。
+	//
+	// 原来的 `max_capacity_kwh` 取的是全部 `end_battery_level >= 90` 的点里的最大值，
+	// 而 e_soc 90~98 的点**系统性偏高 0.56%**（从 94% 线性外推到 100% 会高估，
+	// 车机的续航-电量曲线在顶部是平的）——
+	// 实测「历史最好时 66.72 度」取的正是一个 e_soc=96 的点，
+	// 比严格档的真实上限（65.41）虚高 0.31 度。
+	MaxCapacityKwhStrict *float64 `json:"max_capacity_kwh_strict"` // 只取充到 100% 的点
+
+	// ⚠️ P1-6：**能量反推口径**的容量 —— 与上面的续航×效率口径**完全独立**。
+	//
+	// 公式：充入 kWh ÷ ΔSOC% × 100，**不需要任何 kWh/km 常数**。
+	// 实测两个口径：65.2（续航×效率） vs 65.89（能量反推），差 1.1%。
+	// 同一个 App 里出现三个容量数（这里两个 + 充电页的 65.89），
+	// 而没有一个地方说明它们为什么不同 —— 现在各自标出来源。
+	CapacityKwhEnergy *float64 `json:"capacity_kwh_energy"` // 能量反推口径的容量中位数
+
+	// ⚠️ P0-3：**数据覆盖范围** —— 电池曲线只覆盖车龄的一小段，
+	// 却没有任何说明（车主会以为那条下滑的线就是电池的全部历史）。
+	// 实测本机只覆盖 83 天 / 9,936 公里 = 车龄的 10%，且**没有任何冬季数据**。
+	SeriesSpanDays *int     `json:"series_span_days"`  // 序列覆盖的天数
+	OdometerSpanKm *float64 `json:"odometer_span_km"`  // 序列覆盖的里程
+}
+
+type BatteryPoint struct {
+	Date        time.Time `json:"date"`
+	CapacityKwh *float64  `json:"capacity_kwh"`
+	EndSoc      *int      `json:"end_soc"`
+	// ⚠️ v0.22.0：这个点用的是**哪个 kWh/km 常数**。
+	//
+	// 以前它藏在一句 SQL 里，用户无从核对 —— 而它恰恰是「健康度」会漂移的原因。
+	// 现在随点下发，至少能看出「这个数依赖哪个常数」。
+	EfficiencyUsed *float64 `json:"efficiency_used"`
+	// ⚠️ 该次测量时的里程表（km）—— 用于算「每万公里衰减」。
+	OdometerKm *float64 `json:"odometer_km"`
+	// ⚠️ 能量反推口径的容量（不需要 kWh/km 常数）。
+	CapacityKwhEnergy *float64 `json:"capacity_kwh_energy"`
 }
 
 // AppLatest — App 内更新元数据。

@@ -135,7 +135,7 @@ fun StatusScreen(
         if (api != null) {
             runCatching {
                 withContext(Dispatchers.IO) { api.drives(settings.carId, 500) }
-            }.onSuccess { store.updateDrives(it) }
+            }.onSuccess { store.updateDrives(it, settings.carId) }
         }
     }
     val drives = store.drives
@@ -402,7 +402,30 @@ fun StatusScreen(
                         // ⚠️ v0.9.0（新手车主复核）：措辞改成「车没上报」而不是「数据未更新」。
                         // 车主原话：「车停着不动是常态，这句话像系统在报警。」
                         val staleHours = st.data_age_hours
-                        if (st.data_stale) {
+                        // ⚠️ v0.22.0（自托管运维评审 P0-1）：
+                        // **「车没上报」只在本次请求成功时才说。**
+                        //
+                        // 原来这条横幅**无条件**渲染 —— 只要缓存里的
+                        // `data_warn` 为真就出现。于是服务器连不上时，
+                        // 屏幕上同时挂着：
+                        //   红条：「连不上服务器…」
+                        //   灰条：「车 6 小时没上报数据了 —— 停着不动时属正常。」
+                        //
+                        // 用户读到第二条会以为**车有问题**、车被拖走了、
+                        // 或者 TeslaMate 挂了 —— 实际是 App 自己够不着服务器。
+                        //
+                        // 这是**最坏的一种误导**：把「看不见」说成「车不动了」。
+                        // （与 v0.9.0「正常状态被渲染成错误」是同一类错误的镜像。）
+                        //
+                        // 现在：缓存态（`cachedAt != null`，说明这次没连上）
+                        // 改说「这是上次读到的数据，服务器现在连不上」，
+                        // **不再断言车没动**。
+                        if (store.cachedAt != null) {
+                            NoticeBanner(
+                                "这是上次读到的数据（${store.cachedAt!!.relTime()}）—— " +
+                                    "服务器现在连不上，无法确认车况是否已更新。",
+                            )
+                        } else if (st.data_stale) {
                             val days = staleHours / 24
                             NoticeBanner(
                                 if (days >= 1) {

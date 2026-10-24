@@ -41,8 +41,11 @@ import com.teslamate.app.AppSettings
 import com.teslamate.app.BatteryHealth
 import com.teslamate.app.Stats
 import com.teslamate.app.StatsBucket
+import kotlin.math.roundToInt
 import com.teslamate.app.fmt
+import kotlin.math.roundToInt
 import com.teslamate.app.fmtDate
+import kotlin.math.roundToInt
 import com.teslamate.app.fmtKwh100
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -467,31 +470,66 @@ fun StatsScreen(
                         // 车主原话：「'铭牌'是出厂标称；健康度＝还剩多少」，
                         // 建议写法：「新电池能装 66 度，现在还能装 65.4 度（97%）」。
                         KV("现在还能装", "${b.current_capacity_kwh?.fmt(1)} 度")
-                        KV("历史最好时", "${b.max_capacity_kwh?.fmt(1)} 度")
+                        // ⚠️ v0.22.0（P1-5）：**历史最好时改用严格档** ——
+                        // 严格档只取**充到 100%** 的测量点。
+                        // 原来取的是全部「≥90%」的点里的最大值，
+                        // 而 e_soc 90~98 的点**系统性偏高 0.56%**
+                        // （从 94% 线性外推到 100% 会高估 —— 车机的续航-电量曲线顶部是平的）。
+                        // 实测那个 66.7 度正是一个 e_soc=96 的点。
+                        val strictMax = b.max_capacity_kwh_strict ?: b.max_capacity_kwh
+                        KV("历史最好时", "${strictMax?.fmt(1)} 度")
                         b.nominal_capacity_kwh?.let { KV("新电池标称", "${it.fmt(1)} 度") }
-                        // ⚠️ v0.9.2（口径审计 S1-1）：服务端删掉了「没配铭牌容量就
-                        // 回退到历史最大值」的兜底 —— 那会让健康度静默从 85% 跳到 ~100%
-                        // （「当前/历史最大」这个比值永远接近 100%）。
-                        // 现在健康度是 null，界面必须**说清为什么没有这个数**，
-                        // 而不是让两行一起消失、用户以为是 App 的 bug。
+                        // ⚠️ v0.22.0（P0-2）：**「健康度」改名为「占铭牌」** ——
+                        //
+                        // 原来的注解写「新车即约 95%，低于 90% 才需要关注」——
+                        // 但那个 95% **全项目找不到任何来源**（ADR #11 只决策了「分母用铭牌」，
+                        // 没给这个数），而且与本车实测**自相矛盾**：
+                        // 本车历史最好的一次只有 86.9%（= 铭牌的 86.9%），
+                        // 若「新车即约 95%」成立，新车应该测得 72.96 度 ——
+                        // 比这台车**有史以来最好的一次还多 6.24 度**，而没有任何一次测量支持。
+                        //
+                        // 后果很实际：用户把「84.9%」读成「衰减了 15.1%」，
+                        // 再按注解自己的门槛判定「长期处于告警区」——
+                        // 而实测窗口内容量只掉了 1.6%。
+                        //
+                        // 现在说**可验证**的话：占铭牌多少、本车实测上限是多少。
                         if (b.health_percent != null) {
-                            KV("健康度", "${b.health_percent!!.fmt(1)}%")
+                            KV("占铭牌", "${b.health_percent!!.fmt(1)}%")
                         } else {
                             Text(
-                                "暂无健康度（未配置铭牌容量，服务端不给分母）",
+                                "暂无「占铭牌」（未配置铭牌容量，服务端不给分母）",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        // ⚠️ v0.9.2（口径审计 S3-2）：这个百分比的分子是**可用容量**、
-                        // 分母是**总（铭牌）容量** —— 一台全新车跑同一套算法会显示约 95%，
-                        // 不是 100%。所以它不是「衰减了多少」，而是「可用容量占铭牌多少」。
-                        // 不写清楚会被读成「电池衰减了 15%」。
+                        // ⚠️ v0.22.0（P1-1）：**相对首测** ——
+                        // 这是**唯一不受** `cars.efficiency` 影响的健康指标
+                        // （分子分母同比例缩放）。
+                        // 它回答的才是车主真正想知道的那句：「电池比刚开始测的时候差了多少」。
+                        b.health_percent_of_baseline?.let {
+                            KV("相对首测", "${it.fmt(1)}%")
+                        }
                         Text(
-                            "「健康度」= 可用容量 ÷ 铭牌容量；新车即约 95%，低于 90% 才需要关注",
+                            buildString {
+                                append("「占铭牌」= 可用容量 ÷ 铭牌毛容量，两者不是同一口径，")
+                                append("它不是「衰减了多少」。")
+                                if (b.nominal_capacity_kwh != null && strictMax != null) {
+                                    append("本车实测上限 ")
+                                    append((strictMax * 100 / b.nominal_capacity_kwh).fmt(1))
+                                    append("%。")
+                                }
+                            },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (b.health_percent_of_baseline != null) {
+                            Text(
+                                "「相对首测」= 当前容量 ÷ 首测容量（取前 3 次中位数），" +
+                                    "不受行驶能耗常数影响，是看衰减更准的那个数。",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         val series = b.series.map { it.capacity_kwh?.toFloat() }
                         if (series.count { it != null } >= 2) {
                             // ⚠️ v0.9.2（口径审计 S3-3）：**不再传基准线**。
@@ -511,7 +549,20 @@ fun StatsScreen(
                                 contentDescription = batteryChartDescription(b),
                             )
                             Text(
-                                "可用容量（度）· 纵轴已放大到数据范围",
+                                // ⚠️ v0.22.0（P0-3）：**说清数据覆盖范围** ——
+                                // 电池曲线只覆盖车龄的一小段（实测本机 83 天 / 9,936 公里
+                                // = 车龄的 10%），不说清楚的话，
+                                // 车主会把那条下滑的线当成「电池的全部历史」。
+                                buildString {
+                                    append("可用容量（度）· 纵轴已放大到数据范围")
+                                    if (b.series_span_days != null && b.odometer_span_km != null) {
+                                        append(" · 仅 ")
+                                        append(b.series_span_days)
+                                        append(" 天 / ")
+                                        append(b.odometer_span_km.roundToInt())
+                                        append(" 公里")
+                                    }
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

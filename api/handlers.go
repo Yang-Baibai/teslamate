@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -825,9 +826,20 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	h := &BatteryHealth{}
 	var last *float64
+	// ⚠️ v0.22.0（电池健康专家 P1-5 / P1-1 / P0-3）：下面这些累加器。
+	var (
+		lastOdo      *float64
+		firstOdo     *float64
+		firstDate    time.Time
+		lastDate     time.Time
+		haveDate     bool
+		strictMax    *float64
+		energyCaps   []float64
+		baselineCaps []float64
+	)
 	for rows.Next() {
 		p := &BatteryPoint{}
-		if err := rows.Scan(&p.Date, &p.CapacityKwh, &p.EndSoc); err != nil {
+		if err := rows.Scan(&p.Date, &p.CapacityKwh, &p.EndSoc, &p.EfficiencyUsed, &p.OdometerKm, &p.CapacityKwhEnergy); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -835,11 +847,70 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 			if h.MaxCapacityKwh == nil || *p.CapacityKwh > *h.MaxCapacityKwh {
 				h.MaxCapacityKwh = p.CapacityKwh
 			}
+			// ⚠️ P1-5：**严格档**只取**充到 100%** 的点。
+			// e_soc 90~98 的点系统性偏高 0.56%（从 94% 线性外推到 100% 会高估，
+			// 车机的续航-电量曲线在顶部是平的）——
+			// 而旧的 max_capacity_kwh 取的正是这样一个 e_soc=96 的点（66.72 度），
+			// 比真实上限（65.41）虚高 0.31 度，让窗口内的跌幅看起来更大。
+			if p.EndSoc != nil && *p.EndSoc >= 100 && (strictMax == nil || *p.CapacityKwh > *strictMax) {
+				strictMax = p.CapacityKwh
+			}
+			// ⚠️ P1-1：**首测基线**取**前 3 次的中位数** ——
+			// 只取第一次的话，首测当天若气温异常就会把整条基线锚歪。
+			if len(baselineCaps) < 3 {
+				baselineCaps = append(baselineCaps, *p.CapacityKwh)
+			}
 			last = p.CapacityKwh
 		}
+		if p.CapacityKwhEnergy != nil {
+			energyCaps = append(energyCaps, *p.CapacityKwhEnergy)
+		}
+		if p.OdometerKm != nil {
+			if firstOdo == nil {
+				firstOdo = p.OdometerKm
+			}
+			lastOdo = p.OdometerKm
+		}
+		if !haveDate {
+			firstDate = p.Date
+			haveDate = true
+		}
+		lastDate = p.Date
 		h.Series = append(h.Series, p)
 	}
 	h.CurrentCapacityKwh = last
+	h.MaxCapacityKwhStrict = strictMax
+
+	// ⚠️ v0.22.0（P1-1）：**相对首测** —— 唯一不受 `cars.efficiency` 影响的健康指标。
+	//
+	// 分子分母同比例缩放，所以车主改 `cars.efficiency`（那是为了修 Wh/km 显示）
+	// 这个数**一点都不变**。
+	// 基准取**前 3 次的中位数**而不是第一次 —— 单次测量受当天温度影响太大。
+	if len(baselineCaps) > 0 {
+		base := medianOfFloats(baselineCaps)
+		h.BaselineCapacityKwh = &base
+		if last != nil && base > 0 {
+			v := *last * 100 / base
+			h.HealthPercentOfBaseline = &v
+		}
+	}
+
+	// ⚠️ P1-6：能量反推口径的容量中位数（与主口径互相印证）。
+	if len(energyCaps) > 0 {
+		v := medianOfFloats(energyCaps)
+		h.CapacityKwhEnergy = &v
+	}
+
+	// ⚠️ P0-3：**数据覆盖范围** —— 电池曲线只覆盖车龄的一小段，
+	// 不说清楚的话，车主会把那条线当成「电池的全部历史」。
+	if haveDate && len(h.Series) >= 2 {
+		days := int(lastDate.Sub(firstDate).Hours() / 24)
+		h.SeriesSpanDays = &days
+		if firstOdo != nil && lastOdo != nil {
+			span := *lastOdo - *firstOdo
+			h.OdometerSpanKm = &span
+		}
+	}
 	// 健康度基准 = 铭牌（出厂标称）容量，来自环境变量 NOMINAL_BATTERY_KWH。
 	//
 	// 为什么不能用"历史最大值"当基准（v0.4.0 及以前的错误做法）：
@@ -877,6 +948,24 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- 工具 ----------
+
+// medianOfFloats 返回中位数（偶数个取两个中间值的平均）。
+//
+// ⚠️ v0.22.0：Go 标准库没有中位数，电池健康的新指标要用。
+// 取两个中间值的平均（而不是上中位数），与 numpy/pandas/R 一致 ——
+// 电池专家按教科书算法复算时要对得上。
+func medianOfFloats(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	s := append([]float64(nil), v...)
+	sort.Float64s(s)
+	n := len(s)
+	if n%2 == 1 {
+		return s[n/2]
+	}
+	return (s[n/2-1] + s[n/2]) / 2
+}
 
 func clampLimit(raw string, def int) int {
 	n, err := strconv.Atoi(raw)

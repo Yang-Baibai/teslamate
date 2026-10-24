@@ -88,17 +88,41 @@ class StatusStore(private val cache: StatusCache? = null) {
      *
      * 同步执行（SharedPreferences 的首次 get 会阻塞十几毫秒）——
      * 换来的是「冷启动第一帧就有数字」，不闪骨架屏。
+     *
+     * ⚠️ **v0.22.0（自托管运维评审 P0-2）：按车加载** ——
+     * 缓存键带 carId，且解出来的 `car_id` 必须与传入的一致。
+     * 否则切车 + 断网时，App 会在 B 车的标题下**显示 A 车的数据**。
      */
-    fun hydrate() {
+    fun hydrate(carId: Int) {
         if (status != null) return
-        cache?.load()?.let { hit ->
+        cache?.load(carId)?.let { hit ->
             status = hit.status
             cachedAt = hit.savedAt
         }
-        cache?.loadRangeContext()?.let { ctx ->
+        cache?.loadRangeContext(carId)?.let { ctx ->
             consumption = ctx.consumption
             recentAscentM = ctx.recentAscentM
         }
+    }
+
+    /**
+     * ⚠️ **v0.22.0（自托管运维评审 P0-2）：切车** ——
+     *
+     * 切车必须把内存里的车况**清掉**，否则：
+     *   ① 标题已经换成 B 车，数据还是 A 车的；
+     *   ② 断网时更糟 —— 落盘缓存按车分区后读不到 B 车，
+     *      但内存里还留着 A 车的数据照样显示。
+     *
+     * 清完立刻 hydrate 新车的缓存（有的话立刻就有数字）。
+     */
+    fun switchCar(carId: Int) {
+        status = null
+        cachedAt = null
+        consumption = null
+        recentAscentM = null
+        drives = emptyList()
+        error = null
+        hydrate(carId)
     }
 
     internal fun update(s: CarStatus) {
@@ -124,14 +148,14 @@ class StatusStore(private val cache: StatusCache? = null) {
         error = UserFacingException(message, ApiErrorKind.OTHER)
     }
 
-    internal fun updateDrives(list: List<Drive>) {
+    internal fun updateDrives(list: List<Drive>, carId: Int) {
         drives = list
         // ⚠️ v0.9.0：模型在这里建（而不是页面里 `remember`），
         // 这样才能一起落盘 —— 服务器挂掉时续航口径不变。
         consumption = ConsumptionModel.from(list)
         recentAscentM = list.firstOrNull()?.ascent_m
         consumption?.let {
-            cache?.saveRangeContext(CachedRangeContext(it, recentAscentM))
+            cache?.saveRangeContext(carId, CachedRangeContext(it, recentAscentM))
         }
     }
 }

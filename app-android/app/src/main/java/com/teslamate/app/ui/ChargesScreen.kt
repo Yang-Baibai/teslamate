@@ -54,6 +54,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -237,6 +239,22 @@ internal fun ChargeItem(
         modifier = modifier
             .fillMaxWidth()
             .cardDepth()
+            // ⚠️ v0.22.0（a11y）：**整卡可点但没有可访问名称** ——
+            // uiautomator dump 里充电行的 clickable 节点 content-desc 为空，
+            // TalkBack 聚焦上去读不出这是哪一次充电。
+            // 合并子节点语义并显式给名称（标题 + 类型 + 时间 + 充入量）。
+            .semantics(mergeDescendants = true) {
+                contentDescription = buildString {
+                    append(c.place.firstSegment() ?: "未知地点")
+                    append("，")
+                    append(if (c.is_dc) "直流快充" else "交流慢充")
+                    append("，")
+                    append(c.start_date.fmtShort())
+                    append("，充入 ")
+                    append(c.energy_added_kwh?.fmt(1) ?: "—")
+                    append(" 度")
+                }
+            }
             .pressable(onClick = onClick),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = accents.cardSurface),
@@ -299,10 +317,13 @@ internal fun ChargeItem(
             if (c.start_soc != null && c.end_soc != null) {
                 SocDeltaBar(c.start_soc, c.end_soc, charging = true)
             }
-            // 站点历史：至少 2 次才显示
-            if (stat != null && stat.sessions >= 2) {
+            // 站点历史：⚠️ v0.22.0：**只充过 1 次也显示** ——
+            // 原来门槛是 2 次，而「只充过 1 次」恰恰是**长途新服务区的常态**。
+            // 出发前第一次去一个新服务区，最需要知道的就是「这个桩大概多快」，
+            // 结果界面上一个字都没有。1 次时改说「实测」并标「仅 1 次」。
+            if (stat != null && stat.sessions >= 1) {
                 Text(
-                    stat.summary(),
+                    stationSummaryLine(stat),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -390,6 +411,72 @@ internal fun ChargeDetail(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             err?.let { item { ErrorBanner(it) } }
+
+            // ⚠️ v0.22.0（第 13 轮充电专家 P1-2）：**结论卡前置** ——
+            // 打开充电详情，**第一眼**要看到的是「这次充了多少、用了多久、这个桩多快」，
+            // 而不是地点、日期、场次明细 —— 那些是**证据**，不是结论。
+            //
+            // 官方 Tesla App 给三个数（充入电量 / 峰值功率 / 时长），
+            // 但少两个**决策必需量**：
+            //   ① **SOC 增益** —— 同样 20.6 度，从 68% 充到 100% 与
+            //      从 15% 充到 58% 完全是两回事，官方只给 kWh 不给百分比；
+            //   ② **平均功率**（时间加权）—— 峰值功率只有起步那几分钟有意义
+            //      （实测 22,850 个采样点里 >100 kW 只占 4.1%），
+            //      而「这个桩平均能跑多少 kW」才决定要等多久。
+            item {
+                SectionCard(modifier = Modifier.animateItem()) {
+                    BigStat(
+                        charge.energy_added_kwh?.fmt(1) ?: "—",
+                        "度 · 充入电池",
+                        hero = true,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    ) {
+                        InlineMetric("时长", minutesFmt(charge.duration_min))
+                        InlineMetric(
+                            "平均功率",
+                            charge.effectiveAvgPowerKw()?.let { "$it kW" } ?: "—",
+                        )
+                        InlineMetric(
+                            "峰值功率",
+                            charge.peak_power_kw?.let { "$it kW" } ?: "—",
+                        )
+                    }
+                    // SOC 增益：官方 App 不给，但它是「充了多少」的另一半。
+                    val s0 = charge.start_soc
+                    val s1 = charge.end_soc
+                    if (s0 != null && s1 != null) {
+                        Text(
+                            // ⚠️ 必须用 `${...}` —— `$` 后直接跟 `(` 不是合法的字符串模板
+                            // （Kotlin 只认 `$标识符` 与 `${表达式}`），
+                            // 那样写会把 `$((s1 - s0).coerceAtLeast(0))` **原样印在屏幕上**。
+                            "电量 $s0% → $s1%（+${(s1 - s0).coerceAtLeast(0)}%）",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                    // ⚠️ v0.22.0（充电专家 P2-4）：**补回了多少公里续航** ——
+                    // kWh 对多数用户无感，**公里**有感。
+                    // 用车机自己的标定续航差来算（不是用 kWh 除以一个 kWh/km 常数）——
+                    // 后者会因常数的取值而虚高。
+                    val r0 = charge.start_range_km
+                    val r1 = charge.end_range_km
+                    if (r0 != null && r1 != null) {
+                        val delta = r1 - r0
+                        if (kotlin.math.abs(delta) >= 1.0) {
+                            Text(
+                                "补回约 ${kotlin.math.abs(delta).toLong()} 公里续航" +
+                                    if (delta < 0) "（车机标定续航反而降了，可能与温度有关）" else "",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
 
             item {
                 Surface(
@@ -637,6 +724,55 @@ internal fun ChargeDetail(
                                 xWeights = timeWeights,
                                 contentDescription = "充电过程中电量变化曲线，从 ${socCurve.minOrNull()}% 升到 ${socCurve.maxOrNull()}%",
                             )
+                            // ⚠️ v0.22.0（第 13 轮充电专家 P1-2）：
+                            // **实测的「充到 80% 用了多久」** ——
+                            //
+                            // 这是**从曲线直接读出来的**，不是模型估的：
+                            // 取 SOC 首次达到 80% 的时间戳，减去**曲线起点**。
+                            //
+                            // 为什么重要：App 其它地方给的「充到 80% 约 N 分钟」
+                            // 是**用典型功率反推**的（而且过去用的是高估 45% 的采样均值），
+                            // 而这个是**这次真的花了多久**。官方 App 不给这个数。
+                            //
+                            // ⚠️ 起点必须用**实际起始 SOC**，不能写死「从 10%」——
+                            // 曲线常常从 30% 甚至 68% 才开始（中途才接上监控），
+                            // 写死 10% 会让「从 68% 到 80%」被说成「从 10% 到 80%」。
+                            // （实测踩过：一次 51 分钟的充电被算成「9 分钟」。）
+                            val startPt = curve.firstOrNull()
+                            val t80 = curve.firstOrNull { (it.battery_level ?: -1) >= 80 }?.date
+                            val startSoc = startPt?.battery_level
+                            if (startPt != null && t80 != null && startSoc != null &&
+                                t80.isAfter(startPt.date) && startSoc < 80
+                            ) {
+                                val mins = java.time.Duration.between(startPt.date, t80).toMinutes()
+                                if (mins in 1..600) {
+                                    Text(
+                                        "实测从 $startSoc% 充到 80% 用了 $mins 分钟（从曲线直接读）",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
+                            }
+                            // ⚠️ 充电专家建议的「**怎么读这条曲线**」——
+                            // 一条没有解读的曲线，用户只会得出「桩坏了」的结论。
+                            //
+                            // ⚠️ Compose 的 Text **不解析 Markdown** ——
+                            // 写 **高压段限功率** 会在界面上直接出现两个星号。
+                            val peakIdx = powers.indices.maxByOrNull { powers[it] }
+                            if (peakIdx != null && powers.size > 3) {
+                                val peakKw = powers[peakIdx]
+                                val tailKw = powers.takeLast(powers.size / 5).average()
+                                if (peakKw > 0 && tailKw < peakKw * 0.35 && charge.is_dc) {
+                                    Text(
+                                        "峰值 $peakKw kW 在 " +
+                                            (curve.getOrNull(peakIdx)?.date?.fmtShort() ?: "") +
+                                            "，之后一路降到约 ${tailKw.toInt()} kW —— " +
+                                            "这是直流桩的高压段限功率，不是桩坏了。",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         }
                     }
                 }

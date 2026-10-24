@@ -47,27 +47,45 @@ class StatusCache(context: Context) {
     /**
      * 读出上次成功取到的车况。
      *
+     * ⚠️ **v0.22.0（自托管运维评审 P0-2）：缓存**按车分区**。**
+     *
+     * 原来只有一个全局键 `last_status` —— 于是：
+     *   ① 在 A 车看到车况 → 切到 B 车 → 此时服务器不可达
+     *      → App 在 B 车的标题下**显示 A 车的**电量、位置、锁车状态、里程表。
+     *
+     * ADR #23（多车上下文）自己写着「读错数据的风险，不是体验问题」——
+     * 这正是同一类风险的未覆盖分支。
+     *
+     * 现在：键名带 carId，每台车各存一份。
+     * 另外还有一道**兜底**：解出来的 `car_id` 与请求的不一致就丢弃
+     * （防止历史版本留下的旧键被误读）。
+     *
      * 读不出来（没缓存 / JSON 损坏 / 时间戳非法）一律返回 null ——
      * 宁可没有，也不要半截数据。
      */
-    fun load(): CachedStatus? {
-        val raw = prefs.getString(KEY_STATUS, null) ?: return null
-        val savedAt = runCatching { Instant.parse(prefs.getString(KEY_SAVED_AT, null) ?: return null) }
+    fun load(carId: Int): CachedStatus? {
+        val raw = prefs.getString(statusKey(carId), null) ?: return null
+        val savedAt = runCatching { Instant.parse(prefs.getString(savedAtKey(carId), null) ?: return null) }
             .getOrNull() ?: return null
         val status = runCatching { json.decodeFromString(CarStatus.serializer(), raw) }.getOrNull() ?: return null
+        // 兜底：缓存里的车必须是这台车。
+        if (status.car_id != carId) return null
         return CachedStatus(status, savedAt)
     }
 
     /**
      * 写盘。
      *
+     * 按 `status.car_id` 分区 —— 调用方不用管分区，是数据自己说的。
+     *
      * 失败**静默** —— 缓存写不进去不该影响主流程（用户还是能正常看实时数据）。
      */
     fun save(status: CarStatus) {
+        val carId = status.car_id
         runCatching {
             prefs.edit()
-                .putString(KEY_STATUS, json.encodeToString(CarStatus.serializer(), status))
-                .putString(KEY_SAVED_AT, Instant.now().toString())
+                .putString(statusKey(carId), json.encodeToString(CarStatus.serializer(), status))
+                .putString(savedAtKey(carId), Instant.now().toString())
                 .apply()
         }
     }
@@ -77,26 +95,29 @@ class StatusCache(context: Context) {
      *
      * 与 [save] 分开写：它更新得**更频繁**（每次拉到行程就更新），
      * 而且体积小得多。
+     *
+     * ⚠️ v0.22.0：同样**按车分区** —— 它来自行程列表，也是按车的。
      */
-    fun saveRangeContext(ctx: CachedRangeContext) {
+    fun saveRangeContext(carId: Int, ctx: CachedRangeContext) {
         runCatching {
             prefs.edit()
-                .putString(KEY_RANGE, json.encodeToString(CachedRangeContext.serializer(), ctx))
+                .putString(rangeKey(carId), json.encodeToString(CachedRangeContext.serializer(), ctx))
                 .apply()
         }
     }
 
     /** 读出续航推算上下文；没有或已损坏返回 null。 */
-    fun loadRangeContext(): CachedRangeContext? {
-        val raw = prefs.getString(KEY_RANGE, null) ?: return null
+    fun loadRangeContext(carId: Int): CachedRangeContext? {
+        val raw = prefs.getString(rangeKey(carId), null) ?: return null
         return runCatching { json.decodeFromString(CachedRangeContext.serializer(), raw) }.getOrNull()
     }
 
     private companion object {
         const val PREFS = "tm_status_cache"
-        const val KEY_STATUS = "last_status"
-        const val KEY_SAVED_AT = "last_saved_at"
-        const val KEY_RANGE = "last_range_ctx"
+        // ⚠️ v0.22.0：键名带 carId —— 缓存**按车分区**（见 load 的说明）。
+        fun statusKey(carId: Int) = "last_status_car_$carId"
+        fun savedAtKey(carId: Int) = "last_saved_at_car_$carId"
+        fun rangeKey(carId: Int) = "last_range_ctx_car_$carId"
     }
 }
 

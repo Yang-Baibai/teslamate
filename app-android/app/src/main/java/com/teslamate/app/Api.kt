@@ -386,16 +386,46 @@ data class BatteryPoint(
     @Serializable(with = InstantSer::class) val date: Instant,
     val capacity_kwh: Double? = null,
     val end_soc: Int? = null,
+    /**
+     * ⚠️ v0.22.0：这个点用的是**哪个 kWh/km 常数**。
+     *
+     * 它是「可用容量」这个数的来源，也是「健康度」会漂移的原因
+     * —— 车主为修 Wh/km 显示改一次配置，容量就变一次。
+     * 随点下发至少**可核对**。
+     */
+    val efficiency_used: Double? = null,
+    /** 该次测量时的里程表（km） */
+    val odometer_km: Double? = null,
+    /** 能量反推口径的容量（充入 kWh ÷ ΔSOC% × 100，不需要 kWh/km 常数） */
+    val capacity_kwh_energy: Double? = null,
 )
 
 @Serializable
 data class BatteryHealth(
     val current_capacity_kwh: Double? = null,
     val max_capacity_kwh: Double? = null,
-    /** 铭牌（出厂标称）容量 —— 健康度的分母。缺它就无法验算「85%」这个数。 */
+    /** 铭牌（出厂标称）容量 —— 「占铭牌」的分母。缺它就无法验算这个数。 */
     val nominal_capacity_kwh: Double? = null,
     val health_percent: Double? = null,
     val series: List<BatteryPoint> = emptyList(),
+    // ⚠️ v0.22.0（电池健康专家 P0-1 / P0-2 / P0-3 / P1-1 / P1-5 / P1-6）
+    /**
+     * **相对首测**（百分比）—— 唯一**不受 `cars.efficiency` 影响**的健康指标。
+     *
+     * 分子分母同比例缩放，所以车主改那个常数，这个数一点都不变。
+     * 它回答的才是「电池比刚开始测的时候差了多少」。
+     */
+    val health_percent_of_baseline: Double? = null,
+    /** 首测容量（服务端取前 3 次的中位数） */
+    val baseline_capacity_kwh: Double? = null,
+    /** 严格档上限：只取**充到 100%** 的测量点 */
+    val max_capacity_kwh_strict: Double? = null,
+    /** 能量反推口径的容量中位数（与主口径互相印证） */
+    val capacity_kwh_energy: Double? = null,
+    /** 序列覆盖的天数 —— 不说清楚，车主会把那条线当成「电池的全部历史」 */
+    val series_span_days: Int? = null,
+    /** 序列覆盖的里程 */
+    val odometer_span_km: Double? = null,
 )
 
 @Serializable
@@ -460,8 +490,19 @@ class Api private constructor(private val base: String, private val token: Strin
                     //   401/403 → 令牌问题（界面要给出「去设置」的出口）
                     //   404 + no_data → 这台车还没数据（**正常状态**，走空状态引导）
                     //   5xx → 服务端问题（可重试）
+                    // ⚠️ v0.22.0（自托管运维评审 P0-4 + P1-3）：
+                    // ① `no_car` 也要给「前往设置」——
+                    //    服务端对「这台车在库里不存在」返回 404 + error_code=no_car，
+                    //    但客户端只认 `no_data`，于是落到 OTHER → 给的是**「重试」**。
+                    //    而重试永远不会成功（车号不对，重试一万次也没用）——
+                    //    用户按提示去设置页，按钮却不给他路。
+                    // ② 5xx **不用**服务端的原始错误 ——
+                    //    `writeErr(w, 500, err.Error())` 会把
+                    //    `ERROR: relation "…" does not exist (SQLSTATE 42P01)`
+                    //    这种数据库内部信息原样回给客户端。
                     val kind = when {
                         resp.code == 401 || resp.code == 403 -> ApiErrorKind.AUTH
+                        resp.code == 404 && errCode == "no_car" -> ApiErrorKind.AUTH
                         resp.code == 404 && errCode == "no_data" -> ApiErrorKind.NO_DATA
                         resp.code in 500..599 -> ApiErrorKind.SERVER
                         else -> ApiErrorKind.OTHER
@@ -470,8 +511,13 @@ class Api private constructor(private val base: String, private val token: Strin
                         when (resp.code) {
                             401 -> "访问令牌无效，请到「设置」页重新填写"
                             403 -> "没有访问权限，请到「设置」页检查令牌"
-                            404 -> serverMsg ?: "找不到该数据"
-                            in 500..599 -> serverMsg ?: "服务器暂时不可用，请稍后再试"
+                            404 -> when (errCode) {
+                                "no_car" ->
+                                    "这台车在服务器上不存在，请到「设置」页重新选择车辆"
+                                else -> serverMsg ?: "找不到该数据"
+                            }
+                            // ⚠️ v0.22.0：5xx 一律用本地文案，不回显数据库错误。
+                            in 500..599 -> "服务器内部错误，请稍后再试"
                             else -> serverMsg ?: "请求失败（HTTP ${resp.code}）"
                         },
                         kind,
@@ -482,13 +528,22 @@ class Api private constructor(private val base: String, private val token: Strin
         } catch (e: UserFacingException) {
             throw e // 已经是中文文案，原样上抛
         } catch (e: UnknownHostException) {
+            // ⚠️ v0.22.0（自托管运维评审 P1-3）：**别把 Tailscale 掉线说成「地址写错了」**。
+            //
+            // 原来写「请检查「设置」里的地址是否正确」——
+            // 但本部署走 Tailscale（ADR #9），地址**从没变过**，
+            // 失败最常见的原因是 **Tailscale 没连上**。
+            // 照着原来的文案，用户会把**好地址改坏**。
             throw UserFacingException(
-                "找不到服务器，请检查「设置」里的地址是否正确",
+                "连不上服务器（地址解析失败）。若服务器地址没改过，多半是 Tailscale 没连上。",
                 ApiErrorKind.NETWORK,
             )
         } catch (e: ConnectException) {
+            // ⚠️ v0.22.0：**删掉「手机与它在同一网络」** ——
+            // 本部署走 Tailscale，**从不需要同一网络**，这句是纯误导。
             throw UserFacingException(
-                "连不上服务器，请确认服务已启动、手机与它在同一网络",
+                "连不上服务器。请确认家里那台电脑开着、服务器在跑，" +
+                    "以及手机上的 Tailscale 已连接。",
                 ApiErrorKind.NETWORK,
             )
         } catch (e: SocketTimeoutException) {
@@ -497,10 +552,19 @@ class Api private constructor(private val base: String, private val token: Strin
             //   读取超时 = 连上了但服务器算得太慢（status 查询要扫 500 条 positions）
             // 原来一律说「连接超时，请确认手机和服务器在同一个网络」——
             // 服务器慢也被说成网络问题，**方向完全反了**。
-            val isConnect = e.message?.contains("connect", ignoreCase = true) == true
+            //
+            // ⚠️ v0.22.0：OkHttp 的连接超时抛出的 message 是「timeout」，
+            // **不含 "connect"** —— 原来那个字符串判定根本匹配不上，
+            // 「根本没连上」被说成「服务器响应太慢」。
+            // 现在**只要是 SocketTimeoutException** 就归到「连不上」那一侧，
+            // 读取超时由 OkHttp 的另一类异常（SocketTimeoutException 带 "read"）区分 ——
+            // 判据改用 message 里是否含 "read"（OkHttp 的 read timeout message 是 "timeout"，
+            // 但 socketTimeoutStartCall 的 read 超时会带 "read"）。
+            val isRead = e.message?.contains("read", ignoreCase = true) == true
             throw UserFacingException(
-                if (isConnect) "连不上服务器，请确认服务已启动、手机与它在同一网络"
-                else "服务器响应太慢，请稍后重试",
+                if (isRead) "服务器响应太慢，请稍后重试"
+                else "连不上服务器。请确认家里那台电脑开着、服务器在跑，" +
+                    "以及手机上的 Tailscale 已连接。",
                 ApiErrorKind.NETWORK,
             )
         } catch (e: SerializationException) {

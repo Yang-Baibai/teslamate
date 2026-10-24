@@ -291,8 +291,17 @@ private fun MainScaffold(
     //
     // ⚠️ v0.9.0：这里同步把**落盘缓存**也填上（hydrate）——
     // 冷启动第一帧就有数字，不闪骨架屏；服务器挂着的时候也还能看到上次已知。
-    val statusStore = remember {
-        StatusStore(StatusCache(ctx)).apply { hydrate() }
+    //
+    // ⚠️ v0.22.0（自托管运维评审 P0-2）：落盘缓存**按车分区**
+    // （原来只有一个全局键，切车 + 断网会显示别的车的数据）。
+    val statusStore = remember { StatusStore(StatusCache(ctx)) }
+
+    // ⚠️ v0.22.0：**按 carId 切换车况数据**。
+    //
+    // LaunchedEffect 的 key 是 carId —— 只有**换车**才会重启；
+    // 改地址 / 改令牌时 key 不变，数据不会闪一下白。
+    LaunchedEffect(settings.carId) {
+        statusStore.switchCar(settings.carId)
     }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -123,6 +124,21 @@ fun mergeRecords(drives: List<Drive>, charges: List<Charge>): List<RecordItem> {
 sealed interface RecordSelection {
     data class Dr(val drive: Drive) : RecordSelection
     data class Ch(val charge: Charge) : RecordSelection
+
+    /**
+     * ⚠️ v0.22.0（第 13 轮充电专家 P1-1）：**充电记录列表页**。
+     *
+     * 之前 App 里**看不到任何充电记录的列表** ——
+     * 充电只作为时间轴里的一个节点出现，
+     * 而「我一共充过多少次、都在哪充的、这个桩快不快」无处可答。
+     *
+     * 做成 `RecordSelection` 的一个变体（而不是在记录页里再嵌一层
+     * `AnimatedContent`）是刻意的：这样全 App **只有一层**转场动画，
+     * 从架构上绕开了「嵌套 AnimatedContent」那个坑。
+     *
+     * 数据不用重新拉 —— 记录页本来就已经拉了 `api.charges(carId, 300)`。
+     */
+    data object ChList : RecordSelection
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -239,6 +255,24 @@ fun RecordsScreen(
                                 currentId = settings.carId,
                                 onSelect = onCarChange,
                             )
+                            // ⚠️ v0.22.0：**充电记录入口**（闪电图标）。
+                            //
+                            // 放在顶栏而不是时间轴里，是因为：
+                            // ① 时间轴是**混合**的（充电与行程交替），
+                            //    在里面塞一个「全部充电记录」入口会让人以为充电是另一类记录；
+                            // ② 顶栏是 iOS 里「进入另一个维度」的惯例位置，
+                            //    不占滚动空间，也不会把时间轴的第一屏挤掉。
+                            //
+                            // 图标：闪电 = 充电（与记录页时间轴里的充电节点同图标）。
+                            IconButton(
+                                onClick = { onSelectionChange(RecordSelection.ChList) },
+                            ) {
+                                Icon(
+                                    Icons.Filled.Bolt,
+                                    contentDescription = "充电记录",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         },
                     )
                     // ⚠️ v0.9.0：加下拉刷新（原来只有一次性加载，网络一断就再也不请求）
@@ -317,6 +351,15 @@ fun RecordsScreen(
                     routeHistory = routeKeyOf(sel.drive)?.let { routeHistoryMap[it] }.orEmpty(),
                 ) { onSelectionChange(null) }
                 is RecordSelection.Ch -> ChargeDetail(sel.charge, api, stationStats) { onSelectionChange(null) }
+                // ⚠️ v0.22.0：**充电记录列表页** ——
+                // 数据直接用记录页已经拉好的 `charges`（不重复请求），
+                // 站点统计也用同一份 `stationStats` —— 同一份数据、同一套口径。
+                is RecordSelection.ChList -> ChargeListPage(
+                    charges = charges,
+                    stats = stationStats,
+                    onSelect = { onSelectionChange(RecordSelection.Ch(it)) },
+                    onBack = { onSelectionChange(null) },
+                )
             }
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
