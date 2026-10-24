@@ -79,7 +79,7 @@ fun DrivesScreen(
             loading = false
             return@LaunchedEffect
         }
-        runCatching { withContext(Dispatchers.IO) { api.drives(settings.carId, 50) } }
+        runCatching { withContext(Dispatchers.IO) { api.drives(settings.carId, 200) } }
             .onSuccess { list = it; error = null; loading = false }
             .onFailure { error = it.message; loading = false }
     }
@@ -207,6 +207,17 @@ private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Un
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 InlineMetric("耗电", "${d.energy_kwh?.fmt(1) ?: "—"} kWh")
                 InlineMetric("能耗", "${d.wh_per_km?.fmt(0) ?: "—"} Wh/km")
+                // ⚠️ v0.8.6（长途自驾党复核）：把**到站电量**放进列表行。
+                // 他的 18 次长途停靠，到达电量中位数只有 14%、5 次 ≤10% ——
+                // 这个数是「这次长途够不够」的答案，却只躺在详情页第三张卡里。
+                // end_soc <= 15 用琥珀色提示「到站偏低」。
+                d.end_soc?.let { soc ->
+                    InlineMetric(
+                        "到达",
+                        "$soc%",
+                        valueColor = if (soc <= 15) accents.warnAmber else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
                 InlineMetric("最高", "${d.speed_max ?: "—"} km/h")
             }
         }

@@ -963,7 +963,7 @@ fun VehicleTopView(
             }
             wheels.forEach { wl ->
                 val bad = reading?.isAlerting(wl.value, wl.label) == true
-                val near = reading?.isNear(wl.value) == true
+                val near = reading?.isNear(wl.value, wl.label) == true
                 val wColor = when {
                     bad -> danger.copy(alpha = pulseAlpha)
                     near -> warn
@@ -1001,6 +1001,15 @@ data class TpmsReadingUi(
     val maxBar: Double = 3.3,
     /** 服务端判定的异常轮次（"左前"/"右前"/"左后"/"右后"）；非空时优先 */
     val alertWheels: Set<String> = emptySet(),
+    /**
+     * 软告警轮次（Tesla 自己的 `tpms_soft_warning` / 本机判定的「接近阈值」）。
+     *
+     * ⚠️ v0.8.6（长途自驾党复核）：Tesla 的 `tpms_hard_warning` 是**绝对阈值**告警，
+     * `tpms_soft_warning` 是接近阈值；而**单胎比四轮中位低 0.2 bar**（漏气主信号）
+     * 只有四轮互比能发现 —— Tesla 的 flag 不做互比。**两者都要**：
+     * hard / 本地离群 = 红，soft / 接近 = 琥珀。
+     */
+    val warnWheels: Set<String> = emptySet(),
 ) {
     /** 单胎离群阈值（与服务端 `TpmsOutlierDelta` 对齐，仅作兼容兜底） */
     private val outlierDelta = 0.2
@@ -1016,8 +1025,9 @@ data class TpmsReadingUi(
     }
 
     /** 接近阈值（未触发告警）——用琥珀色描边提示 */
-    fun isNear(p: Double?): Boolean {
-        if (p == null || isAlerting(p)) return false
+    fun isNear(p: Double?, label: String? = null): Boolean {
+        if (p == null || isAlerting(p, label)) return false
+        if (label != null && label in warnWheels) return true
         return p < minBar + 0.15 || p > maxBar - 0.15
     }
 }

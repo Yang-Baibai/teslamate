@@ -245,10 +245,15 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                                     ?: drives.firstOrNull()?.avg_speed_kph?.toDouble()
                                     ?: 60.0
                                 val whBucket = consumption?.whPerKm(refSpeed)
+                                // ⚠️ v0.8.6 修一个真 bug：模型里有爬升修正（≥200m ×1.05），
+                                // 但调用处**从来没传 ascentM** —— 参数默认 null，修正从未生效。
+                                // 爬升从最近一次行程取（车况页已经拉了 drives(200) 到 StatusStore）。
+                                val recentAscent = drives.firstOrNull()?.ascent_m
                                 val trueRange = consumption?.trueRangeKm(
                                     ratedRangeKm = ratedRange,
                                     speedKph = refSpeed,
                                     outsideTempC = st.outside_temp,
+                                    ascentM = recentAscent,
                                 )
                                 BigStat(
                                     (trueRange ?: ratedRange)?.fmt(0) ?: "—",
@@ -529,9 +534,11 @@ private fun TpmsCard(st: CarStatus) {
 
     // 告警轮次：实时源的判定（Tesla 自己的 hard/soft warning）优先
     val alertWheels = (st.tpms_live_alert_wheels + st.tpms_alert_wheels).toSet()
+    val warnWheels = st.tpms_live_warn_wheels.toSet()
     val reading = TpmsReadingUi(
         fl, fr, rl, rr, st.tpms_min_bar, st.tpms_max_bar,
         alertWheels = alertWheels,
+        warnWheels = warnWheels,
     )
 
     SectionCard(
