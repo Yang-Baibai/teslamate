@@ -90,10 +90,10 @@ fun MaintenanceReminder.bannerText(currentOdoKm: Double?): String {
         buildString {
             append("$label 超期 ${kotlin.math.abs(remainingKm).roundToInt()} 公里")
             append(" · 该在里程表 $due 公里时做")
-            // ⚠️ v0.14.0（单位审校 P0-3）：当前里程表也用**千分位** ——
-            // 同一个数在横幅里没千分位、在车况页那行有千分位，
-            // 用户会以为是两个数。
-            currentOdoKm?.let { append("，现在 ${it.fmtThousands()} 公里") }
+            // ⚠️ v0.20.0（车主 P2-5）：**不再重复当前里程表** ——
+            // 车况页下方那行「里程表 101,455 公里」已经写着同一个数，
+            // 一字不差地出现两次，用户会以为是两个不同的数。
+            // 这里只保留「超了多少 / 该在多少时做」——这两个数下方没有。
         }
     } else {
         "$label 还有 ${remainingKm.roundToInt()} 公里到期（该在里程表 $due 公里时做）"

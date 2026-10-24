@@ -38,6 +38,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -51,11 +53,13 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -81,7 +85,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -325,26 +331,54 @@ fun ErrorBanner(
     }
 }
 
-/** 提示横幅（tonal，中性提醒）——用于「数据不是最新的」这类非错误信息 */
+/**
+ * 提示横幅（tonal，中性提醒）——用于「数据不是最新的」这类非错误信息。
+ *
+ * ⚠️ **v0.20.0**：新增可选的 `onClick` —— 可点的中性横幅。
+ * 保养超期这类「**要行动、但今天不会变**」的事用它承载：
+ * 中性色 + 一键直达，比红色横幅安静，又不丢失出口。
+ */
 @Composable
-fun NoticeBanner(text: String, modifier: Modifier = Modifier) {
+fun NoticeBanner(
+    text: String,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
+    val ctx = LocalContext.current
     Surface(
         color = MaterialTheme.colorScheme.tertiaryContainer,
         shape = RoundedCornerShape(16.dp),
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable {
+                        Haptics.tick(ctx)
+                        onClick()
+                    }
+                } else {
+                    Modifier
+                }
+            ),
     ) {
-        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
             Icon(
                 Icons.Filled.Info,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                modifier = Modifier.size(18.dp),
+                // ⚠️ v0.20.0（a11y 评审 P1-7）：图标**顶端对齐** ——
+                // 原来 `Alignment.CenterVertically` 让 18dp 图标落在 3 行文字的中间，
+                // 2 倍字号下正好把一句话拦腰截断（「该在里 | 程表 99,000 公里」）。
+                modifier = Modifier
+                    .padding(top = 2.dp)
+                    .size(18.dp),
             )
             Spacer(Modifier.width(8.dp))
             Text(
                 text,
                 color = MaterialTheme.colorScheme.onTertiaryContainer,
                 style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f),
             )
         }
     }
@@ -637,7 +671,18 @@ fun SegmentedTabs(
                             Haptics.selection(ctx)
                             onSelect(index)
                         }
-                        .padding(vertical = 9.dp, horizontal = 2.dp),
+                        // ⚠️ v0.20.0（a11y 评审 P1-2）：**触控目标 38dp → 44dp**。
+                        // 原来 vertical 9dp + labelLarge 行高 20dp = 38dp，
+                        // 低于 WCAG 2.5.8 的 44dp；horizontal 2.dp 更让相邻段
+                        // 的点击区几乎贴死（2 倍字号截图里四段几乎相接）。
+                        .padding(vertical = 12.dp, horizontal = 4.dp)
+                        // ⚠️ v0.20.0（a11y 评审 P0-2）：合并子节点语义，
+                        // 否则每一段在无障碍树里都是「可点击但没有名字」。
+                        .semantics(mergeDescendants = true) {
+                            // ⚠️ 用 `this.selected` 显式指向语义属性 ——
+                            // 外层已经有一个同名局部 val，直接写 `selected =` 会解析到它。
+                            this.selected = index == selectedIndex
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -862,8 +907,16 @@ fun CollapsibleSection(
                     },
                     scaleDown = 0.96f,
                 )
-                .semantics {
-                    contentDescription = if (expanded) "收起$label" else "展开$label"
+                // ⚠️ v0.20.0（a11y 评审 P1-1）：**触控目标补到 44dp** ——
+                // 原来这一行零 padding，高只有文字行高 16dp（2 倍字下也才 ~20dp），
+                // 是一行灰字加小三角，完全不像可点。
+                .padding(vertical = 14.dp)
+                // ⚠️ v0.20.0（a11y 评审 P1-6）：**不再用 contentDescription 覆盖文本** ——
+                // 原来 contentDescription = "展开怎么算的"，而子 Text 本身就写着「怎么算的」，
+                // TalkBack 会念「展开怎么算的，怎么算的」—— 念两遍。
+                // 改成合并子节点 + 只补一个**状态**描述。
+                .semantics(mergeDescendants = true) {
+                    stateDescription = if (expanded) "已展开" else "已折叠"
                 },
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -956,6 +1009,150 @@ fun SocDeltaBar(
             )
         }
     }
+}
+
+/**
+ * iOS 风格的设置行：**标题 + 当前值摘要 + 右侧 ›**。
+ *
+ * ⚠️ **v0.20.0（iOS IA 评审 P1-1）新增**。
+ *
+ * iOS 设置页根页的铁律是：**根页只放「行」，不放可编辑内容**。
+ * 每行右侧是**当前值的摘要**（灰字），点进去才是编辑界面。
+ * 这与「根页直接铺一排输入框」的区别不只是样子 —— 后者让用户
+ * 面对一张**没有边界的表单**，不知道哪些已经生效、哪些还没保存。
+ *
+ * 参数：
+ * - `subtitle`：右侧灰字摘要。**空字符串则不渲染副标题**（不是渲染空白）。
+ * - `onClick` 为 null → 该行**不可点**（无 › 箭头、无按压反馈）。
+ *   ⚠️ 「看起来可点但实际不可点」是本项目反复出现的硬伤，
+ *   所以不可点的行**不给箭头** —— 箭头就是「可点」的语义承诺。
+ */
+@Composable
+fun SettingRow(
+    title: String,
+    subtitle: String? = null,
+    modifier: Modifier = Modifier,
+    showChevron: Boolean = true,
+    onClick: (() -> Unit)? = null,
+) {
+    val accents = LocalAccentColors.current
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            // ⚠️ v0.20.0（a11y 评审 P0-2）：**合并子节点语义并显式给名称**。
+            //
+            // ⚠️ **踩过的坑**：`semantics(mergeDescendants = true) { }` 配**空 lambda**
+            // 是**无效的** —— 空 lambda 不设置任何语义属性，
+            // Compose 根本不会创建语义节点，合并也就无处发生。
+            // uiautomator dump 里这一行仍然是「可点击但没有名字」。
+            //
+            // 所以这里必须**真的设一个属性**（contentDescription），
+            // 语义节点才会被创建、合并才会生效。
+            // 名称由「标题 + 当前值」拼成 —— 与 iOS 设置页读屏的行为一致。
+            .semantics(mergeDescendants = true) {
+                contentDescription = listOfNotNull(
+                    title,
+                    subtitle?.takeIf { it.isNotBlank() },
+                ).joinToString("，")
+            }
+            // ⚠️ 必须**具名**传 onClick ——
+            // `pressable` 的最后一个参数是 `onPressed`，trailing lambda 会传给它，
+            // 于是 onClick 缺参数（编译报 "No value passed for parameter 'onClick'"）。
+            .then(
+                if (onClick != null) {
+                    Modifier.pressable(onClick = { onClick() })
+                } else {
+                    Modifier
+                }
+            )
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            if (!subtitle.isNullOrEmpty()) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (onClick != null && showChevron) {
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                // 箭头是纯装饰：行本身有标题，TalkBack 念标题即可，
+                // 念「箭头」只会制造噪音（WCAG 2.5.3 标签一致性）。
+                contentDescription = null,
+                tint = accents.cardStrokeEnd.copy(alpha = 0.9f),
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 二级页标题栏：**‹ 上一级标题** + 当前页标题。
+ *
+ * ⚠️ **v0.20.0（iOS IA 评审 P1-2）新增**。
+ *
+ * 原来的二级页（充电详情 / 行程详情）只有一枚 **20dp 裸箭头**，
+ * 没有上一级的名字 —— 用户按之前**不知道自己会回到哪**。
+ * iOS 的返回项是「‹ + 上一级页面标题」（比如「‹ 设置」），
+ * 既说明了「这是二级页」，也说明了「返回去哪」。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SecondaryTitleBar(
+    title: String,
+    backLabel: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val ctx = LocalContext.current
+    TopAppBar(
+        modifier = modifier,
+        title = { ScreenTitle(title) },
+        navigationIcon = {
+            Row(
+                modifier = Modifier
+                    // ⚠️ v0.20.0（a11y 评审 P0-2）：**合并子节点语义 + 显式名称** ——
+                    // 返回箭头节点原来在无障碍树里是「可点击但没有名字」。
+                    // semantics 必须放在 clickable **之前**（外层），
+                    // 外层 merging 节点才会把内层的 role/onClick 一并收进来。
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = "返回$backLabel"
+                    }
+                    .clickable {
+                        Haptics.selection(ctx)
+                        onBack()
+                    }
+                    .padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    // 返回箭头本身不单独念 —— 整行是一个语义节点，
+                    // 名称由旁边的「上一级标题」提供。
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(3.dp))
+                Text(
+                    backLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        },
+    )
 }
 
 /**

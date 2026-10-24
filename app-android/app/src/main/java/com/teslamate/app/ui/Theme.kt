@@ -84,6 +84,26 @@ data class AccentColors(
      * 现在提到 #8C939B（白底 **3.31:1** ✓）。
      */
     val chartBaseline: Color,
+    /**
+     * 能量紫：**行驶耗电**专用色。
+     *
+     * ⚠️ **v0.20.0（车主 P1-2）新增**。
+     *
+     * `StatsScreen.kt` 里「行驶耗电（度）」这张图的注释白纸黑字写着
+     * 「现在用**能量紫**」—— 但代码是 `colorScheme.tertiary`，
+     * 而 tertiary 在 v0.15.0 被**收敛成中性冷灰蓝** #4A5760。
+     * 交流慢充图例是 `secondary` #3A4750 —— 两者只差一档明度，
+     * 肉眼看几乎是同一个深灰。
+     *
+     * 车主原话：「我在用量页扫三张图，第三张的柱子和我上一张图图例里的
+     * 「交流慢充」是同一个深灰色，我一度以为下面那张也是充电数据。」
+     *
+     * 不能改 `tertiary`（它被收敛正是为了避免第二个强调色），
+     * 所以另开一个**独立色相**的 token：
+     *   浅 #6B4FBF 对白 **6.15:1** ✓
+     *   深 #A98BF0 对 #1C1C1E **7.24:1** ✓
+     */
+    val energyViolet: Color,
     /** 玻璃面（半透明底色） */
     val glassTint: Color,
     /** 玻璃面上的高光描边（顶部 1px） */
@@ -116,12 +136,18 @@ private val LightAccents = AccentColors(
     energyBlue = Color(0xFF2F5FD0),
     chargeGreen = Color(0xFF1E9E62),
     chargeGreenText = Color(0xFF0F6B41),
-    warnAmber = Color(0xFFB26A00),
+    // ⚠️ v0.20.0（a11y 评审 P1-5）：#B26A00 → #9A5B00
+    // 原值对白只有 **4.24:1**，低于文字 AA 要求的 4.5:1 ——
+    // 而它是用在**文字**上的：保养卡「还有 N 公里」、
+    // 线路余量表「到达时剩 16%」、行程电量的琥珀数值、图表的保底标注。
+    // 新值对白 **5.43:1**，对卡片内凹块 #EBEBF0 也有 4.57:1。
+    warnAmber = Color(0xFF9A5B00),
     danger = Color(0xFFD13438),
     chartTrack = Color(0xFF77777D),
     // ⚠️ v0.14.0（苹果 HIG P1）：#9AA1A8 → #8C939B
     // 参考线是非文字图形，WCAG 1.4.11 要求 ≥3:1；原值在白底只有 2.78:1。
     chartBaseline = Color(0xFF8C939B),
+    energyViolet = Color(0xFF6B4FBF),
     glassTint = Color(0x99FFFFFF),
     glassHighlight = Color(0x66FFFFFF),
     // ⚠️ v0.14.0（苹果 HIG P1）：**单光源方向写反了**。
@@ -150,9 +176,19 @@ private val DarkAccents = AccentColors(
     chargeGreen = Color(0xFF2FBF71),
     chargeGreenText = Color(0xFF5FD69A),
     warnAmber = Color(0xFFF5A623),
-    danger = Color(0xFFE5484D),
-    chartTrack = Color(0xFF5A5A5E),
+    // ⚠️ v0.20.0（a11y 评审 P1-5）：#E5484D → #FF6B6E
+    // 原值对**卡片面** #1C1C1E 只有 4.35:1（低于文字 4.5:1）——
+    // 注释里的「对底色达标」是拿 #000000 算的，而它实际画在卡片上。
+    // 新值对 #1C1C1E **6.14:1**，对 #000000 7.58:1。
+    danger = Color(0xFFFF6B6E),
+    // ⚠️ v0.20.0（a11y 评审 P1-4）：#5A5A5E → #6E6E76
+    // 轨道（空槽弧 / 能量条空槽 / 0~100% 标尺）实际画在**卡片面** #1C1C1E 上，
+    // 原值只有 **2.48:1** < 3:1（非文字图形 WCAG 1.4.11）。
+    // 注释里的「深 3.1:1」是拿页面底 #000000 算的 —— 载体算错了。
+    // 新值对 #1C1C1E **3.37:1**，对 #000000 4.15:1。
+    chartTrack = Color(0xFF6E6E76),
     chartBaseline = Color(0xFF6E6E76),
+    energyViolet = Color(0xFFA98BF0),
     glassTint = Color(0x8C1C1C1E),
     glassHighlight = Color(0x33FFFFFF),
     shadowAmbient = Color(0x40000000),
@@ -233,7 +269,11 @@ private val LightColors = lightColorScheme(
     surfaceContainer = Color(0xFFFFFFFF),
     surfaceContainerHigh = Color(0xFFF2F2F4),   // 内凹块
     surfaceContainerHighest = Color(0xFFE8E8EB),
-    outline = Color(0xFFB0B0B6),
+    // ⚠️ v0.20.0（a11y 评审 P2）：#B0B0B6 → #8E8E93
+    // `OutlinedButton` 的**唯一**外框 —— 原值对白只有 2.16:1，
+    // 浅色下几乎看不见（2 倍字号截图里「仅测试连接」的边框极淡）。
+    // 新值 3.26:1，满足非文字图形 ≥3:1。
+    outline = Color(0xFF8E8E93),
     outlineVariant = Color(0xFFE0E0E5),
 )
 
@@ -271,7 +311,10 @@ private val DarkColors = darkColorScheme(
     surfaceContainer = Color(0xFF1C1C1E),
     surfaceContainerHigh = Color(0xFF2C2C2E),
     surfaceContainerHighest = Color(0xFF3A3A3C),
-    outline = Color(0xFF48484A),
+    // ⚠️ v0.20.0（a11y 评审 P2）：#48484A → #6E6E76
+    // 对**卡片面** #1C1C1E 原值只有 1.86:1 —— 深色下描边按钮的外框基本不存在。
+    // 新值 3.37:1。
+    outline = Color(0xFF6E6E76),
     outlineVariant = Color(0xFF38383A),
 )
 

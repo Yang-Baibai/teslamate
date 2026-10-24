@@ -2,6 +2,8 @@
 
 package com.teslamate.app.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -17,10 +19,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -34,7 +38,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,6 +52,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -59,10 +67,41 @@ import com.teslamate.app.AppSettings
 import com.teslamate.app.BuildConfig
 import com.teslamate.app.Car
 import com.teslamate.app.Haptics
+import com.teslamate.app.fmtThousands
 import com.teslamate.app.saveSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/**
+ * 设置页的二级页路由。
+ *
+ * ⚠️ **v0.20.0（iOS IA 评审 P1-1）新增**。
+ *
+ * 原来设置页是**一张长表单**：5 张 `SectionCard` 串在一条滚动里，
+ * 服务器地址、访问令牌、四个保养字段、帮助条目全铺在根页上。
+ *
+ * iOS 设置页的铁律是**根页只放行**：
+ * 每行 = 一个设置项 + **当前值的摘要**（灰字）+ 右侧 `›`；
+ * 点进去才是编辑界面。区别不只是样子 —— 长表单让用户面对一张
+ * **没有边界的表单**，不知道哪些已经生效、哪些还没保存。
+ */
+enum class SettingsRoute {
+    /** 服务器地址 / 访问令牌 */
+    Server,
+
+    /** 选择当前车辆 */
+    Vehicles,
+
+    /** 保养与轮胎基准 */
+    Maintenance,
+
+    /** 怎么找到地址和令牌 */
+    Help,
+
+    /** 版本与更新说明 */
+    About,
+}
 
 /**
  * 设置页。
@@ -78,12 +117,35 @@ import kotlinx.coroutines.withContext
  * - 「显示令牌」→ [IosSwitch]（51×31dp 胶囊，iOS 开关）
  * - 「选择车辆」→ **整行可点 + 右侧对勾**（不是 radio 按钮）
  * - 次要按钮 → 中性描边（原来「保存」是**红字描边**，和主按钮的实心红撞色）
+ *
+ * ⚠️ **v0.20.0（iOS IA 评审 P1-1）**：改成**根页（分组列表）+ 5 个二级页**。
+ * 详见 [SettingsRoute]。
  */
 @Composable
-fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
+fun SettingsScreen(
+    settings: AppSettings,
+    modifier: Modifier = Modifier,
+    /**
+     * 车辆列表。
+     *
+     * ⚠️ v0.20.0（P1-4）：由 `AppRoot` 传入，**不再自己拉一次**。
+     * 原来这里声明了一份本地 `cars` 并在 `LaunchedEffect` 里再拉一遍 ——
+     * 同一份数据两个来源，且失败时**静默**（没有 onFailure），
+     * 于是令牌失效时「选择车辆」整组直接消失 ——
+     * 而令牌失效正是用户被引导到设置页的时刻，他到这里却看不到任何车辆信息。
+     */
+    cars: List<Car> = emptyList(),
+    /** 当前二级页；null = 根页。 */
+    route: SettingsRoute? = null,
+    /** 切换二级页。传 null 回根页。 */
+    onRouteChange: (SettingsRoute?) -> Unit = {},
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // ⚠️ 编辑态放在**顶层**：切到二级页再切回来，草稿不丢。
+    // （放在子页面里的话，AnimatedContent 换 targetState 会 dispose 旧内容，
+    //   草稿随之消失 —— 用户填了一半被「车辆」页吸引走，回来发现白填了。）
     var url by remember(settings) { mutableStateOf(settings.serverUrl) }
     var token by remember(settings) { mutableStateOf(settings.token) }
     var carId by remember(settings) { mutableStateOf(settings.carId) }
@@ -98,21 +160,55 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
     var serviceInterval by remember(settings) { mutableStateOf(curBase.serviceIntervalKm.toString()) }
     var tireOdo by remember(settings) { mutableStateOf(curBase.tireOdoKm) }
     var tireInterval by remember(settings) { mutableStateOf(curBase.tireIntervalKm.toString()) }
-    var cars by remember { mutableStateOf<List<Car>>(emptyList()) }
     var showToken by remember { mutableStateOf(false) }
     var testing by remember { mutableStateOf(false) }
     var testOk by remember { mutableStateOf<Boolean?>(null) }
     var testMsg by remember { mutableStateOf<String?>(null) }
-    var savedHint by remember { mutableStateOf(false) }
+    // ⚠️ v0.20.0（P0-3）：保存反馈**按语义域分开** ——
+    // 服务器组保存完，不该让「保养」页也显示「已保存」。
+    var serverSaved by remember { mutableStateOf(false) }
+    var baselineSaved by remember { mutableStateOf(false) }
+    /** 车辆列表兜底：App 级拉取失败时，用户能在这里手动重试。 */
+    var reloadTick by remember { mutableStateOf(0) }
+    var listError by remember { mutableStateOf<String?>(null) }
 
-    fun save() {
+    // ⚠️ v0.20.0（iOS IA 评审 P0-2）：**保存动作拆成三个互不越界的函数**。
+    //
+    // 原来只有一个 `save()`，无条件把本地编辑态 `url`/`token`/`carId` **连同**保养字段
+    // 一起写进 `AppSettings`。于是：
+    //
+    //   用户在「服务器连接」里把地址手滑改成 http://10.0.2.9:8090（**没点测试**）
+    //   → 往下滚 → 点「保存保养与轮胎设置」
+    //   → 新地址 + 旧令牌一起落盘 → 车况/记录/用量三页同时 401
+    //   → 而用户完全不知道是自己刚才那一按导致的。
+    //
+    // 这等于在 v0.9.0 建立「401 必须有出口」机制之后，**又从背后捅了一刀**。
+    //
+    // 现在按**语义域**拆开：每个保存动作只写自己那组字段，
+    // 其余字段从 `settings`（已落盘的事实源）原样带回。
+    //
+    // ⚠️ 注意用的是 `settings.copy(...)` 而不是重新 `AppSettings(...)` ——
+    // 后者会把没提到的字段重置成默认值（token 变空、基准归零）。
+    /** 只写服务器地址 / 令牌。保养基准与 perCar 原样带回。 */
+    fun saveServer() {
         scope.launch {
-            // ⚠️ v0.16.0：写进**当前车**的那一套基准。
-            //
-            // 旧字段也一起写（保留回滚安全），但 `perCar` 才是新的事实源 ——
-            // `baselinesFor()` 只在「该车没配过」时才回落到旧字段。
+            ctx.saveSettings(
+                settings.copy(
+                    serverUrl = url,
+                    token = token,
+                    carId = carId,
+                )
+            )
+        }
+        serverSaved = true
+        baselineSaved = false
+    }
+
+    /** 只写保养 / 轮胎基准。服务器地址与令牌原样带回（**绝不碰**）。 */
+    fun saveBaselines() {
+        scope.launch {
+            // ⚠️ 空串 = 不填 = 不启用提醒（0 表示未设置）
             val b = com.teslamate.app.CarBaselines(
-                // ⚠️ 空串 = 不填 = 不启用提醒（0 表示未设置）
                 serviceOdoKm = serviceOdo,
                 serviceIntervalKm = serviceInterval.trim().toIntOrNull() ?: 20000,
                 tireOdoKm = tireOdo,
@@ -125,10 +221,7 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                 next.remove(carId)
             }
             ctx.saveSettings(
-                AppSettings(
-                    serverUrl = url,
-                    token = token,
-                    carId = carId,
+                settings.copy(
                     serviceOdoKm = b.serviceOdoKm,
                     serviceIntervalKm = b.serviceIntervalKm,
                     tireOdoKm = b.tireOdoKm,
@@ -137,20 +230,278 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                 )
             )
         }
-        savedHint = true
+        baselineSaved = true
+        serverSaved = false
     }
 
-    LaunchedEffect(settings) {
+    /** 只切当前车。服务器地址与令牌原样带回（**绝不碰**）。 */
+    fun saveCarSelection() {
+        scope.launch {
+            ctx.saveSettings(settings.copy(carId = carId))
+        }
+        serverSaved = false
+        baselineSaved = false
+    }
+
+    /**
+     * 测一次连接。
+     *
+     * ⚠️ v0.20.0：原来这段逻辑在两个按钮的 onClick 里**各抄了一份**，
+     * 改一处漏一处 —— 现在抽成一个函数，两个按钮共用。
+     */
+    suspend fun runTest() {
+        testing = true
+        testOk = null
+        testMsg = null
+        val api = Api.create(url, token)
+        when {
+            api == null -> {
+                testOk = false
+                testMsg = "地址格式无效（需要 http:// 或 https:// 开头）"
+            }
+            else -> runCatching { withContext(Dispatchers.IO) { api.cars() } }
+                .onSuccess {
+                    testOk = true
+                    testMsg = "连接成功，发现 ${it.size} 台车"
+                    if (it.none { car -> car.id == carId }) {
+                        carId = it.first().id
+                    }
+                }
+                .onFailure {
+                    testOk = false
+                    testMsg = it.message ?: "连接失败"
+                }
+        }
+        testing = false
+    }
+
+    // ⚠️ v0.20.0（P1-4）：车辆列表的兜底重试 ——
+    // App 级拉取失败时（令牌失效 / 服务器离线），这个页给一个「重试」出口。
+    LaunchedEffect(reloadTick) {
+        if (reloadTick == 0) return@LaunchedEffect
         val api = settings.api() ?: return@LaunchedEffect
         runCatching { withContext(Dispatchers.IO) { api.cars() } }
-            .onSuccess { if (it.isNotEmpty()) cars = it }
+            .onSuccess { listError = null }
+            .onFailure { listError = it.message ?: "连接失败" }
     }
 
+    // ⚠️ v0.20.0：**唯一的 AnimatedContent** ——
+    // 根页与二级页之间的切换全部由这一层负责，
+    // 所以**永远不会出现嵌套 AnimatedContent**（那个才是之前担心的风险源）。
+    AnimatedContent(
+        targetState = route,
+        modifier = modifier,
+        transitionSpec = { pushDetailTransition(this) },
+        label = "settingsRoute",
+    ) { r ->
+        when (r) {
+            null -> SettingsRootPage(
+                settings = settings,
+                cars = cars,
+                onOpen = { onRouteChange(it) },
+            )
+            SettingsRoute.Server -> {
+                BackHandler { onRouteChange(null) }
+                SettingsServerPage(
+                    url = url,
+                    token = token,
+                    showToken = showToken,
+                    onUrlChange = { url = it; testOk = null; testMsg = null; serverSaved = false },
+                    onTokenChange = { token = it; testOk = null; testMsg = null; serverSaved = false },
+                    onToggleToken = { showToken = !showToken },
+                    testing = testing,
+                    testOk = testOk,
+                    testMsg = testMsg,
+                    saved = serverSaved,
+                    onSaveAndTest = {
+                        saveServer()
+                        scope.launch { runTest() }
+                    },
+                    onTestOnly = { scope.launch { runTest() } },
+                    onBack = { onRouteChange(null) },
+                )
+            }
+            SettingsRoute.Vehicles -> {
+                BackHandler { onRouteChange(null) }
+                SettingsVehiclesPage(
+                    cars = cars,
+                    carId = carId,
+                    error = listError,
+                    onSelect = { id ->
+                        carId = id
+                        saveCarSelection()
+                    },
+                    onRetry = { reloadTick++ },
+                    onBack = { onRouteChange(null) },
+                )
+            }
+            SettingsRoute.Maintenance -> {
+                BackHandler { onRouteChange(null) }
+                SettingsMaintenancePage(
+                    carName = cars.firstOrNull { it.id == carId }?.name,
+                    serviceOdo = serviceOdo,
+                    serviceInterval = serviceInterval,
+                    tireOdo = tireOdo,
+                    tireInterval = tireInterval,
+                    onServiceOdo = { serviceOdo = it.trim().toDoubleOrNull() ?: 0.0; baselineSaved = false },
+                    onServiceInterval = { serviceInterval = it.filter { c -> c.isDigit() }; baselineSaved = false },
+                    onTireOdo = { tireOdo = it.trim().toDoubleOrNull() ?: 0.0; baselineSaved = false },
+                    onTireInterval = { tireInterval = it.filter { c -> c.isDigit() }; baselineSaved = false },
+                    dirty = settings.currentBaselines.let {
+                        serviceOdo != it.serviceOdoKm ||
+                            (serviceInterval.trim().toIntOrNull() ?: 20000) != it.serviceIntervalKm ||
+                            tireOdo != it.tireOdoKm ||
+                            (tireInterval.trim().toIntOrNull() ?: 40000) != it.tireIntervalKm
+                    },
+                    saved = baselineSaved,
+                    onSave = { saveBaselines() },
+                    onBack = { onRouteChange(null) },
+                )
+            }
+            SettingsRoute.Help -> {
+                BackHandler { onRouteChange(null) }
+                SettingsHelpPage(onBack = { onRouteChange(null) })
+            }
+            SettingsRoute.About -> {
+                BackHandler { onRouteChange(null) }
+                SettingsAboutPage(onBack = { onRouteChange(null) })
+            }
+        }
+    }
+}
 
+// ══════════════════════════════════════════════════════════════════
+// 根页：iOS 分组列表
+// ══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun SettingsRootPage(
+    settings: AppSettings,
+    cars: List<Car>,
+    onOpen: (SettingsRoute) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Column(modifier) {
-        TopAppBar(
-            title = { ScreenTitle("设置") },
-        )
+        TopAppBar(title = { ScreenTitle("设置") })
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                SectionCard("连接", Modifier.animateItem()) {
+                    SettingRow(
+                        title = "服务器",
+                        subtitle = serverSummary(settings.serverUrl),
+                    ) { onOpen(SettingsRoute.Server) }
+                    RowDivider()
+                    SettingRow(
+                        title = "访问令牌",
+                        // ⚠️ **永不回显 token 本身** —— 只说「设了没」。
+                        subtitle = if (settings.token.isBlank()) "未设置" else "已设置",
+                    ) { onOpen(SettingsRoute.Server) }
+                    RowDivider()
+                    SettingRow(
+                        title = "当前车辆",
+                        subtitle = carSummary(cars, settings.carId),
+                    ) { onOpen(SettingsRoute.Vehicles) }
+                }
+            }
+            item {
+                SectionCard("提醒", Modifier.animateItem()) {
+                    SettingRow(
+                        title = "保养与轮胎",
+                        subtitle = baselineSummary(settings.currentBaselines),
+                    ) { onOpen(SettingsRoute.Maintenance) }
+                }
+            }
+            item {
+                SectionCard("帮助", Modifier.animateItem()) {
+                    SettingRow(
+                        title = "怎么找到地址和令牌？",
+                        subtitle = "局域网 IP · Tailscale",
+                    ) { onOpen(SettingsRoute.Help) }
+                }
+            }
+            item {
+                SectionCard("关于", Modifier.animateItem()) {
+                    // ⚠️ v0.20.0（P2-2）：**不显示 build number** ——
+                    // iOS 从不向用户暴露版本号之外的内部编号，
+                    // 两个版本号并列反而让人困惑「哪个才是真的」。
+                    SettingRow(
+                        title = "版本",
+                        subtitle = "v${BuildConfig.VERSION_NAME}",
+                        onClick = null,
+                        showChevron = false,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 服务器摘要：去掉协议前缀（用户填的时候才需要协议）。 */
+private fun serverSummary(raw: String): String {
+    if (raw.isBlank()) return "未设置"
+    return raw.removePrefix("http://").removePrefix("https://")
+}
+
+/** 当前车辆摘要：取不到就说取不到，不编。 */
+private fun carSummary(cars: List<Car>, carId: Int): String {
+    val car = cars.firstOrNull { it.id == carId } ?: return "未获取到车辆列表"
+    return listOfNotNull(car.name, car.marketing_name).joinToString(" · ")
+}
+
+/** 保养基准摘要：没配就明说没配。 */
+private fun baselineSummary(b: com.teslamate.app.CarBaselines): String {
+    if (b.serviceOdoKm <= 0) return "未设置"
+    // ⚠️ 千分位 —— 全 App 统一（v0.14.0 单位审校）。
+    // 「79000 公里」和别处的「101,455 公里」并列时，后者有分隔符、
+    // 前者没有，用户会以为是两种量级的数。
+    return "上次保养 ${b.serviceOdoKm.fmtThousands()} 公里 · 每 ${b.serviceIntervalKm.toDouble().fmtThousands()} 公里"
+}
+
+/**
+ * 行间细分隔线。
+ *
+ * iOS 分组列表的行之间有一条极细的线，但**只从文字起始处开始**
+ * （左侧留出图标位的缩进），不是通栏。
+ */
+@Composable
+private fun RowDivider() {
+    val accents = LocalAccentColors.current
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp)
+            .height(0.5.dp)
+            .background(accents.cardStrokeEnd)
+    )
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 二级页
+// ══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun SettingsServerPage(
+    url: String,
+    token: String,
+    showToken: Boolean,
+    onUrlChange: (String) -> Unit,
+    onTokenChange: (String) -> Unit,
+    onToggleToken: () -> Unit,
+    testing: Boolean,
+    testOk: Boolean?,
+    testMsg: String?,
+    saved: Boolean,
+    onSaveAndTest: () -> Unit,
+    onTestOnly: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        SecondaryTitleBar(title = "服务器", backLabel = "设置", onBack = onBack)
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
@@ -161,126 +512,102 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                     IosField(
                         label = "服务器地址",
                         value = url,
-                        onValueChange = { url = it; testOk = null; testMsg = null; savedHint = false },
+                        onValueChange = onUrlChange,
                         placeholder = "http://192.168.1.100:8090",
                     )
                     IosField(
                         label = "访问令牌 (API_TOKEN)",
                         value = token,
-                        onValueChange = { token = it; testOk = null; testMsg = null; savedHint = false },
+                        onValueChange = onTokenChange,
                         visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardType = KeyboardType.Password,
                     )
+                    // ⚠️ v0.20.0（iOS IA 评审 P2-3）：**开关移到行尾**。
+                    // iOS 的开关恒在行尾（left = 标签，right = 开关），
+                    // 原来开关在左、文字在右 —— 与 iOS 设置页的视觉方向相反，
+                    // 扫读时「这行是什么」和「这行是什么状态」的顺序是反的。
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                Haptics.selection(ctx)
-                                showToken = !showToken
+                            .clickable { onToggleToken() }
+                            // ⚠️ v0.20.0（a11y 评审 P0-2）：**合并子节点语义** ——
+                            // 否则 uiautomator 里这一行是「可点击但没有名字」的 View，
+                            // TalkBack 聚焦上去读不出这是「显示令牌」。
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = "显示令牌"
                             }
                             .padding(vertical = 4.dp),
                     ) {
-                        IosSwitch(checked = showToken, onCheckedChange = { showToken = it })
-                        Text("显示令牌", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "显示令牌",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IosSwitch(
+                            checked = showToken,
+                            onCheckedChange = { onToggleToken() },
+                            label = "显示令牌",
+                        )
                     }
-                    // ⚠️ v0.14.0（iOS 动效专项评审 P2-4 + IA 评审 P0-2）：
-                    // **实心品牌红按钮 = 全 App 最大的材质违规** ——
-                    // 它是全 App 唯一的饱和红块，与车况页顶部的告警红条撞色：
-                    // 红在这个 App 的语义里只表示**告警**，
-                    // 而这里是在引导主人去点一个「红按钮」。
+                    // ⚠️ v0.20.0（P0-1）：**两个按钮改成纵向排列**。
                     //
-                    // 层级也反了：**「保存」才是离开前必做项**，「测试连接」是可选诊断。
-                    // 现在主次颠倒：
-                    //   · 主按钮「保存并测试」—— 一次点击完成保存 + 校验（中性填充）
-                    //   · 次按钮「仅测试连接」—— 描边
-                    // 两个按钮都**不是红色**。
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // 原来横排（各 `weight(1f)` + 固定 `.height(44.dp)`）：
+                    // 屏宽 1080px @2.625x → 卡片内容 347dp → 每按钮 183dp
+                    // → 文字区只剩 ~331px；而「保存并测试」5 个全角字在 2.0 倍字号下
+                    // 需要 ~397px —— **放不下**。
+                    //
+                    // 更糟的是 `.height(44.dp)` 是**硬约束**：溢出的末字被**直接裁掉**，
+                    // 屏幕上显示成「保存并测」「仅测试连」，**连省略号都没有**。
+                    // 这违反 WCAG 1.4.4（文字不得被裁剪）——
+                    // 而且本机只有模拟器，真机用户几乎必然遇到。
+                    //
+                    // 现在：纵向排列，每个按钮占满整行 → 永远放得下；
+                    // 高度用 `heightIn(min = 44.dp)` —— 最低 44dp 满足触达，
+                    // 需要时（超大字号）**自动长高**而不是裁切。
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             enabled = !testing && url.isNotBlank() && token.isNotBlank(),
-                            onClick = {
-                                // 先落盘，再校验 —— 一次点击完成两件事
-                                save()
-                                testing = true
-                                testOk = null
-                                testMsg = null
-                                scope.launch {
-                                    val api = Api.create(url, token)
-                                    when {
-                                        api == null -> {
-                                            testOk = false
-                                            testMsg = "地址格式无效（需要 http:// 或 https:// 开头）"
-                                        }
-                                        else -> runCatching { withContext(Dispatchers.IO) { api.cars() } }
-                                            .onSuccess {
-                                                cars = it
-                                                testOk = true
-                                                testMsg = "连接成功，发现 ${it.size} 台车"
-                                                if (it.none { car -> car.id == carId }) {
-                                                    carId = it.first().id
-                                                }
-                                            }
-                                            .onFailure {
-                                                testOk = false
-                                                testMsg = it.message ?: "连接失败"
-                                            }
-                                    }
-                                    testing = false
-                                }
-                            },
+                            onClick = onSaveAndTest,
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.surface,
                                 contentColor = MaterialTheme.colorScheme.onSurface,
+                                // ⚠️ M3 默认的 disabled 文字是 onSurface @38% alpha，
+                                // 在浅色底上只有 ~2.2:1 —— 2 倍字号下几乎读不出来。
+                                // 显式改成 onSurfaceVariant（≥4.5:1）。
+                                disabledContainerColor = MaterialTheme.colorScheme.surface,
+                                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                             ),
                             modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp),
+                                .fillMaxWidth()
+                                .heightIn(min = 44.dp)
+                                // ⚠️ v0.20.0（a11y 评审 P0-2）：合并子节点语义，
+                                // 否则按钮在无障碍树里是「有名字的空按钮」。
+                                .semantics(mergeDescendants = true) {
+                                    contentDescription = if (testing) "测试中" else "保存并测试"
+                                },
                         ) {
                             if (testing) {
                                 CircularProgressIndicator(Modifier.width(16.dp), strokeWidth = 2.dp)
                                 Spacer(Modifier.width(6.dp))
                             }
-                            Text("保存并测试")
+                            Text(if (testing) "测试中…" else "保存并测试")
                         }
                         OutlinedButton(
                             enabled = !testing && url.isNotBlank() && token.isNotBlank(),
-                            onClick = {
-                                testing = true
-                                testOk = null
-                                testMsg = null
-                                scope.launch {
-                                    val api = Api.create(url, token)
-                                    when {
-                                        api == null -> {
-                                            testOk = false
-                                            testMsg = "地址格式无效（需要 http:// 或 https:// 开头）"
-                                        }
-                                        else -> runCatching { withContext(Dispatchers.IO) { api.cars() } }
-                                            .onSuccess {
-                                                cars = it
-                                                testOk = true
-                                                testMsg = "连接成功，发现 ${it.size} 台车"
-                                                if (it.none { car -> car.id == carId }) {
-                                                    carId = it.first().id
-                                                }
-                                            }
-                                            .onFailure {
-                                                testOk = false
-                                                testMsg = it.message ?: "连接失败"
-                                            }
-                                    }
-                                    testing = false
-                                }
-                            },
+                            onClick = onTestOnly,
                             shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.outlinedButtonColors(
                                 contentColor = MaterialTheme.colorScheme.onSurface,
+                                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                             ),
                             modifier = Modifier
-                                .weight(1f)
-                                .height(44.dp),
+                                .fillMaxWidth()
+                                .heightIn(min = 44.dp)
+                                .semantics(mergeDescendants = true) {
+                                    contentDescription = "仅测试连接"
+                                },
                         ) {
                             Text("仅测试连接")
                         }
@@ -292,7 +619,7 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    if (savedHint) {
+                    if (saved) {
                         Text(
                             "已保存 ✓（其他页面会自动刷新）",
                             color = MaterialTheme.colorScheme.tertiary,
@@ -301,36 +628,70 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                     }
                 }
             }
+        }
+    }
+}
 
-            if (cars.isNotEmpty()) {
-                item {
-                    SectionCard("选择车辆", Modifier.animateItem()) {
+@Composable
+private fun SettingsVehiclesPage(
+    cars: List<Car>,
+    carId: Int,
+    error: String?,
+    onSelect: (Int) -> Unit,
+    onRetry: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        SecondaryTitleBar(title = "当前车辆", backLabel = "设置", onBack = onBack)
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                SectionCard("选择车辆", Modifier.animateItem()) {
+                    if (cars.isEmpty()) {
+                        // ⚠️ v0.20.0（P1-4）：车辆列表拿不到时**不能静默消失** ——
+                        // 令牌失效正是用户被引导到设置页的时刻，
+                        // 他到这里却什么都看不到，只能干瞪眼。
+                        Text(
+                            error ?: "未获取到车辆列表",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        OutlinedButton(
+                            onClick = onRetry,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 44.dp),
+                        ) {
+                            Text("重试")
+                        }
+                    } else {
                         // ⚠️ v0.9.2：M3 的 RadioButton（红圈红点）→ **整行可点 + 右侧对勾**。
                         // 这是 iOS 设置页的标准范式，命中区也从一个小圆点变成整行。
                         //
                         // ⚠️ v0.14.0（苹果 HIG P1）：**点选即保存**，删掉「保存车辆选择」按钮。
-                        //
-                        // 原来选完车还要点一个**裸文字**按钮才生效 ——
-                        // 而那行文字和上面的车名同形、同样式，用户根本看不出它可点
-                        // （评审原话：「用户无法识别可点」）。
-                        // iOS 的做法是：改单选 → **立即生效**，右侧对勾就是结果。
                         cars.forEach { c ->
                             val selected = carId == c.id
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
-                                        Haptics.selection(ctx)
-                                        carId = c.id
-                                        savedHint = false
-                                        // 点选即保存（iOS 范式）
-                                        save()
+                                    .clickable { onSelect(c.id) }
+                                    // ⚠️ v0.20.0（a11y 评审 P0-2）：合并子节点语义 ——
+                                    // 原来这一行在无障碍树里是「可点击但没有名字」。
+                                    .semantics(mergeDescendants = true) {
+                                        // ⚠️ `this.selected` 显式指向语义属性 ——
+                                        // 外层有同名局部 val，直接写 `selected =` 会解析到它。
+                                        this.selected = selected
                                     }
-                                    .padding(vertical = 8.dp),
+                                    .padding(vertical = 12.dp),
                             ) {
                                 Text(
-                                    "${c.name}${c.marketing_name?.let { " · $it" } ?: ""}",
+                                    listOfNotNull(c.name, c.marketing_name).joinToString(" · "),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.weight(1f),
@@ -338,22 +699,53 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                                 if (selected) {
                                     Icon(
                                         Icons.Filled.Check,
-                                        contentDescription = "已选中",
+                                        // ⚠️ 勾是**状态指示**，不是独立信息 ——
+                                        // 选中状态已经写在行的 `selected` 语义上，
+                                        // 再给图标一个 contentDescription 会念重复。
+                                        contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(20.dp),
                                     )
                                 }
                             }
                         }
-                        Text(
-                            "点一下就切换过去，不用再按保存。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
+                    // ⚠️ v0.16.0：基准按车隔离，得让用户知道。
+                    Text(
+                        "保养与轮胎基准按车分别保存。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
+        }
+    }
+}
 
+@Composable
+private fun SettingsMaintenancePage(
+    carName: String?,
+    serviceOdo: Double,
+    serviceInterval: String,
+    tireOdo: Double,
+    tireInterval: String,
+    onServiceOdo: (String) -> Unit,
+    onServiceInterval: (String) -> Unit,
+    onTireOdo: (String) -> Unit,
+    onTireInterval: (String) -> Unit,
+    dirty: Boolean,
+    saved: Boolean,
+    onSave: () -> Unit,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        SecondaryTitleBar(title = "保养与轮胎", backLabel = "设置", onBack = onBack)
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             item {
                 // ⚠️ v0.9.0（新手车主复核）：
                 // 「上次保养是什么时候 / 什么时候该换胎 —— 全项目 0 命中。这是我最想要的」。
@@ -365,8 +757,7 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                 // 这正是车主真正想知道的那句话。
                 SectionCard(
                     // ⚠️ v0.16.0：标清是**哪台车**的基准（基准已按车隔离）。
-                    "保养与轮胎提醒" +
-                        (cars.firstOrNull { it.id == carId }?.name?.let { " · $it" } ?: ""),
+                    "保养与轮胎提醒" + (carName?.let { " · $it" } ?: ""),
                     Modifier.animateItem(),
                 ) {
                     Text(
@@ -378,60 +769,86 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                     IosField(
                         label = "上次保养时的里程（公里）",
                         value = if (serviceOdo > 0) serviceOdo.toLong().toString() else "",
-                        onValueChange = {
-                            serviceOdo = it.trim().toDoubleOrNull() ?: 0.0
-                            savedHint = false
-                        },
+                        onValueChange = onServiceOdo,
                         keyboardType = KeyboardType.Number,
                     )
                     IosField(
                         label = "保养间隔（公里）",
                         value = serviceInterval,
-                        onValueChange = { serviceInterval = it.filter { c -> c.isDigit() }; savedHint = false },
+                        onValueChange = onServiceInterval,
                         keyboardType = KeyboardType.Number,
                     )
                     IosField(
                         label = "上次换胎时的里程（公里）",
                         value = if (tireOdo > 0) tireOdo.toLong().toString() else "",
-                        onValueChange = {
-                            tireOdo = it.trim().toDoubleOrNull() ?: 0.0
-                            savedHint = false
-                        },
+                        onValueChange = onTireOdo,
                         keyboardType = KeyboardType.Number,
                     )
                     IosField(
                         label = "轮胎更换间隔（公里）",
                         value = tireInterval,
-                        onValueChange = { tireInterval = it.filter { c -> c.isDigit() }; savedHint = false },
+                        onValueChange = onTireInterval,
                         keyboardType = KeyboardType.Number,
                     )
                     // ⚠️ v0.14.0（苹果 HIG P1）：**实心按钮**，不再是裸文字。
                     //
-                    // 「保存提醒设置」原来是一个 TextButton —— 与上面的字段标签同形、同样式，
-                    // 用户识别不出它可点。改成 filled button（高 44dp、圆角 12dp、
-                    // 文字 SemiBold），层级立刻明确。
+                    // ⚠️ v0.20.0（P0-3）：**有改动才用主色** ——
+                    // 原来无论有没有改动都是中性 `surface` 填充，
+                    // 与「保存并测试」权重相同，扫读时无法分辨哪是本组提交动作；
+                    // 现在「有未保存改动」= 主色实心，「没有改动」= 中性禁用。
                     Button(
-                        onClick = { save() },
+                        onClick = onSave,
+                        enabled = dirty,
                         shape = RoundedCornerShape(12.dp),
                         // ⚠️ v0.16.0：**中性**，不是品牌红。
                         // 红色在这个 App 的语义里只表示**告警** ——
                         // 一个「保存提醒」的按钮用红块，是在把例行操作伪装成警报。
-                        // （v0.15.0 把「测试连接」改中性时漏了这一个。）
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = MaterialTheme.colorScheme.onSurface,
+                            containerColor = if (dirty) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                            contentColor = if (dirty) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                            disabledContainerColor = MaterialTheme.colorScheme.surface,
+                            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(44.dp),
+                            .heightIn(min = 44.dp)
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = "保存保养与轮胎设置"
+                            },
                     ) {
-                        Text("保存保养与轮胎设置", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            when {
+                                saved -> "已保存 ✓"
+                                dirty -> "保存保养与轮胎设置"
+                                else -> "没有改动"
+                            },
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    if (saved && !dirty) {
+                        Text(
+                            "已保存 ✓（其他页面会自动刷新）",
+                            color = MaterialTheme.colorScheme.tertiary,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                 }
             }
+        }
+    }
+}
 
+@Composable
+private fun SettingsHelpPage(onBack: () -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        SecondaryTitleBar(title = "怎么找到地址和令牌？", backLabel = "设置", onBack = onBack)
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             item {
-                SectionCard("怎么找到地址和令牌？", Modifier.animateItem()) {
+                SectionCard(null, Modifier.animateItem()) {
                     // ⚠️ v0.16.0（苹果 HIG P2）：**悬挂缩进** ——
                     // 原来三条挤在一个 Text 里，项目符号后面的换行顶格对齐卡片内边距，
                     // 读起来像三段各说各话，而不是一个列表。
@@ -460,11 +877,22 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                     }
                 }
             }
+        }
+    }
+}
 
+@Composable
+private fun SettingsAboutPage(onBack: () -> Unit, modifier: Modifier = Modifier) {
+    Column(modifier) {
+        SecondaryTitleBar(title = "关于", backLabel = "设置", onBack = onBack)
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             item {
                 SectionCard("关于", Modifier.animateItem()) {
                     KV("当前版本", "v${BuildConfig.VERSION_NAME}")
-                    KV("版本号", BuildConfig.VERSION_CODE.toString())
                     Text(
                         "启动时自动检查更新；有新版本会弹窗提示，点「立即更新」即可在线升级。",
                         style = MaterialTheme.typography.bodySmall,
@@ -527,7 +955,12 @@ fun IosField(
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                 visualTransformation = visualTransformation,
                 keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // ⚠️ v0.20.0（a11y 评审 P0-2）：**输入框要能自报家门** ——
+                    // 标签是输入框**外面**的一个独立 TextView，
+                    // TalkBack 聚焦到输入框时只能读出值、不知道这是哪个字段。
+                    .semantics { contentDescription = label },
             )
         }
     }
@@ -544,6 +977,8 @@ fun IosSwitch(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /** ⚠️ v0.20.0（a11y 评审 P0-2）：开关的**可访问名称**。 */
+    label: String = "开关",
 ) {
     val accents = LocalAccentColors.current
     // ⚠️ `LocalContext.current` 只能在 @Composable 作用域取，
@@ -572,10 +1007,29 @@ fun IosSwitch(
             .background(
                 androidx.compose.ui.graphics.lerp(offColor, onColor, trackColor) ?: offColor
             )
-            .clickable {
-                Haptics.selection(ctx)
-                onCheckedChange(!checked)
-            },
+            // ⚠️ v0.20.0（a11y 评审 P0-2）：**用 toggleable 而不是 clickable** ——
+            // `clickable` 只提供「可点」，不提供「这是一个开关、开/关状态」。
+            // TalkBack 读出来会是「按钮」而不是「开关，已关闭」。
+            // `toggleable` 同时给出 Role.Switch 与 checked 状态语义。
+            //
+            // ⚠️ 语义必须放在 toggleable **之前**（外层）——
+            // 外层 merging 节点会把内层的 role/checked/onClick 一并收进来，
+            // 于是这一个节点同时有：名字 + 角色 + 开/关状态 + 可激活。
+            //
+            // ⚠️ 之前这里写了 `.clearAndSetSemantics { }` ——
+            // 那会把 toggleable 的语义**全清掉**（开关变成完全无名的节点）。
+            // 空 clearAndSetSemantics 同样无效（不设任何属性）。
+            .semantics(mergeDescendants = true) {
+                contentDescription = label
+            }
+            .toggleable(
+                value = checked,
+                onValueChange = {
+                    Haptics.selection(ctx)
+                    onCheckedChange(it)
+                },
+                role = Role.Switch,
+            ),
         contentAlignment = Alignment.CenterStart,
     ) {
         Box(

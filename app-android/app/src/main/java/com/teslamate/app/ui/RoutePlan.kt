@@ -6,15 +6,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -23,6 +27,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.teslamate.app.Charge
@@ -167,6 +173,21 @@ data class RoutePlan(
      * 原来这张卡只给线路身份（「A → B · 252 公里 · 走过 1 次」），
      * 从来没回答过「这次能不能一次开到？要在哪充？充多久？」
      * —— 数据都算出来了，只差翻译成一句话。
+     *
+     * ⚠️ v0.20.0（车主 P0-2）：**「不用中途充电」这句话是错的**。
+     *
+     * 原来的 `stops.isEmpty()` 分支写「不用中途充电」——
+     * 但 `stops` 的含义是「**这条线路上你充电过的站**」，
+     * 不是「这里需要充电」。你在这条线上一次都没充过电，
+     * 结论就变成「不用中途充电」—— **把「没有数据」说成了「不需要」**。
+     *
+     * 车主原话：「出发前一晚我规划这条 252 公里的长途，结论句第一句是
+     * 「不用中途充电」，于是我不安排任何补电；后半句我当成了脚注。」
+     *
+     * 现在：
+     * ① 先说**电量结论**（到站剩多少 / 哪一公里跌破保底）—— 这才是决策依据；
+     * ② 没有补电点时明说「这条线路上没有你的充电记录，中途补电给不出位置」，
+     *    而不是假装「不需要充」。
      */
     fun verdict(): String {
         val low = lowestSoc ?: return "这趟没有足够的电量记录，算不出结论"
@@ -175,9 +196,11 @@ data class RoutePlan(
             stops.isNotEmpty() ->
                 "需充 ${stops.size} 次" + (below?.let { " · 第 ${it.roundToInt()} 公里低于 20% 保底" } ?: "")
             below != null ->
-                "不用中途充电，但第 ${below.roundToInt()} 公里只剩 $low%（低于 20% 保底）"
+                "第 ${below.roundToInt()} 公里只剩 $low%（低于 20% 保底）· " +
+                    "这条线路上没有你的充电记录，中途补电给不出位置"
             else ->
-                "能一次开到 · 预计到达 $low%"
+                "能一次开到 · 预计到达 $low%" +
+                    "（这条线路上没有你的充电记录，中途补电给不出位置）"
         }
     }
 }
@@ -355,6 +378,10 @@ fun RoutePlanChips(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
+        // ⚠️ v0.20.0（车主 P1-4）：**末尾留白** ——
+        // 原来末项会被卡片右边缘**竖着切掉一半**（只看得见一个字），
+        // 用户分不清是「还有更多」还是渲染坏了。
+        contentPadding = PaddingValues(end = 12.dp),
     ) {
         items(templates) { t ->
             val selected = t.key == selectedKey
@@ -367,12 +394,37 @@ fun RoutePlanChips(
                 } else {
                     null
                 },
-                modifier = Modifier.clickable { onSelect(t.key) },
+                modifier = Modifier
+                    // ⚠️ v0.20.0（a11y 评审 P0-3）：**用 selectable 而不是 clickable** ——
+                    // 「选我要走的那条线」是这个 App 的核心功能，
+                    // 而选中态原来只有底色 + 描边（**只靠颜色**，违反 WCAG 1.3.1），
+                    // TalkBack 也不知道哪条被选中。
+                    // `selectable` 给出 Role.Tab + selected 语义。
+                    .selectable(
+                        selected = selected,
+                        role = Role.Tab,
+                        onClick = { onSelect(t.key) },
+                    )
+                    // ⚠️ 触控目标：原来 chip 高只有 28dp（16dp 文字 + 12dp 内距），
+                    // 远低于 WCAG 2.5.8 的 44dp。
+                    .heightIn(min = 44.dp)
+                    .semantics(mergeDescendants = true) { },
             ) {
                 Row(
-                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // ⚠️ v0.20.0（a11y 评审 P0-3）：**选中项加勾** ——
+                    // 非颜色的选中标记（WCAG 1.3.1），色觉障碍用户也读得出。
+                    if (selected) {
+                        Icon(
+                            Icons.Filled.Check,
+                            contentDescription = null,
+                            tint = accents.energyBlue,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                    }
                     Text(
                         "${t.fromLabel} → ${t.toLabel}",
                         style = MaterialTheme.typography.labelMedium,
@@ -382,10 +434,16 @@ fun RoutePlanChips(
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
                         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                        maxLines = 1,
+                        // ⚠️ v0.20.0（a11y 评审 P0-3）：允许两行 ——
+                        // 原来 maxLines=1，2 倍字号下截成「广昆高速 → 城…」。
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    if (t.occurrences > 1) {
+                    // ⚠️ v0.20.0（车主 P1-4）：**次数 ≥1 就显示** ——
+                    // 原来只在 >1 时渲染，于是「只跑过 1 次」和「没有数据」
+                    // 在界面上长得一模一样 —— 而出发前判断「这条线我熟不熟」
+                    // 恰恰要区分这两种情况。
+                    if (t.occurrences >= 1) {
                         Spacer(Modifier.width(5.dp))
                         Text(
                             "×${t.occurrences}",
@@ -563,7 +621,25 @@ fun RoutePlanCard(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        if (plan.stops.isNotEmpty() || plan.endpointStops.isNotEmpty()) {
+        // ⚠️ v0.20.0（车主 P0-2）：**站点区永远渲染** ——
+        // 原来 `if (stops.isNotEmpty() || endpointStops.isNotEmpty())` 让整块消失，
+        // 于是「没有补电点」和「这张卡没这栏」在界面上**长得一模一样**。
+        // 用户根本看不出自己看到的是 0 个站点还是渲染漏了。
+        //
+        // 现在无站时也把这一栏画出来，明说「没有可参考的补电点」。
+        if (plan.stops.isEmpty() && plan.endpointStops.isEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "沿途充电站",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "这条线路上没有你的充电记录 —— 没有可参考的补电点。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
             Spacer(Modifier.height(6.dp))
             if (plan.stops.isNotEmpty()) {
                 Text(
@@ -650,7 +726,6 @@ fun RoutePlanCard(
                 }
             }
         }
-
         plan.lowestSoc?.let { low ->
             Spacer(Modifier.height(4.dp))
             val below = plan.belowFloorKm

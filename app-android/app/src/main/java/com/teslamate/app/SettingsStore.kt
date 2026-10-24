@@ -84,18 +84,34 @@ data class AppSettings(
      *
      * ⚠️ 旧版本只有一组全局值 —— 那组值属于**当时正在看的那台车**，
      * 所以只有当前车能继承它；别的车一律「未设置」（不显示提醒卡）。
+     *
+     * ⚠️⚠️ **v0.20.0（iOS IA 评审 P0-4 顺带查出的多车串号 bug）**：
+     * 迁移条件原来是「`perCar[id]` 缺失 **且** `id == carId`」——
+     * 这意味着**任何一台没配过基准的车，只要它是当前车，就会继承旧字段**。
+     *
+     * 复现（本机只有 1 台车，**只能靠推理发现，端到端测不出来**）：
+     * 1. 车主 A 车配了基准 79,000 / 20,000 → `perCar = {1: …}`，旧字段也写了这组值；
+     * 2. 家人切到 B 车（id=2），B 从没配过基准 → `perCar` 里**没有 2**；
+     * 3. `baselinesFor(2)` → `perCar[2]` 缺失，`2 == carId` 成立
+     *    → **回落旧字段** → B 车拿到 A 车的「保养 79,000 公里」基准；
+     * 4. B 车里程表 30,000 → App 报「保养超期 49,000 公里」——
+     *    正是 v0.16.0 要消灭的**假告警**，只是换了个形式回来。
+     *
+     * 修法：迁移是**一次性**的，只在 `perCar` **整体为空**（从未迁移过）时生效。
+     * 一旦 `perCar` 非空，它就是唯一事实源 —— 缺就是「未设置」，不再回落。
      */
-    fun baselinesFor(id: Int): CarBaselines =
-        perCar[id] ?: if (id == carId) {
-            CarBaselines(
+    fun baselinesFor(id: Int): CarBaselines {
+        perCar[id]?.let { return it }
+        if (perCar.isEmpty() && id == carId) {
+            return CarBaselines(
                 serviceOdoKm = serviceOdoKm,
                 serviceIntervalKm = serviceIntervalKm,
                 tireOdoKm = tireOdoKm,
                 tireIntervalKm = tireIntervalKm,
             )
-        } else {
-            CarBaselines()
         }
+        return CarBaselines()
+    }
 
     /** 当前车的基准。 */
     val currentBaselines: CarBaselines get() = baselinesFor(carId)

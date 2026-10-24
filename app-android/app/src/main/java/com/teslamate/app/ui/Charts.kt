@@ -216,7 +216,16 @@ fun StackedBarChart(
     val n = series.firstOrNull()?.values?.size ?: 0
     val textMeasurer = rememberTextMeasurer()
     val contentColor = LocalContentColor.current
+    // ⚠️ v0.20.0（a11y 评审 P1-3）：参考线改用 **`chartBaseline`** ——
+    // 这个 token 是 v0.14.0 专门为参考线建的（白底 3.11:1），
+    // 但全项目 grep 只命中 Theme.kt 自身，从没被用上 ——
+    // 而参考线实际画的是 `onSurface @45%` 合成色，浅色只有 **2.85:1** < 3:1。
+    // 参考线是「20% 保底线」「比上趟省 19%」的读图依据，必须看得见。
+    val accents = LocalAccentColors.current
     val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    // ⚠️ v0.20.0：参考线标注的颜色要在 @Composable 作用域取 ——
+    // DrawScope 里调 MaterialTheme.colorScheme 编译不过。
+    val refLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val hasData = series.any { s -> s.values.any { (it ?: 0f) > 0f } }
@@ -288,7 +297,7 @@ fun StackedBarChart(
                     var x = plotLeft
                     while (x < size.width) {
                         drawLine(
-                            color = contentColor.copy(alpha = 0.45f),
+                            color = accents.chartBaseline,
                             start = Offset(x, y),
                             end = Offset(minOf(x + dash, size.width), y),
                             strokeWidth = 1.5.dp.toPx(),
@@ -299,7 +308,7 @@ fun StackedBarChart(
                     if (referenceLabel.isNotBlank()) {
                         val layout = textMeasurer.measure(
                             text = referenceLabel,
-                            style = TextStyle(fontSize = 9.sp, color = contentColor.copy(alpha = 0.6f)),
+                            style = TextStyle(fontSize = 9.sp, color = refLabelColor),
                         )
                         drawText(
                             textLayoutResult = layout,
@@ -378,7 +387,11 @@ fun LineChart(
 ) {
     val textMeasurer = rememberTextMeasurer()
     val contentColor = LocalContentColor.current
+    // ⚠️ v0.20.0（a11y 评审 P1-3）：参考线用 `chartBaseline`（见 StackedBarChart 里的说明）。
+    val accents = LocalAccentColors.current
     val hasData = values.any { it != null && it > 0f }
+    // ⚠️ v0.20.0：参考线标注的颜色要在 @Composable 作用域取（见 StackedBarChart）。
+    val refLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val progress = chartProgress(hasData)
     val density = LocalDensity.current
     // 颜色必须在 @Composable 作用域取出再传进 DrawScope ——
@@ -475,7 +488,7 @@ fun LineChart(
                     var x = plotLeft
                     while (x < size.width) {
                         drawLine(
-                            color = contentColor.copy(alpha = 0.45f),
+                            color = accents.chartBaseline,
                             start = Offset(x, y),
                             end = Offset(minOf(x + dash, size.width), y),
                             strokeWidth = 1.5.dp.toPx(),
@@ -486,7 +499,7 @@ fun LineChart(
                     if (referenceLabel.isNotBlank()) {
                         val layout = textMeasurer.measure(
                             text = referenceLabel,
-                            style = TextStyle(fontSize = 9.sp, color = contentColor.copy(alpha = 0.6f)),
+                            style = TextStyle(fontSize = 9.sp, color = refLabelColor),
                         )
                         drawText(
                             textLayoutResult = layout,
@@ -810,7 +823,9 @@ fun PowerProfileChart(
             ticks.forEach { v ->
                 val y = yAt(v)
                 drawLine(
-                    color = if (v == 0.0) contentColor.copy(alpha = 0.35f) else gridColor,
+                    // ⚠️ v0.20.0（a11y 评审 P2）：零线是「正/负」分界，有语义 ——
+                    // 原值 `onSurface @35%` 浅色只有 2.17:1，看不出哪条是零线。
+                    color = if (v == 0.0) accents.chartBaseline else gridColor,
                     start = Offset(plotLeft, y),
                     end = Offset(plotRight, y),
                     strokeWidth = 1.dp.toPx(),

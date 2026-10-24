@@ -549,7 +549,11 @@ internal fun DriveDetail(
                 }
             }
             Text(
-                "轨迹采样点 ${track.size} 个",
+                // ⚠️ v0.20.0（车主 P2-3）：**删掉「轨迹采样点 N 个」** ——
+                // 「采样点」是开发者语言，车主看不懂它有什么用；
+                // 而它占着一行、还带着一个内部实现细节（采样密度）。
+                // 真要表达「这条轨迹记录得细不细」，说的是「记录完整」而不是「点」。
+                "轨迹 ${track.size} 个点 · 记录完整",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -610,7 +614,22 @@ internal fun DriveDetail(
                                     append("耗电 ")
                                     append(drive.energy_kwh?.fmt(1) ?: "—")
                                     append(" 度")
-                                    drive.start_soc?.let { append(" · 电量 $it%") }
+                                    // ⚠️ v0.20.0（车主 P0-1）：**给「到站电量」，不是出发电量**。
+                                    //
+                                    // 原来这里写的是 `start_soc`（出发时的电量），
+                                    // 标签却是「电量」—— 于是「耗电 7.2 度 · 电量 96%」
+                                    // 被读成「**到站还剩 96%**」。
+                                    // 而同一屏下方写着「96% → 85%」，真到 252 公里只剩 16%。
+                                    // 这是**会让人误判是否需要在服务区停留**的错误。
+                                    //
+                                    // 现在：优先给 end_soc 且标签写「到站」；
+                                    // 没有 end_soc 才退回 start_soc，并把标签写明「出发」。
+                                    val endSoc = drive.end_soc
+                                    val startSoc = drive.start_soc
+                                    when {
+                                        endSoc != null -> append(" · 到站 $endSoc%")
+                                        startSoc != null -> append(" · 出发 $startSoc%")
+                                    }
                                 },
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

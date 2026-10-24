@@ -47,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,6 +58,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.teslamate.app.AppLatest
@@ -110,6 +113,18 @@ fun TeslaMateApp() {
     //   - 「点当前 Tab = 回到根」才有地方可复位。
     var recordSelection by remember { mutableStateOf<RecordSelection?>(null) }
 
+    // ⚠️ v0.20.0（iOS IA 评审 P1-1）：**设置页的二级页路由提到 App 级**。
+    //
+    // 存的是 `SettingsRoute` 的 **name 字符串**而不是枚举本身 ——
+    // `rememberSaveable` 只能自动保存基本类型，枚举不行。
+    // 用 name 既能保存，又在 `valueOf` 失败时安全回落（见下面的 runCatching）。
+    //
+    // 放在 App 级的理由与 `recordSelection` 相同：
+    // ① 切 Tab 再回来，二级页还在（iOS：每个 Tab 持有自己的导航栈）；
+    // ② 「点当前 Tab = 回到根」才有地方可复位；
+    // ③ 401 横幅与保养卡的箭头需要**深链到指定二级页**（见 `onOpenSettings`）。
+    var settingsRoute by rememberSaveable { mutableStateOf<String?>(null) }
+
     // ⚠️ v0.16.0（车队运营评审 P0-2）：**车辆列表提到 App 级**。
     //
     // 原来只有设置页会拉车辆列表，其它页面根本不知道「有几台车、
@@ -144,6 +159,9 @@ fun TeslaMateApp() {
     LaunchedEffect(Unit) {
         ctx.settingsFlow().collect { settings = it }
     }
+
+    // ⚠️ v0.20.0（iOS IA 评审 P1-3）：**深链的落点在 MainScaffold 里实现** ——
+    // 那里才有 tab 的 setter 与 onTabChange。
 
     // 启动后查一次更新：仅在 settings 配好后触发；versionCode 严格大于当前才提示
     LaunchedEffect(settings?.configured) {
@@ -195,6 +213,10 @@ fun TeslaMateApp() {
                         onRecordSelectionChange = { recordSelection = it },
                         cars = cars,
                         onCarChange = onCarChange,
+                        // ⚠️ v0.20.0：设置页二级页状态**传参**给 MainScaffold ——
+                        // 它是独立的 @Composable 函数，拿不到 TeslaMateApp 的局部变量。
+                        settingsRoute = settingsRoute,
+                        onSettingsRouteChange = { settingsRoute = it },
                         onTabChange = { t ->
                             // ⚠️ v0.13.0（iOS 交互评审 P0-2）：**点当前已选中的 Tab = 回到根**。
                             //
@@ -205,9 +227,16 @@ fun TeslaMateApp() {
                             //
                             // iOS 惯例（UITabBarController）：再点一次当前 Tab → 该栈 pop 到根。
                             if (t == tab) {
-                                if (tab == Tab.RECORDS && recordSelection != null) {
-                                    Haptics.selection(ctx)
-                                    recordSelection = null   // 反向 push 动画由 AnimatedContent 自动播
+                                when {
+                                    tab == Tab.RECORDS && recordSelection != null -> {
+                                        Haptics.selection(ctx)
+                                        recordSelection = null   // 反向 push 动画由 AnimatedContent 自动播
+                                    }
+                                    // ⚠️ v0.20.0：设置页的二级页同样要能「回根」。
+                                    tab == Tab.SETTINGS && settingsRoute != null -> {
+                                        Haptics.selection(ctx)
+                                        settingsRoute = null
+                                    }
                                 }
                             } else {
                                 Haptics.selection(ctx)
@@ -237,9 +266,26 @@ private fun MainScaffold(
     onRecordSelectionChange: (RecordSelection?) -> Unit,
     cars: List<com.teslamate.app.Car> = emptyList(),
     onCarChange: (Int) -> Unit = {},
+    /** ⚠️ v0.20.0：设置页二级页路由（null = 根页）。 */
+    settingsRoute: String? = null,
+    onSettingsRouteChange: (String?) -> Unit = {},
     onTabChange: (Tab) -> Unit,
 ) {
     val ctx = LocalContext.current
+
+    // ⚠️ v0.20.0（iOS IA 评审 P1-3）：**深链到设置页的指定二级页** ——
+    // 原来所有「去设置」出口都只是切 Tab —— 用户从 401 横幅点过去，
+    // 落在设置页**顶部**，而他真正要改的东西（地址/令牌）在第一组、
+    // 保养基准在第三组，都得自己找。现在直接落到指定二级页。
+    val openSettingsRoute: (SettingsRoute?) -> Unit = { r ->
+        // ⚠️ 已经在设置页时**不要**走 onTabChange ——
+        // 它的语义是「切 Tab」，而「点当前 Tab」会被解释成「回到根」，
+        // 那样深链刚落地就被自己弹回根页。
+        if (tab != Tab.SETTINGS) {
+            onTabChange(Tab.SETTINGS)
+        }
+        onSettingsRouteChange(r?.name)
+    }
     // 车况数据提到 App 级：切 Tab 时页面会被 AnimatedContent 销毁，
     // 数据放在页面里就会连同骨架屏一起重放一次（等于重新开一次 App）。
     //
@@ -305,6 +351,18 @@ private fun MainScaffold(
                             NavigationBarItem(
                                 selected = tab == t,
                                 onClick = { onTabChange(t) },
+                                // ⚠️ v0.20.0（a11y 评审 P0-2）：**合并子节点语义 + 显式名称** ——
+                                // uiautomator dump 里 4 个底栏 Tab 全是
+                                // 「clickable=true 且 text/content-desc 都为空」的 View
+                                // （文字落在不可聚焦的子 TextView 上），
+                                // TalkBack 聚焦到底栏读不出是哪个 Tab —— 导航直接不可用。
+                                //
+                                // ⚠️ 注意：**空 lambda 的 `semantics(mergeDescendants = true)` 无效** ——
+                                // 不设置任何属性就不会创建语义节点，合并无处发生。
+                                // 必须真的设 contentDescription。
+                                modifier = Modifier.semantics(mergeDescendants = true) {
+                                    contentDescription = t.label
+                                },
                                 icon = {
                                     // contentDescription = null：可见的文字标签已提供可访问名称，
                                     // 再给图标一份会导致 TalkBack 念「车况,车况」（WCAG 2.5.3）
@@ -377,7 +435,11 @@ private fun MainScaffold(
                         modifier = Modifier.fillMaxSize(),
                         store = statusStore,
                         // 令牌失效时给用户一个直达设置的出口（见 ApiErrorKind.AUTH）
-                        onOpenSettings = { onTabChange(Tab.SETTINGS) },
+                        // ⚠️ v0.20.0：直接落到「服务器」二级页 —— 401 的原因就是地址/令牌，
+                        // 落点与原因一致，不用让用户自己找。
+                        onOpenSettings = { openSettingsRoute(SettingsRoute.Server) },
+                        // ⚠️ v0.20.0：保养卡 → 保养二级页（原来两者共用同一个出口）。
+                        onOpenMaintenance = { openSettingsRoute(SettingsRoute.Maintenance) },
                         // ⚠️ v0.16.0：顶栏车切换芯片
                         cars = cars,
                         onCarChange = onCarChange,
@@ -389,7 +451,7 @@ private fun MainScaffold(
                         onSelectionChange = { onRecordSelectionChange(it) },
                         // ⚠️ v0.14.0：令牌失效时给「前往设置」的出口
                         // （原来只有车况页有，停在记录页会无限次点「重试」）。
-                        onOpenSettings = { onTabChange(Tab.SETTINGS) },
+                        onOpenSettings = { openSettingsRoute(SettingsRoute.Server) },
                         // ⚠️ v0.16.0：顶栏车切换芯片
                         cars = cars,
                         onCarChange = onCarChange,
@@ -397,11 +459,21 @@ private fun MainScaffold(
                     Tab.USAGE -> StatsScreen(
                         settings,
                         Modifier.fillMaxSize(),
-                        onOpenSettings = { onTabChange(Tab.SETTINGS) },
+                        onOpenSettings = { openSettingsRoute(SettingsRoute.Server) },
                         cars = cars,
                         onCarChange = onCarChange,
                     )
-                    Tab.SETTINGS -> SettingsScreen(settings, Modifier.fillMaxSize())
+                    Tab.SETTINGS -> SettingsScreen(
+                        settings,
+                        Modifier.fillMaxSize(),
+                        // ⚠️ v0.20.0（iOS IA 评审 P1-4）：车辆列表由 App 级传入，
+                        // 设置页不再自己拉一遍（失败时静默、且整组会消失）。
+                        cars = cars,
+                        route = settingsRoute?.let { name ->
+                            runCatching { SettingsRoute.valueOf(name) }.getOrNull()
+                        },
+                        onRouteChange = { r -> onSettingsRouteChange(r?.name) },
+                    )
                 }
             }
         }

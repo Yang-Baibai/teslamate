@@ -413,10 +413,14 @@ fun StatsScreen(
                                 // 扫一眼我会以为下面那张也是充电数据。
                                 // 「颜色在说假话」。
                                 //
-                                // 现在用**能量紫**（与蓝、灰都不同相），
-                                // 语义上也对：耗电是能量流出，直流快充是能量蓝，
-                                // 交流慢充是中性灰 —— 三张图三个色相。
-                                color = MaterialTheme.colorScheme.tertiary,
+                                // ⚠️ v0.20.0（车主 P1-2）：**能量紫现在真的落地了** ——
+                                // v0.14.0 的注释就写着「现在用能量紫」，但代码是
+                                // `colorScheme.tertiary`，而 tertiary 在 v0.15.0
+                                // 已被收敛成中性冷灰蓝 #4A5760 ——
+                                // 与交流慢充的 secondary #3A4750 只差一档明度，
+                                // **肉眼几乎同色**，那个修复其实没生效。
+                                // 现在用真正独立的 `energyViolet` 色相。
+                                color = LocalAccentColors.current.energyViolet,
                                 label = "用电",
                             ),
                         ),
@@ -618,7 +622,12 @@ private fun ChartHint(
             // ⚠️ v0.9.2（口径审计 S4-1）：**分母只算有数据的桶**，
             // 所以「日均 80 km」其实是「有记录的 3 天」的平均，不是 7 天日均（34 km）。
             // 不写清楚就是个误导 —— 现在把天数自曝出来。
-            "$avgLabel ${avg.fmt(0)} $unit（有记录 ${nonZero.size} $avgUnit）",
+            //
+            // ⚠️ v0.20.0（车主 P1-6）：**补一句「没开车不产生记录」** ——
+            // 光说「有记录 3 天」而不解释，主人会以为自己天天通勤、
+            // App 漏了 4 天的数据（车主原话：「我怀疑 App 漏了 4 天的数据」）。
+            // 补了这半句，「3 天」就从「缺了 4 天」变成「本来就这么填」。
+            "$avgLabel ${avg.fmt(0)} $unit（有记录 ${nonZero.size} $avgUnit，没开车不产生记录）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

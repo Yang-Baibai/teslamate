@@ -105,6 +105,14 @@ fun StatusScreen(
      * 光在文案里写「请到「设置」页重新填写」等于没给路。
      */
     onOpenSettings: () -> Unit = {},
+    /**
+     * ⚠️ v0.20.0（iOS IA 评审 P1-3）：**保养卡的出口要落到具体二级页**。
+     *
+     * 原来保养卡与 401 横幅共用同一个 `onOpenSettings`，都只是跳到设置页**顶部** ——
+     * 而保养基准在设置页的**最下面**，用户跳过去还要滚一屏半才看到。
+     * 箭头承诺的落点与实际落点不符，等于没有落点。
+     */
+    onOpenMaintenance: () -> Unit = {},
     /** ⚠️ v0.16.0：车辆列表（顶栏车切换芯片，仅多车时出现）。 */
     cars: List<com.teslamate.app.Car> = emptyList(),
     /** ⚠️ v0.16.0：切换当前车辆。 */
@@ -356,19 +364,27 @@ fun StatusScreen(
                             maintenanceReminders(st.odometer, settings)
                         }
                         reminders.firstOrNull { it.needsAction }?.let { r ->
-                            // ⚠️ 超期是**该行动**的事（红色），快到了只是提醒（中性）。
-                            // 两者都挂横幅，但力度不同 —— 用同一种样式会让「超期」显得像例行公事。
+                            // ⚠️ v0.20.0（车主 P1-1）：**保养超期不再用红色** ——
                             //
-                            // ⚠️ v0.14.0（新手车主 P0-2）：文案**消歧** ——
-                            // 「保养已超期 2455 公里」在中文里会被读成
-                            // 「上次保养后开了 2455 公里」，误读方向是「还早」，
-                            // 而保养超期只有一个方向：太晚。
-                            // 现在把「该在多少做 / 现在多少」一起写出来。
-                            if (r.overdue) {
-                                ErrorBanner(r.bannerText(st.odometer))
-                            } else {
-                                NoticeBanner(r.bannerText(st.odometer))
-                            }
+                            // 车主原话：「每天早上打开 App，先撞上一条红色
+                            // 「保养 超期 2455 公里」，而这红条在我做完保养之前
+                            // 会**连着亮几个月**，真正每天变的电量被它压在下面。」
+                            //
+                            // 告警的排序依据应该是「**多久会变**」，而不是「有多红」：
+                            // 保养/换胎是**数月不变**的事，胎压异常、电量 <10%
+                            // 才是**今天就会变**的事。红色只留给后者，
+                            // 「红色 = 立刻要处理」的信噪比才立得住。
+                            //
+                            // 现在：中性横幅 + **可点**（直达保养基准页）——
+                            // 该做的事一件没少，但不再长期霸占告警位。
+                            //
+                            // ⚠️ v0.20.0（P2-5）：横幅里删掉「现在 101,455 公里」——
+                            // 同一个数在同一屏下方「里程表 101,455 公里」已经有了，
+                            // 一字不差地出现两次只会让人以为是两个数。
+                            NoticeBanner(
+                                r.bannerText(st.odometer),
+                                onClick = onOpenMaintenance,
+                            )
                         }
 
                         // 数据新鲜度：让「车睡着了（正常）」和「连不上服务器」不再长得一样。
@@ -552,7 +568,7 @@ fun StatusScreen(
                             MaintenanceCard(
                                 reminders = reminders,
                                 carName = cars.firstOrNull { it.id == settings.carId }?.name,
-                                onOpenSettings = onOpenSettings,
+                                onOpenSettings = onOpenMaintenance,
                             )
                         }
                     }

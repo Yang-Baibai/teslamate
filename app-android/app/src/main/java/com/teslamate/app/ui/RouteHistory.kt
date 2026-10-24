@@ -103,6 +103,21 @@ fun compareWithRouteHistory(
     val curKm = drive.distance_km ?: return null
     if (curKm <= 0.0) return null
 
+    // ⚠️ v0.20.0（充电数据专家 P0-1）：**当前趟也要过值域护栏**。
+    //
+    // 原来基准样本做了 `wh in 50.0..400.0` 过滤，**当前趟却没有** ——
+    // 规则不对称，于是：
+    //   本趟 wh_per_km = −55（标定续航不降反升，物理上不可能）
+    //   基准 = 150 Wh/km
+    //   → 结论「比上趟省 137%」—— **胡说**。
+    //
+    // 实测：本机 440 条行程里有 14 条 wh_per_km ≤ 0，
+    // 其中 12 条常跑线路含至少一条非正能耗行程。
+    //
+    // 现在当前趟与基准用**同一套**护栏；不合格就不给结论，
+    // 而不是给一个看着有依据、实则错误的百分比。
+    if (curWh !in 50.0..400.0) return null
+
     // 基准样本：同线路、Wh/km 有值、里程 ≥ 20 km（太短的那趟本身噪声大）
     val usable = others.filter {
         val wh = it.wh_per_km ?: return@filter false
