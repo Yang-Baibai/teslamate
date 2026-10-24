@@ -46,7 +46,7 @@ data class SpeedBucket(
     val samples: Int,
 )
 
-class ConsumptionModel(val buckets: List<SpeedBucket>) {
+class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
 
     /** 该模型由多少条行程构成（用于在 UI 上标注置信度） */
     val sampleCount: Int = buckets.sumOf { it.samples }
@@ -136,7 +136,31 @@ class ConsumptionModel(val buckets: List<SpeedBucket>) {
                 buckets += SpeedBucket(lo, hi, median, inBucket.size)
             }
             if (buckets.isEmpty()) return null
-            return ConsumptionModel(buckets)
+
+            // ── 巡航速度代理 ──────────────────────────────────
+            // ⚠️ v0.8.6（长途自驾党复核）：原来参考车速用的是**整段均速**，
+            // 一次长途（城区 + 高速 + 堵车）均速 102 km/h 会落进 90–110 桶（182.7 Wh/km），
+            // 但你实际巡航在 120 km/h（该桶应为 197.7）—— 于是高速时算出来的
+            // 「真实可达」**偏乐观 12 km**。
+            // 改法：取「近期高速行程」（peak speed ≥ 100 km/h）的均速中位数作巡航速度。
+            // 这些行程的均速最接近你实际的巡航速度；没有高速行程就退回全样本均速。
+            // ── 巡航速度代理 ──────────────────────────────────
+            // ⚠️ v0.8.6（长途自驾党复核）：原来参考车速用的是**整段均速**，
+            // 一次长途（城区 + 高速 + 堵车）均速 102 km/h 会落进 90–110 桶（182.7 Wh/km），
+            // 但你实际巡航在 120 km/h（该桶应为 197.7）—— 于是高速时算出来的
+            // 「真实可达」**偏乐观约 12 km**。
+            //
+            // 取值顺序（v0.8.7 修正过一次）：
+            //  1. 高速行程（speed_max ≥ 100）的**峰值速度**中位数
+            //     —— 用峰值而不是均速：均速会被起止段的市区拉低
+            //     （实测一度算出「按 64 km/h 巡航」，那是市区速度）
+            //  2. 全部行程的峰值速度中位数
+            val fast = usable.filter { (it.speed_max ?: 0) >= 100 }
+            val pool = if (fast.isNotEmpty()) fast else usable
+            val peaks = pool.mapNotNull { it.speed_max?.toDouble() }.filter { it > 0 }.sorted()
+            val cruise = if (peaks.isEmpty()) 60.0 else peaks[peaks.size / 2]
+
+            return ConsumptionModel(buckets, cruise)
         }
     }
 }

@@ -239,9 +239,11 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                                 // 现在用你自己跑出来的 Wh/km 折算：
                                 //   真实可达 = 标定续航 × 146 ÷ 实测 Wh/km × 温度修正 × 爬升修正 × 0.9 余量
                                 val ratedRange = st.rated_range_km ?: st.ideal_range_km
-                                // 参考车速：行驶中用实时车速；停车时用最近一次行程的均速
-                                //（长途规划关心的是「你通常怎么开」，不是「车现在静止时的 0」）。
+                                // 参考车速：行驶中用实时车速；停车时用**巡航速度**
+                                //（近期高速行程的均速中位数 —— 长途党复核指出
+                                //  整段均速会让人在高速时按市区桶估，偏乐观约 12 km）。
                                 val refSpeed = st.speed?.takeIf { it > 5 }?.toDouble()
+                                    ?: consumption?.cruiseKph
                                     ?: drives.firstOrNull()?.avg_speed_kph?.toDouble()
                                     ?: 60.0
                                 val whBucket = consumption?.whPerKm(refSpeed)
@@ -276,9 +278,16 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 if (trueRange != null) {
+                                    // ⚠️ v0.8.6（长途自驾党复核）：把**假设链**写出来。
+                                    // 他原话：「308 背后的假设（巡航车速、温度）不显示，
+                                    // 我判断不出它按市区还是高速算的」。
+                                    // 一个规划用的数，不交代前提就只是个数字。
                                     Text(
-                                        (whBucket?.let { "按你最近 ${consumption?.sampleCount ?: 0} 次行程实测 ${it.whPerKm.fmt(0)} Wh/km 折算" } ?: "")
-                                            .ifBlank { "按实测能耗折算" },
+                                        buildString {
+                                            append("按 ${refSpeed.roundToInt()} km/h 巡航")
+                                            st.outside_temp?.let { append(" · ${it.roundToInt()}°C") }
+                                            whBucket?.let { append(" · 实测 ${it.whPerKm.fmt(0)} Wh/km") }
+                                        },
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
