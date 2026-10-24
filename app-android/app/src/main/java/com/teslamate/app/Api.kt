@@ -130,8 +130,7 @@ data class Drive(
     val ascent_m: Int? = null,
     val descent_m: Int? = null,
     val inside_temp_avg: Double? = null,
-    val power_max_kw: Int? = null,
-    val power_min_kw: Int? = null,
+    val power_max_kw: Int? = null,    val power_min_kw: Int? = null,
     val start_rated_range_km: Double? = null,
     val end_rated_range_km: Double? = null,
     val start_ideal_range_km: Double? = null,
@@ -139,6 +138,15 @@ data class Drive(
     val start_geofence: String? = null,
     val end_geofence: String? = null,
     val has_supercharger: Boolean = false,
+    /**
+     * 这趟行程结束时附近是否发生过充电（**任意类型**，含交流）。
+     *
+     * v0.7.1 服务端修复：`has_supercharger` 原先用的是「充电时间落在行程时间窗内」，
+     * 而充电永远发生在**行程结束之后**，于是这个字段恒为 false（实测 200 条行程 0 条命中）。
+     * 现在服务端改用**里程关联**（|充电起始里程 − 行程结束里程| < 2 km），
+     * 命中数从 0 变成 52/200。
+     */
+    val charge_after_trip: Boolean = false,
 )
 
 @Serializable
@@ -236,6 +244,8 @@ data class BatteryPoint(
 data class BatteryHealth(
     val current_capacity_kwh: Double? = null,
     val max_capacity_kwh: Double? = null,
+    /** 铭牌（出厂标称）容量 —— 健康度的分母。缺它就无法验算「85%」这个数。 */
+    val nominal_capacity_kwh: Double? = null,
     val health_percent: Double? = null,
     val series: List<BatteryPoint> = emptyList(),
 )
@@ -311,10 +321,19 @@ class Api private constructor(private val base: String, private val token: Strin
 
     fun cars(): List<Car> = get("/api/v1/cars")
     fun status(carId: Int): CarStatus = get("/api/v1/cars/$carId/status")
-    fun drives(carId: Int, limit: Int = 30): List<Drive> =
-        get("/api/v1/cars/$carId/drives?limit=$limit")
+
+    /**
+     * 行程列表。
+     *
+     * ⚠️ **limit 默认从 30 提到 200**（服务端 clampLimit 上限就是 200）：
+     * 原来的 50 条窗口里 **一条高速行程都没有**（avg_speed ≥ 90 km/h = 0 条），
+     * 于是「按车速分桶的实测能耗表」根本建不出来 —— 真实可达续航也就无从谈起。
+     * 200 条窗口里有 6 条高速样本，够画第一版表。
+     */
+    fun drives(carId: Int, limit: Int = 200, offset: Int = 0): List<Drive> =
+        get("/api/v1/cars/$carId/drives?limit=$limit&offset=$offset")
     fun track(driveId: Int): List<TrackPoint> = get("/api/v1/drives/$driveId/track")
-    fun charges(carId: Int, limit: Int = 50): List<Charge> =
+    fun charges(carId: Int, limit: Int = 200): List<Charge> =
         get("/api/v1/cars/$carId/charges?limit=$limit")
     fun curve(chargeId: Int): List<CurvePoint> = get("/api/v1/charges/$chargeId/curve")
     fun stats(carId: Int, period: String): Stats =

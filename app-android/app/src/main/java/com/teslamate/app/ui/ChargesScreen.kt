@@ -12,6 +12,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -20,11 +21,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Power
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,7 +39,6 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -55,6 +59,7 @@ import com.teslamate.app.CurvePoint
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtFull
 import com.teslamate.app.fmtMonth
+import com.teslamate.app.firstSegment
 import com.teslamate.app.fmtShort
 import com.teslamate.app.minutesFmt
 import kotlinx.coroutines.Dispatchers
@@ -79,23 +84,18 @@ fun ChargesScreen(settings: AppSettings, modifier: Modifier) {
             .onFailure { error = it.message; loading = false }
     }
 
-    // 列表 ⇄ 详情：Play 式推入/滑出
+    // 列表 ⇄ 详情：iOS 式 push（新页推入，旧页 30% 视差退让 + 左缘投影）
     AnimatedContent(
         targetState = selected,
         modifier = modifier,
-        transitionSpec = {
-            if (targetState != null) {
-                (slideInHorizontally(tween(300)) { it } + fadeIn(tween(240))) togetherWith
-                    (fadeOut(tween(180)) + slideOutHorizontally(tween(280)) { -it / 10 })
-            } else {
-                (fadeIn(tween(240)) + slideInHorizontally(tween(280)) { -it / 10 }) togetherWith
-                    (slideOutHorizontally(tween(300)) { it } + fadeOut(tween(180)))
-            }
-        },
+        transitionSpec = { pushDetailTransition(this) },
         label = "chargeDetail",
     ) { sel ->
-        if (sel == null) ChargeList(list, loading, error, settings, onSelect = { selected = it })
-        else ChargeDetail(sel, api) { selected = null }
+        Box(Modifier.fillMaxSize()) {
+            if (sel == null) ChargeList(list, loading, error, settings, onSelect = { selected = it })
+            else ChargeDetail(sel, api) { selected = null }
+            if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
+        }
     }
 }
 
@@ -153,49 +153,90 @@ private fun ChargeList(
     }
 }
 
+/**
+ * 充电列表行。
+ *
+ * ⚠️ **v0.7.1 修正**：原来把所有字段挤进一条 `maxLines=1` 的 Text
+ * （"10-12 14:30 · 47分钟 · 充入 12.3 kWh · 45%→88% · ¥18.40"），
+ * 在 360dp 宽的真机上永远只能看到前半截，末尾的**费用**和**SOC 变化**最容易被吃掉 ——
+ * 而这恰恰是车主最想看的两件事。
+ * 现在改成三层结构：**地点（可两行）→ 时间 → 三个并排指标**，
+ * 信息一条不丢，且每条都有独立视觉权重。
+ */
 @Composable
 private fun ChargeItem(c: Charge, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val accents = LocalAccentColors.current
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .pressScale()
-            .clickable(onClick = onClick),
+            .cardDepth()
+            .pressable(onClick = onClick),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        colors = CardDefaults.cardColors(containerColor = accents.cardSurface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
                 Text(
-                    c.place ?: "未知地点",
+                    // 地址只取第一段（"龙山九路, 西区街道, …" → "龙山九路"），
+                    // 完整邮编地址在车况页位置卡里以灰色小字保留。
+                    c.place.firstSegment() ?: "未知地点",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = if (c.is_dc) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceContainerHigh,
-                ) {
-                    Text(
-                        if (c.is_dc) "快充" else "慢充",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (c.is_dc) MaterialTheme.colorScheme.onPrimaryContainer
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp),
+                Spacer(Modifier.width(10.dp))
+                ChargeTypeChip(c.is_dc)
+            }
+            Text(
+                "${c.start_date.fmtShort()} · ${minutesFmt(c.duration_min)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                InlineMetric("充入", "${c.energy_added_kwh?.fmt(1) ?: "—"} kWh")
+                InlineMetric("电量", "${c.start_soc ?: "—"}→${c.end_soc ?: "—"}%")
+                if (c.cost != null) {
+                    InlineMetric(
+                        "费用",
+                        "¥${c.cost.fmt(2)}",
+                        valueColor = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
+        }
+    }
+}
+
+/** 快充/慢充标签：矢量图标 + 文字，状态不只靠颜色 */
+@Composable
+private fun ChargeTypeChip(isDc: Boolean) {
+    val accents = LocalAccentColors.current
+    // ⚠️ v0.7.1：原来用 `primaryContainer`（深色下是一块 **深红** #93000A）——
+    // 一条普通记录的快充标签，红色权重远大于信息量，而且和「告警红」撞语义。
+    // 现在直流用充电绿（与能量条、充电态统一），交流用中性灰。
+    val tint = if (isDc) accents.chargeGreen else MaterialTheme.colorScheme.onSurfaceVariant
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = tint.copy(alpha = 0.16f),
+    ) {
+        Row(
+            Modifier.padding(start = 8.dp, end = 10.dp, top = 3.dp, bottom = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (isDc) Icons.Filled.Bolt else Icons.Filled.Power,
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(Modifier.width(4.dp))
             Text(
-                "${c.start_date.fmtShort()} · ${minutesFmt(c.duration_min)} · 充入 ${c.energy_added_kwh?.fmt(1)} kWh" +
-                    " · ${c.start_soc ?: "—"}%→${c.end_soc ?: "—"}%" +
-                    (c.cost?.let { " · ¥${it.fmt(2)}" } ?: ""),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                if (isDc) "直流快充" else "交流慢充",
+                style = MaterialTheme.typography.labelMedium,
+                color = tint,
             )
         }
     }
@@ -246,13 +287,21 @@ private fun ChargeDetail(charge: Charge, api: Api?, onClose: () -> Unit) {
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
-                        Row {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (charge.is_dc) Icons.Filled.Bolt else Icons.Filled.Power,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp),
+                            )
+                            Spacer(Modifier.width(4.dp))
                             Text(
-                                if (charge.is_dc) "⚡ 直流快充" else "🔌 交流慢充",
+                                if (charge.is_dc) "直流快充" else "交流慢充",
                                 style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             charge.geofence_name?.takeIf { it != charge.place }?.let {
-                                Spacer(Modifier.padding(start = 8.dp))
+                                Spacer(Modifier.width(8.dp))
                                 Text(
                                     "· $it",
                                     style = MaterialTheme.typography.labelMedium,
@@ -334,19 +383,38 @@ private fun ChargeDetail(charge: Charge, api: Api?, onClose: () -> Unit) {
             if (curve.isNotEmpty()) {
                 val powers = curve.mapNotNull { it.charger_power_kw }
                 if (powers.isNotEmpty()) {
+                    // 真实时间轴：充电过程的采样间隔极不均匀 —— 怠速时几分钟才一个点，
+                    // 一冲电时几十秒一个点。等距画会把功率曲线压成一团锯齿，
+                    // 看起来像"功率剧烈抖动"，其实是采样密度问题。
+                    val timeWeights = curve.map { it.date.toEpochMilli().toFloat() }
+                    val xLabels = listOfNotNull(
+                        curve.firstOrNull()?.date?.fmtShort(),
+                        curve.getOrNull(curve.size / 2)?.date?.fmtShort(),
+                        curve.lastOrNull()?.date?.fmtShort(),
+                    ).distinct()
+                    val peakKw = powers.max()
                     item {
                         SectionCard("充电功率曲线 (kW)", Modifier.animateItem()) {
                             LineChart(
                                 values = curve.map { it.charger_power_kw?.toFloat() },
                                 color = MaterialTheme.colorScheme.primary,
+                                yUnit = "kW",
+                                xLabels = xLabels,
+                                xWeights = timeWeights,
+                                contentDescription = "充电功率随时间变化曲线，峰值 $peakKw 千瓦，共 ${curve.size} 个采样点",
                             )
                         }
                     }
+                    val socCurve = curve.mapNotNull { it.battery_level }
                     item {
                         SectionCard("电量曲线 (%)", Modifier.animateItem()) {
                             LineChart(
                                 values = curve.map { it.battery_level?.toFloat() },
-                                color = MaterialTheme.colorScheme.tertiary,
+                                color = MaterialTheme.colorScheme.secondary,
+                                yUnit = "%",
+                                xLabels = xLabels,
+                                xWeights = timeWeights,
+                                contentDescription = "充电过程中电量变化曲线，从 ${socCurve.minOrNull()}% 升到 ${socCurve.maxOrNull()}%",
                             )
                         }
                     }

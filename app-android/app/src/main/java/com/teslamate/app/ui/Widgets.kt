@@ -56,11 +56,14 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -132,8 +135,13 @@ fun Modifier.glassSurface(
  *   廉价 = 大圆角 + 一层灰阴影 + 饱和渐变
  *   高级 = 单一光源（同屏阴影同色同向）+ 克制层级 + 静止的精致细节
  *
- * 深色模式下阴影几乎不可见，**渐变描边是唯一能让卡片"浮起来"的东西**，
- * 所以描边在深色下提高 alpha。
+ * ⚠️ **v0.7.1 修正**：
+ *   1. 阴影的 spotColor 原来是 `primary`（特斯拉红）@26% —— 于是**每张卡片都带一圈红晕**，
+ *      浅色底上表现为"粉红发光"，是"一眼看出是套模板"的最大来源。
+ *      现在改为**中性黑**，彩色阴影只留给电量环这种真正需要强调的元素。
+ *   2. 描边颜色从硬编码白 @22%/@6% 改为读 `cardStroke`/`cardStrokeEnd` token ——
+ *      浅色下原来是**白描白卡**（肉眼完全看不见边界），现在浅色走黑 @8%→@3%。
+ *   3. 高光 `drawRect` 之前没有裁剪到圆角，四个圆角会露出方角白斑；现在裁到 shape。
  */
 @Composable
 fun Modifier.cardDepth(
@@ -142,15 +150,14 @@ fun Modifier.cardDepth(
     ambient: Float = 0.10f,
     spot: Float = 0.26f,
 ): Modifier {
-    val dark = MaterialTheme.colorScheme.background.luminanceIsDark()
-    val spotColor = MaterialTheme.colorScheme.primary.copy(alpha = spot)
+    val accents = LocalAccentColors.current
     return this
         .shadow(
             elevation = elevation.dp,
             shape = shape,
             clip = false,
-            ambientColor = Color.Black.copy(alpha = ambient),
-            spotColor = spotColor,
+            ambientColor = accents.shadowAmbient,
+            spotColor = accents.shadowKey,
         )
         .drawWithCache {
             // 静止的对角高光，模拟玻璃受光。成本 = 一次 drawRect，几乎为零。
@@ -168,10 +175,7 @@ fun Modifier.cardDepth(
         .border(
             width = 1.dp,
             brush = Brush.linearGradient(
-                colors = listOf(
-                    Color.White.copy(alpha = if (dark) 0.22f else 0.55f),
-                    Color.White.copy(alpha = if (dark) 0.06f else 0.16f),
-                ),
+                colors = listOf(accents.cardStroke, accents.cardStrokeEnd),
                 start = Offset.Zero,
                 end = Offset(1000f, 1000f),
             ),
@@ -373,40 +377,45 @@ fun Modifier.pressable(
 /** 保留旧签名以兼容既有调用点（现在真正生效） */
 fun Modifier.pressScale(scaleDown: Float = 0.97f): Modifier = this
 
-/** 分组信息卡：毛玻璃 + 彩色阴影 + 渐变描边 */
+/**
+ * 分组信息卡：**实色卡面** + 中性阴影 + 渐变描边。
+ *
+ * ⚠️ **v0.7.1 修正**：原来卡面是 `glassSurface(GlassLevel.Regular)` ——
+ * 半透明白/黑叠在页底上。深色下 = #000000 叠 #000000 = **#000000**，
+ * 卡片与页面背景 1.00:1，「深色改纯黑分层」在卡片上等于没做；
+ * 浅色下 = #FBFBFC 叠 #F7F7F9，卡片 1.03:1，同样看不见层次。
+ * 现在直接用**不透明 `cardSurface`**（浅 #FFFFFF / 深 #1C1C1E），
+ * 页面底 → 卡片面 → 内嵌块的三级纵深一次成型，**不动任何布局**。
+ */
 @Composable
 fun SectionCard(
     title: String? = null,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val accents = LocalAccentColors.current
     Card(
         modifier = modifier
             .fillMaxWidth()
             .cardDepth(elevation = 6f),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = Color.Transparent,
+            containerColor = accents.cardSurface,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Box(
-            Modifier
-                .glassSurface(GlassLevel.Regular, RoundedCornerShape(20.dp))
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(
-                Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                if (title != null) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                content()
+            if (title != null) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
+            content()
         }
     }
 }
@@ -428,21 +437,56 @@ fun KV(k: String, v: String) {
 }
 
 /**
- * 小信息块。
+ * 行内指标：灰标签 + 实数值，横向排布。
  *
- * ⚠️ **层级倒置修正**：原来用 `surfaceContainer`（比父卡片 surfaceContainerLow 更亮），
- * 深色下两者感知亮度差 ΔL* 仅 1.4 —— 人眼不可辨，嵌套层次直接消失。
- * 现在改成**与父卡片同色 + 0.5dp hairline**，这是 iOS inset-grouped 的标准做法。
+ * 列表行不再把所有信息挤成一行 `maxLines=1` 截断（充电/行程列表的通病：
+ * "10-12 14:30 · 47分钟 · 充入 12.3 kWh · 45%→88% · ¥18.40" 永远显示不全），
+ * 改成 **两行结构**：第二行是时间，第三行是三个并排指标，标签小、数值实。
+ */
+@Composable
+fun InlineMetric(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface,
+) {
+    Row(modifier, verticalAlignment = Alignment.Bottom) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = valueColor,
+        )
+    }
+}
+
+/**
+ * 小信息块（卡片内凹块）。
+ *
+ * ⚠️ **v0.7.1 二次修正**：v0.7.0 把底色改成「与父卡片同色 + hairline」，
+ * 声称修好了层级倒置 —— 但父卡片当时是**半透明玻璃**，实测浅色 #FFFFFF vs #FBFBFC
+ * （ΔL\* 0.9）、深色 #0B0B0D vs #000000（ΔL\* 3.0），层次**原样存在**。
+ * 现在父卡片是实色 `cardSurface`，内凹块用**专门的 `cardInset`**：
+ *   深色 = #1C1C1E 卡里的 #0B0B0D（ΔL\* 7.4，像真的凹下去）
+ *   浅色 = #FFFFFF 卡里的 #F2F2F4（ΔL\* 3.2）
+ * 描边同时从 1dp 硬线降到 0.5dp —— 靠**明度差**表达层级，不靠线。
  */
 @Composable
 fun InfoTile(title: String, value: String, modifier: Modifier = Modifier) {
+    val accents = LocalAccentColors.current
     Surface(
         shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = accents.cardInset,
         modifier = modifier
             .border(
-                width = 1.dp,
-                color = MaterialTheme.colorScheme.outlineVariant,
+                width = 0.5.dp,
+                color = accents.cardStrokeEnd,
                 shape = RoundedCornerShape(14.dp),
             ),
     ) {
@@ -532,7 +576,7 @@ private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
  *  - 加静态刻度环（12 格）——静态细节比动画更能提升高级感
  */
 @Composable
-fun SocRing(soc: Int?, modifier: Modifier = Modifier) {
+fun SocRing(soc: Int?, modifier: Modifier = Modifier, charging: Boolean = false) {
     val a = LocalAccentColors.current
     val track = a.chartTrack
     // 颜色语义（特斯拉设计语言）：
@@ -540,6 +584,7 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier) {
     //   绿色 **只** 表示"正在充电"
     val color = when {
         soc == null -> track
+        charging -> a.chargeGreen
         soc >= 20 -> a.energyBlue
         soc >= 10 -> a.warnAmber
         else -> a.danger
@@ -551,7 +596,16 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier) {
     )
     val shown = animated.roundToInt()
     Box(
-        modifier = modifier.size(168.dp),
+        modifier = modifier.size(168.dp)
+            // ⚠️ v0.7.1：Canvas 画的环对屏幕阅读器完全不可达，
+            // 加语义描述（电量 + 充电状态）。
+            .semantics {
+                contentDescription = buildString {
+                    append("电量 ")
+                    append(if (soc == null) "未知" else "$soc%")
+                    if (charging) append("，正在充电")
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.size(168.dp)) {
@@ -583,15 +637,24 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier) {
                     style = Stroke(width = stroke, cap = StrokeCap.Round),
                 )
             }
-            // 静态刻度：12 格，每 10% 一格（往内推，避免与圆弧重叠）
+            // 静态刻度：10 格，每格 10%
+            //
+            // ⚠️ **v0.7.1 修正两处**：
+            //  1. 角度原来写成 `135 + i * 22.5 + 90` —— 那个 `+90` 是多余的，
+            //     导致整个刻度盘相对圆弧**偏转 90°**，看上去像"刻度乱转"。
+            //     圆弧起点 135°、跨度 270°，10 格就该每格 27°，起点与弧对齐。
+            //  2. 12 格 × 22.5° 与"每格 10%"自相矛盾（12 格只能表达 120%），
+            //     亮起判定 `shown / 10` 于是和格数错位 —— 98% 只亮 9 格。
+            //     现在统一成 10 格 / 27°，亮起判定 `shown > i * 10`，
+            //     于是 50% 亮 5 格、98% 亮 10 格，与圆弧读数一致。
             val r = size.minDimension / 2 - stroke - 2.dp.toPx()
             val c = Offset(size.width / 2, size.height / 2)
-            for (i in 0 until 12) {
-                val ang = Math.toRadians((135 + i * 22.5 + 90).toDouble())
+            for (i in 0 until 10) {
+                val ang = Math.toRadians((135f + i * 27f).toDouble())
                 val inner = r - 5.dp.toPx()
                 val outer = r
                 drawLine(
-                    color = if (i < (shown / 10)) color.copy(alpha = 0.85f) else track,
+                    color = if (shown > i * 10) color.copy(alpha = 0.85f) else track,
                     start = Offset(
                         c.x + (inner * kotlin.math.cos(ang)).toFloat(),
                         c.y + (inner * kotlin.math.sin(ang)).toFloat(),
@@ -624,6 +687,13 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier) {
  * 能量条 —— 特斯拉最易识别的视觉母题。
  *
  * 横向圆角条 + 目标 SOC 刻度线，充电中转绿。
+ *
+ * ⚠️ **v0.7.1 修正**：
+ *  1. 目标刻度原来画的是**纯白 @75%** —— 浅色模式下白画在浅色轨道上等于隐形
+ *     （实测 1.17:1，WCAG 1.4.11 要求非文字图形 ≥3:1）。现在用 `onSurfaceVariant`，
+ *     深浅两模式都 ≥4.5:1。
+ *  2. 轨道 `chartTrack` 深色下只有 1.39:1 —— 提到 ≥3:1，否则"满格量程"读不出来。
+ *  3. 加 `contentDescription`：Canvas 画的条对屏幕阅读器完全不可达（IA 专家实测）。
  */
 @Composable
 fun EnergyBar(
@@ -647,10 +717,18 @@ fun EnergyBar(
         animationSpec = tween(500, easing = FastOutSlowInEasing),
         label = "energyBar",
     )
+    val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
     Box(
         modifier
             .fillMaxWidth()
             .height(height.dp)
+            .semantics {
+                contentDescription = buildString {
+                    append("电量 ${soc ?: "未知"}%")
+                    if (charging) append("，正在充电")
+                    targetSoc?.let { append("，目标电量 $it%") }
+                }
+            }
     ) {
         Canvas(Modifier.fillMaxSize()) {
             val r = androidx.compose.ui.geometry.CornerRadius(size.height / 2f)
@@ -665,7 +743,7 @@ fun EnergyBar(
             targetSoc?.let { t ->
                 val x = size.width * (t / 100f)
                 drawLine(
-                    color = Color.White.copy(alpha = 0.75f),
+                    color = tickColor,
                     start = Offset(x, 0f),
                     end = Offset(x, size.height),
                     strokeWidth = 2.dp.toPx(),
@@ -688,8 +766,13 @@ fun VehicleTopView(
     modifier: Modifier = Modifier,
 ) {
     val a = LocalAccentColors.current
-    val body = MaterialTheme.colorScheme.surfaceContainer
-    val line = MaterialTheme.colorScheme.outlineVariant
+    val dark = MaterialTheme.colorScheme.background.luminanceIsDark()
+    // 车身：浅色用品牌红（一眼认出是特斯拉），深色用中性灰蓝分层。
+    // 描边与轮胎都用「轮廓级」灰 —— 原来浅色下轮胎是 #E6E8EB 贴在白车身上，等于隐形。
+    val bodyTop = if (dark) Color(0xFF3A3A3C) else Color(0xFFD70012)
+    val bodyBottom = if (dark) Color(0xFF242426) else Color(0xFF93000A)
+    val outline = if (dark) Color(0xFF6E6E76) else Color(0xFF8E8E93)
+    val glass = if (dark) Color(0xFF6E6E76) else Color(0xFFB8BCC2)
     val danger = a.danger
     val warn = a.warnAmber
 
@@ -704,62 +787,119 @@ fun VehicleTopView(
         label = "tpmsPulseAlpha",
     )
 
-    Box(modifier, contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxWidth().height(220.dp)) {
-            val w = size.width * 0.52f
-            val h = size.height * 0.86f
+    Box(
+        modifier = modifier.semantics {
+            // 俯视图里的「哪轮异常」只靠颜色表达，读屏用户拿不到。
+            // 把四轮读数与异常状态写进语义描述。
+            contentDescription = buildString {
+                append("俯视图：")
+                val list = listOf(
+                    "左前" to reading?.fl,
+                    "右前" to reading?.fr,
+                    "左后" to reading?.rl,
+                    "右后" to reading?.rr,
+                )
+                list.forEachIndexed { i, (label, v) ->
+                    if (i > 0) append("，")
+                    append(label)
+                    append(" ")
+                    append(if (v == null) "无数据" else "%.2f bar".format(v))
+                    if (reading?.isAlerting(v, label) == true) append("，异常")
+                }
+            }
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(Modifier.fillMaxWidth().height(200.dp)) {
+            val w = size.width * 0.60f
+            val h = size.height * 0.92f
             val left = (size.width - w) / 2
             val top = (size.height - h) / 2
-            val bodyShape = CornerRadius(24.dp.toPx())
+            val cx = size.width / 2
 
-            // 车身
-            drawRoundRect(
-                color = body,
-                topLeft = Offset(left, top),
-                size = androidx.compose.ui.geometry.Size(w, h),
-                cornerRadius = bodyShape,
+            // ── 车身轮廓 ────────────────────────────────────────────
+            // ⚠️ v0.7.1 重画：原来是一个圆角矩形 + 2 个圆角矩形当风挡 + 4 个小圆角条当轮子，
+            // 视觉质感控评为「全 App 最廉价的一处」。
+            // 现在是**真正的俯视轮廓**：车头收窄、尾部收窄、腰线外凸、四角圆润，
+            // 再叠品牌色纵向渐变 —— 一眼能认出是台车，而不是一个灰色方块。
+            val body = Path().apply {
+                // 车头（上方）：从左侧腰部起，往上收窄到车头
+                moveTo(cx - w * 0.44f, top + h * 0.22f)
+                quadraticTo(cx - w * 0.48f, top + h * 0.05f, cx - w * 0.34f, top)
+                lineTo(cx + w * 0.34f, top)
+                quadraticTo(cx + w * 0.48f, top + h * 0.05f, cx + w * 0.44f, top + h * 0.22f)
+                // 右侧腰线 → 后轮拱 → 尾部收窄
+                lineTo(cx + w * 0.50f, top + h * 0.40f)
+                lineTo(cx + w * 0.50f, top + h * 0.66f)
+                lineTo(cx + w * 0.42f, top + h * 0.90f)
+                quadraticTo(cx + w * 0.40f, top + h, cx + w * 0.28f, top + h)
+                lineTo(cx - w * 0.28f, top + h)
+                quadraticTo(cx - w * 0.40f, top + h, cx - w * 0.42f, top + h * 0.90f)
+                lineTo(cx - w * 0.50f, top + h * 0.66f)
+                lineTo(cx - w * 0.50f, top + h * 0.40f)
+                close()
+            }
+            drawPath(
+                body,
+                brush = Brush.verticalGradient(
+                    listOf(bodyTop, bodyBottom),
+                    startY = top,
+                    endY = top + h,
+                ),
             )
-            drawRoundRect(
-                color = line,
-                topLeft = Offset(left, top),
-                size = androidx.compose.ui.geometry.Size(w, h),
-                cornerRadius = bodyShape,
-                style = Stroke(width = 1.dp.toPx()),
-            )
-            // 前后风挡
-            drawRoundRect(
-                color = line.copy(alpha = 0.7f),
-                topLeft = Offset(left + w * 0.22f, top + 8.dp.toPx()),
-                size = androidx.compose.ui.geometry.Size(w * 0.56f, 22.dp.toPx()),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx()),
-            )
-            drawRoundRect(
-                color = line.copy(alpha = 0.7f),
-                topLeft = Offset(left + w * 0.22f, top + h - 30.dp.toPx()),
-                size = androidx.compose.ui.geometry.Size(w * 0.56f, 22.dp.toPx()),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx()),
-            )
+            drawPath(body, color = outline, style = Stroke(width = 1.5.dp.toPx()))
 
-            // 四个轮位
+            // 风挡（梯形）
+            fun windshield(yTop: Float, yBot: Float, wide: Float, narrow: Float) {
+                val p = Path().apply {
+                    moveTo(cx - wide * w / 2, yTop)
+                    lineTo(cx + wide * w / 2, yTop)
+                    lineTo(cx + narrow * w / 2, yBot)
+                    lineTo(cx - narrow * w / 2, yBot)
+                    close()
+                }
+                drawPath(p, color = glass)
+            }
+            windshield(top + h * 0.055f, top + h * 0.135f, 0.56f, 0.40f)
+            windshield(top + h * 0.865f, top + h * 0.945f, 0.40f, 0.54f)
+
+            // ── 四个轮位 ────────────────────────────────────────────
             data class W(val label: String, val value: Double?, val x: Float, val y: Float)
+            val wheelW = 17.dp.toPx()
+            val wheelH = 42.dp.toPx()
             val wheels = listOf(
-                W("左前", reading?.fl, left - 12.dp.toPx(), top + h * 0.20f),
-                W("右前", reading?.fr, left + w + 12.dp.toPx() - 18.dp.toPx(), top + h * 0.20f),
-                W("左后", reading?.rl, left - 12.dp.toPx(), top + h * 0.62f),
-                W("右后", reading?.rr, left + w + 12.dp.toPx() - 18.dp.toPx(), top + h * 0.62f),
+                W("左前", reading?.fl, cx - w * 0.50f - wheelW * 0.62f, top + h * 0.20f),
+                W("右前", reading?.fr, cx + w * 0.50f - wheelW * 0.38f, top + h * 0.20f),
+                W("左后", reading?.rl, cx - w * 0.50f - wheelW * 0.62f, top + h * 0.62f),
+                W("右后", reading?.rr, cx + w * 0.50f - wheelW * 0.38f, top + h * 0.62f),
             )
+            // 先画四个轮拱槽（比车身略暗的竖槽），再把轮子嵌进去 ——
+            // 轮子直接贴在车身上会像"贴纸"，有个槽才像嵌进去。
+            // ⚠️ 第一版用 drawArc 画轮拱弧线，结果是四个"钩子"挂在车身侧面，很脏。
+            // 现在改用暗色圆角矩形槽，干净且一眼能看出轮位。
             wheels.forEach { wl ->
-                val bad = reading?.isAlerting(wl.value) == true
+                drawRoundRect(
+                    color = Color.Black.copy(alpha = 0.30f),
+                    topLeft = Offset(wl.x - 3.dp.toPx(), wl.y - 4.dp.toPx()),
+                    size = androidx.compose.ui.geometry.Size(
+                        wheelW + 6.dp.toPx(),
+                        wheelH + 8.dp.toPx(),
+                    ),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(9.dp.toPx()),
+                )
+            }
+            wheels.forEach { wl ->
+                val bad = reading?.isAlerting(wl.value, wl.label) == true
                 val near = reading?.isNear(wl.value) == true
                 val wColor = when {
                     bad -> danger.copy(alpha = pulseAlpha)
                     near -> warn
-                    else -> a.chartTrack
+                    else -> outline
                 }
                 drawRoundRect(
                     color = wColor,
                     topLeft = Offset(wl.x, wl.y),
-                    size = androidx.compose.ui.geometry.Size(18.dp.toPx(), 44.dp.toPx()),
+                    size = androidx.compose.ui.geometry.Size(wheelW, wheelH),
                     cornerRadius = androidx.compose.ui.geometry.CornerRadius(6.dp.toPx()),
                 )
             }
@@ -767,7 +907,18 @@ fun VehicleTopView(
     }
 }
 
-/** 俯视图旁的数值列表。阈值由服务端给出（唯一事实源），App 不自己写。 */
+/**
+ * 俯视图旁的数值列表。
+ *
+ * ⚠️ **v0.7.1 修正（唯一事实源的最后一块拼图）**：
+ * 服务端从 v0.7.0 起就在响应里下发 `tpms_alert_wheels`（异常轮次的中文名），
+ * 但 App **从头到尾没读过它** —— 判定仍在本地做，阈值与「单胎离群 0.2 bar」
+ * 在 App 里是**硬编码**的。这与 CHANGELOG 里「不再本地算阈值」的承诺不符，
+ * 也是全 App 唯一残留的「两端各算一份」的地方。
+ *
+ * 现在：`alertWheels` 非空 → **一律以服务端判定为准**；
+ * 只有服务端没给（老服务端兼容）时才退回本地阈值。
+ */
 data class TpmsReadingUi(
     val fl: Double?,
     val fr: Double?,
@@ -775,14 +926,20 @@ data class TpmsReadingUi(
     val rr: Double?,
     val minBar: Double = 2.5,
     val maxBar: Double = 3.3,
+    /** 服务端判定的异常轮次（"左前"/"右前"/"左后"/"右后"）；非空时优先 */
+    val alertWheels: Set<String> = emptySet(),
 ) {
-    fun isAlerting(p: Double?): Boolean {
+    /** 单胎离群阈值（与服务端 `TpmsOutlierDelta` 对齐，仅作兼容兜底） */
+    private val outlierDelta = 0.2
+
+    fun isAlerting(p: Double?, label: String? = null): Boolean {
+        if (alertWheels.isNotEmpty() && label != null) return label in alertWheels
         if (p == null) return false
         if (p < minBar || p > maxBar) return true
         val all = listOfNotNull(fl, fr, rl, rr).sorted()
         if (all.isEmpty()) return false
         val median = all[all.size / 2]
-        return (median - p) > 0.2
+        return (median - p) > outlierDelta
     }
 
     /** 接近阈值（未触发告警）——用琥珀色描边提示 */

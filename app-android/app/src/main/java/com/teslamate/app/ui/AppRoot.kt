@@ -7,12 +7,16 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,6 +31,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.TopAppBar
@@ -132,41 +137,65 @@ fun TeslaMateApp() {
 private fun MainScaffold(settings: AppSettings) {
     var tab by remember { mutableStateOf(Tab.STATUS) }
     val ctx = LocalContext.current
-    val density = LocalDensity.current
+    // 车况数据提到 App 级：切 Tab 时页面会被 AnimatedContent 销毁，
+    // 数据放在页面里就会连同骨架屏一起重放一次（等于重新开一次 App）。
+    val statusStore = remember { StatusStore() }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Bottom),
         bottomBar = {
             // 毛玻璃导航栏（iOS bar material）
+            val accents = LocalAccentColors.current
             Box(
                 Modifier
                     .fillMaxWidth()
                     .glassSurface(GlassLevel.Bar, RoundedCornerShape(0.dp), realBlur = true)
             ) {
-                NavigationBar(containerColor = Color.Transparent) {
-                    Tab.entries.forEach { t ->
-                        NavigationBarItem(
-                            selected = tab == t,
-                            onClick = {
-                                if (tab != t) {
-                                    Haptics.selection(ctx)
-                                    tab = t
-                                }
-                            },
-                            icon = {
-                                // contentDescription = null：可见的文字标签已提供可访问名称，
-                                // 再给图标一份会导致 TalkBack 念「车况,车况」（WCAG 2.5.3）
-                                Icon(t.icon, contentDescription = null)
-                            },
-                            label = { Text(t.label, style = MaterialTheme.typography.labelSmall) },
-                        )
+                Column {
+                    // ⚠️ v0.7.1：栏顶原来**没有分割线**，页面内容直接溶进栏里，
+                    // 边界不清（iOS Tab Bar 有一条 0.5px 顶部分割线）。
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(0.5.dp)
+                            .background(accents.cardStroke)
+                    )
+                    NavigationBar(containerColor = Color.Transparent) {
+                        Tab.entries.forEach { t ->
+                            NavigationBarItem(
+                                selected = tab == t,
+                                onClick = {
+                                    if (tab != t) {
+                                        Haptics.selection(ctx)
+                                        tab = t
+                                    }
+                                },
+                                icon = {
+                                    // contentDescription = null：可见的文字标签已提供可访问名称，
+                                    // 再给图标一份会导致 TalkBack 念「车况,车况」（WCAG 2.5.3）
+                                    Icon(t.icon, contentDescription = null, modifier = Modifier.size(22.dp))
+                                },
+                                label = { Text(t.label, style = MaterialTheme.typography.labelSmall) },
+                                colors = NavigationBarItemDefaults.colors(
+                                    // ⚠️ M3 默认会画一个胶囊指示器（浅色 #DCE3E8 / 深色 #2A353D），
+                                    // 是纯 Material 味，与整 App 的 iOS 语言冲突。
+                                    // iOS 的选中态是**图标与文字同色**，没有胶囊。
+                                    indicatorColor = Color.Transparent,
+                                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                ),
+                            )
+                        }
                     }
                 }
             }
         },
     ) { padding ->
         // ⚠️ iOS UITabBar 切换是**无位移**的（瞬时或极轻 cross-dissolve）。
-        // 原实现有 12.5% 的水平滑动，那是 Play 商店味，与 iOS 相反。改为固定 16dp 位移。
+        // v0.7.0 把 12.5% 改成了固定 16dp 位移，注释说"无位移"、实现却是有位移 ——
+        // 注释与实现相反，比注释错更糟。v0.7.1 彻底去掉位移，只留交叉淡入淡出。
         AnimatedContent(
             targetState = tab,
             modifier = Modifier
@@ -176,21 +205,12 @@ private fun MainScaffold(settings: AppSettings) {
                 // ⚠️ haze 与 hazeChild 不可互为父子，所以源必须挂在内容区而不是根容器。
                 .haze(LocalHazeState.current),
             transitionSpec = {
-                val dir = if (targetState.ordinal >= initialState.ordinal) 1 else -1
-                val shift = with(density) { 16.dp.toPx() }.toInt()
-                val shiftOut = with(density) { 8.dp.toPx() }.toInt()
-                (
-                    fadeIn(tween(140, delayMillis = 40)) +
-                        slideInHorizontally(tween(200)) { dir * shift }
-                    ) togetherWith (
-                    fadeOut(tween(120)) +
-                        slideOutHorizontally(tween(180)) { -dir * shiftOut }
-                    )
+                fadeIn(tween(140)) togetherWith fadeOut(tween(120))
             },
             label = "tabSwitch",
         ) { current ->
             when (current) {
-                Tab.STATUS -> StatusScreen(settings, Modifier.fillMaxSize())
+                Tab.STATUS -> StatusScreen(settings, Modifier.fillMaxSize(), statusStore)
                 Tab.CHARGES -> ChargesScreen(settings, Modifier.fillMaxSize())
                 Tab.DRIVES -> DrivesScreen(settings, Modifier.fillMaxSize())
                 Tab.STATS -> StatsScreen(settings, Modifier.fillMaxSize())

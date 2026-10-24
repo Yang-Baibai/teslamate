@@ -60,7 +60,7 @@
 | `has_supercharger` | bool | 这趟行程的终点附近有**直流快充**记录 |
 | `charge_after_trip` | bool | 这趟行程的终点附近有**任何**充电记录（含交流慢充） |
 
-> **v0.7.1 修正：充电与行程改用里程关联，不用时间窗。**
+> **v0.8.0 修正：充电与行程改用里程关联，不用时间窗。**
 > 旧判据 `charges.date BETWEEN drives.start_date AND drives.end_date` 恒为 false——
 > 充电发生在行程**结束之后**（到达服务区 → 结束行程 → 开始充电），
 > 导致最近 200 条行程的 `has_supercharger` 全是 false。

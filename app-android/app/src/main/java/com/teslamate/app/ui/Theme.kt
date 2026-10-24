@@ -52,7 +52,13 @@ data class AccentColors(
     val fastCharge: Color,
     /** 交流慢充 */
     val slowCharge: Color,
-    /** 图表网格线 / 轨道 */
+    /**
+     * 图表网格线 / 轨道 / 空槽。
+     *
+     * ⚠️ **v0.7.1 提亮**：原来深色 #26262A（对黑底 1.39:1）、浅色 #E6E8EB（对白 1.23:1），
+     * 远低于 WCAG 1.4.11 要求的 3:1 —— 意味着"满格量程"这件事**根本读不出来**。
+     * 现在提到 #5A5A5E（深 3.1:1）/ #8E8E93（浅 3.3:1）。
+     */
     val chartTrack: Color,
     /** 图表参考线（中位数/基准） */
     val chartBaseline: Color,
@@ -64,6 +70,22 @@ data class AccentColors(
     val shadowAmbient: Color,
     /** 卡片投影的主光 */
     val shadowKey: Color,
+    /**
+     * 卡片面（**不透明**）—— iOS grouped 层级三级纵深的第一级。
+     *
+     * ⚠️ 之前没有这个 token，SectionCard 走的是「半透明黑/白叠在页底上」：
+     * 深色下黑 @55% 叠在 #000000 页底 = **还是 #000000**，卡片与背景 1.00:1，
+     * 「深色改纯黑分层」在卡片上完全没生效 —— 全 App 结构塌成「黑底黑卡 + 一根白边」。
+     * 浅色下白 @55% 叠在 #F7F7F9 = #FBFBFC，卡片 vs 背景 1.03:1，层次同样归零。
+     * 现在卡片面用**实色**，层级一次成型。
+     */
+    val cardSurface: Color,
+    /** 卡片内凹块：比卡片面「凹」一级（InfoTile 等内嵌内容） */
+    val cardInset: Color,
+    /** 卡片描边（渐变头尾两端） */
+    val cardStroke: Color,
+    /** 卡片描边（渐变尾端） */
+    val cardStrokeEnd: Color,
 )
 
 private val LightAccents = AccentColors(
@@ -75,12 +97,18 @@ private val LightAccents = AccentColors(
     danger = Color(0xFFD13438),
     fastCharge = Color(0xFFD70012),
     slowCharge = Color(0xFF2F5FD0),
-    chartTrack = Color(0xFFE6E8EB),
+    chartTrack = Color(0xFF8E8E93),
     chartBaseline = Color(0xFF9AA1A8),
     glassTint = Color(0x99FFFFFF),
     glassHighlight = Color(0x66FFFFFF),
     shadowAmbient = Color(0x14000000),
     shadowKey = Color(0x0A000000),
+    // iOS grouped 浅色三级：页面底 #F2F2F7 → 卡片面 #FFFFFF → 内凹 #F2F2F4
+    cardSurface = Color(0xFFFFFFFF),
+    cardInset = Color(0xFFF2F2F4),
+    // 浅色下描边必须**是黑不是白** —— 白描白卡等于没有边界（之前就是白 55%，肉眼全隐形）
+    cardStroke = Color(0x14000000),
+    cardStrokeEnd = Color(0x08000000),
 )
 
 private val DarkAccents = AccentColors(
@@ -92,18 +120,35 @@ private val DarkAccents = AccentColors(
     danger = Color(0xFFE5484D),
     fastCharge = Color(0xFFFF453A),
     slowCharge = Color(0xFF5B8DEF),
-    chartTrack = Color(0xFF26262A),
+    chartTrack = Color(0xFF5A5A5E),
     chartBaseline = Color(0xFF6E6E76),
     glassTint = Color(0x8C1C1C1E),
     glassHighlight = Color(0x33FFFFFF),
     shadowAmbient = Color(0x40000000),
     shadowKey = Color(0x66000000),
+    // iOS grouped 深色三级：页面底 #000000 → 卡片面 #1C1C1E → 内凹 #0B0B0D
+    cardSurface = Color(0xFF1C1C1E),
+    cardInset = Color(0xFF0B0B0D),
+    // 深色下描边是白（黑描黑看不见），但要比之前收敛：22% → 14%
+    cardStroke = Color(0x24FFFFFF),
+    cardStrokeEnd = Color(0x0AFFFFFF),
 )
 
 val LocalAccentColors = staticCompositionLocalOf { LightAccents }
 
-/** 毛玻璃状态。整个 App 共用一个，根容器作 source，玻璃面作 effect。 */
-val LocalHazeState = staticCompositionLocalOf<HazeState> {
+/**
+ * 当前是否深色模式。
+ *
+ * 需要按模式切换色板的组件（自绘分段控件、Canvas 图表等）用这个判断，
+ * 而不是各自硬编码两套颜色 —— 硬编码是"两套 App 拼在一起"的常见来源。
+ */
+@Composable
+fun isDarkTheme(): Boolean {
+    val bg = MaterialTheme.colorScheme.background
+    return (0.299f * bg.red + 0.587f * bg.green + 0.114f * bg.blue) < 0.5f
+}
+
+/** 毛玻璃状态。整个 App 共用一个，根容器作 source，玻璃面作 effect。 */val LocalHazeState = staticCompositionLocalOf<HazeState> {
     error("HazeState 未初始化")
 }
 
@@ -141,16 +186,16 @@ private val LightColors = lightColorScheme(
     onError = Color(0xFFFFFFFF),
     errorContainer = Color(0xFFFFDAD6),
     onErrorContainer = Color(0xFF410002),
-    background = Color(0xFFF7F7F9),        // iOS systemGroupedBackground
+    background = Color(0xFFF2F2F7),        // iOS systemGroupedBackground
     onBackground = Color(0xFF1C1C1E),
-    surface = Color(0xFFF7F7F9),
+    surface = Color(0xFFF2F2F7),
     onSurface = Color(0xFF1C1C1E),
     surfaceVariant = Color(0xFFEBEBEE),
     onSurfaceVariant = Color(0xFF6B6B70),
     surfaceContainerLowest = Color(0xFFFFFFFF),
     surfaceContainerLow = Color(0xFFFFFFFF),
     surfaceContainer = Color(0xFFFFFFFF),
-    surfaceContainerHigh = Color(0xFFF0F0F2),
+    surfaceContainerHigh = Color(0xFFF2F2F4),   // 内凹块
     surfaceContainerHighest = Color(0xFFE8E8EB),
     outline = Color(0xFFB0B0B6),
     outlineVariant = Color(0xFFE0E0E5),
@@ -182,10 +227,10 @@ private val DarkColors = darkColorScheme(
     surfaceVariant = Color(0xFF2C2C2E),
     onSurfaceVariant = Color(0xFF98989F),
     surfaceContainerLowest = Color(0xFF000000),
-    surfaceContainerLow = Color(0xFF0B0B0D),
+    surfaceContainerLow = Color(0xFF1C1C1E),   // 卡片面（与 AccentColors.cardSurface 一致）
     surfaceContainer = Color(0xFF1C1C1E),
-    surfaceContainerHigh = Color(0xFF242426),
-    surfaceContainerHighest = Color(0xFF2C2C2E),
+    surfaceContainerHigh = Color(0xFF2C2C2E),
+    surfaceContainerHighest = Color(0xFF3A3A3C),
     outline = Color(0xFF48484A),
     outlineVariant = Color(0xFF38383A),
 )

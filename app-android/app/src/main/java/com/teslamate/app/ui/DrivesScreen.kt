@@ -4,18 +4,13 @@ package com.teslamate.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.add
 import androidx.compose.foundation.layout.asPaddingValues
@@ -24,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -37,7 +33,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,6 +53,7 @@ import com.teslamate.app.TrackPoint
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtFull
 import com.teslamate.app.fmtMonth
+import com.teslamate.app.firstSegment
 import com.teslamate.app.fmtShort
 import com.teslamate.app.minutesFmt
 import kotlinx.coroutines.Dispatchers
@@ -85,19 +81,14 @@ fun DrivesScreen(settings: AppSettings, modifier: Modifier) {
     AnimatedContent(
         targetState = selected,
         modifier = modifier,
-        transitionSpec = {
-            if (targetState != null) {
-                (slideInHorizontally(tween(300)) { it } + fadeIn(tween(240))) togetherWith
-                    (fadeOut(tween(180)) + slideOutHorizontally(tween(280)) { -it / 10 })
-            } else {
-                (fadeIn(tween(240)) + slideInHorizontally(tween(280)) { -it / 10 }) togetherWith
-                    (slideOutHorizontally(tween(300)) { it } + fadeOut(tween(180)))
-            }
-        },
+        transitionSpec = { pushDetailTransition(this) },
         label = "driveDetail",
     ) { sel ->
-        if (sel == null) DriveList(list, loading, error, settings, onSelect = { selected = it })
-        else DriveDetail(sel, api, settings) { selected = null }
+        Box(Modifier.fillMaxSize()) {
+            if (sel == null) DriveList(list, loading, error, settings, onSelect = { selected = it })
+            else DriveDetail(sel, api, settings) { selected = null }
+            if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
+        }
     }
 }
 
@@ -155,27 +146,38 @@ private fun DriveList(
     }
 }
 
+/**
+ * 行程列表行。
+ *
+ * ⚠️ **v0.7.1 修正**：同充电列表的老问题 —— 一行 `maxLines=1` 把
+ * "10-12 09:15 · 47分钟 · 12.3 kWh · 148 Wh/km · 最高 132 km/h" 截断，
+ * **能耗与最高速**（数据控车主最关心的两项）永远看不到。
+ * 改成三层结构：路线（可两行）→ 时间与时长 → 三个并排指标。
+ */
 @Composable
 private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val accents = LocalAccentColors.current
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .pressScale()
-            .clickable(onClick = onClick),
+            .cardDepth()
+            .pressable(onClick = onClick),
         shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        colors = CardDefaults.cardColors(containerColor = accents.cardSurface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
                 Text(
-                    "${d.start_place ?: "?"} → ${d.end_place ?: "?"}",
+                    // 起终点只取地址第一段（完整邮编地址在详情页里保留）
+                    "${d.start_place.firstSegment() ?: "?"} → ${d.end_place.firstSegment() ?: "?"}",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                Spacer(Modifier.width(10.dp))
                 Text(
                     "${d.distance_km?.fmt(1) ?: "—"} km",
                     style = MaterialTheme.typography.titleSmall,
@@ -183,13 +185,15 @@ private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Un
                 )
             }
             Text(
-                "${d.start_date.fmtShort()} · ${minutesFmt(d.duration_min)} · ${d.energy_kwh?.fmt(1)} kWh" +
-                    " · ${d.wh_per_km?.fmt(0) ?: "—"} Wh/km · 最高 ${d.speed_max ?: "—"} km/h",
+                "${d.start_date.fmtShort()} · ${minutesFmt(d.duration_min)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
             )
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                InlineMetric("耗电", "${d.energy_kwh?.fmt(1) ?: "—"} kWh")
+                InlineMetric("能耗", "${d.wh_per_km?.fmt(0) ?: "—"} Wh/km")
+                InlineMetric("最高", "${d.speed_max ?: "—"} km/h")
+            }
         }
     }
 }
@@ -294,8 +298,16 @@ private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose:
                     drive.start_geofence?.let { KV("起点围栏", it) }
                     KV("终点", drive.end_place ?: "—")
                     drive.end_geofence?.let { KV("终点围栏", it) }
-                    if (drive.has_supercharger) {
-                        KV("超充经过", "是（途中到达过超级充电桩）")
+                    // ⚠️ v0.7.1：原来写「超充经过 / 途中到达过超级充电桩」，
+                    // 但服务端那个判据（充电时间落在行程时间窗内）**永远命中不了** ——
+                    // 充电发生在行程结束之后，于是这个字段恒为 false（200 条行程 0 条命中）。
+                    // 服务端已改用里程关联修好，命中数变成 52/200。
+                    // 同时措辞按新语义修正：说的是「到达时有充电」，不是「途中路过超充」。
+                    if (drive.charge_after_trip || drive.has_supercharger) {
+                        KV(
+                            "到达时充电",
+                            if (drive.has_supercharger) "是（到达时有直流快充）" else "是（到达时有交流充电）",
+                        )
                     }
                 }
             }

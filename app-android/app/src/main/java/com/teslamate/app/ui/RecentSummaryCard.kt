@@ -128,11 +128,14 @@ private fun SummaryContent(s: StatsBucket) {
             }
             Spacer(Modifier.padding(top = 6.dp))
             // 快充占比条：一眼看出这 30 天的补能结构
+            // ⚠️ v0.7.1：原来用 primary（特斯拉红）—— 红色在本 App 的语义里
+            // 只表示「告警 / 品牌点缀」，用来画一条普通占比条属于语义误用。
+            // 改用能量蓝（快充本身就是「直流快充」，用品牌红还会和告警撞色）。
             LinearProgressIndicator(
                 progress = { if (s.charge_kwh > 0) (s.dc_kwh / s.charge_kwh).toFloat() else 0f },
                 modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                color = LocalAccentColors.current.energyBlue,
+                trackColor = LocalAccentColors.current.chartTrack,
             )
         }
     }

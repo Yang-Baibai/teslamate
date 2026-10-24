@@ -2,7 +2,10 @@
 
 package com.teslamate.app.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -11,12 +14,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -25,7 +26,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -33,6 +37,7 @@ import com.teslamate.app.AppSettings
 import com.teslamate.app.BatteryHealth
 import com.teslamate.app.Stats
 import com.teslamate.app.fmt
+import com.teslamate.app.fmtDate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -68,39 +73,32 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
     Column(modifier) {
         TopAppBar(
             title = { Text("统计", fontWeight = FontWeight.Bold) },
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         )
         LazyColumn(
             Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp),
+            // ⚠️ v0.7.1：原来只有 bottom padding，SectionCard 又是 fillMaxWidth
+            // → 卡片左右**贴边 0dp**，而同页分段按钮留了 16dp，加载完还会左右跳一下。
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                SingleChoiceSegmentedButtonRow(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                ) {
-                    periods.forEachIndexed { i, (key, label) ->
-                        SegmentedButton(
-                            selected = period == key,
-                            onClick = { period = key },
-                            shape = SegmentedButtonDefaults.itemShape(index = i, count = periods.size),
-                        ) {
-                            Text(label)
-                        }
-                    }
-                }
+                PeriodSegmented(
+                    periods = periods,
+                    current = period,
+                    onSelect = { period = it },
+                )
             }
 
             if (error != null) {
-                item { Column(Modifier.padding(horizontal = 16.dp)) { ErrorBanner(error!!) } }
+                item { ErrorBanner(error!!) }
                 return@LazyColumn
             }
 
             val s = stats
             if (s == null) {
                 item {
-                    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         SkeletonBox(Modifier.fillMaxWidth().height(140.dp))
                         SkeletonBox(Modifier.fillMaxWidth().height(200.dp))
                         SkeletonBox(Modifier.fillMaxWidth().height(200.dp))
@@ -125,26 +123,31 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             }
 
             item {
-                SectionCard("里程 (km)", Modifier.animateItem()) {
+                SectionCard("行驶里程 (km)", Modifier.animateItem()) {
                     StackedBarChart(
                         series = listOf(
                             ChartSeries(
                                 values = s.buckets.map { it.km.toFloat() },
-                                color = MaterialTheme.colorScheme.primary,
+                                // ⚠️ v0.7.1：原来用 primary（特斯拉红）—— 「里程」没有红色语义，
+                                // 红色在本 App 里只表示告警/品牌点缀。改用能量蓝。
+                                color = LocalAccentColors.current.energyBlue,
                                 label = "里程",
                             ),
                         ),
+                        yUnit = "km",
+                        xLabels = bucketAxisLabels(s.buckets.map { it.start }),
+                        contentDescription = statsChartDescription("行驶里程", s.buckets.map { it.start to it.km }),
                     )
                     RangeHint(s)
                 }
             }
 
             item {
-                SectionCard("充电量 (kWh)", Modifier.animateItem()) {
+                SectionCard("充入电量 (kWh)", Modifier.animateItem()) {
                     ChartLegend(
                         listOf(
                             "直流快充" to MaterialTheme.colorScheme.primary,
-                            "交流慢充" to MaterialTheme.colorScheme.tertiary,
+                            "交流慢充" to MaterialTheme.colorScheme.secondary,
                         ),
                     )
                     StackedBarChart(
@@ -156,17 +159,20 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                             ),
                             ChartSeries(
                                 values = s.buckets.map { it.ac_kwh.toFloat() },
-                                color = MaterialTheme.colorScheme.tertiary,
+                                color = MaterialTheme.colorScheme.secondary,
                                 label = "交流",
                             ),
                         ),
+                        yUnit = "kWh",
+                        xLabels = bucketAxisLabels(s.buckets.map { it.start }),
+                        contentDescription = statsChartDescription("充入电量", s.buckets.map { it.start to (it.dc_kwh + it.ac_kwh) }),
                     )
                     RangeHint(s)
                 }
             }
 
             item {
-                SectionCard("行车用电 (kWh)", Modifier.animateItem()) {
+                SectionCard("行驶耗电 (kWh)", Modifier.animateItem()) {
                     StackedBarChart(
                         series = listOf(
                             ChartSeries(
@@ -175,6 +181,9 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                                 label = "用电",
                             ),
                         ),
+                        yUnit = "kWh",
+                        xLabels = bucketAxisLabels(s.buckets.map { it.start }),
+                        contentDescription = statsChartDescription("行驶耗电", s.buckets.map { it.start to it.kwh_used }),
                     )
                     RangeHint(s)
                 }
@@ -188,12 +197,22 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                     } else {
                         KV("当前可用容量", "${b.current_capacity_kwh?.fmt(1)} kWh")
                         KV("历史最佳容量", "${b.max_capacity_kwh?.fmt(1)} kWh")
+                        b.nominal_capacity_kwh?.let { KV("铭牌容量", "${it.fmt(1)} kWh") }
                         b.health_percent?.let { KV("健康度", "${it.fmt(1)}%") }
                         val series = b.series.map { it.capacity_kwh?.toFloat() }
                         if (series.count { it != null } >= 2) {
+                            // ⚠️ 关键：把「铭牌容量」作为基准线画出来。
+                            //   原来 Y 轴各自归一化到自己的峰值，66.0 → 65.4 kWh 的
+                            //   真实衰减画出来是一条几乎水平的直线——衰减 1% 和 10% 看起来一样平。
+                            //   锚定到铭牌容量的 1.3 倍后，衰减趋势一眼可见。
                             LineChart(
                                 values = series,
-                                color = MaterialTheme.colorScheme.tertiary,
+                                color = MaterialTheme.colorScheme.secondary,
+                                yUnit = "kWh",
+                                xLabels = bucketAxisLabels(b.series.map { it.date.fmtDate() }),
+                                referenceValue = b.nominal_capacity_kwh?.toFloat(),
+                                referenceLabel = "铭牌",
+                                contentDescription = batteryChartDescription(b),
                             )
                         }
                     }
@@ -203,17 +222,76 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
     }
 }
 
+/**
+ * 自绘分段控件（iOS UISegmentedControl 风格）。
+ *
+ * ⚠️ v0.7.1：原来用 M3 的 `SingleChoiceSegmentedButtonRow` —— 它自带描边、圆角和
+ * 一个选中态填充块，**纯 Material 味**，与整 App 的 iOS 语言冲突。
+ * 现在：外层一个低对比容器 + 内部 2dp 间隙 + 选中块纯色（深 #3A3A3C / 浅 #FFFFFF），
+ * 文字颜色区分选中与否，没有描边、没有 M3 指示器。
+ */
+@Composable
+private fun PeriodSegmented(
+    periods: List<Pair<String, String>>,
+    current: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val dark = isDarkTheme()
+    val trackColor = if (dark) Color(0xFF1C1C1E) else Color(0xFFE9E9EC)
+    val selectedBg = if (dark) Color(0xFF3A3A3C) else Color.White
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(trackColor)
+            .padding(2.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        periods.forEach { (key, label) ->
+            val selected = current == key
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (selected) selectedBg else Color.Transparent)
+                    .clickable { onSelect(key) }
+                    .padding(vertical = 9.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (selected) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 图表下方的摘要行。
+ *
+ * ⚠️ v0.7.1：原来这里打的是**首末日期**，而图表 X 轴已经打了首/中/末三个日期标签 ——
+ * 同一件事说两遍。换成真正有用的**峰值 + 均值**。
+ */
 @Composable
 private fun RangeHint(s: Stats) {
     if (s.buckets.isEmpty()) return
+    val km = s.buckets.map { it.km }.filter { it > 0 }
+    if (km.isEmpty()) return
+    val peak = km.max()
+    val peakDate = s.buckets.firstOrNull { it.km == peak }?.start?.take(10)?.drop(5) ?: ""
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(
-            s.buckets.first().start.take(10),
+            "峰值 ${peak.fmt(0)} km（$peakDate）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            s.buckets.last().start.take(10),
+            "日均 ${(km.sum() / km.size).fmt(0)} km",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

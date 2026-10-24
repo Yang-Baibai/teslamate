@@ -8,8 +8,10 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,7 +26,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,6 +48,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -53,8 +60,11 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.teslamate.app.ActiveCharge
 import com.teslamate.app.AppSettings
 import com.teslamate.app.CarStatus
+import com.teslamate.app.ConsumptionModel
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtShort
+import com.teslamate.app.fmtThousands
+import com.teslamate.app.relTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -63,25 +73,41 @@ import kotlinx.coroutines.withContext
 
 /** 车况首页：大标题折叠栏 + 下拉刷新 + 15 秒自动刷新 */
 @Composable
-fun StatusScreen(settings: AppSettings, modifier: Modifier) {
+fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore = remember { StatusStore() }) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
-    var status by remember { mutableStateOf<CarStatus?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
+    // 数据存在 App 级 store 里：切 Tab 回来时旧数据还在，
+    // 直接显示并后台刷新 —— 不再闪一次骨架屏。
+    // store 内部用 mutableStateOf 持有，所以在 @Composable 里直接读就会订阅变化。
+    val status = store.status
+    val error = store.error
     var refreshing by remember { mutableStateOf(false) }
     var showMap by remember { mutableStateOf(false) }
+
+    LaunchedEffect(api, settings.carId) {
+        if (api != null) {
+            runCatching {
+                withContext(Dispatchers.IO) { api.drives(settings.carId, 200) }
+            }.onSuccess { store.updateDrives(it) }
+        }
+    }
+    val drives = store.drives
+    val consumption = remember(drives) { ConsumptionModel.from(drives) }
 
     // ⚠️ 修正：地图展开时按返回键原本会直接退出 App（没有 BackHandler）。
     BackHandler(enabled = showMap) { showMap = false }
 
     suspend fun load() {
         if (api == null) {
-            error = if (settings.configured) "服务器地址或令牌无效，请到「设置」页检查" else "尚未配置服务器，请到「设置」页填写地址与令牌"
+            store.fail(
+                if (settings.configured) "服务器地址或令牌无效，请到「设置」页检查"
+                else "尚未配置服务器，请到「设置」页填写地址与令牌"
+            )
             return
         }
         runCatching { withContext(Dispatchers.IO) { api.status(settings.carId) } }
-            .onSuccess { status = it; error = null }
-            .onFailure { error = it.message ?: "网络错误" }
+            .onSuccess { store.update(it) }
+            .onFailure { store.fail(it.message ?: "网络错误") }
     }
 
     fun refresh() {
@@ -110,6 +136,10 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
     Column(modifier) {
         TopAppBar(
             title = { Text("车况", fontWeight = FontWeight.Bold) },
+            // ⚠️ v0.7.1：顶部栏原来用 M3 默认容器色（深色下是一块不透明 #1C1C1E），
+            // 底部导航栏却是真毛玻璃 —— 同一个 App 里两套材质语言。
+            // 现在顶部栏透明，与底部玻璃统一为「内容在上、材质在下」的一套语言。
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
             actions = {
                 IconButton(onClick = { refresh() }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "刷新")
@@ -151,7 +181,9 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                             StateChip(st.state)
                             Spacer(Modifier.weight(1f))
                             Text(
-                                "更新于 ${st.updated_at.fmtShort()}",
+                                // ⚠️ v0.7.1：绝对时间看不出隔了多久，改相对时间
+                                // （「更新于 3 分钟前」），超过一周才回落到绝对时间。
+                                "更新于 ${st.updated_at.relTime()}",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -176,15 +208,53 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         ) {
-                            SocRing(st.battery_level)
+                            SocRing(st.battery_level, charging = st.active_charge != null)
                             Spacer(Modifier.width(28.dp))
                             Column {
-                                // 续航用「预估」口径（est → ideal → rated 依次降级）。
-                                // 标定续航是 EPA 上限，车机实际显示的预估会随近期能耗浮动。
-                                val range = st.est_range_km ?: st.ideal_range_km ?: st.rated_range_km
-                                BigStat(range?.fmt(0) ?: "—", "预估续航 (km)")
-                                Spacer(Modifier.height(20.dp))
-                                BigStat(st.odometer?.fmt(0) ?: "—", "里程表 (km)")
+                                // ── 续航：显示**真实可达**，不再显示骗人的「预估」 ──
+                                //
+                                // 原来取 est → ideal → rated 三级降级，实测这条链塌缩成一个值：
+                                // ideal 与 rated 在 55,669 行里逐行相同，est 全库只有 0.085% 有值。
+                                // 屏幕上写「预估续航」，实际是 EPA 标定值 —— 夏季高速会乐观 25%~40%。
+                                //
+                                // 现在用你自己跑出来的 Wh/km 折算：
+                                //   真实可达 = 标定续航 × 146 ÷ 实测 Wh/km × 温度修正 × 爬升修正 × 0.9 余量
+                                val ratedRange = st.rated_range_km ?: st.ideal_range_km
+                                // 参考车速：行驶中用实时车速；停车时用最近一次行程的均速
+                                //（长途规划关心的是「你通常怎么开」，不是「车现在静止时的 0」）。
+                                val refSpeed = st.speed?.takeIf { it > 5 }?.toDouble()
+                                    ?: drives.firstOrNull()?.avg_speed_kph?.toDouble()
+                                    ?: 60.0
+                                val whBucket = consumption?.whPerKm(refSpeed)
+                                val trueRange = consumption?.trueRangeKm(
+                                    ratedRangeKm = ratedRange,
+                                    speedKph = refSpeed,
+                                    outsideTempC = st.outside_temp,
+                                )
+                                BigStat(
+                                    (trueRange ?: ratedRange)?.fmt(0) ?: "—",
+                                    if (trueRange != null) "真实可达 (km)" else "标定续航 (km)",
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    if (trueRange != null) {
+                                        "标定 ${ratedRange?.fmt(0) ?: "—"} km" +
+                                            (whBucket?.let { " · 按你的实测 ${it.whPerKm.fmt(0)} Wh/km 折算" } ?: "") +
+                                            " · 已留 10% 余量"
+                                    } else {
+                                        "EPA 标定值（非动态预估）"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                // ⚠️ 原来里程表也是 34sp Bold，与续航**同级** —— 一屏两个主角。
+                                // 降级为一行小字：信息一点没丢，但视觉上只剩续航是主角。
+                                Text(
+                                    "里程表 ${st.odometer?.fmtThousands() ?: "—"} km",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
 
@@ -201,26 +271,56 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                         val lat = st.map_lat ?: st.lat
                         val lng = st.map_lng ?: st.lng
                         if (lat != null && lng != null) {
+                            val accents = LocalAccentColors.current
                             Surface(
                                 shape = RoundedCornerShape(20.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                color = accents.cardSurface,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .pressScale()
-                                    .clickable { showMap = !showMap },
+                                    .cardDepth()
+                                    .pressable(onClick = { showMap = !showMap }),
                             ) {
-                                Column(Modifier.padding(16.dp)) {
+                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            "位置",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        // ⚠️ v0.7.1：箭头原来孤零零吊在地点名**下方左对齐**，
+                                        // 看着像掉下来的图标。移进标题行右端，与标题垂直居中。
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                            contentDescription = if (showMap) "收起地图" else "展开地图",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(20.dp),
+                                        )
+                                    }
+                                    // 地点名是完整邮编地址（"龙山九路, 西区街道, 惠州大亚湾…, 516083, 中国"），
+                                    // 占两行且没有信息增量 —— 主标题只取**第一段**，
+                                    // 完整地址降为一行灰色小字，信息一点不丢。
+                                    val fullPlace = st.location_name ?: "未命名地点"
+                                    val shortPlace = fullPlace
+                                        .substringBefore('，')
+                                        .substringBefore(',')
+                                        .trim()
+                                        .ifBlank { fullPlace }
                                     Text(
-                                        "位置",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    Text(
-                                        st.location_name ?: "未命名地点",
+                                        shortPlace,
                                         style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 2,
+                                        maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                     )
+                                    if (shortPlace != fullPlace) {
+                                        Text(
+                                            fullPlace,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
                                     AnimatedVisibility(
                                         visible = showMap,
                                         enter = expandVertically() + fadeIn(),
@@ -237,16 +337,6 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                                                     .height(220.dp),
                                             )
                                         }
-                                    }
-                                    // ⚠️ 原来这里写「点击展开地图」——开发者口吻，
-                                    // 而且整块已经可点了，不需要额外解释。
-                                    if (!showMap) {
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                            contentDescription = "展开地图",
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(20.dp),
-                                        )
                                     }
                                 }
                             }
@@ -301,7 +391,10 @@ private fun TpmsCard(st: CarStatus) {
     val fl = st.tpms_fl; val fr = st.tpms_fr; val rl = st.tpms_rl; val rr = st.tpms_rr
     if (fl == null && fr == null && rl == null && rr == null) return // 一个都没有就不占版面
 
-    val reading = TpmsReadingUi(fl, fr, rl, rr, st.tpms_min_bar, st.tpms_max_bar)
+    val reading = TpmsReadingUi(
+        fl, fr, rl, rr, st.tpms_min_bar, st.tpms_max_bar,
+        alertWheels = st.tpms_alert_wheels.toSet(),
+    )
 
     SectionCard(
         title = if (st.tpms_alert) "轮胎胎压 · 建议检查" else "轮胎胎压",
@@ -309,19 +402,28 @@ private fun TpmsCard(st: CarStatus) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             VehicleTopView(reading = reading, modifier = Modifier.weight(0.9f))
             Column(Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                TpmsValue("左前", fl, reading.isAlerting(fl))
-                TpmsValue("右前", fr, reading.isAlerting(fr))
-                TpmsValue("左后", rl, reading.isAlerting(rl))
-                TpmsValue("右后", rr, reading.isAlerting(rr))
+                TpmsValue("左前", fl, reading.isAlerting(fl, "左前"))
+                TpmsValue("右前", fr, reading.isAlerting(fr, "右前"))
+                TpmsValue("左后", rl, reading.isAlerting(rl, "左后"))
+                TpmsValue("右后", rr, reading.isAlerting(rr, "右后"))
             }
         }
         // 告警不能只靠颜色（WCAG 1.4.1）——服务端已算好这句文案，直接用
         st.tpms_alert_detail?.takeIf { it.isNotBlank() }?.let {
-            Text(
-                "⚠ $it",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.WarningAmber,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
         }
         Text(
             "正常范围 ${st.tpms_min_bar}–${st.tpms_max_bar} bar（冷胎）",
@@ -348,10 +450,13 @@ private fun TpmsValue(label: String, value: Double?, alert: Boolean) {
         )
         if (alert) {
             Spacer(Modifier.width(4.dp))
-            Text(
-                "⚠",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error,
+            // ⚠️ v0.7.1：emoji ⚠ → 矢量图标。emoji 在 Android 是彩色字形，
+            // 与矢量图标混排时基线和字重都对不齐，TalkBack 朗读也不稳定。
+            Icon(
+                Icons.Filled.WarningAmber,
+                contentDescription = "异常",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(14.dp),
             )
         }
     }
@@ -389,15 +494,37 @@ private fun TpmsCell(label: String, value: Double?, alert: Boolean, modifier: Mo
 
 @Composable
 private fun ChargeNowCard(c: ActiveCharge) {
+    val accents = LocalAccentColors.current
     Surface(
-        color = MaterialTheme.colorScheme.tertiaryContainer,
+        // ⚠️ v0.7.1：原来整块用 `tertiaryContainer`（深色下是一整片浅蓝灰 #243039）。
+        // 那样一来，里面的 InfoTile（cardInset = #0B0B0D 深色块）就成了
+        // **深色块嵌在浅色块里** —— 层级倒置，正好是 v0.7.0 想消灭的那个问题。
+        // 现在状态卡与其余卡片同材质（cardSurface），只用**顶部一条状态色**区分，
+        // 内嵌块的层级关系就正确了。
+        color = accents.cardSurface,
         shape = RoundedCornerShape(20.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().cardDepth(),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                    .background(accents.chargeGreen)
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // ⚠️ v0.7.1：emoji ⚡ → 矢量图标（Android 把 emoji 渲染成彩色字形，
+                // 与矢量图标混排时基线/字重都对不齐，TalkBack 朗读也不稳定）。
+                Icon(
+                    Icons.Filled.Bolt,
+                    contentDescription = null,
+                    tint = accents.chargeGreen,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(6.dp))
                 Text(
-                    "⚡ 充电中${if (c.fast_charger_present == true) " · 直流快充" else ""}",
+                    "充电中${if (c.fast_charger_present == true) " · 直流快充" else ""}",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
@@ -405,7 +532,7 @@ private fun ChargeNowCard(c: ActiveCharge) {
                 Text(
                     "自 ${c.started_at.fmtShort()}",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -419,19 +546,35 @@ private fun ChargeNowCard(c: ActiveCharge) {
 
 @Composable
 private fun DriveNowCard(d: com.teslamate.app.ActiveDrive, st: CarStatus) {
+    val accents = LocalAccentColors.current
     Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer,
+        // 同 ChargeNowCard：状态卡与其余卡片同材质，只用顶部色条区分状态。
+        color = accents.cardSurface,
         shape = RoundedCornerShape(20.dp),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().cardDepth(),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                    .background(accents.energyBlue)
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("🚗 行驶中", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Icon(
+                    Icons.Filled.DirectionsCar,
+                    contentDescription = null,
+                    tint = accents.energyBlue,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("行驶中", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
                 Text(
                     "自 ${d.started_at.fmtShort()}",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
