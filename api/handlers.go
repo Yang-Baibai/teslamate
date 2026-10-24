@@ -31,6 +31,58 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+// handleHealthDetailed 是**给车主看的**服务器状态（需鉴权）。
+//
+// ⚠️ v0.22.0（自托管运维评审 P1-1）：自托管服务的用户体验，八成体现在**它坏的时候**。
+// 而「我的服务器现在是什么状态」在 App 里**无处可查** ——
+// `/healthz` 只回一个 "ok"，不报 Fleet 状态、服务器时间、最后采集时间。
+//
+// ⚠️ 为什么**必须鉴权**：而 `/healthz` 是**免鉴权**且映射到 0.0.0.0:8090，
+// 扩字段会泄露内部状态（车队 VIN、服务器时间、版本号）。
+// 所以新端点带 `auth()`，`/healthz` 只保留最小的 ok/503。
+func handleHealthDetailed(w http.ResponseWriter, _ *http.Request) {
+	out := map[string]any{}
+
+	// ① 数据库连通性与延迟
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	dbOK := db.Ping(ctx) == nil
+	dbMs := time.Since(start).Milliseconds()
+	out["db_ok"] = dbOK
+	out["db_latency_ms"] = dbMs
+
+	// ② 服务器时间与时区（分日桶用的那个）
+	tz := getenv("TZ_NAME", "Asia/Shanghai")
+	out["server_timezone"] = tz
+	out["server_time"] = time.Now().UTC().Format(time.RFC3339)
+
+	// ③ Fleet 实时状态
+	fleet := map[string]any{
+		"enabled":  teslaFleetEnabled(),
+		"state":    teslaFleetState(),
+		"last_ok":  teslaFleetLastOK(),
+		"error":    teslaFleetError(),
+	}
+	out["fleet"] = fleet
+
+	// ④ 最后一次车况采集（TeslaMate 报上来的）
+	var lastPos *time.Time
+	var ageHours *float64
+	_ = db.QueryRow(context.Background(),
+		`SELECT max(date) FROM positions`).Scan(&lastPos)
+	if lastPos != nil {
+		h := time.Since(*lastPos).Hours()
+		ageHours = &h
+	}
+	out["teslamate"] = map[string]any{
+		"last_position_at": lastPos,
+		"age_hours":        ageHours,
+	}
+
+	writeJSON(w, out)
+}
+
 func handleCars(w http.ResponseWriter, _ *http.Request) {
 	rows, err := db.Query(context.Background(), sqlCars)
 	if err != nil {
@@ -135,6 +187,8 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	// 这与「这会儿读不到」是两件事，App 必须分开说。
 	fleetEnabled := teslaFleetEnabled()
 	s.FleetEnabled = &fleetEnabled
+	// ⚠️ v0.22.0：Fleet 实时状态四态（disabled / asleep / unauthorized / unreachable / ok）。
+	s.FleetState = teslaFleetState()
 
 	// ⚠️ v0.21.0：**车端里程表**（Fleet API 的 vehicle_state.odometer）。
 	// 与 `s.Odometer`（TeslaMate 按 GPS 点累计）不同：

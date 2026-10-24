@@ -102,6 +102,8 @@ fun StatsScreen(
     val avgUnit = if (apiPeriod == "year") "个月" else "天"
     var stats by remember { mutableStateOf<Stats?>(null) }
     var battery by remember { mutableStateOf<BatteryHealth?>(null) }
+    // ⚠️ v0.22.0：电池健康**独立的错误** —— 它失败不该让整页不可用。
+    var batteryError by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
     // ⚠️ v0.14.0：error 改成存**异常**而不是字符串 ——
     // 只有拿到 kind（AUTH / NO_DATA / …）才能决定横幅样式与按钮。
     var error by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
@@ -120,6 +122,18 @@ fun StatsScreen(
 
     // ⚠️ v0.9.0：抽成可复用的 load() —— 原来只有一次性加载，
     // 网络一断就再也不请求，用户必须「切走再切回」才能重试。
+    //
+    // ⚠️ **v0.22.0（自托管运维评审 P1-2）：两个请求**拆开**。**
+    //
+    // 原来是一次 `Pair(api.stats(...), api.battery(...))`：
+    // `battery` 抛异常 → `stats` 的成功结果**一起被丢弃**，
+    // `stats` 保持 null → 整页回到骨架屏 + 错误横幅。
+    //
+    // 也就是说：**电池健康这一个接口失败，整个用量页就不可用了** ——
+    // 降级路径在「其中之一出错」时反而更差。
+    //
+    // 现在两个请求各自独立：谁失败谁降级，
+    // 电池健康卡显示「取不到 · 重试」，其余（里程/能耗/充入量）照常。
     suspend fun load() {
         if (api == null) {
             // ⚠️ v0.14.0：未配置 / 地址无效 → kind = AUTH，横幅直接给「前往设置」。
@@ -129,17 +143,25 @@ fun StatsScreen(
             )
             return
         }
+        // ① 统计（里程/能耗/充入量）—— 主数据
         runCatching {
-            withContext(Dispatchers.IO) {
-                Pair(api.stats(settings.carId, apiPeriod), api.battery(settings.carId))
-            }
+            withContext(Dispatchers.IO) { api.stats(settings.carId, apiPeriod) }
         }.onSuccess {
-            stats = it.first
-            battery = it.second
+            stats = it
             loadedPeriod = periodIndex
             error = null
         }.onFailure {
             error = it as? com.teslamate.app.UserFacingException
+                ?: com.teslamate.app.UserFacingException(it.message ?: "出错了")
+        }
+        // ② 电池健康 —— 独立的次要数据，失败只降级自己
+        runCatching {
+            withContext(Dispatchers.IO) { api.battery(settings.carId) }
+        }.onSuccess {
+            battery = it
+            batteryError = null
+        }.onFailure {
+            batteryError = it as? com.teslamate.app.UserFacingException
                 ?: com.teslamate.app.UserFacingException(it.message ?: "出错了")
         }
     }
@@ -463,7 +485,15 @@ fun StatsScreen(
             val b = battery
             item {
                 SectionCard("电池健康", Modifier.animateItem()) {
-                    if (b == null || b.current_capacity_kwh == null) {
+                    if (batteryError != null) {
+                        // ⚠️ v0.22.0：电池健康取不到时，**只降级这一张卡**，
+                        // 页面其余部分（里程/能耗/充入电量）照常显示。
+                        Text(
+                            "电池健康数据取不到 —— ${batteryError!!.message}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (b == null || b.current_capacity_kwh == null) {
                         Text("暂无足够数据（需要 ≥90% 的完整充电记录）", style = MaterialTheme.typography.bodySmall)
                     } else {
                         // ⚠️ v0.9.0（新手车主复核）：「铭牌容量」是术语。

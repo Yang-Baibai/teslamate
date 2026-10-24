@@ -70,6 +70,18 @@ type CarStatus struct {
 	// （原来 App 一律说「没读到」，车主会以为是车机或网络故障。）
 	FleetEnabled *bool `json:"fleet_enabled"`
 
+	// ⚠️ v0.22.0：**Fleet 实时状态**（disabled / asleep / unauthorized / unreachable / ok）。
+	//
+	// 「没值」其实是四种完全不同的情况，不分开就会误导：
+	//   disabled     这台服务器**没有实时状态源**（没配凭据）—— 永远不会变
+	//   asleep       车在休眠 —— **正常状态**，等它醒来就更新
+	//   unauthorized 授权失效 —— 一次性 token 过期，**不会自愈**，要人工重新授权
+	//   unreachable  云端故障 —— 会自愈（退避重试中）
+	//
+	// 不分开的后果：「授权失效」被说成「稍后自动重试」——
+	// 而一次性 token **永远重试也不会成功**，锁车与实时胎压会静默停更。
+	FleetState string `json:"fleet_state"`
+
 	// v0.8.5 新增：实时胎压（来源 Tesla Fleet API 的 vehicle_state，后台轮询后缓存）
 	//
 	// ⚠️ 与上面的 tpms_fl/fr/rl/rr 是**两个来源，不要互相覆盖**：

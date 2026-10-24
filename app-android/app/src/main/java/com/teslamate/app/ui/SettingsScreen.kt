@@ -99,6 +99,14 @@ enum class SettingsRoute {
     /** 怎么找到地址和令牌 */
     Help,
 
+    /**
+     * ⚠️ v0.22.0：服务器状态。
+     *
+     * 自托管服务的体验，八成体现在**它坏的时候** ——
+     * 而「我的服务器现在是什么状态」原本在 App 里**无处可查**。
+     */
+    ServerStatus,
+
     /** 版本与更新说明 */
     About,
 }
@@ -139,6 +147,8 @@ fun SettingsScreen(
     route: SettingsRoute? = null,
     /** 切换二级页。传 null 回根页。 */
     onRouteChange: (SettingsRoute?) -> Unit = {},
+    /** ⚠️ v0.22.0：给「服务器状态」页用（拉 /api/v1/health）。 */
+    api: com.teslamate.app.Api? = null,
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -362,6 +372,13 @@ fun SettingsScreen(
                 BackHandler { onRouteChange(null) }
                 SettingsHelpPage(onBack = { onRouteChange(null) })
             }
+            SettingsRoute.ServerStatus -> {
+                BackHandler { onRouteChange(null) }
+                SettingsServerStatusPage(
+                    api = api,
+                    onBack = { onRouteChange(null) },
+                )
+            }
             SettingsRoute.About -> {
                 BackHandler { onRouteChange(null) }
                 SettingsAboutPage(onBack = { onRouteChange(null) })
@@ -421,6 +438,16 @@ private fun SettingsRootPage(
                         title = "怎么找到地址和令牌？",
                         subtitle = "局域网 IP · Tailscale",
                     ) { onOpen(SettingsRoute.Help) }
+                }
+            }
+            item {
+                SectionCard("状态", Modifier.animateItem()) {
+                    // ⚠️ v0.22.0：**服务器状态**入口 ——
+                    // 自托管服务坏的时候，车主需要知道「是服务器的问题还是车的问题」。
+                    SettingRow(
+                        title = "服务器状态",
+                        subtitle = "数据库 · 实时状态 · 最后采集时间",
+                    ) { onOpen(SettingsRoute.ServerStatus) }
                 }
             }
             item {
@@ -881,9 +908,164 @@ private fun SettingsHelpPage(onBack: () -> Unit, modifier: Modifier = Modifier) 
     }
 }
 
+/**
+ * ⚠️ **v0.22.0（自托管运维评审 P1-1）：服务器状态页**。
+ *
+ * 自托管服务的体验，八成体现在**它坏的时候**。
+ * 车主真正需要回答的问题是「**是服务器的问题，还是车的问题？**」——
+ * 而 App 里原本**无处可查**（`/healthz` 只回一个 ok）。
+ *
+ * 这一页给四件事：
+ * ① 一句**人话结论**（正常 / 数据库不可达 / Tesla 授权失效 / 车在休眠）；
+ * ② 数据库连通性与延迟；
+ * ③ Fleet 实时状态（四态）；
+ * ④ 最后一次车况采集时间（TeslaMate 报上来的）。
+ */
 @Composable
-private fun SettingsAboutPage(onBack: () -> Unit, modifier: Modifier = Modifier) {
+private fun SettingsServerStatusPage(
+    api: com.teslamate.app.Api?,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    var health by remember { mutableStateOf<com.teslamate.app.HealthDetail?>(null) }
+    var err by remember { mutableStateOf<String?>(null) }
+    var loading by remember { mutableStateOf(true) }
+
+    suspend fun load() {
+        loading = true
+        err = null
+        if (api == null) {
+            err = "尚未配置服务器地址与令牌"
+            loading = false
+            return
+        }
+        runCatching {
+            withContext(Dispatchers.IO) { api.health() }
+        }.onSuccess {
+            health = it
+            loading = false
+        }.onFailure {
+            err = it.message ?: "连不上服务器"
+            loading = false
+        }
+    }
+    LaunchedEffect(Unit) { load() }
+
     Column(modifier) {
+        SecondaryTitleBar(title = "服务器状态", backLabel = "设置", onBack = onBack)
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                SectionCard(modifier = Modifier.animateItem()) {
+                    when {
+                        loading -> Text(
+                            "正在检查…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        err != null -> {
+                            Text(
+                                "连不上服务器 —— $err",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            Text(
+                                "请确认家里那台电脑开着、服务器在跑，以及手机上的 Tailscale 已连接。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            OutlinedButton(
+                                onClick = { scope.launch { load() } },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp),
+                            ) {
+                                Text("重试")
+                            }
+                        }
+                        health != null -> {
+                            val h = health!!
+                            // ① 一句人话结论
+                            val (verdict, verdictColor) = when {
+                                !h.db_ok ->
+                                    "数据库不可达 —— 服务器连不上数据库" to MaterialTheme.colorScheme.error
+                                h.fleet.state == "unauthorized" ->
+                                    "Tesla 授权已失效 —— 锁车与实时胎压已停更" to MaterialTheme.colorScheme.error
+                                h.fleet.state == "unreachable" ->
+                                    "暂时连不上 Tesla 云端 —— 锁车与实时胎压已停更" to
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                h.fleet.state == "asleep" ->
+                                    "一切正常（车在休眠，锁车状态等它醒来才更新）" to
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                h.fleet.state == "disabled" ->
+                                    "一切正常（未接入 Tesla 实时状态，锁车与实时胎压不可用）" to
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                else ->
+                                    "一切正常" to MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            Text(
+                                verdict,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = verdictColor,
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            // ② 数据库
+                            KV("数据库", if (h.db_ok) "正常（${h.db_latency_ms} 毫秒）" else "不可达")
+                            // ③ Fleet 实时状态
+                            KV(
+                                "实时状态",
+                                when (h.fleet.state) {
+                                    "disabled" -> "未接入"
+                                    "asleep" -> "车在休眠"
+                                    "unauthorized" -> "授权已失效"
+                                    "unreachable" -> "连不上云端"
+                                    "ok" -> "正常"
+                                    else -> "—"
+                                },
+                            )
+                            // ④ 最后一次车况采集
+                            val age = h.teslamate.age_hours
+                            KV(
+                                "最后车况",
+                                if (age != null) {
+                                    val hrs = age.toInt()
+                                    if (hrs >= 24) "${hrs / 24} 天前" else "$hrs 小时前"
+                                } else {
+                                    "—"
+                                },
+                            )
+                            h.fleet.error?.takeIf { it.isNotBlank() }?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            item {
+                SectionCard("服务器信息", Modifier.animateItem()) {
+                    KV("App 版本", "v${BuildConfig.VERSION_NAME}")
+                    health?.server_timezone?.let { KV("服务端时区", it) }
+                    Text(
+                        "车况数据按服务端时区分日；时间轴上的时间按手机时区显示。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsAboutPage(onBack: () -> Unit, modifier: Modifier = Modifier) {    Column(modifier) {
         SecondaryTitleBar(title = "关于", backLabel = "设置", onBack = onBack)
         LazyColumn(
             Modifier.fillMaxSize(),

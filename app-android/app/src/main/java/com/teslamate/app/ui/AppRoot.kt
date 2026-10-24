@@ -303,6 +303,20 @@ private fun MainScaffold(
     LaunchedEffect(settings.carId) {
         statusStore.switchCar(settings.carId)
     }
+
+    // ⚠️ **v0.22.0（自托管运维评审 P2-5）：换服务器 → 清掉全部缓存。**
+    //
+    // 原来换服务器地址后，**旧服务器的车况缓存还留在盘上** ——
+    // 新地址连不上时，App 会在新服务器名下显示**旧服务器**的数据。
+    // （与「缓存按车分区」是同一类错误的两半：那个解决「换车」，这个解决「换服务器」。）
+    var lastServerUrl by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(settings.serverUrl) {
+        val cur = settings.serverUrl
+        if (lastServerUrl != null && lastServerUrl != cur) {
+            statusStore.clearCache()
+        }
+        lastServerUrl = cur
+    }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Bottom),
@@ -482,6 +496,8 @@ private fun MainScaffold(
                             runCatching { SettingsRoute.valueOf(name) }.getOrNull()
                         },
                         onRouteChange = { r -> onSettingsRouteChange(r?.name) },
+                        // ⚠️ v0.22.0：给「服务器状态」二级页用。
+                        api = settings.api(),
                     )
                 }
             }

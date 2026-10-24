@@ -104,6 +104,27 @@ try {
   $st   = Invoke-RestMethod -Uri "$ApiBase/api/v1/cars/$CarId/status" -Headers $hdr -TimeoutSec 15
 } catch {
   Write-Log "❌ 取状态失败: $($_.Exception.Message)"
+  # ⚠️ **v0.22.0（自托管运维评审 P1-5）：失败也要说一声** ——
+  # 服务器或 API 挂掉时，用户唯一的告警通道（Hermes 推送）**恰好随服务一起沉默** ——
+  # 于是「车况服务挂了」这件事完全没人知道，只能等用户自己发现 App 不更新。
+  #
+  # 连着失败 3 轮才推（避免网络抖一下就吵），
+  # 但每次失败都把计数写进状态文件，恢复后归零。
+  $failCount = 1
+  if (Test-Path $StateFile) {
+    try {
+      $pf = Get-Content -LiteralPath $StateFile -Raw -Encoding utf8 | ConvertFrom-Json
+      $failCount = [int](Get-Prop $pf 'fail_count' 0) + 1
+    } catch { $failCount = 1 }
+  }
+  if ($failCount -ge 3) {
+    Send-Hermes "⚠️ 车况服务取不到数据" "已连续 $failCount 轮无法从服务器读取车况。`n请确认家里那台电脑开着、服务器在跑，以及手机上的 Tailscale 已连接。"
+  }
+  $failState = [ordered]@{
+    fail_count    = $failCount
+    last_check_at = (Get-Date).ToUniversalTime().ToString('o')
+  }
+  $failState | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding utf8
   exit 2
 }
 
@@ -122,6 +143,16 @@ $battery   = Get-Prop $st 'battery_level'
 $addedKwh  = if ($charging) { Get-Prop $chargeInfo 'energy_added_kwh' } else { $null }
 $tpmsAlert = [bool](Get-Prop $st 'tpms_alert')
 $dataStale = [bool](Get-Prop $st 'data_stale')
+# ⚠️ v0.22.0：Fleet 实时状态（四态）。
+#
+# 为什么推送脚本必须读它：
+# 中国区的 refresh_token 是**一次性**的，授权过期后 Fleet **永远不会自己恢复** ——
+# 锁车与实时胎压会**静默停更**，而这个脚本原本完全不读 Fleet 状态，
+# 于是「锁没锁」这个车主第一诉求，可能一周都没人发现。
+#
+# unauthorized  → 不会自愈，要人工在服务器上重新授权
+# unreachable  → 会自愈（退避重试中），但还是值得说一声
+$fleetState = [string](Get-Prop $st 'fleet_state' 'ok')
 $carName   = try {
   (Invoke-RestMethod -Uri "$ApiBase/api/v1/cars" -Headers $hdr -TimeoutSec 10 |
     Where-Object { $_.id -eq [int]$CarId } | Select-Object -First 1).name
@@ -174,6 +205,20 @@ if ($dataStale -and -not [bool](Get-Prop $prev 'last_stale')) {
   }
 }
 
+# ⚠️ v0.22.0：Fleet 状态告警（只推一次，恢复后重置）。
+if ($fleetState -eq 'unauthorized' -and -not [bool](Get-Prop $prev 'last_fleet_unauthorized')) {
+  $events += @{
+    subject = "🔑 $carName Tesla 授权已失效 · 锁车状态已停更"
+    body    = "实时状态拿不到了（一次性令牌过期，重试也不会成功）。`n请在服务器上重新授权：scripts/tesla-authorize.ps1`n在此之前，App 里的锁车状态与实时胎压都不可信。"
+  }
+}
+if ($fleetState -eq 'unreachable' -and -not [bool](Get-Prop $prev 'last_fleet_unreachable')) {
+  $events += @{
+    subject = "📡 $carName 暂时连不上 Tesla 云端"
+    body    = "实时状态暂时取不到（会自己恢复）。`n锁车与实时胎压显示的是最后一次成功获取的数据。"
+  }
+}
+
 foreach ($e in $events) { Send-Hermes $e.subject $e.body }
 
 # ── 存新状态 ──────────────────────────────────────────────────────
@@ -183,7 +228,12 @@ $new = [ordered]@{
   last_added_kwh   = if ($charging) { $addedKwh } else { Get-Prop $prev 'last_added_kwh' }
   last_tpms_alert  = $tpmsAlert
   last_stale       = $dataStale
-  last_check_at    = (Get-Date).ToUniversalTime().ToString('o')
+  # ⚠️ v0.22.0：Fleet 状态的两个告警位（恢复后自动重置，不再重复推）。
+  last_fleet_unauthorized = ($fleetState -eq 'unauthorized')
+  last_fleet_unreachable  = ($fleetState -eq 'unreachable')
+  # ⚠️ v0.22.0：本轮成功 → 失败计数**归零**（下次再失败时重新从 1 数）。
+  fail_count    = 0
+  last_check_at = (Get-Date).ToUniversalTime().ToString('o')
 }
 $new | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding utf8
-Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAlert 数据过期=$dataStale 事件数=$($events.Count)"
+Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAlert 数据过期=$dataStale fleet=$fleetState 事件数=$($events.Count)"

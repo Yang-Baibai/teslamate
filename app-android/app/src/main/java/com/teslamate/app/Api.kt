@@ -176,6 +176,15 @@ data class CarStatus(
      */
     val fleet_enabled: Boolean? = null,
     /**
+     * ⚠️ v0.22.0：**Fleet 实时状态**（disabled / asleep / unauthorized / unreachable / ok）。
+     *
+     * 「没值」其实是四种完全不同的情况：
+     * `disabled` 没配凭据（永远不会变）· `asleep` 车在休眠（正常）·
+     * `unauthorized` 授权失效（**不会自愈**，要人工重新授权）·
+     * `unreachable` 云端故障（会自愈）。
+     */
+    val fleet_state: String? = null,
+    /**
      * **实时胎压**（bar，来源 Tesla Fleet API 的 `vehicle_state`）。
      *
      * ⚠️ 与上面的 [tpms_fl] 等是**两个来源，不要互相覆盖**：
@@ -428,9 +437,39 @@ data class BatteryHealth(
     val odometer_span_km: Double? = null,
 )
 
+/**
+ * ⚠️ v0.22.0：服务器健康详情（`GET /api/v1/health`，**需鉴权**）。
+ *
+ * 自托管服务的用户体验，八成体现在**它坏的时候** ——
+ * 而「我的服务器现在是什么状态」在 App 里原本**无处可查**。
+ */
 @Serializable
-data class AppLatest(
-    val version_code: String = "0",
+data class HealthDetail(
+    val db_ok: Boolean = false,
+    val db_latency_ms: Long = 0,
+    val server_timezone: String? = null,
+    val server_time: String? = null,
+    val fleet: FleetHealth = FleetHealth(),
+    val teslamate: TeslamateHealth = TeslamateHealth(),
+)
+
+@Serializable
+data class FleetHealth(
+    val enabled: Boolean = false,
+    /** disabled / asleep / unauthorized / unreachable / ok */
+    val state: String? = null,
+    val last_ok: String? = null,
+    val error: String? = null,
+)
+
+@Serializable
+data class TeslamateHealth(
+    val last_position_at: String? = null,
+    val age_hours: Double? = null,
+)
+
+@Serializable
+data class AppLatest(    val version_code: String = "0",
     val version_name: String = "0.0.0",
     val apk_url: String = "",
     val sha256: String? = null,
@@ -607,4 +646,12 @@ class Api private constructor(private val base: String, private val token: Strin
         get("/api/v1/cars/$carId/stats?period=$period")
     fun battery(carId: Int): BatteryHealth = get("/api/v1/cars/$carId/battery")
     fun appLatest(): AppLatest = get("/api/v1/app/latest")
+
+    /**
+     * ⚠️ v0.22.0：服务器健康详情（给 App 的「服务器状态」页用）。
+     *
+     * 与 `/healthz` 的区别：`/healthz` **免鉴权**且对外映射，只回最小 ok/503；
+     * 这个端点**带鉴权**，可以返回 Fleet 状态、最后采集时间、数据库延迟。
+     */
+    fun health(): HealthDetail = get("/api/v1/health")
 }

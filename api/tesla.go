@@ -124,6 +124,8 @@ type teslaClient struct {
 	// 而「锁没锁」是车主第一诉求，把它降级成「未知」比显示一个旧值伤害大得多。
 	fleetErr    string
 	fleetLastOK *time.Time
+	// ⚠️ v0.22.0：Fleet 实时状态（四态 + 正常），见 FleetState* 常量。
+	fleetState string
 }
 
 // TeslaTPMSWheel 一只轮胎的实时读数与 Tesla 服务端的告警位。
@@ -196,6 +198,33 @@ func teslaFleetEnabled() bool {
 	return tesla.configured()
 }
 
+// ⚠️ v0.22.0：Fleet 实时状态（四态 + 正常）。
+//
+// 没配凭据 → disabled；有凭据但还没跑过 → ok（初始值）。
+func teslaFleetState() string {
+	if tesla == nil || !tesla.configured() {
+		return FleetStateDisabled
+	}
+	return tesla.FleetState()
+}
+
+// ⚠️ v0.22.0：给「服务器状态」页用的三个原始值。
+func teslaFleetLastOK() *time.Time {
+	if tesla == nil {
+		return nil
+	}
+	_, ok := tesla.FleetStatus()
+	return ok
+}
+
+func teslaFleetError() string {
+	if tesla == nil {
+		return ""
+	}
+	err, _ := tesla.FleetStatus()
+	return err
+}
+
 // ⚠️ v0.21.0：车端里程表（km）。
 //
 // 与 `positions.odometer`（TeslaMate 按 GPS 点累计）的区别：
@@ -228,6 +257,24 @@ func (c *teslaClient) markFleetOK() {
 	c.fleetErr = ""
 	now := time.Now().UTC()
 	c.fleetLastOK = &now
+	c.fleetState = FleetStateOK
+}
+
+// setFleetState 记下 Fleet 实时状态（四态 + 正常）。
+func (c *teslaClient) setFleetState(s string) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.fleetState = s
+}
+
+// FleetState 返回当前的 Fleet 状态。
+func (c *teslaClient) FleetState() string {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	if c.fleetState == "" {
+		return FleetStateOK
+	}
+	return c.fleetState
 }
 
 // loadTeslaConfig 从环境变量读配置。缺什么都不报错——缺了就是「未知」。
@@ -390,6 +437,30 @@ func (c *teslaClient) clearVehicleState() {
 	c.liveTPMS = TeslaTPMS{}
 }
 
+// Fleet 实时状态的**四态**（+ 正常）。
+//
+// ⚠️ v0.22.0（自托管运维评审 P1-4 + P0-3）：
+// 原来 App 只能区分「有值」与「没值」（未知），
+// 而「没值」其实是**四种完全不同的情况**：
+//
+//	disabled     没配凭据 —— 这台服务器**没有实时状态源**（永远不会变）
+//	asleep       车在休眠 —— **正常状态**，不是故障（等它醒来就更新）
+//	unauthorized 授权失效 —— 一次性 token 过期，**不会自愈**，要人工重新授权
+//	unreachable  云端故障 —— 会自愈（退避重试中）
+//
+// 不分开的后果很具体：
+//   - 「车休眠」被说成「没读到」→ 车主以为车机或网络坏了；
+//   - 「授权失效」被说成「稍后自动重试」→ **永远重试也不会成功**，
+//     而锁车与实时胎压会**静默停更**，唯一的告警通道（Hermes 推送）
+//     又不读这个状态 —— 于是「锁没锁」这个第一诉求可能一周没人发现。
+const (
+	FleetStateDisabled    = "disabled"
+	FleetStateAsleep      = "asleep"
+	FleetStateUnauthorized = "unauthorized"
+	FleetStateUnreachable = "unreachable"
+	FleetStateOK          = "ok"
+)
+
 // shortFleetError 把内部错误压成一句**能直接给用户看**的话。
 //
 // 原则：这句话会原样出现在 App 的横幅上，所以
@@ -406,11 +477,31 @@ func shortFleetError(err error) string {
 	case strings.Contains(err.Error(), "vehicle_data 返回 5"):
 		return "Tesla 云端暂时不可用，稍后自动重试；" + tail
 	case strings.Contains(err.Error(), "刷新 access_token 失败"):
-		return "Tesla 授权刷新失败，稍后自动重试；" + tail
+		// ⚠️ v0.22.0：**删掉「稍后自动重试」** ——
+		// 中国区的 refresh_token 是**一次性**的，刷新失败意味着它已过期，
+		// 重试一万次也不会成功。文案必须指向真正的出路：
+		// 在服务器上重新跑一次授权脚本。
+		return "Tesla 授权已过期，需要在服务器上重新授权" +
+			"（scripts/tesla-authorize.ps1）；锁车与实时胎压已停更"
 	case strings.Contains(err.Error(), "获取车辆列表失败"):
 		return "读不到 Tesla 车辆列表，稍后自动重试；" + tail
 	default:
 		return "暂时连不上 Tesla 云端，稍后自动重试；" + tail
+	}
+}
+
+// fleetStateFor 从错误推出状态。
+//
+// ⚠️ 「刷新 access_token 失败」单独成一类 —— 它是**授权失效**，
+// 与「云端故障」的处理方式完全不同：前者要人工介入，后者会自愈。
+func fleetStateFor(err error) string {
+	switch {
+	case errors.Is(err, errTeslaAuth):
+		return FleetStateUnauthorized
+	case strings.Contains(err.Error(), "刷新 access_token 失败"):
+		return FleetStateUnauthorized
+	default:
+		return FleetStateUnreachable
 	}
 }
 
@@ -451,8 +542,14 @@ func (c *teslaClient) handlePollResult(err error, backoff time.Duration) (time.D
 	case errors.Is(err, errVehicleUnavailable):
 		// 车睡着了：这不是故障。保留上次已知结果（锁车 + 实时胎压），
 		// 只提示一次别刷屏，也不要在 App 上挂错误横幅。
+		//
+		// ⚠️ v0.22.0：状态记成 **asleep**（而不是「正常」）——
+		// 「车在休眠」与「一切正常」是**两件事**：
+		// 前者意味着锁车状态要等它醒来才更新，App 该说清楚这一点，
+		// 而不是让用户对着一个不动的锁车图标猜。
 		log.Printf("ℹ️  Tesla 车辆当前不可用（多半休眠）：锁车与实时胎压保留上次结果")
 		c.setFleetError("")
+		c.setFleetState(FleetStateAsleep)
 		return c.cfg.pollInterval, teslaBackoffInit
 
 	default:
@@ -461,6 +558,7 @@ func (c *teslaClient) handlePollResult(err error, backoff time.Duration) (time.D
 		// 「锁没锁」是车主第一诉求 —— 显示一个带时间戳的旧值
 		// 比显示「未知」有用得多，也不误导（App 会写明这是什么时候的数据）。
 		c.setFleetError(shortFleetError(err))
+		c.setFleetState(fleetStateFor(err))
 		wait := backoff
 		next := backoff * 2
 		if next > teslaBackoffMax {

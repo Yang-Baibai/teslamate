@@ -90,6 +90,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
+	// ⚠️ v0.22.0：给 App「服务器状态」页用的详细端点（**需鉴权** ——
+	// /healthz 是免鉴权且对外映射的，不能往里加内部状态）。
+	mux.HandleFunc("GET /api/v1/health", auth(handleHealthDetailed))
 	mux.HandleFunc("GET /api/v1/cars", auth(handleCars))
 	mux.HandleFunc("GET /api/v1/cars/{id}/status", auth(handleStatus))
 	mux.HandleFunc("GET /api/v1/cars/{id}/drives", auth(handleDrives))

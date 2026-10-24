@@ -112,6 +112,21 @@ class StatusCache(context: Context) {
         return runCatching { json.decodeFromString(CachedRangeContext.serializer(), raw) }.getOrNull()
     }
 
+    /**
+     * ⚠️ **v0.22.0（自托管运维评审 P2-5）：换服务器时清掉全部缓存。**
+     *
+     * 原来换服务器地址后，**旧服务器的车况缓存还留在盘上** ——
+     * 于是新地址连不上时，App 会在新服务器名下显示**旧服务器**的数据。
+     *
+     * 与 P0-2（缓存按车分区）是同一类错误的另一半：
+     * 分区解决了「换车」，这个解决「换服务器」。
+     */
+    fun clearAll() {
+        runCatching {
+            prefs.edit().clear().apply()
+        }
+    }
+
     private companion object {
         const val PREFS = "tm_status_cache"
         // ⚠️ v0.22.0：键名带 carId —— 缓存**按车分区**（见 load 的说明）。

@@ -176,6 +176,8 @@ fun RecordsScreen(
     // ⚠️ v0.14.0：error 改成存**异常**而不是字符串 ——
     // 只有拿到 kind（AUTH / NO_DATA / …）才能决定横幅样式与按钮。
     var error by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
+    // ⚠️ v0.22.0：充电记录的**独立错误** —— 它失败不该让整个记录页不可用。
+    var chargeError by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
     var loading by remember { mutableStateOf(true) }
     var refreshing by remember { mutableStateOf(false) }
     val selected = selection
@@ -203,6 +205,16 @@ fun RecordsScreen(
     val routeHistoryMap = remember(drives) { buildRouteHistory(drives) }
 
     // ⚠️ v0.9.0：一次拉两份数据（原来两个 Tab 各拉各的）
+    //
+    // ⚠️ **v0.22.0（自托管运维评审 P1-2）：两个请求**拆开**。**
+    //
+    // 原来是一次 `api.drives(...) to api.charges(...)`：
+    // 任一失败 → 两份数据**一起被丢弃** → 整页回到骨架屏。
+    // 也就是说 `/charges` 失败 = 整个记录页不可用。
+    //
+    // 现在各自独立：行程失败 → 只显示行程相关的错误；
+    // 充电失败 → 时间轴照常显示（充电节点只是少了几条），
+    // 线路余量表与充电列表页会显示「充电记录取不到」。
     suspend fun load() {
         if (api == null) {
             // ⚠️ v0.14.0：未配置 / 地址无效 → kind = AUTH，
@@ -214,19 +226,27 @@ fun RecordsScreen(
             loading = false
             return
         }
+        // ① 行程（时间轴的主干）
         runCatching {
-            withContext(Dispatchers.IO) {
-                api.drives(settings.carId, 500) to api.charges(settings.carId, 300)
-            }
-        }.onSuccess { (d, c) ->
-            drives = d
-            charges = c
+            withContext(Dispatchers.IO) { api.drives(settings.carId, 500) }
+        }.onSuccess {
+            drives = it
             error = null
             loading = false
         }.onFailure {
             error = it as? com.teslamate.app.UserFacingException
                 ?: com.teslamate.app.UserFacingException(it.message ?: "出错了")
             loading = false
+        }
+        // ② 充电（时间轴的次要成分 + 线路余量表的数据源）
+        runCatching {
+            withContext(Dispatchers.IO) { api.charges(settings.carId, 300) }
+        }.onSuccess {
+            charges = it
+            chargeError = null
+        }.onFailure {
+            chargeError = it as? com.teslamate.app.UserFacingException
+                ?: com.teslamate.app.UserFacingException(it.message ?: "出错了")
         }
     }
 

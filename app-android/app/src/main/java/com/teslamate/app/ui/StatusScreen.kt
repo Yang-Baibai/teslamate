@@ -37,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
@@ -325,7 +326,7 @@ fun StatusScreen(
                             // ⚠️ v0.8.5：三态**都显式呈现**（含「锁车状态未知」），
                             // 不再在拿不到数据时悄悄退回「在线/休眠/离线」胶囊 ——
                             // 那样等于把「没取到」伪装成「没这功能」。
-                            LockStateChip(st.locked, st.locked_at)
+                            LockStateChip(st.locked, st.locked_at, st.fleet_state)
                             Spacer(Modifier.weight(1f))
                             Text(
                                 // ⚠️ v0.7.1：绝对时间看不出隔了多久，改相对时间
@@ -473,13 +474,16 @@ fun StatusScreen(
                         // 服务端现在显式下发 `fleet_enabled`：
                         //   false → 「这台车没连实时状态源」—— 原因说准，且它**不会变**
                         //   true  → 「这会儿没取到」—— 原因另说（fleet_error）
-                        val fleetNotice = remember(st.locked, st.fleet_error, st.fleet_last_ok, st.fleet_enabled) {
+                        val fleetNotice = remember(st.locked, st.fleet_error, st.fleet_last_ok, st.fleet_enabled, st.fleet_state) {
                             buildString {
                                 if (st.locked == null) {
-                                    if (st.fleet_enabled == false) {
-                                        append("这台车没连实时状态源，锁车与实时胎压拿不到 —— 不是车的问题。")
-                                    } else {
-                                        append("没读到车机的锁车状态 —— 这不代表车没锁。")
+                                    when (st.fleet_state) {
+                                        "disabled" ->
+                                            append("这台车没连实时状态源，锁车与实时胎压拿不到 —— 不是车的问题。")
+                                        "asleep" ->
+                                            append("车在休眠，锁车与实时胎压要等它醒来才更新 —— 不是车的问题。")
+                                        else ->
+                                            append("没读到车机的锁车状态 —— 这不代表车没锁。")
                                     }
                                 }
                                 if (st.fleet_error.isNotBlank()) {
@@ -859,23 +863,54 @@ private fun RangeAndOdometer(
  *    不是异常），挂着它只会让人以为锁车状态有问题。
  */
 @Composable
-private fun LockStateChip(locked: Boolean?, lockedAt: Instant?) {
+private fun LockStateChip(locked: Boolean?, lockedAt: Instant?, fleetState: String? = null) {
     val accents = LocalAccentColors.current
     val icon: androidx.compose.ui.graphics.vector.ImageVector
     val text: String
     val tint: androidx.compose.ui.graphics.Color
-    when (locked) {
-        true -> {
+    // ⚠️ v0.22.0（自托管运维评审 P1-4）：**「未知」拆成四种**。
+    //
+    // 「没取到」其实是四种完全不同的情况，不分开就会误导：
+    //   disabled     这台服务器**没配 Fleet 凭据** → 永远不会有值（不是故障）
+    //   asleep       车在休眠 → **正常状态**，等它醒来就更新（不是故障）
+    //   unauthorized 授权失效 → 一次性 token 过期，**不会自愈**，要人工重新授权
+    //   unreachable  云端故障 → 会自愈（退避重试中）
+    //
+    // 原来一律说「锁车状态未知」—— 车主读到「未知」会焦虑
+    // （原话：「到底锁没锁？？能锁吗？」），
+    // 而现在能直接告诉他**这是哪一种**，以及**要不要动手**。
+    when {
+        locked == true -> {
             icon = Icons.Filled.Lock
             text = "已上锁"
             tint = MaterialTheme.colorScheme.onSurfaceVariant
         }
-        false -> {
+        locked == false -> {
             icon = Icons.Filled.LockOpen
             text = "未上锁"
             tint = accents.warnAmber
         }
-        null -> {
+        fleetState == "disabled" -> {
+            icon = Icons.Filled.HelpOutline
+            text = "锁车状态 · 未接入"
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        fleetState == "asleep" -> {
+            icon = Icons.Filled.HelpOutline
+            text = "车在休眠 · 锁车状态等它醒来才更新"
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        fleetState == "unauthorized" -> {
+            icon = Icons.Filled.ErrorOutline
+            text = "锁车状态 · 授权已失效"
+            tint = accents.danger
+        }
+        fleetState == "unreachable" -> {
+            icon = Icons.Filled.ErrorOutline
+            text = "锁车状态 · 暂时连不上"
+            tint = accents.warnAmber
+        }
+        else -> {
             icon = Icons.Filled.HelpOutline
             text = "锁车状态未知"
             tint = MaterialTheme.colorScheme.onSurfaceVariant
