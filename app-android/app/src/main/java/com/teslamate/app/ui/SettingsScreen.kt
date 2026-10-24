@@ -162,8 +162,66 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                         IosSwitch(checked = showToken, onCheckedChange = { showToken = it })
                         Text("显示令牌", style = MaterialTheme.typography.bodyMedium)
                     }
+                    // ⚠️ v0.14.0（iOS 动效专项评审 P2-4 + IA 评审 P0-2）：
+                    // **实心品牌红按钮 = 全 App 最大的材质违规** ——
+                    // 它是全 App 唯一的饱和红块，与车况页顶部的告警红条撞色：
+                    // 红在这个 App 的语义里只表示**告警**，
+                    // 而这里是在引导主人去点一个「红按钮」。
+                    //
+                    // 层级也反了：**「保存」才是离开前必做项**，「测试连接」是可选诊断。
+                    // 现在主次颠倒：
+                    //   · 主按钮「保存并测试」—— 一次点击完成保存 + 校验（中性填充）
+                    //   · 次按钮「仅测试连接」—— 描边
+                    // 两个按钮都**不是红色**。
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
+                            enabled = !testing && url.isNotBlank() && token.isNotBlank(),
+                            onClick = {
+                                // 先落盘，再校验 —— 一次点击完成两件事
+                                save()
+                                testing = true
+                                testOk = null
+                                testMsg = null
+                                scope.launch {
+                                    val api = Api.create(url, token)
+                                    when {
+                                        api == null -> {
+                                            testOk = false
+                                            testMsg = "地址格式无效（需要 http:// 或 https:// 开头）"
+                                        }
+                                        else -> runCatching { withContext(Dispatchers.IO) { api.cars() } }
+                                            .onSuccess {
+                                                cars = it
+                                                testOk = true
+                                                testMsg = "连接成功，发现 ${it.size} 台车"
+                                                if (it.none { car -> car.id == carId }) {
+                                                    carId = it.first().id
+                                                }
+                                            }
+                                            .onFailure {
+                                                testOk = false
+                                                testMsg = it.message ?: "连接失败"
+                                            }
+                                    }
+                                    testing = false
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                contentColor = MaterialTheme.colorScheme.onSurface,
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp),
+                        ) {
+                            if (testing) {
+                                CircularProgressIndicator(Modifier.width(16.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text("保存并测试")
+                        }
+                        OutlinedButton(
                             enabled = !testing && url.isNotBlank() && token.isNotBlank(),
                             onClick = {
                                 testing = true
@@ -194,25 +252,14 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                                 }
                             },
                             shape = RoundedCornerShape(12.dp),
-                        ) {
-                            if (testing) {
-                                CircularProgressIndicator(Modifier.width(16.dp), strokeWidth = 2.dp)
-                                Spacer(Modifier.width(6.dp))
-                            }
-                            Text("测试连接")
-                        }
-                        // ⚠️ v0.9.2：次要按钮**不再用红色**。
-                        // 原来「保存」是红字描边，与旁边实心红的「测试连接」撞色，
-                        // 两个按钮的层级完全分不出来。
-                        OutlinedButton(
-                            enabled = url.isNotBlank() && token.isNotBlank(),
-                            onClick = { save() },
-                            shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.outlinedButtonColors(
                                 contentColor = MaterialTheme.colorScheme.onSurface,
                             ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(44.dp),
                         ) {
-                            Text("保存")
+                            Text("仅测试连接")
                         }
                     }
                     testMsg?.let {
@@ -237,6 +284,13 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                     SectionCard("选择车辆", Modifier.animateItem()) {
                         // ⚠️ v0.9.2：M3 的 RadioButton（红圈红点）→ **整行可点 + 右侧对勾**。
                         // 这是 iOS 设置页的标准范式，命中区也从一个小圆点变成整行。
+                        //
+                        // ⚠️ v0.14.0（苹果 HIG P1）：**点选即保存**，删掉「保存车辆选择」按钮。
+                        //
+                        // 原来选完车还要点一个**裸文字**按钮才生效 ——
+                        // 而那行文字和上面的车名同形、同样式，用户根本看不出它可点
+                        // （评审原话：「用户无法识别可点」）。
+                        // iOS 的做法是：改单选 → **立即生效**，右侧对勾就是结果。
                         cars.forEach { c ->
                             val selected = carId == c.id
                             Row(
@@ -247,6 +301,8 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                                         Haptics.selection(ctx)
                                         carId = c.id
                                         savedHint = false
+                                        // 点选即保存（iOS 范式）
+                                        save()
                                     }
                                     .padding(vertical = 8.dp),
                             ) {
@@ -266,12 +322,11 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                                 }
                             }
                         }
-                        TextButton(
-                            onClick = { save() },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            ),
-                        ) { Text("保存车辆选择") }
+                        Text(
+                            "点一下就切换过去，不用再按保存。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }
@@ -293,7 +348,7 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     IosField(
-                        label = "上次保养时的里程（km）",
+                        label = "上次保养时的里程（公里）",
                         value = if (serviceOdo > 0) serviceOdo.toLong().toString() else "",
                         onValueChange = {
                             serviceOdo = it.trim().toDoubleOrNull() ?: 0.0
@@ -302,13 +357,13 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                         keyboardType = KeyboardType.Number,
                     )
                     IosField(
-                        label = "保养间隔（km）",
+                        label = "保养间隔（公里）",
                         value = serviceInterval,
                         onValueChange = { serviceInterval = it.filter { c -> c.isDigit() }; savedHint = false },
                         keyboardType = KeyboardType.Number,
                     )
                     IosField(
-                        label = "上次换胎时的里程（km）",
+                        label = "上次换胎时的里程（公里）",
                         value = if (tireOdo > 0) tireOdo.toLong().toString() else "",
                         onValueChange = {
                             tireOdo = it.trim().toDoubleOrNull() ?: 0.0
@@ -317,17 +372,25 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                         keyboardType = KeyboardType.Number,
                     )
                     IosField(
-                        label = "轮胎更换间隔（km）",
+                        label = "轮胎更换间隔（公里）",
                         value = tireInterval,
                         onValueChange = { tireInterval = it.filter { c -> c.isDigit() }; savedHint = false },
                         keyboardType = KeyboardType.Number,
                     )
-                    TextButton(
-                            onClick = { save() },
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                            ),
-                        ) { Text("保存提醒设置") }
+                    // ⚠️ v0.14.0（苹果 HIG P1）：**实心按钮**，不再是裸文字。
+                    //
+                    // 「保存提醒设置」原来是一个 TextButton —— 与上面的字段标签同形、同样式，
+                    // 用户识别不出它可点。改成 filled button（高 44dp、圆角 12dp、
+                    // 文字 SemiBold），层级立刻明确。
+                    Button(
+                        onClick = { save() },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp),
+                    ) {
+                        Text("保存保养与轮胎设置", fontWeight = FontWeight.SemiBold)
+                    }
                 }
             }
 

@@ -326,8 +326,15 @@ private fun MainScaffold(
                         modifier = Modifier.fillMaxSize(),
                         selection = recordSelection,
                         onSelectionChange = { onRecordSelectionChange(it) },
+                        // ⚠️ v0.14.0：令牌失效时给「前往设置」的出口
+                        // （原来只有车况页有，停在记录页会无限次点「重试」）。
+                        onOpenSettings = { onTabChange(Tab.SETTINGS) },
                     )
-                    Tab.USAGE -> StatsScreen(settings, Modifier.fillMaxSize())
+                    Tab.USAGE -> StatsScreen(
+                        settings,
+                        Modifier.fillMaxSize(),
+                        onOpenSettings = { onTabChange(Tab.SETTINGS) },
+                    )
                     Tab.SETTINGS -> SettingsScreen(settings, Modifier.fillMaxSize())
                 }
             }

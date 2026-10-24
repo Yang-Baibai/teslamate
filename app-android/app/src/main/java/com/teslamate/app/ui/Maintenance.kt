@@ -1,6 +1,7 @@
 package com.teslamate.app.ui
 
 import com.teslamate.app.AppSettings
+import com.teslamate.app.fmtThousands
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -81,12 +82,15 @@ fun MaintenanceReminder.describe(): String =
  * 单看这一句就知道是「超期多少」，而不是「开了多少」。
  */
 fun MaintenanceReminder.bannerText(currentOdoKm: Double?): String {
-    val due = dueOdoKm.roundToInt()
+    val due = dueOdoKm.fmtThousands()
     return if (overdue) {
         buildString {
-            append("$label 超期 ${abs(remainingKm).roundToInt()} 公里")
+            append("$label 超期 ${kotlin.math.abs(remainingKm).roundToInt()} 公里")
             append(" · 该在里程表 $due 公里时做")
-            currentOdoKm?.let { append("，现在 ${it.roundToInt()} 公里") }
+            // ⚠️ v0.14.0（单位审校 P0-3）：当前里程表也用**千分位** ——
+            // 同一个数在横幅里没千分位、在车况页那行有千分位，
+            // 用户会以为是两个数。
+            currentOdoKm?.let { append("，现在 ${it.fmtThousands()} 公里") }
         }
     } else {
         "$label 还有 ${remainingKm.roundToInt()} 公里到期（该在里程表 $due 公里时做）"

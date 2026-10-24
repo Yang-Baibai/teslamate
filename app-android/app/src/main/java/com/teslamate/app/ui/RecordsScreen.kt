@@ -146,12 +146,16 @@ fun RecordsScreen(
      */
     selection: RecordSelection? = null,
     onSelectionChange: (RecordSelection?) -> Unit = {},
+    /** ⚠️ v0.14.0：令牌失效时错误横幅的「前往设置」出口。 */
+    onOpenSettings: () -> Unit = {},
 ) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
     var drives by remember { mutableStateOf<List<Drive>>(emptyList()) }
     var charges by remember { mutableStateOf<List<Charge>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
+    // ⚠️ v0.14.0：error 改成存**异常**而不是字符串 ——
+    // 只有拿到 kind（AUTH / NO_DATA / …）才能决定横幅样式与按钮。
+    var error by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
     var loading by remember { mutableStateOf(true) }
     var refreshing by remember { mutableStateOf(false) }
     val selected = selection
@@ -171,7 +175,12 @@ fun RecordsScreen(
     // ⚠️ v0.9.0：一次拉两份数据（原来两个 Tab 各拉各的）
     suspend fun load() {
         if (api == null) {
-            error = if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页"
+            // ⚠️ v0.14.0：未配置 / 地址无效 → kind = AUTH，
+            // 横幅直接给「前往设置」（而不是让用户干等重试）。
+            error = com.teslamate.app.UserFacingException(
+                if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页",
+                com.teslamate.app.ApiErrorKind.AUTH,
+            )
             loading = false
             return
         }
@@ -185,7 +194,8 @@ fun RecordsScreen(
             error = null
             loading = false
         }.onFailure {
-            error = it.message
+            error = it as? com.teslamate.app.UserFacingException
+                ?: com.teslamate.app.UserFacingException(it.message ?: "出错了")
             loading = false
         }
     }
@@ -227,11 +237,14 @@ fun RecordsScreen(
                             // 而且横幅**没有任何出口**（车况页有「重试」，这里没有）。
                             // 现在：横幅叠在列表**上面**，列表照常显示。
                             error != null -> Column(Modifier.fillMaxSize()) {
-                                ErrorBanner(
+                                // ⚠️ v0.14.0：改用公共的 [ApiErrorBanner] ——
+                                // 原来这里**一律**只给「重试」，令牌失效时用户会无限次点重试，
+                                // 永远走不到能修的地方。现在 AUTH 会给「前往设置」。
+                                ApiErrorBanner(
                                     error!!,
                                     modifier = Modifier.padding(16.dp),
-                                    actionLabel = "重试",
-                                    onAction = {
+                                    onOpenSettings = onOpenSettings,
+                                    onRetry = {
                                         scope.launch {
                                             refreshing = true
                                             load()

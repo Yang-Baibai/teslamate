@@ -25,6 +25,7 @@ import com.teslamate.app.AppSettings
 import com.teslamate.app.Stats
 import com.teslamate.app.StatsBucket
 import com.teslamate.app.fmt
+import com.teslamate.app.fmtKwh100
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -101,7 +102,10 @@ fun RecentSummaryCard(
 private fun SummaryContent(s: StatsBucket) {
     SectionCard("最近 30 天") {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            Stat("里程", "${s.km.fmt(0)} km", Modifier.weight(1f))
+            // ⚠️ v0.14.0（单位审校 P1-3）：
+            // 「里程」→「行驶里程」（与用量页图表同名，且「总里程」会被读成
+            // 「这车一辈子跑了多少」）；fmt(0) 把 238.8 直接抹成 239 —— 那是假精度。
+            Stat("行驶里程", "${s.km.fmt(1)} 公里", Modifier.weight(1f))
             Stat("充入", "${s.charge_kwh.fmt(0)} 度", Modifier.weight(1f))
         }
         Spacer(Modifier.padding(top = 10.dp))
@@ -113,7 +117,8 @@ private fun SummaryContent(s: StatsBucket) {
             Spacer(Modifier.padding(top = 10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "平均能耗 ${s.wh_per_km?.fmt(0)} Wh/km",
+                    // ⚠️ v0.14.0：Wh/km → **kWh/100km**（中国车主的口径）。
+                    "平均能耗 ${s.wh_per_km?.fmtKwh100()} kWh/100km",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

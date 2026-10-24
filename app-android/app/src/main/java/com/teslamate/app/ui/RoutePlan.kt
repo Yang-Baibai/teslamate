@@ -477,7 +477,7 @@ fun RoutePlanCard(
                     ) {
                         Text(
                             // 起点处的站标「起点」，比「0 km」好懂
-                            if (s.kmAlongRoute < 1.0) "起点" else "${s.kmAlongRoute.roundToInt()} km",
+                            if (s.kmAlongRoute < 1.0) "起点" else "${s.kmAlongRoute.roundToInt()} 公里",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.width(62.dp),

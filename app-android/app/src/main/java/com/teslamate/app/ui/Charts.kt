@@ -576,9 +576,12 @@ fun batteryChartDescription(b: com.teslamate.app.BatteryHealth): String {
     val maxV = valid.maxOf { it.capacity_kwh!! }
     val nominal = b.nominal_capacity_kwh
     return "电池可用容量曲线：共 ${valid.size} 个满充记录，" +
-        "从 ${first.capacity_kwh!!.fmt(1)} kWh 到 ${last.capacity_kwh!!.fmt(1)} kWh，" +
-        "最高 ${maxV.fmt(1)} kWh" +
-        (nominal?.let { "，新电池标称容量 ${it.fmt(1)} kWh，当前健康度 ${b.health_percent?.fmt(1) ?: "未知"}%" } ?: "") +
+        // ⚠️ v0.14.0（单位审校 P1-4）：无障碍朗读里的 **kWh 改成「度」** ——
+        // 屏幕上写的是「现在还能装 65.4 度」，TalkBack 却念「65.4 kWh」，
+        // 屏幕阅读器用户拿到一个 App 里其他地方不存在的单位。
+        "从 ${first.capacity_kwh!!.fmt(1)} 度 到 ${last.capacity_kwh!!.fmt(1)} 度，" +
+        "最高 ${maxV.fmt(1)} 度" +
+        (nominal?.let { "，新电池标称容量 ${it.fmt(1)} 度，当前健康度 ${b.health_percent?.fmt(1) ?: "未知"}%" } ?: "") +
         "。"
 }
 

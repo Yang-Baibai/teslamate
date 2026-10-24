@@ -8,6 +8,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloat
@@ -77,7 +78,9 @@ import com.teslamate.app.AppSettings
 import com.teslamate.app.CarStatus
 import com.teslamate.app.ConsumptionModel
 import com.teslamate.app.Haptics
+import com.teslamate.app.districtCity
 import com.teslamate.app.fmt
+import com.teslamate.app.fmtKwh100
 import com.teslamate.app.fmtShort
 import com.teslamate.app.fmtThousands
 import com.teslamate.app.relTime
@@ -189,24 +192,55 @@ fun StatusScreen(
                 // ⚠️ v0.9.2（iOS 交互评审 P1-7）：刷新按钮原来点了**零反馈** ——
                 // 图标不转、按钮不禁用（刷新中再点会并发再发一次请求）、也没有触感。
                 // 用户点完刷新，屏幕上什么变化都看不到。
-                val spin = rememberInfiniteTransition(label = "refreshSpin")
-                val angle by spin.animateFloat(
-                    0f, 360f,
-                    infiniteRepeatable(tween(900, easing = androidx.compose.animation.core.LinearEasing)),
-                    label = "refreshAngle",
-                )
+                //
+                // ⚠️ v0.14.0（iOS 动效专项评审 P0-2）：修三个缺陷。
+                //
+                // ① **角度跳变**：原来 `angle` 由**常驻** infinite transition 驱动，
+                //    点刷新的瞬间 `rotationZ` 从 0 **跳到当前角度**（可能是 347°）——
+                //    肉眼可见地「咔」一下。现在进入刷新时先 `snapTo` 当前角度。
+                // ② **结束硬切**：`rotationZ` 直接回到 0，像被拽回去。
+                //    现在结束时长 200ms 平滑转回 0°。
+                // ③ **禁用变灰**：刷新中 `enabled = false` 让 M3 把图标染成 38% 透明灰，
+                //    图标在「变灰」和「在转」两个通道里打架。
+                //    现在**不禁用**（并发防护靠函数内的 `if (refreshing) return`），
+                //    只把 tint 换成 onSurfaceVariant。
+                val spin = remember { Animatable(0f) }
+                LaunchedEffect(refreshing) {
+                    if (refreshing) {
+                        // 先对齐到当前角度，消除跳变
+                        spin.snapTo(spin.value % 360f)
+                        // 每圈 700ms 匀速续跑
+                        while (true) {
+                            spin.animateTo(
+                                targetValue = spin.value + 360f,
+                                animationSpec = tween(Motion.RefreshSpin, easing = androidx.compose.animation.core.LinearEasing),
+                            )
+                        }
+                    } else if (spin.value != 0f) {
+                        // 平滑回正，而不是瞬移
+                        spin.animateTo(
+                            targetValue = 360f - (spin.value % 360f),
+                            animationSpec = tween(Motion.RefreshSettle, easing = FastOutSlowInEasing),
+                        )
+                    }
+                }
                 IconButton(
                     onClick = {
                         Haptics.tick(ctx)
-                        refresh()
+                        // 并发防护：不禁用按钮，就在这里挡
+                        if (!refreshing) refresh()
                     },
-                    enabled = !refreshing,
                 ) {
                     Icon(
                         Icons.Filled.Refresh,
                         contentDescription = "刷新",
+                        tint = if (refreshing) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
                         modifier = Modifier.graphicsLayer {
-                            rotationZ = if (refreshing) angle else 0f
+                            rotationZ = spin.value
                         },
                     )
                 }
@@ -238,25 +272,14 @@ fun StatusScreen(
                     //   其它     → 「重试」（不用干等 15 秒自动轮询）
                     // 而「这台车还没数据」是**正常状态**，不该用红条报错 ——
                     // 走一个中性的引导块。
-                    if (err.kind == com.teslamate.app.ApiErrorKind.NO_DATA) {
-                        NoticeBanner(
-                            err.message ?: "这台车还没有任何数据。可能还没开过，或采集器还没上报。"
-                        )
-                    } else {
-                        ErrorBanner(
-                            err.message ?: "出错了",
-                            actionLabel = if (err.kind == com.teslamate.app.ApiErrorKind.AUTH) {
-                                "前往设置"
-                            } else {
-                                "重试"
-                            },
-                            onAction = if (err.kind == com.teslamate.app.ApiErrorKind.AUTH) {
-                                onOpenSettings
-                            } else {
-                                { refresh() }
-                            },
-                        )
-                    }
+                    //
+                    // ⚠️ v0.14.0：抽成公共的 [ApiErrorBanner]，
+                    // 四个页面共用同一套分级逻辑（原来只有这一页有出口）。
+                    ApiErrorBanner(
+                        err,
+                        onOpenSettings = onOpenSettings,
+                        onRetry = { refresh() },
+                    )
                 }
 
                 val st = status
@@ -492,7 +515,16 @@ fun StatusScreen(
 
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             InfoTile("车外温度", st.outside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
-                            InfoTile("功率", st.power?.let { "$it kW" } ?: "—", Modifier.weight(1f))
+                            // ⚠️ v0.14.0（新手车主 P2-2）：**停车时不显示「功率 0 kW」**。
+                            //
+                            // 车停着的时候功率恒为 0，这一格没有任何信息量，
+                            // 却占掉半个信息块的位置。
+                            // 条件是「速度为空（停着）且功率为 0」——
+                            // 停车但开着空调（功率不为 0）时仍然要显示。
+                            val powerIdle = st.speed == null && (st.power ?: 0.0) == 0.0
+                            if (!powerIdle) {
+                                InfoTile("功率", st.power?.let { "$it kW" } ?: "—", Modifier.weight(1f))
+                            }
                         }
                         // ⚠️ v0.8.5（效率车主复核）删掉「海拔 | 可用电量」两块：
                         //  · 海拔一年用一次，且 data-dictionary 自己写着「深圳平原常为 null」
@@ -620,13 +652,25 @@ private fun RangeAndOdometer(
                 whSample?.let { s ->
                     append(
                         if (s.exact) {
-                            " · 实测 ${s.bucket.whPerKm.fmt(0)} Wh/km（${s.bucket.label} 档）"
+                            " · 实测 ${s.bucket.whPerKm.fmtKwh100()} kWh/100km（${s.bucket.label} 档）"
                         } else {
-                            " · 参考 ${s.bucket.whPerKm.fmt(0)} Wh/km（借用 ${s.bucket.label} 档）"
+                            " · 参考 ${s.bucket.whPerKm.fmtKwh100()} kWh/100km（借用 ${s.bucket.label} 档）"
                         }
                     )
                 }
                 append(" · 已留 10% 余量")
+            }
+            // ⚠️ v0.14.0（单位审校 P0-4）：**换算说明**。
+            //
+            // 能耗单位从 Wh/km 换成 kWh/100km（÷10），
+            // 同一个数换了个写法 —— 不说清楚，老用户会把
+            // 「181 Wh/km」和「18.1 kWh/100km」当成两个量，
+            // 甚至以为丢了一个 0。
+            //
+            // 「怎么算的」是全 App **唯一**该出现单位口径说明的地方
+            // —— 平时它是干扰，展开时它就是答案的一部分。
+            if (trueRange != null) {
+                append(" · 能耗单位 kWh/100km 即每 100 公里的耗电量（旧版写的 Wh/km 是同一个数）")
             }
         }
         Text(
@@ -667,7 +711,11 @@ private fun RangeAndOdometer(
         // ⚠️ 原来里程表也是 34sp Bold，与续航**同级** —— 一屏两个主角。
         // 降级为一行小字：信息一点没丢，但视觉上只剩续航是主角。
         Text(
-            "里程表 ${st.odometer?.fmtThousands() ?: "—"} km",
+            // ⚠️ v0.14.0（单位审校 P0-3）：**「km」→「公里」**。
+            // 同一屏里保养横幅写「99000 公里」「101455 公里」，
+            // 这行却写「101,455 km」—— 两种单位 + 两种数字格式，
+            // 用户会以为是两个数。
+            "里程表 ${st.odometer?.fmtThousands() ?: "—"} 公里",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -813,23 +861,27 @@ private fun LocationCard(
                 )
             }
             // 地点名是完整邮编地址（"龙山九路, 西区街道, 惠州大亚湾…, 516083, 中国"），
-            // 占两行且没有信息增量 —— 主标题只取**第一段**，
-            // 完整地址降为一行灰色小字，信息一点不丢。
+            // 占两行且没有信息增量 —— 主标题只取**第一段**。
+            //
+            // ⚠️ v0.14.0（新手车主 P2-2）：副行也**不再写整条地址** ——
+            // 原来写「新湖路, 永丰社区, 西乡街道, 宝安区, 深圳市, 广东省, 518100, 中国」，
+            // 一整行都是废话。现在只留行政区层级「宝安区 深圳市」。
             val fullPlace = st.location_name ?: "未命名地点"
             val shortPlace = fullPlace
                 .substringBefore('，')
                 .substringBefore(',')
                 .trim()
                 .ifBlank { fullPlace }
+            val districtLine = fullPlace.districtCity()
             Text(
                 shortPlace,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (shortPlace != fullPlace) {
+            if (districtLine != null) {
                 Text(
-                    fullPlace,
+                    districtLine,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

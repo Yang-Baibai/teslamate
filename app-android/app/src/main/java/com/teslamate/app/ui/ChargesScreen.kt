@@ -442,10 +442,25 @@ internal fun ChargeDetail(
                     //   2) 损耗那一行要**带类型** —— AC 的差额 = 车载充电机效率（~7–10%），
                     //      DC 的差额 = 桩 + 车路径（~5–8%），两条不同的物理路径，
                     //      不带类型的话用户会拿 10% 和 5% 比。
-                    KV("充进电池的电", charge.energy_added_kwh?.fmt(2, " 度") ?: "—")
-                    KV("充电桩送出", charge.energy_used_kwh?.fmt(2, " 度") ?: "—")
+                    // ⚠️ v0.14.0（单位审校 P1-2）：两个名字改成**量名** ——
+                    // 「充进电池的电」把量词塞进了名字里；
+                    // 「充电桩送出」没有量词，读起来像**事件**不是**量**。
+                    KV("充入电池电量", charge.energy_added_kwh?.fmt(1, " 度") ?: "—")
+                    KV("充电桩输出电量", charge.energy_used_kwh?.fmt(1, " 度") ?: "—")
                     charge.loss_percent?.let {
-                        KV("充电损耗", "${it.fmt(1)}%（${if (charge.is_dc) "直流" else "交流"}）")
+                        // ⚠️ v0.14.0：损耗行**带上绝对量** ——
+                        // 只给百分比，用户不知道那是 0.1 度还是 3 度。
+                        val lossKwh = charge.energy_used_kwh?.let { used ->
+                            charge.energy_added_kwh?.let { added -> used - added }
+                        }
+                        KV(
+                            "充电损耗",
+                            buildString {
+                                append("${it.fmt(1)}%")
+                                lossKwh?.let { l -> append("（${l.fmt(2)} 度）") }
+                                append("（${if (charge.is_dc) "直流" else "交流"}）")
+                            },
+                        )
                     }
                     if (charge.loss_percent != null) {
                         Text(

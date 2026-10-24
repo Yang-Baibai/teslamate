@@ -68,6 +68,7 @@ import com.teslamate.app.Drive
 import com.teslamate.app.TrackPoint
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtFull
+import com.teslamate.app.fmtKwh100
 import com.teslamate.app.fmtMonth
 import com.teslamate.app.firstSegment
 import com.teslamate.app.fmtShort
@@ -276,7 +277,7 @@ internal fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> U
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            "${d.distance_km?.fmt(1) ?: "—"} km",
+                            "${d.distance_km?.fmt(1) ?: "—"} 公里",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -297,7 +298,7 @@ internal fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> U
                 // 常规字号：距离与标题同一行右对齐
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "${d.distance_km?.fmt(1) ?: "—"} km",
+                        "${d.distance_km?.fmt(1) ?: "—"} 公里",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         // ⚠️ v0.8.3：原来用 primary（特斯拉红）。列表里重复几十次的红色数字
@@ -329,7 +330,19 @@ internal fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> U
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 InlineMetric("耗电", "${d.energy_kwh?.fmt(1) ?: "—"} 度")
-                InlineMetric("能耗", "${d.wh_per_km?.fmt(0) ?: "—"} Wh/km")
+                // ⚠️ v0.14.0（单位审校 P0-1）：**短途不显示「能耗」**。
+                //
+                // 5.0 km 的行程会算出 22.4 kWh/100km、1.8 km 算出 21.3 ——
+                // 那不是测量误差，是「整数公里标定续航 ÷ 行驶里程」的量纲必然结果
+                // （分子 ±0.5 km 的量化误差在短途被放大成 20%+，
+                // 停车开空调的耗电也摊在这 1.8 km 上）。
+                //
+                // 列表行是**扫读位**，放一个会误导的数字成本最高；
+                // 30 公里这个阈值沿用已有的 `tooShortForSoc`，不新造第二个数。
+                // 详情页仍然显示，但会加一句说明为什么偏高。
+                if ((d.distance_km ?: 0.0) >= 30.0) {
+                    InlineMetric("能耗", "${d.wh_per_km?.fmtKwh100() ?: "—"} kWh/100km")
+                }
                 // ⚠️ v0.8.6（长途自驾党复核）：把**到站电量**放进列表行。
                 // 他的 18 次长途停靠，到达电量中位数只有 14%、5 次 ≤10% ——
                 // 这个数是「这次长途够不够」的答案，却只躺在详情页第三张卡里。
@@ -527,7 +540,13 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                     // 曲线最高只到 9 kW，卡片写 92 kW，差 10 倍。
                     // 读者只能得出「图画错了」或「数据不对」。
                     // 现在标题标明是分箱平均，底部卡片标明是瞬时。
-                    SectionCard("用电曲线（kW · 1 km 分箱平均 · 对应里程）", Modifier.animateItem()) {
+                    // ⚠️ v0.14.0（单位审校 P2-1 / P2-2）：
+                    // 「用电曲线」→「**功率曲线**」——
+                    // 「用电」在中文里指**电量**（kWh），这里画的是**功率**（kW），
+                    // 同一屏两个「用电」指两个量。
+                    // 「1 km 分箱平均」→「**每 1 公里平均**」——
+                    // 「分箱」是数据工程黑话，用户不知道那是什么意思。
+                    SectionCard("功率曲线（kW · 每 1 公里平均 · 对应里程）", Modifier.animateItem()) {
                         val peakUp = powerProfile.maxOf { it.powerKw }
                         val peakDown = powerProfile.minOf { it.powerKw }
                         PowerProfileChart(
@@ -541,11 +560,11 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                         )
                         Text(
                             "正值 = 耗电（蓝）· 负值 = 刹车回收（绿）" +
-                                (drive.wh_per_km?.let { " · 本程 ${it.fmt(0)} Wh/km" } ?: "") +
+                                (drive.wh_per_km?.let { " · 本趟 ${it.fmtKwh100()} kWh/100km" } ?: "") +
                                 // ⚠️ v0.14.0：把「瞬时峰值」和「分箱平均」的差别**写在明面上**，
                                 // 免得同屏两个功率数打架时读者以为数据坏了。
                                 (drive.power_max_kw?.let {
-                                    " · 瞬时峰值 $it kW，图中为 1 km 分箱平均"
+                                    " · 瞬时峰值 $it kW，图中为每 1 公里平均"
                                 } ?: ""),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -567,7 +586,7 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                         val tooShortForSoc = (drive.distance_km ?: 0.0) < 30.0 || socDrop < 5
                         if (socValues.size >= 2 && tooShortForSoc) {
                             Text(
-                                "本趟仅掉 ${socDrop} 个百分点（${drive.distance_km?.fmt(1) ?: "—"} km），" +
+                                "本趟仅掉 ${socDrop} 个百分点（${drive.distance_km?.fmt(1) ?: "—"} 公里），" +
                                     "短途不适用长途规划",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -608,7 +627,7 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                                     milestones.kmAt10?.let {
                                         append(" · 约第 ${it.roundToInt()} 公里降到 10%")
                                     }
-                                    append(" · 1 km 分箱，精度约 ±2 km")
+                                    append(" · 每 1 公里取平均，精度约 ±2 公里")
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -622,24 +641,51 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                     KV("开始", drive.start_date.fmtFull())
                     KV("结束", drive.end_date?.fmtFull() ?: "—")
                     KV("时长", minutesFmt(drive.duration_min))
-                    KV("里程", drive.distance_km?.fmt(2, " km") ?: "—")
+                    // ⚠️ v0.14.0（单位审校 P1-3）：**1 位小数 + 「公里」**。
+                    // `distance` 来自 GPS 里程表差，真值分辨率约 10 m ——
+                    // 写成「3.90 公里」是把 ±0.005 公里当成事实。
+                    KV("里程", drive.distance_km?.fmt(1, " 公里") ?: "—")
                     KV("电量变化", "${drive.start_soc ?: "—"}% → ${drive.end_soc ?: "—"}%")
-                    KV("标定续航变化", rangeDelta(drive.start_rated_range_km, drive.end_rated_range_km))
-                    // ⚠️ v0.9.2（口径审计 S4-2）：删掉「预估续航变化」这一行。
-                    // 它取的是 ideal_range_km，而 ideal 与 rated 在 55,669 行里
-                    // **逐行完全相同**（差异数 = 0）—— 两行显示的是同一个数，
-                    // 一个叫「标定」一个叫「预估」，看起来像两种不同的续航。
-                    // 车况页早就改叫「现在能开 / 官方标称」了，这里是残留。
+                    // ⚠️ v0.14.0（单位审校 P0-2）：**删掉「标定续航变化」整行**。
+                    //
+                    // 三个理由：
+                    // ① **同源冗余** —— Δ标定续航 × 0.146 就是下面「行驶耗电」，
+                    //    一个「能耗」卡里两行给的是同一个数；
+                    // ② **「标定」是黑话** —— 用户不知道它指特斯拉的官方参考续航表；
+                    // ③ **观感悖论** —— 「我开了 3.9 公里，续航掉了 6 公里？」，
+                    //    用户会以为 App 坏了。
+                    // 它的信息已经在「电量变化 82% → 70%」里以更有意义的形式给出。
                 }
             }
             item {
                 SectionCard("能耗", Modifier.animateItem()) {
-                    KV("行车用电", drive.energy_kwh?.fmt(2, " 度") ?: "—")
-                    KV("百公里能耗", drive.wh_per_km?.let { "${it.fmt(0)} Wh/km" } ?: "—")
-                    val odo = drive.odometer_end?.let { drive.odometer_start?.let { s -> it - s } }
-                    if (odo != null && drive.energy_kwh != null && odo > 0) {
-                        val eq = drive.energy_kwh * 1000 / odo
-                        KV("按里程算能耗", "${eq.fmt(0)} Wh/km（odometer 差）")
+                    // ⚠️ v0.14.0（单位审校 P1-1）：「行车用电」→「行驶耗电」，
+                    // 与用量页的图表标题同名 —— 同一个量不该有两个名字。
+                    // ⚠️ v0.14.0（单位审校 P1-3）：1 位小数（`energy_kwh` 的
+                    // 真实分辨率是 0.146 度，2 位是假精度）。
+                    KV("行驶耗电", drive.energy_kwh?.fmt(1, " 度") ?: "—")
+                    KV("百公里能耗", drive.wh_per_km?.let { "${it.fmtKwh100()} kWh/100km" } ?: "—")
+                    // ⚠️ v0.14.0（口径审计 P2-1）：删掉「按里程算能耗」这一行。
+                    //
+                    // 服务端的 `wh_per_km` **已经**用 `d.distance`（里程表差）做分母
+                    // （api/queries.go），所以这一行算出来的是**同一个数**，
+                    // 只是换了个说法 —— 而「（odometer 差）」里那个英文词
+                    // 在中文界面里还是个雷。
+                    //
+                    // ⚠️ v0.14.0（单位审校 P0-1）：**短途加脚注**。
+                    //
+                    // 短途的能耗**天然偏高**：分子是整数公里的标定续航差（±0.5 km
+                    // 的量化误差），分母只有行驶里程 —— 1.8 km 的行程能算出 213 Wh/km。
+                    // 停车时开空调的耗电也摊在这 1.8 km 上。
+                    // 不说清楚，提车半年的车主会以为「App 算错了 / 车有问题」。
+                    val dKm = drive.distance_km ?: 0.0
+                    if (dKm < 30.0) {
+                        Text(
+                            "短途（不足 30 公里）的能耗偏高：停车时开空调等耗电也摊在了行驶里程上，" +
+                                "这个数字不能和长途比",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

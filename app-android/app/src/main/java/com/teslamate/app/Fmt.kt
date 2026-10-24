@@ -74,6 +74,47 @@ fun String?.firstSegment(): String? {
     return s.ifBlank { this }
 }
 
+/**
+ * 从完整邮编地址里压出「区 + 市」这一层。
+ *
+ * ⚠️ v0.14.0（新手车主 P2-2）：位置卡的副行原来写的是**整条邮寄地址**：
+ * 「新湖路, 永丰社区, 西乡街道, 宝安区, 深圳市, 广东省, 518100, 中国」——
+ * 占满一行、信息增量接近零（主标题已经是「新湖路」）。
+ *
+ * 现在只留行政区层级：「宝安区 深圳市」。
+ * 完整地址在展开的地图详情里仍然可见，信息一点不丢。
+ */
+fun String?.districtCity(): String? {
+    if (this == null) return null
+    val parts = split('，', ',').map { it.trim() }.filter { it.isNotBlank() }
+    if (parts.size < 2) return null
+    val district = parts.lastOrNull { it.endsWith("区") || it.endsWith("县") }
+    val city = parts.lastOrNull { it.endsWith("市") }
+    val picked = listOfNotNull(district, city).distinct()
+    return picked.takeIf { it.isNotEmpty() }?.joinToString(" ")
+}
+
+/**
+ * 把 **Wh/km** 换算成 **kWh/100km** 展示。
+ *
+ * ⚠️ v0.14.0（新手车主 P1-1 + 中文本地化专项）：
+ * 中国车主脑子里的能耗单位是 **kWh/100km** —— 汽车之家、懂车帝、
+ * 特斯拉中国官网全是这个口径。Wh/km 在中文语境里像外星语，
+ * 「162 Wh/km」这个数对目标用户**等于不存在**。
+ *
+ * 换算：**÷10**（100 km 的 kWh 数 = Wh/km 数 ÷ 10）。
+ * 单位串用 **kWh/100km**（行业通用写法）。
+ *
+ * ⚠️ **内部计算一律仍用 Wh/km** —— 只在**显示层**换算，
+ * 这样能耗模型、续航折算、保底余量全都不受影响，改一个显示层就能回滚。
+ */
+fun Double?.fmtKwh100(decimals: Int = 1): String =
+    this?.let { String.format(Locale.CHINA, "%.${decimals}f", it / 10.0) } ?: "—"
+
+/** kWh/100km 的完整写法（含单位）。 */
+fun Double?.fmtKwh100WithUnit(decimals: Int = 1): String =
+    this?.let { String.format(Locale.CHINA, "%.${decimals}f kWh/100km", it / 10.0) } ?: "—"
+
 fun minutesFmt(m: Int?): String {
     if (m == null) return "—"
     val h = m / 60

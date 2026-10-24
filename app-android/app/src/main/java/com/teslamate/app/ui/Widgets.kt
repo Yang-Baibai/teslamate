@@ -64,6 +64,7 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -84,7 +85,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.teslamate.app.ApiErrorKind
 import com.teslamate.app.Haptics
+import com.teslamate.app.UserFacingException
 import dev.chrisbanes.haze.hazeChild
 import kotlin.math.roundToInt
 
@@ -188,7 +191,17 @@ fun Modifier.cardDepth(
             onDrawBehind { drawRect(sheen) }
         }
         .border(
-            width = 1.dp,
+            // ⚠️ v0.14.0（iOS 动效专项评审 P1-1）：**1dp → 0.5dp（发丝线）**。
+            //
+            // 1dp 在 2.75x 密度下是 2.75px，在 20dp 圆角上读作「描了个边」，
+            // 不读作「材质边界」。iOS grouped 卡片用的是 0.5pt 发丝线。
+            //
+            // 参照样板是同一文件里的 [InfoTile] —— 它本来就是 0.5dp，
+            // 「层次靠材质不靠描边」的正确示范。
+            //
+            // ⚠️ 例外（不要一刀切）：选中/焦点态用 2dp 主色 ring（灰描边加粗不是「选中」）；
+            // 分段控件选中胶囊无描边；输入框改填充式。
+            width = 0.5.dp,
             brush = Brush.linearGradient(
                 colors = listOf(accents.cardStroke, accents.cardStrokeEnd),
                 start = Offset.Zero,
@@ -210,6 +223,47 @@ private fun Color.luminanceIsDark(): Boolean =
 fun navBarBottom(): androidx.compose.ui.unit.Dp =
     androidx.compose.foundation.layout.WindowInsets.navigationBars
         .asPaddingValues().calculateBottomPadding()
+
+/**
+ * **统一的错误横幅** —— 四个页面共用。
+ *
+ * ⚠️ v0.14.0（充电页/设置页 IA 评审 P0-4）：
+ *
+ * 原来只有**车况页**区分 `ApiErrorKind`：
+ *   · AUTH（令牌失效）→「前往设置」（有出口）
+ *   · 其它 →「重试」
+ *
+ * 而记录 / 用量 / 充电 / 行程详情页**一律**只给「重试」——
+ * 令牌失效时用户停在那些页面会无限次点「重试」，
+ * 永远走不到能修的地方。这是 v0.9.0 修过的「401 无出口」**又犯了一次**，
+ * 只是换了个页面。
+ *
+ * 现在四个页面共用这一个组件，按 kind 决定横幅样式与按钮：
+ *   · NO_DATA → 中性横幅（这是**正常状态**，不是故障）
+ *   · AUTH    → 红条 + 「前往设置」
+ *   · 其它    → 红条 + 「重试」
+ */
+@Composable
+fun ApiErrorBanner(
+    err: UserFacingException,
+    onOpenSettings: () -> Unit,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (err.kind == ApiErrorKind.NO_DATA) {
+        NoticeBanner(
+            err.message ?: "这台车还没有任何数据。可能还没开过，或采集器还没上报。",
+            modifier = modifier,
+        )
+    } else {
+        ErrorBanner(
+            err.message ?: "出错了",
+            modifier = modifier,
+            actionLabel = if (err.kind == ApiErrorKind.AUTH) "前往设置" else "重试",
+            onAction = if (err.kind == ApiErrorKind.AUTH) onOpenSettings else onRetry,
+        )
+    }
+}
 
 /**
  * 错误横幅（tonal）。
@@ -504,45 +558,88 @@ fun SegmentedTabs(
     val ctx = LocalContext.current
     val trackColor = if (dark) Color(0xFF1C1C1E) else Color(0xFFE9E9EC)
     val selectedBg = if (dark) Color(0xFF3A3A3C) else Color.White
-    Row(
+    val n = labels.size
+
+    // ⚠️ v0.14.0（iOS 动效专项评审 P0-1）：**指示块滑动**。
+    //
+    // 原来每段各自 `animateColorAsState` 淡入淡出 —— 旧块淡出 + 新块淡入，
+    // 是「闪」不是「滑」。而这个控件的注释偏偏写着「iOS 的选中块是**滑过去**的」，
+    // **注释与实现相反**（比注释错更糟）。
+    //
+    // 现在改成**一块**指示块在轨道上平移：
+    //   · 位移用 spring（无回弹，约 230ms 收敛）——
+    //     用户直接操作引起的状态变化用 spring，被打断时能自然接管速度；
+    //   · 文字色 180ms，与指示块同步启动。
+    val animatedIndex by animateFloatAsState(
+        targetValue = selectedIndex.toFloat(),
+        animationSpec = Motion.SelectMove,
+        label = "segmentIndex",
+    )
+
+    Box(
         modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
             .background(trackColor)
             .padding(2.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        labels.forEachIndexed { index, label ->
-            val selected = index == selectedIndex
-            // ⚠️ v0.9.2：选中块用动画色，不再硬切
-            val bg by animateColorAsState(
-                targetValue = if (selected) selectedBg else Color.Transparent,
-                animationSpec = tween(220, easing = FastOutSlowInEasing),
-                label = "segmentBg",
+        // ⚠️ 指示块用 Canvas 画（声明在文字层**之前** → 画在文字**下面**）。
+        // matchParentSize 让它不参与定尺寸 —— 尺寸由下面的文字行决定。
+        Canvas(Modifier.matchParentSize()) {
+            if (n <= 0) return@Canvas
+            val gap = 2.dp.toPx()
+            val segW = (size.width - gap * (n - 1)) / n
+            if (segW <= 0f) return@Canvas
+            val x = (segW + gap) * animatedIndex
+            drawRoundRect(
+                color = selectedBg,
+                topLeft = Offset(x, 0f),
+                size = Size(segW, size.height),
+                cornerRadius = CornerRadius(8.dp.toPx()),
             )
-            Box(
-                Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(bg)
-                    .clickable {
-                        Haptics.selection(ctx)
-                        onSelect(index)
-                    }
-                    .padding(vertical = 9.dp, horizontal = 2.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    label,
-                    // ⚠️ v0.9.2：大字号下不折行（折行会与相邻段的选中胶囊贴死）
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (selected) MaterialTheme.colorScheme.onSurface
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            labels.forEachIndexed { index, label ->
+                val selected = index == selectedIndex
+                // 文字色随指示块同步过渡
+                val textColor by animateColorAsState(
+                    targetValue = if (selected) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    animationSpec = Motion.SelectTextColor,
+                    label = "segmentText",
                 )
+                val fontWeight by animateFloatAsState(
+                    targetValue = if (selected) 1f else 0f,
+                    animationSpec = Motion.SelectText,
+                    label = "segmentWeight",
+                )
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clickable {
+                            Haptics.selection(ctx)
+                            onSelect(index)
+                        }
+                        .padding(vertical = 9.dp, horizontal = 2.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        label,
+                        // ⚠️ v0.9.2：大字号下不折行（折行会与相邻段的选中胶囊贴死）
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (fontWeight > 0.5f) FontWeight.SemiBold else FontWeight.Normal,
+                        color = textColor,
+                    )
+                }
             }
         }
     }

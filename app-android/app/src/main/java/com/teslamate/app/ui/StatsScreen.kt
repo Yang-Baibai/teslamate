@@ -42,13 +42,19 @@ import com.teslamate.app.Stats
 import com.teslamate.app.StatsBucket
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtDate
+import com.teslamate.app.fmtKwh100
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** 统计：周/月/年 里程、能耗、充电、电池健康 */
 @Composable
-fun StatsScreen(settings: AppSettings, modifier: Modifier) {
+fun StatsScreen(
+    settings: AppSettings,
+    modifier: Modifier,
+    /** ⚠️ v0.14.0：令牌失效时错误横幅的「前往设置」出口。 */
+    onOpenSettings: () -> Unit = {},
+) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
     /**
@@ -88,7 +94,9 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
     val avgUnit = if (apiPeriod == "year") "个月" else "天"
     var stats by remember { mutableStateOf<Stats?>(null) }
     var battery by remember { mutableStateOf<BatteryHealth?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
+    // ⚠️ v0.14.0：error 改成存**异常**而不是字符串 ——
+    // 只有拿到 kind（AUTH / NO_DATA / …）才能决定横幅样式与按钮。
+    var error by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     // ⚠️ v0.9.2（iOS 交互评审 P0-3）：**数据与它所属的时间段绑定**。
     //
@@ -106,7 +114,11 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
     // 网络一断就再也不请求，用户必须「切走再切回」才能重试。
     suspend fun load() {
         if (api == null) {
-            error = if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页"
+            // ⚠️ v0.14.0：未配置 / 地址无效 → kind = AUTH，横幅直接给「前往设置」。
+            error = com.teslamate.app.UserFacingException(
+                if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页",
+                com.teslamate.app.ApiErrorKind.AUTH,
+            )
             return
         }
         runCatching {
@@ -118,7 +130,10 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             battery = it.second
             loadedPeriod = periodIndex
             error = null
-        }.onFailure { error = it.message }
+        }.onFailure {
+            error = it as? com.teslamate.app.UserFacingException
+                ?: com.teslamate.app.UserFacingException(it.message ?: "出错了")
+        }
     }
 
     LaunchedEffect(settings, apiPeriod) { load() }
@@ -182,10 +197,13 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             // 现在：错误横幅叠在上面，**数据照常显示**。
             if (error != null) {
                 item {
-                    ErrorBanner(
+                    // ⚠️ v0.14.0：改用公共的 [ApiErrorBanner] ——
+                    // 原来这里**一律**只给「重试」，令牌失效时用户会无限次点重试，
+                    // 永远走不到能修的地方。现在 AUTH 会给「前往设置」。
+                    ApiErrorBanner(
                         error!!,
-                        actionLabel = "重试",
-                        onAction = {
+                        onOpenSettings = onOpenSettings,
+                        onRetry = {
                             scope.launch {
                                 refreshing = true
                                 load()
@@ -219,10 +237,34 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             item {
                 SectionCard("$periodLabel 汇总", Modifier.animateItem()) {
                     if (sum != null) {
-                        KV("总里程", "${sum.km.fmt(1)} km")
-                        KV("行车用电", "${sum.kwh_used.fmt(1)} 度")
-                        KV("充入电量", "${sum.charge_kwh.fmt(1)} 度（快充 ${sum.dc_kwh.fmt(1)} / 慢充 ${sum.ac_kwh.fmt(1)}）")
-                        KV("充电费用", if (sum.cost > 0) "${sum.cost.fmt(2)} 元" else "未记录")
+                        // ⚠️ v0.14.0（单位审校 P1-1 / P1-3）：
+                        // 「行车用电」→「行驶耗电」（与下面图表同名）——
+                        // 原来同一个量在汇总卡叫「行车用电」、在图表叫「行驶耗电」，
+                        // 用户会以为是两个量。
+                        // 「总里程」→「行驶里程」——
+                        // 「总里程」在中文里会被读成「这车一辈子跑了多少」。
+                        KV("行驶里程", "${sum.km.fmt(1)} 公里")
+                        KV("行驶耗电", "${sum.kwh_used.fmt(1)} 度")
+                        // ⚠️ v0.14.0（单位审校 P2-4）：慢充为 0 时**不显示该分段**。
+                        KV(
+                            "充入电量",
+                            buildString {
+                                append("${sum.charge_kwh.fmt(1)} 度")
+                                if (sum.dc_kwh > 0.05 || sum.ac_kwh > 0.05) {
+                                    append("（快充 ${sum.dc_kwh.fmt(1)}")
+                                    if (sum.ac_kwh > 0.05) append(" / 慢充 ${sum.ac_kwh.fmt(1)}")
+                                    append("）")
+                                }
+                            },
+                        )
+                        // ⚠️ v0.14.0：「充电费用」**只出现一次**。
+                        // 有电费数据时给金额；没有时给「怎么才能有数据」的下一步
+                        // （API 早就接了，是 TeslaMate 库里的 cost 全是 NULL）。
+                        if (sum.cost > 0) {
+                            KV("充电费用", "${sum.cost.fmt(2)} 元")
+                        } else {
+                            KV("充电费用", "未记录 —— 在 TeslaMate 网页端手填单价后才有")
+                        }
                         // ⚠️ v0.9.0（新手车主复核）：补「每公里花多少钱」。
                         // 车主原话：「每公里花多少钱（充 60 度跑 400 公里 = 0.15 元/公里）
                         // ——没有，我只看到总数和每度电」。
@@ -246,15 +288,15 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                                 // ⚠️ 分子分母不同源：分子只含「被记录了费用」的充电，
                                 // 分母含全部里程（含家充跑的公里）→ 系统性偏低。
                                 // 所以必须写明覆盖度，不能当成一个干净的数。
-                                "${(sum.cost / sum.km).fmt(2)} 元（仅含已记录电费的充电）",
+                                // ⚠️ v0.14.0（单位审校 P1-5）：值自带单位「/公里」。
+                                "${(sum.cost / sum.km).fmt(2)} 元/公里（仅含已记录电费的充电）",
                             )
-                        } else {
-                            // ⚠️ v0.14.0（新手车主 P0-4）：**只留一行**。
-                            // 两行「没有」比一行更让人烦，而且说的是同一件事。
-                            // 「每公里成本」这一行在有电费数据时才会出现。
-                            KV("充电费用", "未记录 —— 在 TeslaMate 网页端手填单价后才有")
                         }
-                        sum.wh_per_km?.let { KV("平均能耗", "${it.fmt(0)} Wh/km") }
+                        // ⚠️ v0.14.0（新手车主 P0-4）：没有电费数据时**不再补一行**
+                        // 「每公里成本 / 暂无电费数据」——
+                        // 两行「没有」说的是同一件事，比一行更让人烦。
+                        // 「充电费用」那一行已经说明了怎么才能有数据。
+                        sum.wh_per_km?.let { KV("平均能耗", "${it.fmtKwh100()} kWh/100km") }
                         KV("行程 / 充电次数", "${sum.drive_count} 次 / ${sum.charge_count} 次")
                     } else {
                         // ⚠️ v0.9.2（iOS 交互 P0-5）：原来 sum == null 时渲染一张**只有标题的空白卡**，
@@ -269,7 +311,7 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
             }
 
             item {
-                SectionCard("行驶里程（km）", Modifier.animateItem()) {
+                SectionCard("行驶里程（公里）", Modifier.animateItem()) {
                     StackedBarChart(
                         series = listOf(
                             ChartSeries(
@@ -284,7 +326,7 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
                         xLabels = bucketAxisLabels(buckets.map { it.start }),
                         contentDescription = statsChartDescription("行驶里程", buckets.map { it.start to it.km }),
                     )
-                    ChartHint(buckets.map { it.km to it.start }, "km", avgLabel, avgUnit)
+                    ChartHint(buckets.map { it.km to it.start }, "公里", avgLabel, avgUnit)
                 }
             }
 
