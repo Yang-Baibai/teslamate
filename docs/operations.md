@@ -371,3 +371,95 @@ schtasks /Delete /TN "TeslaMate-WeeklyDBBackup" /F
 - **电脑关机或 Docker Desktop 没启动时会失败**（`execvpe`/容器未运行）。脚本会写日志并以非 0 退出，**不会**产出半截文件——`backup-db.sh` 内置了 10KB 体积校验，失败即删。
 - 备份落在项目目录内（同 `database/`）。实测本机 OneDrive 未同步该目录，因此无同步风险；若将来启用 OneDrive，`backups/` 可以放心同步（每周才写一次），但 `database/` 必须排除。
 - 磁盘占用：8 × ~195MB ≈ 1.6GB。超过就开始轮转删旧的。
+
+## 10. 车况提醒 → Hermes 推送
+
+> 2026-10-24 建立。**App 不再自己发通知**，提醒统一走本机的 Hermes（微信/飞书）。
+
+### 10.1 架构
+
+```
+TeslaMate 栈（本机 Docker）              Windows 计划任务
+   api:8090  ← 只读 REST                    TeslaMate-CarWatch（每 5 分钟）
+        │                                        │
+        │ HTTP 127.0.0.1:8090                  │ pwsh scripts/watch-car.ps1
+        ▼                                        ▼
+   database ← teslamate 采集            Hermes（hermes send --to feishu）
+                                             │
+                                             ▼
+                                        飞书 / 微信（你）
+```
+
+**为什么监听放在服务端而不是 App 里**：
+- 这台电脑 7×24 开着，是 TeslaMate 的宿主；手机可能连不上它（外出 / Tailscale 卡住）。
+  监听放在服务端，外出照样能收到提醒。
+- 判定口径统一在 API 层（`api/alerts.go`），App 和推送脚本读同一份结果。
+
+### 10.2 常用操作
+
+```bash
+# 手动跑一轮（真实推送）
+pwsh -File scripts/watch-car.ps1
+
+# 干跑，只打印不发送（调试用）
+pwsh -File scripts/watch-car.ps1 -DryRun
+```
+
+```powershell
+# 任务状态 / 上次结果码（0 = 成功）
+schtasks /Query /TN "TeslaMate-CarWatch" /FO LIST /V
+
+# 立刻触发一次
+schtasks /Run /TN "TeslaMate-CarWatch"
+
+# 改周期（示例：改成 10 分钟）
+schtasks /Change /TN "TeslaMate-CarWatch" /MO 10
+
+# 停止自动推送
+schtasks /Delete /TN "TeslaMate-CarWatch" /F
+```
+
+日志：`scripts/.watch-car.log`（每次运行追加）。状态：`scripts/.watch-car-state.json`
+（记录上一次车况用于判断跳变，**不要手工改**，删掉它等于让脚本重新建立基线）。
+
+### 10.3 配置（在项目根 `.env`）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `WATCH_HERMES_TARGET` | `feishu` | 推送目标。`feishu` 或 `weixin` |
+| `WATCH_API_BASE` | `http://127.0.0.1:8090` | API 地址 |
+| `WATCH_CAR_ID` | `1` | 车辆 id |
+| `HERMES_BIN` | `%LOCALAPPDATA%\hermes\bin\hermes.exe` | Hermes 可执行文件 |
+
+**同名环境变量优先于 `.env`**（临时改配置不用动文件）。
+
+### 10.4 ⚠️ 微信通道的前置条件
+
+```
+hermes send --to weixin "xxx"
+→ iLink sendmessage session not ready: ret=-2 prepare failed
+  — the user must send the bot a message first (or re-pair)
+```
+
+**微信必须先给机器人发一条消息**（或重新配对）才能主动推送。
+飞书没有这个限制，所以**默认走飞书**。想换微信：先给微信机器人发一句话，
+再把 `WATCH_HERMES_TARGET` 改成 `weixin` 即可。
+
+⚠️ **必须用 `hermes.exe`，不能用 `hermes.cmd`**：后者是 batch shim，
+程序化调用（计划任务 / `Process.Start`）会静默失败。
+
+### 10.5 推送规则
+
+只在**状态跳变**时推送，否则每 5 分钟一条噪音，几天后就会被关掉。
+完整口径见 `docs/data-dictionary.md` §3.5。
+
+| 事件 | 触发 | 首轮（无历史状态） |
+|---|---|---|
+| 🔌 开始充电 | 停着 → 充电中 | **不推**（是状态不是事件） |
+| ✅ 充电完成 | 充电中 → 停止 | **不推**（同上） |
+| ⚠️ 胎压异常 | `tpms_alert` 由 false 变 true | **推**（现存问题应立刻知道） |
+| ⓘ 数据超 24h 未更新 | `data_stale` 由 false 变 true | **推**（同上） |
+
+同一异常只推一次，恢复正常后才重置。
+
+---

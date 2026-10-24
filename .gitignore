@@ -42,6 +42,11 @@ teslamate-chinese-dashboards/
 .claude/
 .cursor/
 
+# ── 车况监听（Hermes 推送）运行时文件 ──
+# 状态文件记录上一次的车况（用于判断事件跳变），日志是运行记录，都不该进版本库。
+# 注意脚本本身叫 watch-car.ps1（没有前导点），所以这个规则只命中 .watch-car* 开头的运行时文件。
+scripts/.watch-car*
+
 # ── Android / Go 构建产物 ──
 app-android/**/build/
 app-android/.gradle/

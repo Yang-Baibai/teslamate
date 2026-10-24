@@ -20,7 +20,7 @@ Go 1.23 编写的只读 REST API，是 Android 客户端（`../app-android/`）�
 ```
 GET /healthz                       健康检查（免鉴权）
 GET /api/v1/cars                   车辆列表
-GET /api/v1/cars/{id}/status       实时车况（含四轮胎压）
+GET /api/v1/cars/{id}/status       实时车况（四轮胎压 + 服务端算好的告警判定）
 GET /api/v1/cars/{id}/drives       行程列表
 GET /api/v1/drives/{id}/track      行程轨迹（≤1500 点降采样）
 GET /api/v1/cars/{id}/charges      充电列表（含损耗率/桩型）

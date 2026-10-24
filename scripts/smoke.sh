@@ -30,6 +30,18 @@ S=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" $B/api/v1/cars/1/status)
 echo "$S" | python -c "import json,sys;d=json.load(sys.stdin);assert 'tpms_fl' in d" 2>/dev/null \
   && ok "status 含 tpms 字段" || fail "status 含 tpms 字段"
 
+# 4b. v0.7.0：服务端算好的告警判定字段（App 与 Hermes 推送脚本共用同一份口径）
+echo "$S" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+for k in ('tpms_alert','tpms_alert_wheels','tpms_min_bar','tpms_max_bar','data_age_hours','data_stale'):
+    assert k in d, 'missing '+k
+assert isinstance(d['tpms_alert'], bool), 'tpms_alert must be bool'
+assert isinstance(d['tpms_alert_wheels'], list), 'tpms_alert_wheels must be list'
+assert d['tpms_min_bar'] < d['tpms_max_bar'], 'tpms range inverted'
+assert d['data_age_hours'] >= 0, 'negative data age'" 2>/dev/null \
+  && ok "status 含告警判定字段" || fail "status 含告警判定字段"
+
 # 5. 充电列表含损耗率
 CH=$(curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charges?limit=3")
 echo "$CH" | python -c "import json,sys;d=json.load(sys.stdin);assert len(d)>0 and 'loss_percent' in d[0]" 2>/dev/null \

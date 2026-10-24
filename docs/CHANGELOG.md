@@ -5,7 +5,67 @@
 
 ---
 
-## 2026-10-16 晚间（App 两项改进 + 模拟器无法启动的根因）
+## 2026-10-24（车况提醒接入 Hermes，App 退回纯查看）
+
+### 背景
+App 之前只能在用户主动打开时工作——充电结束不会通知、胎压异常不会告警。
+对「一台车 + 家人」的定位来说，家人不会主动打开一个查车况的 App。
+用户决定：**提醒不放在 App 里，改由本机的 Hermes 推送到微信/飞书。**
+
+### 改动 1：告警判定收进 API 层（唯一事实源）
+
+- 新增 `api/alerts.go`：胎压阈值 + 越界判定 + 单胎离群判定 + 数据新鲜度
+- `/cars/{id}/status` 新增 6 个字段：
+  `tpms_alert` / `tpms_alert_wheels`(数组) / `tpms_alert_detail` / `tpms_min_bar` / `tpms_max_bar` /
+  `data_age_hours` / `data_stale`
+- **为什么收进服务端**：App 和推送脚本两边各写一份阈值必然漂移，
+  会出现「App 说胎压正常但微信推了告警」。阈值本身也由 API 返回，
+  连界面上那句「正常范围 X–Y bar」都不会两边不一致。
+- 冒烟测试新增 1 项断言（告警字段存在性与类型），**13/13 通过**
+
+### 改动 2：推送脚本 `scripts/watch-car.ps1`
+
+- 轮询本机 API → 与上次状态比对 → 状态跳变时调 `hermes send`
+- 事件：开始充电 / 充电完成 / 胎压异常 / 数据超 24 小时未更新
+- **只在跳变时推**，且同一异常只推一次、恢复正常后重置
+- 首轮（无历史状态）：充电类不推（那是状态不是事件），但现存问题（胎压/数据过期）照推一次
+- 环境变量优先于 `.env`，临时改配置不用动文件
+
+### 改动 3：App 退回纯查看
+
+- 删除 `Notifier.kt` / `WatchWorker.kt` / `WatchState.kt` / `Tpms.kt` / `ic_notify.xml`
+- 移除 `work-runtime-ktx` 依赖与 `POST_NOTIFICATIONS` 权限
+- APK 从 18.19 MB 降到 **17.79 MB**
+- App 的胎压显示改读服务端判定结果（`tpms_alert_wheels`），不再本地算阈值
+- 车况页保留「数据新鲜度」提示——那是显示层的澄清，不是推送
+
+### 改动 4：Windows 计划任务
+
+- 任务名 `TeslaMate-CarWatch`，**每 5 分钟**执行一次
+- 命令走 ASCII junction `C:\tm-ws`（避开中文路径在 cmd/Task Scheduler 的解析坑）
+- 实测：自动调度触发过一次、手动触发过一次，`Last Result: 0`
+
+### Hermes 接入的实测结论
+
+| 通道 | 结果 |
+|---|---|
+| **feishu** | ✅ `Sent to feishu home channel`，可用，**设为默认** |
+| weixin | ❌ `iLink sendmessage session not ready: the user must send the bot a message first` |
+
+- 微信必须**先给机器人发一条消息**（或重新配对）才能主动推送；飞书无此限制
+- 必须用 `hermes.exe`（`hermes.cmd` 是 batch shim，程序化调用会静默失败）
+- 端到端实测：真实推送出一条「ⓘ 爱车 数据已 37 小时未更新」，飞书已收到
+- 四类事件分支全部用 mock API 逐条验证过（含去重逻辑）
+
+### 文档同步
+
+`api-spec.md`（新字段）/ `data-dictionary.md`（新增 §3.5 告警判定口径）/
+`手机客户端使用说明.md`（提醒章节改为「走 Hermes」）/ `operations.md`（新增 §10）/
+`adr.md`（新增 #20 #21）/ `smoke.sh`（新增 1 项断言）
+
+---
+
+## 2026-10-16（晚间：App 两项改进 + 模拟器无法启动的根因）
 
 ### ✅ 已通过真机验收（2026-10-16 晚，真机 25042PN24C / Android 16）
 

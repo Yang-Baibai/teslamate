@@ -45,6 +45,16 @@ type CarStatus struct {
 	TpmsRL *float64 `json:"tpms_rl"`
 	TpmsRR *float64 `json:"tpms_rr"`
 
+	// v0.7.0 新增：服务端算好的告警判定（唯一事实源，App 与推送脚本共用）
+	// 详见 alerts.go —— 阈值与判定逻辑只在服务端实现一次。
+	TpmsAlert       bool     `json:"tpms_alert"`
+	TpmsAlertWheels []string `json:"tpms_alert_wheels"` // 如 ["左后"]
+	TpmsAlertDetail string   `json:"tpms_alert_detail"` // 如 "左后 2.80 bar"
+	TpmsMinBar      float64  `json:"tpms_min_bar"`      // 正常范围下限（供 App 展示，避免两边各写一份）
+	TpmsMaxBar      float64  `json:"tpms_max_bar"`      // 正常范围上限
+	DataAgeHours    int      `json:"data_age_hours"`    // 数据距今多少小时
+	DataStale       bool     `json:"data_stale"`        // 数据是否已过期
+
 	ActiveCharge *ActiveCharge `json:"active_charge,omitempty"`
 	ActiveDrive  *ActiveDrive  `json:"active_drive,omitempty"`
 }

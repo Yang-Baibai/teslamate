@@ -3,8 +3,11 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- 后台发本地通知（充电完成 / 胎压异常 / 数据过期）。Android 13+ 需运行时申请 -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!--
+      注意：不再申请 POST_NOTIFICATIONS。
+      推送与提醒由本机的 Hermes 负责（scripts/watch-car.ps1 → 飞书/微信），
+      App 只负责查看车况，保持无通知权限、零后台负担。
+    -->
     <!-- 启动 APK 安装意图（App 内一键更新需要） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <queries>

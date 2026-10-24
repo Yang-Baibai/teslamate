@@ -49,8 +49,8 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
-    // 后台轮询 + 本地通知（充电完成 / 胎压异常 / 数据过期）
-    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    // 不再引入 WorkManager：后台推送与提醒改由本机的 Hermes 负责
+    // （项目根 scripts/watch-car.ps1 + Windows 计划任务），App 只做查看。
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

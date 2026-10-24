@@ -97,6 +97,14 @@ data class CarStatus(
     val tpms_fr: Double? = null,
     val tpms_rl: Double? = null,
     val tpms_rr: Double? = null,
+    // 服务端算好的告警判定（唯一事实源，App 不再自己算阈值）
+    val tpms_alert: Boolean = false,
+    val tpms_alert_wheels: List<String> = emptyList(),
+    val tpms_alert_detail: String = "",
+    val tpms_min_bar: Double = 2.5,
+    val tpms_max_bar: Double = 3.3,
+    val data_age_hours: Int = 0,
+    val data_stale: Boolean = false,
     val active_charge: ActiveCharge? = null,
     val active_drive: ActiveDrive? = null,
 )

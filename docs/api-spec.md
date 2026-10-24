@@ -38,6 +38,18 @@
 | location_name | geofence 或 300m 内最近地址名 |
 | active_charge | 充电中才有：charge_id/charger_power_kw/energy_added_kwh/fast_charger_present… |
 | active_drive | 行驶中才有：drive_id/started_at |
+| **tpms_alert** | **服务端算好的胎压异常判定（bool）** |
+| **tpms_alert_wheels** | **异常轮次名数组，如 `["左后"]`** |
+| **tpms_alert_detail** | **异常轮次读数，如 `"左后 2.80 bar"`** |
+| **tpms_min_bar / tpms_max_bar** | **胎压正常范围（供 App 展示，避免两边各写一份阈值）** |
+| **data_age_hours** | **数据距今多少小时（整数）** |
+| **data_stale** | **数据是否已过期（超过 24 小时）** |
+
+> **v0.7.0 新增的四个判定字段是「唯一事实源」。**
+> 告警阈值与判定逻辑只在服务端实现一次（`api/alerts.go`），
+> App 只读结果并按轮胎着色，推送脚本 `scripts/watch-car.ps1` 也只读结果。
+> 这样不会出现「App 说胎压正常但微信推了告警」这种两边算法漂移的情况。
+> 详见 data-dictionary.md §3。
 
 ### /drives 列表项
 `id` `start_date` `end_date` `duration_min` `distance_km` `start_place`/`end_place`（geofence 优先） `start_soc`/`end_soc` `energy_kwh` `wh_per_km` `speed_max` `outside_temp_avg` `odometer_start/end`

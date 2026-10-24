@@ -50,9 +50,6 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.teslamate.app.ActiveCharge
 import com.teslamate.app.AppSettings
 import com.teslamate.app.CarStatus
-import com.teslamate.app.TPMS_MAX_BAR
-import com.teslamate.app.TPMS_MIN_BAR
-import com.teslamate.app.TpmsReading
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtShort
 import kotlinx.coroutines.Dispatchers
@@ -60,8 +57,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.time.Duration
-import java.time.Instant
 
 /** 车况首页：大标题折叠栏 + 下拉刷新 + 15 秒自动刷新 */
 @Composable
@@ -151,14 +146,15 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                         // 数据新鲜度：让「车睡着了（正常）」和「数据不新」不再长得一样。
                         // 连不上服务器的情况由上面的 ErrorBanner 负责（那是请求失败）；
                         // 这里说明的是「请求成功了，但车本身很久没上报」——多半是车停着不动。
-                        val staleHours = Duration.between(st.updated_at, Instant.now()).toHours()
+                        // 小时数由服务端算（api/alerts.go），App 不自己算时间差。
+                        val staleHours = st.data_age_hours
                         if (staleHours >= 24) {
                             NoticeBanner(
-                                "车辆已 ${staleHours} 小时没有上报数据。" +
+                                "车辆已 $staleHours 小时没有上报数据。" +
                                     "车停着不动属正常；若你人在外地，也可能是网络不通，请留意上方是否有红色提示。"
                             )
                         } else if (staleHours >= 6) {
-                            NoticeBanner("车辆已离线约 ${staleHours} 小时，数据可能不是最新的。")
+                            NoticeBanner("车辆已离线约 $staleHours 小时，数据可能不是最新的。")
                         }
 
                         Row(
@@ -248,7 +244,7 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                                 Modifier.weight(1f),
                             )
                         }
-                        TpmsCard(st.tpms_fl, st.tpms_fr, st.tpms_rl, st.tpms_rr)
+                        TpmsCard(st)
                     }
                 }
             }
@@ -259,29 +255,32 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
 /**
  * 胎压卡（2×2 网格：左前/右前/左后/右后）。
  * 胎压是家用车最有价值的安全仪表——胎压异常（过高/过低/单胎明显偏低）
- * 会用橙色高亮提示，这是 Tesla App 也没有做但确实有用的一环。
+ * 会用红色高亮提示，这是 Tesla App 也没有做但确实有用的一环。
  *
- * 判定逻辑与阈值统一放在 [com.teslamate.app.TpmsReading]，
- * 车况页与后台通知共用同一套口径，避免两处算法漂移。
+ * ⚠️ 判定完全由服务端算好（api/alerts.go），App 只读结果并按轮胎着色。
+ * 阈值也只有服务端一份——避免 App 和推送脚本两边各写一套、改一处忘一处。
  */
 @Composable
-private fun TpmsCard(fl: Double?, fr: Double?, rl: Double?, rr: Double?) {
-    val t = TpmsReading(fl, fr, rl, rr)
-    if (t.values.isEmpty()) return // 一个都没有就不占版面
+private fun TpmsCard(st: CarStatus) {
+    val fl = st.tpms_fl; val fr = st.tpms_fr; val rl = st.tpms_rl; val rr = st.tpms_rr
+    if (fl == null && fr == null && rl == null && rr == null) return // 一个都没有就不占版面
+
+    val bad = st.tpms_alert_wheels
+    fun alerting(name: String) = bad.contains(name)
 
     SectionCard(
-        title = if (t.anyAlert) "轮胎胎压 · 建议检查" else "轮胎胎压",
+        title = if (st.tpms_alert) "轮胎胎压 · 建议检查" else "轮胎胎压",
     ) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            TpmsCell("左前", fl, t.isAlerting(fl), Modifier.weight(1f))
-            TpmsCell("右前", fr, t.isAlerting(fr), Modifier.weight(1f))
+            TpmsCell("左前", fl, alerting("左前"), Modifier.weight(1f))
+            TpmsCell("右前", fr, alerting("右前"), Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            TpmsCell("左后", rl, t.isAlerting(rl), Modifier.weight(1f))
-            TpmsCell("右后", rr, t.isAlerting(rr), Modifier.weight(1f))
+            TpmsCell("左后", rl, alerting("左后"), Modifier.weight(1f))
+            TpmsCell("右后", rr, alerting("右后"), Modifier.weight(1f))
         }
         Text(
-            "正常范围 $TPMS_MIN_BAR–$TPMS_MAX_BAR bar（冷胎）",
+            "正常范围 ${st.tpms_min_bar}–${st.tpms_max_bar} bar（冷胎）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

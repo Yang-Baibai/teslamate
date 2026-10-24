@@ -98,6 +98,20 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	if driveID != nil {
 		s.ActiveDrive = &ActiveDrive{DriveID: *driveID, StartedAt: *driveStart}
 	}
+	// 服务端统一算好告警判定，App 与推送脚本读同一份结果（见 alerts.go）
+	tpmsAlert := EvaluateTpms(s.TpmsFL, s.TpmsFR, s.TpmsRL, s.TpmsRR)
+	s.TpmsAlert = tpmsAlert.Alerting
+	s.TpmsAlertWheels = tpmsAlert.Wheels
+	if s.TpmsAlertWheels == nil {
+		s.TpmsAlertWheels = []string{}
+	}
+	s.TpmsAlertDetail = strings.Join(tpmsAlert.Values, "  ")
+	s.TpmsMinBar = TpmsMinBar
+	s.TpmsMaxBar = TpmsMaxBar
+	age := EvaluateDataAge(s.UpdatedAt)
+	s.DataAgeHours = age.Hours
+	s.DataStale = age.Stale
+
 	writeJSON(w, s)
 }
 
