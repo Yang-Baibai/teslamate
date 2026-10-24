@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 数据库备份（pg_dump）。建议 Windows 任务计划每月跑一次 + 任何动库操作前手动跑。
 # 用法：bash scripts/backup-db.sh [备注]
-# 产物：backups/db-YYYYMMDD[-备注].sql
+# 产物：$BACKUP_DIR/db-YYYYMMDD[-备注].sql（默认 /c/tm-backups，**不在 OneDrive 内**）
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

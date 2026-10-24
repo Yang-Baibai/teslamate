@@ -33,7 +33,7 @@ docker compose logs -f --tail 100 api         # 手机 API（含每请求耗时�
 mkdir -p backups
 docker exec teslamate-database-1 pg_dump -U teslamate -d teslamate > /c/tm-backups/db-$(date +%Y%m%d).sql
 ```
-- 现有基线：`/c/tm-backups/db-baseline-20261012.sql`（189 MB，**在 OneDrive 之外**）。
+- 历史基线 `db-baseline-20261012.sql`（189 MB）已于 2026-10-24 删除；当前可用备份在 `C:\tm-backups\`（**不在 OneDrive 内**）。
 - 建议频率：每月一次 + 任何动库操作之前。
 
 ### 2.2 整栈恢复（灾难场景）
@@ -358,6 +358,7 @@ adb shell monkey -p com.tailscale.ipn -c android.intent.category.LAUNCHER 1
 
 ### 9.3 轮转的 baseline 保护
 轮转只匹配 `$BACKUP_DIR/db-[0-9]*.sql`，**`db-baseline-*` 不匹配**（`db-` 后面是字母 `b` 不是数字），因此基线种子文件永远不会因轮转被删。改脚本时别把这个 glob 改成 `db-*.sql`。
+> 2026-10-24：历史基线 `db-baseline-20261012.sql` 已按用户要求删除（它当时还在 OneDrive 同步路径下）。上述 glob 机制本身不变。
 
 ### 9.4 常用操作
 ```bash
