@@ -17,8 +17,17 @@
         pwsh -File scripts/tesla-authorize.ps1
         脚本会打印一个 URL，在浏览器里打开、同意授权，脚本自动收尾。
 
-    用法 B（后台注册的是别的地址，把回调 URL 里的 code 贴过来）：
-        pwsh -File scripts/tesla-authorize.ps1 -Code '<回调URL里的code>'
+    用法 B（后台注册的回调地址不是本机、或那个端口被别人占着）：
+        先跑一次不带 -Code 的脚本，拿到它打印的 URL 并在浏览器完成授权；
+        浏览器会跳到一个打不开的地址，把那条**完整 URL**（或只取 ?code= 的值）贴回来，
+        再跑：
+            pwsh -File scripts/tesla-authorize.ps1 -Code '<code>'
+        脚本会复用上一次的 PKCE verifier（存在 %TEMP%/tesla-pkce.json），
+        所以 PKCE 校验能通过。
+
+    用法 B 也适用于「后台只注册了别的 redirect_uri」的情况 ——
+    用法 A 打印的 URL 里的 redirect_uri 要与后台注册的一致，
+    否则 Tesla 会直接报错、根本不会回调到本机。
 
 .PARAMETER RedirectUri
     必须是 Tesla 开发者后台为该 client 注册的回调地址（精确匹配）。
@@ -35,11 +44,15 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$RedirectUri = 'http://localhost:8000/callback',
-    [int]$Port = 8000,
+    [string]$RedirectUri = 'http://localhost:8765/callback',
+    [int]$Port = 8765,
     [string]$Region = 'cn',
     [string]$Code = '',
-    [int]$TimeoutSeconds = 900
+    [int]$TimeoutSeconds = 1800,
+    # 只打印授权 URL 不等待回调（配合 -Code 贴码模式用）。
+    # 适用场景：后台注册的 redirect_uri 指向一个本机没有监听器的端口 ——
+    # 授权后浏览器会跳到那个打不开的地址，把地址栏里的 code 贴回来即可。
+    [switch]$PrintOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,29 +86,63 @@ if (-not $clientId -or -not $clientSecret) {
 }
 
 # ── PKCE ────────────────────────────────────────────────
-$rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-$b = New-Object byte[] 64; $rng.GetBytes($b)
-$verifier = [Convert]::ToBase64String($b).TrimEnd('=').Replace('+','-').Replace('/','_')
-$hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($verifier))
-$challenge = [Convert]::ToBase64String($hash).TrimEnd('=').Replace('+','-').Replace('/','_')
-$b2 = New-Object byte[] 24; $rng.GetBytes($b2)
-$state = [Convert]::ToBase64String($b2).TrimEnd('=').Replace('+','-').Replace('/','_')
+# ⚠️ verifier 必须与「用户在浏览器里授权时用的那个 URL」配对。
+#    贴 code 回来的场景（-Code）必须复用上次生成的那一组，否则 PKCE 校验必然失败。
+$pkceFile = Join-Path $env:TEMP 'tesla-pkce.json'
+$reuse = $null
+if ($Code -and (Test-Path $pkceFile)) {
+    try {
+        $cached = Get-Content $pkceFile -Raw | ConvertFrom-Json
+        $age = (Get-Date) - [datetime]::Parse($cached.created_at)
+        if ($age.TotalMinutes -lt 120) { $reuse = $cached }
+    } catch {}
+}
+if ($reuse) {
+    $verifier = $reuse.code_verifier
+    $challenge = $reuse.code_challenge
+    $state = $reuse.state
+    Write-Host '✓ 复用上次生成的 PKCE（与浏览器里授权时用的同一组）' -ForegroundColor DarkGray
+} else {
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $b = New-Object byte[] 64; $rng.GetBytes($b)
+    $verifier = [Convert]::ToBase64String($b).TrimEnd('=').Replace('+','-').Replace('/','_')
+    $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash([System.Text.Encoding]::ASCII.GetBytes($verifier))
+    $challenge = [Convert]::ToBase64String($hash).TrimEnd('=').Replace('+','-').Replace('/','_')
+    $b2 = New-Object byte[] 24; $rng.GetBytes($b2)
+    $state = [Convert]::ToBase64String($b2).TrimEnd('=').Replace('+','-').Replace('/','_')
+    [System.IO.File]::WriteAllText($pkceFile, (@{
+        client_id = $clientId; code_verifier = $verifier; code_challenge = $challenge
+        state = $state; created_at = (Get-Date).ToString('o')
+    } | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "✓ PKCE 已生成并保存到 $pkceFile" -ForegroundColor DarkGray
+}
 
 # scope 只要读车辆实时数据（含 lock_state）；不申请 vehicle_cmds（那是解锁/远程启动等写操作）
 $scope = 'openid offline_access vehicle_device_data'
 
 if (-not $Code) {
-    # ── 监听回调 ──────────────────────────────────────────
-    $listener = New-Object System.Net.HttpListener
-    $listener.Prefixes.Add("http://localhost:$Port/")
-    $listener.Start()
+    # ── 打印授权 URL ──────────────────────────────────────
+    $url = "$authBase/oauth2/v3/authorize?client_id=$clientId&code_challenge=$challenge&code_challenge_method=S256&redirect_uri=$([uri]::EscapeDataString($RedirectUri))&scope=$([uri]::EscapeDataString($scope))&state=$state&prompt=login&prompt_missing_scopes=true&response_type=code"
     Write-Host ''
     Write-Host '══════════════════════════════════════════════════════════' -ForegroundColor Cyan
     Write-Host ' 请在浏览器打开下面的 URL，登录并同意授权：' -ForegroundColor Cyan
     Write-Host '══════════════════════════════════════════════════════════' -ForegroundColor Cyan
-    $url = "$authBase/oauth2/v3/authorize?client_id=$clientId&code_challenge=$challenge&code_challenge_method=S256&redirect_uri=$([uri]::EscapeDataString($RedirectUri))&scope=$([uri]::EscapeDataString($scope))&state=$state&prompt=login&prompt_missing_scopes=true&response_type=code"
     Write-Host $url -ForegroundColor Yellow
     Write-Host ''
+
+    if ($PrintOnly) {
+        Write-Host '（-PrintOnly：打印完就退出，不起监听）' -ForegroundColor DarkGray
+        Write-Host '授权后浏览器会跳到 redirect_uri 指向的地址 —— 那个页面打不开是正常的。' -ForegroundColor DarkGray
+        Write-Host '把地址栏里的整条 URL（或只取 ?code= 后面那段）贴回来即可：' -ForegroundColor DarkGray
+        Write-Host "  pwsh -File scripts/tesla-authorize.ps1 -Code '<code或URL>' -RedirectUri '$RedirectUri'" -ForegroundColor DarkGray
+        Write-Host '══════════════════════════════════════════════════════════' -ForegroundColor Cyan
+        exit 0
+    }
+
+    # ── 监听回调 ──────────────────────────────────────────
+    $listener = New-Object System.Net.HttpListener
+    $listener.Prefixes.Add("http://localhost:$Port/")
+    $listener.Start()
     Write-Host " 正在等待回调（http://localhost:$Port/callback）… 授权后自动继续。" -ForegroundColor DarkGray
     Write-Host '══════════════════════════════════════════════════════════' -ForegroundColor Cyan
     Write-Host ''
@@ -117,6 +164,11 @@ if (-not $Code) {
     if (-not $Code) { throw "回调里没有 code。实际收到：$($ctx.Request.Url)" }
     if ($gotState -ne $state) { throw "state 不匹配（可能是 CSRF），请重试" }
     Write-Host "✓ 收到授权码（$($Code.Length) 字符）" -ForegroundColor Green
+}
+else {
+    # 贴码模式：允许直接粘一整条回调 URL
+    if ($Code -match 'code=([^&\s]+)') { $Code = $Matches[1] }
+    Write-Host "✓ 使用贴回的授权码（$($Code.Length) 字符）" -ForegroundColor DarkGray
 }
 
 # ── 换 token ─────────────────────────────────────────────
