@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -249,13 +250,25 @@ fun StatsScreen(
             item {
                 SectionCard("$periodLabel 汇总", Modifier.animateItem()) {
                     if (sum != null) {
+                        // ⚠️ v0.17.0（苹果 HIG P0-1）：**一屏一个主角数字**。
+                        //
+                        // 原来 7 行**等权**排布 —— 扫一眼没有落点，
+                        // 主角不成立（评审原话：「任意一屏截图缩略到 200px 宽，
+                        // 灰度化后仍能一眼指出唯一的最深/最大文字块」）。
+                        //
+                        // 现在：里程升为主角（44sp Bold），其余降为次级行。
+                        BigStat(
+                            sum.km.fmt(1),
+                            "公里 · $periodLabel",
+                            hero = true,
+                        )
+                        Spacer(Modifier.height(10.dp))
                         // ⚠️ v0.14.0（单位审校 P1-1 / P1-3）：
                         // 「行车用电」→「行驶耗电」（与下面图表同名）——
                         // 原来同一个量在汇总卡叫「行车用电」、在图表叫「行驶耗电」，
                         // 用户会以为是两个量。
                         // 「总里程」→「行驶里程」——
                         // 「总里程」在中文里会被读成「这车一辈子跑了多少」。
-                        KV("行驶里程", "${sum.km.fmt(1)} 公里")
                         KV("行驶耗电", "${sum.kwh_used.fmt(1)} 度")
                         // ⚠️ v0.14.0（单位审校 P2-4）：慢充为 0 时**不显示该分段**。
                         KV(
@@ -275,7 +288,16 @@ fun StatsScreen(
                         if (sum.cost > 0) {
                             KV("充电费用", "${sum.cost.fmt(2)} 元")
                         } else {
-                            KV("充电费用", "未记录 —— 在 TeslaMate 网页端手填单价后才有")
+                            // ⚠️ v0.17.0：说明文字**拆到下一行** ——
+                            // 原来把它塞进值里（「未记录 —— 在 TeslaMate 网页端手填单价后才有」），
+                            // 值太长会换行成两行、右对齐还顶到边角，很难读。
+                            KV("充电费用", "未记录")
+                            Text(
+                                "费用需在 TeslaMate 网页端手填单价后才有",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 4.dp),
+                            )
                         }
                         // ⚠️ v0.9.0（新手车主复核）：补「每公里花多少钱」。
                         // 车主原话：「每公里花多少钱（充 60 度跑 400 公里 = 0.15 元/公里）

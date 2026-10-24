@@ -526,13 +526,16 @@ fun StatusScreen(
 
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             InfoTile("车外温度", st.outside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
-                            // ⚠️ v0.14.0（新手车主 P2-2）：**停车时不显示「功率 0 kW」**。
+                            // ⚠️ v0.14.0（新手车主 P2-2）：**功率为 0 时整格隐藏**。
                             //
                             // 车停着的时候功率恒为 0，这一格没有任何信息量，
                             // 却占掉半个信息块的位置。
-                            // 条件是「速度为空（停着）且功率为 0」——
-                            // 停车但开着空调（功率不为 0）时仍然要显示。
-                            val powerIdle = st.speed == null && (st.power ?: 0.0) == 0.0
+                            //
+                            // ⚠️ 判据用「功率值就是 0」而不是「速度为空」——
+                            // TeslaMate 停着时记的是 `speed = 0`（不是 null），
+                            // 所以按 speed 判会漏掉（实测「功率 0 kW」照样显示）。
+                            // 但「功率未知（null）」要显示「—」，不能一起藏掉。
+                            val powerIdle = st.power != null && st.power == 0
                             if (!powerIdle) {
                                 InfoTile("功率", st.power?.let { "$it kW" } ?: "—", Modifier.weight(1f))
                             }

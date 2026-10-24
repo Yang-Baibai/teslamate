@@ -492,6 +492,17 @@ internal fun DriveDetail(
                 if (endPt != null) {
                     val lat = endPt.map_lat ?: endPt.lat
                     val lng = endPt.map_lng ?: endPt.lng
+                    // ⚠️ v0.17.0（iOS 动效与材质专项评审 P0-3 / 3D 规格表）：
+                    // **按下瞬间的 3D 倾斜**。
+                    //
+                    // 这是全 App 最适合给几何 3D 的位置 —— 浮在地图上的一个独立小物件，
+                    // 按下时轻微前倾（像被手指按下去），抬手回 0，不留残留畸变。
+                    //
+                    // `cameraDistance` 由 [Tilt3DState] 强制成 **3 × 自身宽（px）** ——
+                    // 见 Motion.kt 里的推导：框架默认的 8px 会让近边跑到相机背后，
+                    // 而流传很广的「12~16dp」会在 330dp 宽的卡上让近边**放大 82%**。
+                    val tilt = remember { Tilt3DState() }
+                    var mapPressed by remember { mutableStateOf(false) }
                     Surface(
                         // ⚠️ v0.14.0（苹果 HIG P0-4）：圆角改胶囊、高度提到 **44dp**。
                         // 原来整个可点区域只有约 25dp（图标 16dp + 上下 6dp 内边距），
@@ -500,17 +511,24 @@ internal fun DriveDetail(
                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
-                            .padding(10.dp),
+                            .padding(10.dp)
+                            .tilt3DState(
+                                state = tilt,
+                                rotationX = if (mapPressed) -2f else 0f,
+                            ),
                     ) {
                         Row(
                             Modifier
                                 .height(44.dp)
-                                .clickable {
-                                    val uri = Uri.parse("geo:$lat,$lng?q=$lat,$lng")
-                                    runCatching {
-                                        mapCtx.startActivity(Intent(Intent.ACTION_VIEW, uri))
-                                    }
-                                }
+                                .pressable(
+                                    onClick = {
+                                        val uri = Uri.parse("geo:$lat,$lng?q=$lat,$lng")
+                                        runCatching {
+                                            mapCtx.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                                        }
+                                    },
+                                    onPressed = { mapPressed = it },
+                                )
                                 .padding(horizontal = 16.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -558,6 +576,49 @@ internal fun DriveDetail(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // ⚠️ v0.17.0（苹果 HIG P0-1）：**主角条** —— 一屏一个主角数字。
+            //
+            // 原来这一屏全是等权的卡片与图表，扫一眼没有落点。
+            // 现在地图下面就是这一趟的三个关键数：**多远、多久、多费**。
+            item(key = "hero") {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        BigStat(
+                            drive.distance_km?.fmt(1) ?: "—",
+                            "公里",
+                            hero = true,
+                        )
+                        Spacer(Modifier.width(20.dp))
+                        Column {
+                            Text(
+                                buildString {
+                                    append(minutesFmt(drive.duration_min))
+                                    drive.wh_per_km?.let { append(" · ${it.fmtKwh100()} kWh/100km") }
+                                },
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                buildString {
+                                    append("耗电 ")
+                                    append(drive.energy_kwh?.fmt(1) ?: "—")
+                                    append(" 度")
+                                    drive.start_soc?.let { append(" · 电量 $it%") }
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
             // ── 功率剖面 ──────────────────────────────────────────
             // 长途自驾党在实测 43 条行程后选它当唯一最有价值的曲线：
             // 一条线同时给出能耗、地形、回收三件事（海拔曲线是它的子集），

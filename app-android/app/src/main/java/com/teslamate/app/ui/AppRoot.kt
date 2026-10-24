@@ -1,6 +1,7 @@
 package com.teslamate.app.ui
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -52,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -306,7 +308,25 @@ private fun MainScaffold(
                                 icon = {
                                     // contentDescription = null：可见的文字标签已提供可访问名称，
                                     // 再给图标一份会导致 TalkBack 念「车况,车况」（WCAG 2.5.3）
-                                    Icon(t.icon, contentDescription = null, modifier = Modifier.size(22.dp))
+                                    //
+                                    // ⚠️ v0.17.0（iOS 动效专项评审 P2-3）：**选中图标微动** ——
+                                    // scale 1.0 → 1.08，spring(dampingRatio 0.8 / stiffness 900)。
+                                    // 只给选中的那个；未选中的一律 1.0。
+                                    val iconScale by animateFloatAsState(
+                                        targetValue = if (tab == t) 1.08f else 1f,
+                                        animationSpec = Motion.IconPop,
+                                        label = "tabIconScale",
+                                    )
+                                    Icon(
+                                        t.icon,
+                                        contentDescription = null,
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .graphicsLayer {
+                                                scaleX = iconScale
+                                                scaleY = iconScale
+                                            },
+                                    )
                                 },
                                 label = { Text(t.label, style = MaterialTheme.typography.labelSmall) },
                                 colors = NavigationBarItemDefaults.colors(

@@ -32,14 +32,14 @@ fun <T> pushDetailTransition(
 ): ContentTransform {
     val forward = scope.targetState != null
     return if (forward) {
-        (slideInHorizontally(animationSpec = tween(340)) { it } + fadeIn(tween(200)))
+        (slideInHorizontally(animationSpec = tween(Motion.Push)) { it } + fadeIn(tween(200)))
             .togetherWith(
-                fadeOut(tween(160)) + slideOutHorizontally(animationSpec = tween(340)) { -it * 3 / 10 }
+                fadeOut(tween(160)) + slideOutHorizontally(animationSpec = tween(Motion.Push)) { -it * 3 / 10 }
             )
     } else {
-        (fadeIn(tween(200)) + slideInHorizontally(animationSpec = tween(340)) { -it * 3 / 10 })
+        (fadeIn(tween(200)) + slideInHorizontally(animationSpec = tween(Motion.Push)) { -it * 3 / 10 })
             .togetherWith(
-                slideOutHorizontally(animationSpec = tween(340)) { it } + fadeOut(tween(160))
+                slideOutHorizontally(animationSpec = tween(Motion.Push)) { it } + fadeOut(tween(160))
             )
     }
 }

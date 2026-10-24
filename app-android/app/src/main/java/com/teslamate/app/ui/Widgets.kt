@@ -57,6 +57,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -440,16 +441,25 @@ fun Modifier.pressable(
     onClick: () -> Unit,
     scaleDown: Float = 0.965f,
     enabled: Boolean = true,
+    /**
+     * ⚠️ v0.17.0：按下状态回调（用于**按下瞬间的 3D 倾斜**）。
+     *
+     * 之前 `pressable` 只把「按下」变成变暗 + 缩放，
+     * 调用方拿不到 pressed 状态 —— 于是像「在地图里打开」这种浮动物
+     * 想做「按下轻微前倾、抬手回 0」就做不了。
+     */
+    onPressed: (Boolean) -> Unit = {},
 ): Modifier {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val ctx = LocalContext.current
+    // 状态变化时通知调用方（用于 3D 倾斜这类「按下瞬间」的效果）
+    LaunchedEffect(pressed) { onPressed(pressed) }
     val scale by animateFloatAsState(
         targetValue = if (pressed) scaleDown else 1f,
-        animationSpec = tween(
-            durationMillis = if (pressed) 60 else 200,
-            easing = FastOutSlowInEasing,
-        ),
+        // ⚠️ v0.17.0：时长改用 [Motion] token（60ms 进 / 200ms 出）。
+        // 原来 60/200 是写死的两处数字，改一处漏一处。
+        animationSpec = if (pressed) Motion.PressIn else Motion.PressOut,
         label = "pressScale",
     )
     val fade by animateFloatAsState(
@@ -458,10 +468,7 @@ fun Modifier.pressable(
         // 而且 M3 的 ripple 在 touch-down 立刻绘制 —— 滚动列表时手指划过每张卡片
         // 都会闪一下水波纹，看起来像渲染故障而不是反馈。
         targetValue = if (pressed) 0.90f else 1f,
-        animationSpec = tween(
-            durationMillis = if (pressed) 60 else 200,
-            easing = FastOutSlowInEasing,
-        ),
+        animationSpec = if (pressed) Motion.PressIn else Motion.PressOut,
         label = "pressAlpha",
     )
     return this
@@ -833,29 +840,66 @@ fun CollapsibleSection(
     // 所以要先取出来，不能写在 .clickable 的 lambda 里（那不是 composable 上下文）。
     val ctx = LocalContext.current
     Column(modifier) {
-        Text(
-            text = if (expanded) "$label ▾" else "$label ▸",
-            style = MaterialTheme.typography.labelSmall,
-            // ⚠️ v0.9.0：不用 primary（品牌红）—— 本 App 里红色只表示告警/品牌点缀，
-            // 一个折叠链接是红的看起来像出错了。可点性由 ▸/▾ 表达。
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .clickable {
-                    Haptics.tick(ctx)
-                    expanded = !expanded
-                }
+        // ⚠️ v0.17.0（iOS 动效专项评审 P1-5）：
+        // **箭头改成图标 + 旋转**，不再是 ▸/▾ 字符替换。
+        //
+        // 字符替换是**瞬时跳变** —— 与内容展开不同步，
+        // 是「廉价感」最直接的来源之一。
+        // 现在用 `Icons.Filled.ExpandMore` + `rotationZ` 0↔180°，
+        // 时长与内容高度动画同步（240ms easeOut）。
+        val arrowRotation by animateFloatAsState(
+            targetValue = if (expanded) 180f else 0f,
+            animationSpec = tween(Motion.ChevronRotate, easing = FastOutSlowInEasing),
+            label = "collapsibleArrow",
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .pressable(
+                    onClick = {
+                        Haptics.tick(ctx)
+                        expanded = !expanded
+                    },
+                    scaleDown = 0.96f,
+                )
                 .semantics {
                     contentDescription = if (expanded) "收起$label" else "展开$label"
                 },
-        )
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                // ⚠️ v0.9.0：不用 primary（品牌红）—— 本 App 里红色只表示告警/品牌点缀，
+                // 一个折叠链接是红的看起来像出错了。
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(16.dp)
+                    .graphicsLayer { rotationZ = arrowRotation },
+            )
+        }
         // ⚠️ v0.9.2（iOS 交互评审 P1-11）：展开/收起**要有过渡**。
         // 原来 `if (expanded) { content() }` 是硬切 —— 内容瞬间出现/消失，
         // 父容器高度瞬间跳变，把下方所有内容「顶」下去再弹回来，
         // 这是最容易被感知的廉价感来源。
+        //
+        // ⚠️ v0.17.0（iOS 动效专项评审 P1-5）：淡入与高度**同步** ——
+        // 原来 fade 160ms / 高度 220ms 不同步，
+        // 内容在高度还没到位时就已经可见，底部被「切」一下。
         AnimatedVisibility(
             visible = expanded,
-            enter = fadeIn(tween(160)) + expandVertically(tween(220, easing = FastOutSlowInEasing)),
-            exit = fadeOut(tween(120)) + shrinkVertically(tween(180, easing = FastOutSlowInEasing)),
+            enter = fadeIn(Motion.FadeIn) + expandVertically(
+                tween(Motion.ExpandHeight, easing = FastOutSlowInEasing),
+            ),
+            exit = fadeOut(tween(Motion.ExpandFadeOut)) + shrinkVertically(
+                tween(Motion.ExpandHeight, easing = FastOutSlowInEasing),
+            ),
         ) {
             content()
         }
@@ -1166,6 +1210,34 @@ fun SocRing(
                     style = Stroke(width = stroke, cap = StrokeCap.Round),
                 )
             }
+            // ⚠️ v0.17.0（iOS 动效与材质专项评审 · 3D 规格表）：
+            // **电量环不给几何旋转** —— 数字会跟着转，看起来像渲染错误。
+            // 「3D 感」改用 **2D 伪 3D** 实现：
+            //   · 10 点钟 → 2 点钟方向一道**弧形高光**（白 @18%，2dp）—— 模拟凸玻璃受光；
+            //   · 4~5 点钟方向一道**暗弧**（黑 @10%）—— 模拟背光面的暗部。
+            // 两笔都是**静态**细节：「静态细节比动画更能提升高级感」。
+            val hlR = arcSize.width / 2f
+            val hlTopLeft = Offset(size.width / 2 - hlR, size.height / 2 - hlR)
+            val hlSize = Size(hlR * 2, hlR * 2)
+            val hlStroke = 2.dp.toPx()
+            drawArc(
+                color = Color.White.copy(alpha = 0.18f),
+                startAngle = -60f,
+                sweepAngle = 120f,
+                useCenter = false,
+                topLeft = hlTopLeft,
+                size = hlSize,
+                style = Stroke(width = hlStroke, cap = StrokeCap.Round),
+            )
+            drawArc(
+                color = Color.Black.copy(alpha = 0.10f),
+                startAngle = 120f,
+                sweepAngle = 30f,
+                useCenter = false,
+                topLeft = hlTopLeft,
+                size = hlSize,
+                style = Stroke(width = hlStroke, cap = StrokeCap.Round),
+            )
             // 静态刻度：10 格，每格 10%
             //
             // ⚠️ **v0.7.1 修正两处**：
