@@ -736,10 +736,13 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier, charging: Boolean = false)
     )
     val shown = animated.roundToInt()
     // 圆环随 fontScale 一起放大 —— 否则大字号下 "100%" 会溢出圆环。
-    // ⚠️ v0.8.1：配合 AppRoot 把 fontScale 封顶从 1.15 提到 1.30，
-    // 这个环必须跟着长，否则解封的那部分字号就会在环里溢出去。
+    // ⚠️ v0.8.1：配合 AppRoot 把 fontScale 封顶从 1.15 提到 1.30。
+    // ⚠️ v0.9.0：AppRoot **解封**了 fontScale（WCAG 1.4.4 要求 200% 可用），
+    //   于是这里的上限也要放开 —— 但不能无限放大：
+    //   环太大就放不进屏幕宽度（393dp 屏去掉 32dp 页边距 = 361dp 可用）。
+    //   1.75 → 168 × 1.75 = 294dp，仍有余量。
     val fontScale = LocalDensity.current.fontScale
-    val ringSize = (168 * fontScale.coerceIn(1f, 1.3f)).dp
+    val ringSize = (168 * fontScale.coerceIn(1f, 1.75f)).dp
     Box(
         modifier = modifier.size(ringSize)
             // ⚠️ v0.7.1：Canvas 画的环对屏幕阅读器完全不可达，
@@ -872,6 +875,15 @@ fun EnergyBar(
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    // ⚠️ v0.9.0：标签带的高度按**实测文字高度**算，
+    // 否则大字号下（fontScale 2.0）9sp 变成 18sp，会溢出色带压到条上。
+    val labelLayout = targetSoc?.let {
+        textMeasurer.measure("目标 $it%", TextStyle(fontSize = 9.sp, color = labelColor))
+    }
+    val labelBandDp = with(density) {
+        (labelLayout?.size?.height?.toDp() ?: 0.dp) + 2.dp
+    }
     Box(
         modifier
             .fillMaxWidth()
@@ -886,9 +898,9 @@ fun EnergyBar(
         Canvas(
             Modifier
                 .fillMaxWidth()
-                .height((height + 13).dp)
+                .height(height.dp + labelBandDp)
         ) {
-            val labelH = 13.dp.toPx()
+            val labelH = labelBandDp.toPx()
             val barTop = labelH
             val barH = size.height - labelH
             val r = androidx.compose.ui.geometry.CornerRadius(barH / 2f)

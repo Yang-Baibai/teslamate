@@ -225,7 +225,7 @@ private fun ChargeList(
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ChargeItem(
+internal fun ChargeItem(
     c: Charge,
     stat: StationStat?,
     modifier: Modifier = Modifier,
@@ -295,7 +295,7 @@ private fun ChargeItem(
 
 /** 快充/慢充标签：矢量图标 + 文字，状态不只靠颜色 */
 @Composable
-private fun ChargeTypeChip(isDc: Boolean) {
+internal fun ChargeTypeChip(isDc: Boolean) {
     val accents = LocalAccentColors.current
     // ⚠️ v0.7.1：原来用 `primaryContainer`（深色下是一块 **深红** #93000A）——
     // 一条普通记录的快充标签，红色权重远大于信息量，而且和「告警红」撞语义。
@@ -326,7 +326,7 @@ private fun ChargeTypeChip(isDc: Boolean) {
 }
 
 @Composable
-private fun ChargeDetail(
+internal fun ChargeDetail(
     charge: Charge,
     api: Api?,
     stats: Map<String, StationStat>,

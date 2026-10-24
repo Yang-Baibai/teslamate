@@ -123,22 +123,19 @@ fun TeslaMateApp() {
         // MIUI/HyperOS 大字号档会把 fontScale 提到 1.2~1.3，官方适配文档明确指出
         // 大档位会造成"布局错乱、重叠"（dev.mi.com 大字体适配说明）。
         //
-        // ⚠️ v0.8.1：封顶从 **1.15 提到 1.30**。
-        // 之前的 1.15 把绝大多数用户的系统大字体档（1.15 / 1.2 / 1.3）**全部截断** ——
-        // 用户在系统里把字调到最大，App 里几乎没变化。
-        // IA 复核指出这违反 WCAG 1.4.4（Resize Text）。
-        // 现在 1.3 以内的系统设置**完全生效**（覆盖 MIUI/HyperOS 的常规大档），
-        // 并配合 SocRing 随 fontScale 放大圆环，避免大字号下数字溢出圆环。
+        // ⚠️ v0.8.1 封顶 1.15 → v0.9.0 解封到 **完全放开**。
         //
-        // 仍封顶到 1.3（而非完全解封到 2.0）的原因：车况页是仪表盘布局，
-        // 电量环 + 续航 + 里程在 360dp 宽屏上，2.0 倍时纵向会挤爆。
-        // **完全满足 1.4.4 需要把仪表盘改成可弹性布局，属遗留项。**
-        val baseDensity = LocalDensity.current
-        val cappedDensity = remember(baseDensity) {
-            Density(baseDensity.density, fontScale = minOf(baseDensity.fontScale, 1.30f))
-        }
+        //   之前封顶的理由是：「车况页是仪表盘布局，电量环 + 续航 + 里程在 360dp 宽屏上，
+        //   2.0 倍时纵向会挤爆。**完全满足 1.4.4 需要把仪表盘改成可弹性布局，属遗留项。**」
+        //   现在车况页首屏已改成**弹性布局**（大字号时电量环与续航上下排，而不是硬挤成一行），
+        //   这条遗留项就解除了 —— 再封顶就等于**明知有解却不给用户**（WCAG 1.4.4）。
+        //
+        //   ⚠️ 1.15 那次封顶最糟：把绝大多数用户的系统大字体档（1.15/1.2/1.3）**全部截断** ——
+        //   用户在系统里把字调到最大，App 里几乎没变化。
+        //
+        // 这里**不再覆盖 LocalDensity** —— 直接用系统的 fontScale。
+        // 需要感知字号的控件（比如电量环）自己读 LocalDensity.current.fontScale。
         CompositionLocalProvider(
-            LocalDensity provides cappedDensity,
             LocalHazeState provides remember { HazeState() },
         ) {
             Box(Modifier.fillMaxSize()) {

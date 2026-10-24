@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -54,6 +55,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -332,105 +334,35 @@ fun StatusScreen(
                             }
                         }
 
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                        ) {
-                            SocRing(st.battery_level, charging = st.active_charge != null)
-                            Spacer(Modifier.width(28.dp))
-                            Column {
-                                // ── 续航：显示**真实可达**，不再显示骗人的「预估」 ──
-                                //
-                                // 原来取 est → ideal → rated 三级降级，实测这条链塌缩成一个值：
-                                // ideal 与 rated 在 55,669 行里逐行相同，est 全库只有 0.085% 有值。
-                                // 屏幕上写「预估续航」，实际是 EPA 标定值 —— 夏季高速会乐观 25%~40%。
-                                //
-                                // 现在用你自己跑出来的 Wh/km 折算：
-                                //   真实可达 = 标定续航 × 146 ÷ 实测 Wh/km × 温度修正 × 爬升修正 × 0.9 余量
-                                val ratedRange = st.rated_range_km ?: st.ideal_range_km
-                                // 参考车速：行驶中用实时车速；停车时用**巡航速度**
-                                //（近期高速行程的均速中位数 —— 长途党复核指出
-                                //  整段均速会让人在高速时按市区桶估，偏乐观约 12 km）。
-                                val refSpeed = st.speed?.takeIf { it > 5 }?.toDouble()
-                                    ?: consumption?.cruiseKph
-                                    ?: drives.firstOrNull()?.avg_speed_kph?.toDouble()
-                                    ?: 60.0
-                                val whBucket = consumption?.whPerKm(refSpeed)
-                                // ⚠️ v0.8.6 修一个真 bug：模型里有爬升修正（≥200m ×1.05），
-                                // 但调用处**从来没传 ascentM** —— 参数默认 null，修正从未生效。
-                                // 爬升从最近一次行程取（车况页已经拉了 drives(200) 到 StatusStore）。
-                                val recentAscent = drives.firstOrNull()?.ascent_m
-                                val trueRange = consumption?.trueRangeKm(
-                                    ratedRangeKm = ratedRange,
-                                    speedKph = refSpeed,
-                                    outsideTempC = st.outside_temp,
-                                    ascentM = recentAscent,
-                                )
-                                BigStat(
-                                    (trueRange ?: ratedRange)?.fmt(0) ?: "—",
-                                    // ⚠️ v0.9.0（新手车主复核）：「真实可达 (km)」是术语。
-                                    // 车主原话：「'可达'太书面」「我真正要的是一句话：
-                                    // '现在能开 206 公里，高速算的，够你回家'」。
-                                    // 大数字 + 这行小字，读起来就是「现在能开 206 公里」。
-                                    if (trueRange != null) "现在能开（公里）" else "官方标称（公里）",
-                                )
-                                Spacer(Modifier.height(4.dp))
-                                // ⚠️ v0.9.0（新手车主复核）：**假设链收进可展开区**。
-                                //
-                                // 原来主数字下面明晃晃挂着三行参数
-                                // （「标定 312 km 的 66%」+「按 132 km/h 巡航 · 28°C · 实测 183 Wh/km」），
-                                // 车主的反应是：
-                                //   「屏幕上同时出现 206 和 312，我脑子里变成'官方说 312，
-                                //     App 说 206，我到底该信哪个？' 两个数字打架，
-                                //     比只给一个数字更让我拿不准。」
-                                //   「多出来的信息不是让我更有信心，是让我更慌。」
-                                //
-                                // 现在：主数字**只给答案**，怎么算的收在一行「怎么算的 ▸」里，
-                                // 点开才展开 —— 规划长途时它是关键，平时它是干扰。
-                                var showExplain by remember { mutableStateOf(false) }
-                                val explainText = buildString {
-                                    if (ratedRange != null && ratedRange > 0) {
-                                        append("官方标称 ${ratedRange.fmt(0)} 公里")
-                                    }
-                                    if (trueRange != null) {
-                                        append(" · 按平时 ${refSpeed.roundToInt()} km/h 估算")
-                                        st.outside_temp?.let { append(" · ${it.roundToInt()}°C") }
-                                        whBucket?.let { append(" · 实测 ${it.whPerKm.fmt(0)} Wh/km") }
-                                        append(" · 已留 10% 余量")
-                                    }
-                                }
-                                Text(
-                                    text = if (showExplain) "怎么算的 ▾" else "怎么算的 ▸",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    // ⚠️ v0.9.0：不用 primary（品牌红）。
-                                    // 本 App 里红色只表示告警/品牌点缀 —— 一个折叠链接是红的，
-                                    // 看起来像出错了。可点性由 ▸/▾ 本身表达（iOS 就是这么做的）。
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier
-                                        .clickable { showExplain = !showExplain }
-                                        .semantics {
-                                            contentDescription = if (showExplain) {
-                                                "收起续航计算方式"
-                                            } else {
-                                                "展开续航计算方式"
-                                            }
-                                        },
-                                )
-                                if (showExplain) {
-                                    Text(
-                                        explainText.ifBlank { "暂无足够数据估算" },
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Spacer(Modifier.height(12.dp))
-                                // ⚠️ 原来里程表也是 34sp Bold，与续航**同级** —— 一屏两个主角。
-                                // 降级为一行小字：信息一点没丢，但视觉上只剩续航是主角。
-                                Text(
-                                    "里程表 ${st.odometer?.fmtThousands() ?: "—"} km",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                        // ⚠️ v0.9.0：**弹性首屏** —— 大字号时电量环与续航**上下排**，
+                        // 而不是硬挤在一行。
+                        //
+                        // 之前 AppRoot 把 fontScale 封在 1.30，理由是
+                        // 「车况页是仪表盘布局，2.0 倍时纵向会挤爆」——
+                        // 现在解封了 fontScale（WCAG 1.4.4 要求 200% 可用），
+                        // 这条遗留项必须一起解掉，否则等于「解封了一半」。
+                        //
+                        // 阈值 1.5：1.5 倍时左右两栏还挤得下；再大就必须换行。
+                        val fontScale = LocalDensity.current.fontScale
+                        if (fontScale >= 1.5f) {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                SocRing(st.battery_level, charging = st.active_charge != null)
+                                Spacer(Modifier.height(16.dp))
+                                RangeAndOdometer(st, consumption, drives, Modifier.fillMaxWidth())
+                            }
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            ) {
+                                SocRing(st.battery_level, charging = st.active_charge != null)
+                                Spacer(Modifier.width(28.dp))
+                                RangeAndOdometer(st, consumption, drives, Modifier.weight(1f))
                             }
                         }
 
@@ -489,6 +421,115 @@ fun StatusScreen(
                 }
             }
         }
+    }
+}
+
+/**
+ * 续航 + 里程表 + 「怎么算的」折叠区。
+ *
+ * ⚠️ v0.9.0：从 StatusScreen 里抽出来 —— 因为首屏改成**弹性布局**后，
+ * 这一块要能在「左右两栏」与「上下两栏」两种排法里复用。
+ */
+@Composable
+private fun RangeAndOdometer(
+    st: CarStatus,
+    consumption: ConsumptionModel?,
+    drives: List<com.teslamate.app.Drive>,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        // ── 续航：显示**真实可达**，不再显示骗人的「预估」 ──
+        //
+        // 原来取 est → ideal → rated 三级降级，实测这条链塌缩成一个值：
+        // ideal 与 rated 在 55,669 行里逐行相同，est 全库只有 0.085% 有值。
+        // 屏幕上写「预估续航」，实际是 EPA 标定值 —— 夏季高速会乐观 25%~40%。
+        //
+        // 现在用你自己跑出来的 Wh/km 折算：
+        //   真实可达 = 标定续航 × 146 ÷ 实测 Wh/km × 温度修正 × 爬升修正 × 0.9 余量
+        val ratedRange = st.rated_range_km ?: st.ideal_range_km
+        // 参考车速：行驶中用实时车速；停车时用**巡航速度**
+        //（近期高速行程的均速中位数 —— 长途党复核指出
+        //  整段均速会让人在高速时按市区桶估，偏乐观约 12 km）。
+        val refSpeed = st.speed?.takeIf { it > 5 }?.toDouble()
+            ?: consumption?.cruiseKph
+            ?: drives.firstOrNull()?.avg_speed_kph?.toDouble()
+            ?: 60.0
+        val whBucket = consumption?.whPerKm(refSpeed)
+        // ⚠️ v0.8.6 修一个真 bug：模型里有爬升修正（≥200m ×1.05），
+        // 但调用处**从来没传 ascentM** —— 参数默认 null，修正从未生效。
+        // 爬升从最近一次行程取（车况页已经拉了 drives(200) 到 StatusStore）。
+        val recentAscent = drives.firstOrNull()?.ascent_m
+        val trueRange = consumption?.trueRangeKm(
+            ratedRangeKm = ratedRange,
+            speedKph = refSpeed,
+            outsideTempC = st.outside_temp,
+            ascentM = recentAscent,
+        )
+        BigStat(
+            (trueRange ?: ratedRange)?.fmt(0) ?: "—",
+            // ⚠️ v0.9.0（新手车主复核）：「真实可达 (km)」是术语。
+            // 车主原话：「'可达'太书面」「我真正要的是一句话：
+            // '现在能开 206 公里，高速算的，够你回家'」。
+            // 大数字 + 这行小字，读起来就是「现在能开 206 公里」。
+            if (trueRange != null) "现在能开（公里）" else "官方标称（公里）",
+        )
+        Spacer(Modifier.height(4.dp))
+        // ⚠️ v0.9.0（新手车主复核）：**假设链收进可展开区**。
+        //
+        // 原来主数字下面明晃晃挂着三行参数
+        // （「标定 312 km 的 66%」+「按 132 km/h 巡航 · 28°C · 实测 183 Wh/km」），
+        // 车主的反应是：
+        //   「屏幕上同时出现 206 和 312，我脑子里变成'官方说 312，
+        //     App 说 206，我到底该信哪个？' 两个数字打架，
+        //     比只给一个数字更让我拿不准。」
+        //   「多出来的信息不是让我更有信心，是让我更慌。」
+        //
+        // 现在：主数字**只给答案**，怎么算的收在一行「怎么算的 ▸」里，
+        // 点开才展开 —— 规划长途时它是关键，平时它是干扰。
+        var showExplain by remember { mutableStateOf(false) }
+        val explainText = buildString {
+            if (ratedRange != null && ratedRange > 0) {
+                append("官方标称 ${ratedRange.fmt(0)} 公里")
+            }
+            if (trueRange != null) {
+                append(" · 按平时 ${refSpeed.roundToInt()} km/h 估算")
+                st.outside_temp?.let { append(" · ${it.roundToInt()}°C") }
+                whBucket?.let { append(" · 实测 ${it.whPerKm.fmt(0)} Wh/km") }
+                append(" · 已留 10% 余量")
+            }
+        }
+        Text(
+            text = if (showExplain) "怎么算的 ▾" else "怎么算的 ▸",
+            style = MaterialTheme.typography.labelSmall,
+            // ⚠️ v0.9.0：不用 primary（品牌红）。
+            // 本 App 里红色只表示告警/品牌点缀 —— 一个折叠链接是红的，
+            // 看起来像出错了。可点性由 ▸/▾ 本身表达（iOS 就是这么做的）。
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clickable { showExplain = !showExplain }
+                .semantics {
+                    contentDescription = if (showExplain) {
+                        "收起续航计算方式"
+                    } else {
+                        "展开续航计算方式"
+                    }
+                },
+        )
+        if (showExplain) {
+            Text(
+                explainText.ifBlank { "暂无足够数据估算" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        // ⚠️ 原来里程表也是 34sp Bold，与续航**同级** —— 一屏两个主角。
+        // 降级为一行小字：信息一点没丢，但视觉上只剩续航是主角。
+        Text(
+            "里程表 ${st.odometer?.fmtThousands() ?: "—"} km",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -811,8 +852,14 @@ private fun TpmsValue(label: String, value: Double?, alert: Boolean) {
             label,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(34.dp),
+            // ⚠️ v0.9.0：用 widthIn 而不是固定 width ——
+            // 固定 34dp 在 fontScale 2.0 下会把「左前」挤成竖排（「左」/「前」两行）。
+            // 四个标签都是两个字，宽度自然一致，数值列照样对齐。
+            modifier = Modifier.widthIn(min = 34.dp),
         )
+        // ⚠️ v0.9.0：宽度改成自适应后，标签与数值之间必须自己留间距
+        // （原来靠 34dp 的固定宽度顺带提供了间隔）。
+        Spacer(Modifier.width(10.dp))
         Text(
             value?.let { "${it.fmt(2)} bar" } ?: "—",
             style = MaterialTheme.typography.bodyMedium,

@@ -202,7 +202,7 @@ private fun DriveList(
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Unit) {
+internal fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val accents = LocalAccentColors.current
     Card(
         modifier = modifier
@@ -268,7 +268,7 @@ private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Un
 }
 
 @Composable
-private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose: () -> Unit) {
+internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose: () -> Unit) {
     var track by remember { mutableStateOf<List<TrackPoint>>(emptyList()) }
     var err by remember { mutableStateOf<String?>(null) }
     // 充电记录：用来关联「这趟行程到达时充的是哪一次电」

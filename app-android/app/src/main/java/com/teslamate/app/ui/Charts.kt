@@ -168,8 +168,11 @@ fun StackedBarChart(
     val hasData = series.any { s -> s.values.any { (it ?: 0f) > 0f } }
     val progress = chartProgress(hasData)
     val density = LocalDensity.current
-    val yLabelWidth = with(density) { 34.dp.toPx() }
-    val xLabelHeight = with(density) { if (xLabels.isEmpty()) 0f else 16.dp.toPx() }
+    // ⚠️ v0.9.0：刻度文字随 fontScale 放大，预留带也必须跟着放大，
+    // 否则大字号下 X 轴标签会压到曲线、Y 轴标签被裁掉。
+    val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
+    val yLabelWidth = with(density) { (34 * fs).dp.toPx() }
+    val xLabelHeight = with(density) { if (xLabels.isEmpty()) 0f else (16 * fs).dp.toPx() }
 
     Box(
         modifier = modifier.semantics {
@@ -312,8 +315,11 @@ fun LineChart(
     // DrawScope 里调 MaterialTheme.colorScheme 编译不过（不是 @Composable 上下文）。
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val yLabelWidth = with(density) { 34.dp.toPx() }
-    val xLabelHeight = with(density) { if (xLabels.isEmpty()) 0f else 16.dp.toPx() }
+    // ⚠️ v0.9.0：刻度文字随 fontScale 放大，预留带也必须跟着放大，
+    // 否则大字号下 X 轴标签会压到曲线、Y 轴标签被裁掉。
+    val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
+    val yLabelWidth = with(density) { (34 * fs).dp.toPx() }
+    val xLabelHeight = with(density) { if (xLabels.isEmpty()) 0f else (16 * fs).dp.toPx() }
 
     Box(
         modifier = modifier.semantics {
@@ -555,8 +561,12 @@ fun PowerProfileChart(
     val contentColor = LocalContentColor.current
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val density = LocalDensity.current
-    val yLabelWidth = with(density) { 34.dp.toPx() }
-    val xLabelHeight = with(density) { 16.dp.toPx() }
+    // ⚠️ v0.9.0：刻度文字随 fontScale 放大，**预留带也必须跟着放大**，
+    // 否则大字号下刻度会压到图里（X 轴标签压住曲线、Y 轴标签被裁掉）。
+    // 1.6 是上限 —— 再大刻度就该换成「自适应 Y 轴范围」而不是继续挤。
+    val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
+    val yLabelWidth = with(density) { (34 * fs).dp.toPx() }
+    val xLabelHeight = with(density) { (16 * fs).dp.toPx() }
 
     Box(
         modifier = modifier.semantics {
@@ -569,8 +579,23 @@ fun PowerProfileChart(
                 .height(170.dp)
         ) {
             if (samples.size < 2) return@Canvas
+            // ⚠️ **v0.9.0 修第二个真 bug（运算符优先级）**。
+            //
+            //   原式：`-samples.minOf { it.powerKw }.coerceAtLeast(0.0)`
+            //   Kotlin 里前缀负号作用于**整个调用链**，所以它实际是
+            //     `-(samples.minOf { ... }.coerceAtLeast(0.0))`
+            //   —— 先把「最小功率」钳到 ≥ 0，**再取负**。
+            //   于是 maxNeg 永远是 0 或负数（min=-6 → 0 → -0.0），
+            //   两个后果：
+            //     1. `maxNeg > 0.001` 永远为假 → 回收那半边从来没被正确画过；
+            //     2. posRatio = maxPos/(maxNeg+maxPos) 可能 **> 1**
+            //        → 零线掉到画布**下面** → 填充区溢出画布、
+            //          盖住 X 轴标签与下方的说明文字、整张图错位。
+            //   （实测：一条带回收的 4.5 km 行程，零线跑到画布外 190 px。）
+            //
+            //   现在：先取负再钳位，maxNeg 才是真正的「最大回收功率」。
             val maxPos = samples.maxOf { it.powerKw }.coerceAtLeast(0.0)
-            val maxNeg = -samples.minOf { it.powerKw }.coerceAtLeast(0.0)
+            val maxNeg = (0.0 - samples.minOf { it.powerKw }).coerceAtLeast(0.0)
             val plotTop = 0f
             val plotBottom = size.height - xLabelHeight
             val plotHeight = plotBottom - plotTop
@@ -599,7 +624,9 @@ fun PowerProfileChart(
             val posRatio = if (maxPos <= 0.001) {
                 0f
             } else {
-                (maxPos / (maxNeg + maxPos)).toFloat()
+                // ⚠️ 再加一道钳位：即使 maxPos/maxNeg 的比例算错，
+                // 零线也不会掉出画布（掉出去 = 整张图错位 + 填充区溢出压住下方文字）。
+                (maxPos / (maxNeg + maxPos)).toFloat().coerceIn(0f, 1f)
             }
             val zeroY = plotTop + plotHeight * posRatio
             val upH = zeroY - plotTop
@@ -747,9 +774,11 @@ fun SocStrip(
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val density = LocalDensity.current
+    // ⚠️ v0.9.0：刻度文字随 fontScale 放大，预留带也必须跟着放大（见 PowerProfileChart 的说明）
+    val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
     // 右侧留给「电量」刻度（100% / 0%），左侧不占 —— 与上方功率图的左边距对齐
-    val rightLabelWidth = with(density) { 30.dp.toPx() }
-    val bottomLabelHeight = with(density) { 13.dp.toPx() }
+    val rightLabelWidth = with(density) { (30 * fs).dp.toPx() }
+    val bottomLabelHeight = with(density) { (13 * fs).dp.toPx() }
 
     Box(
         modifier = modifier.semantics {
