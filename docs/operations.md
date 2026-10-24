@@ -31,16 +31,16 @@ docker compose logs -f --tail 100 api         # 手机 API（含每请求耗时�
 ### 2.1 数据库备份（唯一有状态数据源）
 ```bash
 mkdir -p backups
-docker exec teslamate-database-1 pg_dump -U teslamate -d teslamate > backups/db-$(date +%Y%m%d).sql
+docker exec teslamate-database-1 pg_dump -U teslamate -d teslamate > /c/tm-backups/db-$(date +%Y%m%d).sql
 ```
-- 现有基线：`backups/db-baseline-20261012.sql`（189 MB）。
+- 现有基线：`/c/tm-backups/db-baseline-20261012.sql`（189 MB，**在 OneDrive 之外**）。
 - 建议频率：每月一次 + 任何动库操作之前。
 
 ### 2.2 整栈恢复（灾难场景）
 ```bash
 # 1. 清空 database/ 目录（或换新目录），compose up -d database，等 healthy
 # 2. 恢复
-cat backups/db-YYYYMMDD.sql | docker exec -i teslamate-database-1 psql -U teslamate -d teslamate
+cat /c/tm-backups/db-YYYYMMDD.sql | docker exec -i teslamate-database-1 psql -U teslamate -d teslamate
 # 3. docker compose up -d（其余服务重建 schema 缓存即可）
 # 4. 注意：恢复后 teslamate_cn_extension_meta 若丢失，需重跑中文仪表盘 SQL（见 3.1）
 ```
@@ -171,7 +171,7 @@ curl -sI http://localhost:8090/apk/teslamate-app.apk | grep -iE "HTTP|content-ty
 
 1. ~~**`database/` 位于 OneDrive 同步目录**~~ ❌ **2026-10-16 实测推翻，此风险不成立**。
    项目根路径含 `OneDrive` 字样，但**实测本机并未同步该目录**：同步日志中 `teslamate`/`database` 零命中，1388 个数据库文件属性全为 `Archive`（零占位符），账户配置 9 个月未更新。**无需迁移。**
-   ⚠️ **若将来重新登录/启用 OneDrive**：必须先把 `database/` 从同步中排除（或设为「始终保留在此设备上」），否则 PGDATA 会被上传，且一旦被脱水成占位符，Postgres 读到的是 0 字节存根。`backups/` 可以继续同步（每周才写一次）。
+   ⚠️ **若将来重新登录/启用 OneDrive**：必须先把 `database/` 从同步中排除（或设为「始终保留在此设备上」），否则 PGDATA 会被上传，且一旦被脱水成占位符，Postgres 读到的是 0 字节存根。`backups/` 已迁到 `C:\tm-backups`（OneDrive 之外），历史遗留的旧备份文件仍需你手动迁走。
    > 教训记录在 CHANGELOG 2026-10-16 晚间段：不能从文件夹名推断它在同步。
 2. ~~**弱密码**：`.env` 中 `***REMOVED***` / `***REMOVED***`。~~ ⏸️ **2026-10-16 决定维持现状**：局域网自用可接受，暂不轮换。
    ⚠️ 但要注意：**这两个口令的字面值已随本文件进入 git 历史**（`docs/operations.md` 曾直接写出它们），所以它们**不再构成秘密边界**。真正的安全边界是——**绝不把 8090 / 3000 / 4000 端口映射到公网**。若将来暴露面变化（公网访问、开放给他人、换到不可信网络），必须先按 §6 轮换口令。
@@ -196,7 +196,7 @@ docker compose up -d        # 让 teslamate/grafana/api 拿到新密码
 |---|---|
 | Grafana 切中文镜像（2026-10-11） | `cp compose.yaml.bak.20261012-000215 compose.yaml && docker compose up -d grafana` |
 | 新增 api 服务 | compose 删掉 api 段落 + `docker compose up -d`（SQL/数据无影响） |
-| 数据库动过（SQL/回算） | `cat backups/db-*.sql \| docker exec -i teslamate-database-1 psql -U teslamate -d teslamate`（整库恢复） |
+| 数据库动过（SQL/回算） | `cat /c/tm-backups/db-*.sql \| docker exec -i teslamate-database-1 psql -U teslamate -d teslamate`（整库恢复） |
 
 ## 8. Windows 中文路径应对（junction 速查）
 
@@ -348,8 +348,8 @@ adb shell monkey -p com.tailscale.ipn -c android.intent.category.LAUNCHER 1
 | 任务名 | `TeslaMate-WeeklyDBBackup` |
 | 触发 | 每周日 03:00 |
 | 实际执行 | `"C:\Program Files\Git\bin\bash.exe" -c "cd /c/tm-ws && bash scripts/backup-weekly.sh"` |
-| 产物 | `backups/db-YYYYMMDD.sql`，保留最近 8 份 |
-| 日志 | `backups/backup.log`（每次运行追加） |
+| 产物 | `/c/tm-backups/db-YYYYMMDD.sql`，保留最近 8 份（`TM_BACKUP_DIR` 可改目录） |
+| 日志 | `/c/tm-backups/backup.log`（每次运行追加） |
 
 `backup-weekly.sh` = 跑一次 `backup-db.sh` + 轮转清理 + 写日志。它会在开始前检查 `docker` 是否可用、`teslamate-database-1` 是否在跑，不满足直接记失败退出（计划任务的输出默认被系统丢弃，没有日志就等于黑盒）。
 
@@ -357,7 +357,7 @@ adb shell monkey -p com.tailscale.ipn -c android.intent.category.LAUNCHER 1
 计划任务的命令行由 Task Scheduler 解析，中文路径会踩 §8 那个坑。junction 路径全 ASCII，一次绕开。
 
 ### 9.3 轮转的 baseline 保护
-轮转只匹配 `backups/db-[0-9]*.sql`，**`db-baseline-*` 不匹配**（`db-` 后面是字母 `b` 不是数字），因此基线种子文件永远不会因轮转被删。改脚本时别把这个 glob 改成 `db-*.sql`。
+轮转只匹配 `$BACKUP_DIR/db-[0-9]*.sql`，**`db-baseline-*` 不匹配**（`db-` 后面是字母 `b` 不是数字），因此基线种子文件永远不会因轮转被删。改脚本时别把这个 glob 改成 `db-*.sql`。
 
 ### 9.4 常用操作
 ```bash
@@ -384,7 +384,9 @@ schtasks /Delete /TN "TeslaMate-WeeklyDBBackup" /F
 
 ### 9.5 已知限制
 - **电脑关机或 Docker Desktop 没启动时会失败**（`execvpe`/容器未运行）。脚本会写日志并以非 0 退出，**不会**产出半截文件——`backup-db.sh` 内置了 10KB 体积校验，失败即删。
-- 备份落在项目目录内（同 `database/`）。实测本机 OneDrive 未同步该目录，因此无同步风险；若将来启用 OneDrive，`backups/` 可以放心同步（每周才写一次），但 `database/` 必须排除。
+- 备份**已迁出项目目录**，落在 C:\tm-backups（默认 /c/tm-backups，可用 TM_BACKUP_DIR 覆盖）。
+ 原因：项目目录在 OneDrive 同步路径下，200MB 级的 pg_dump 全文（含**全部精确位置历史**、充电记录、行程，以及 private.tokens 里 Cloak 加密的 TeslaMate 凭据）会被自动上传到云端 —— 与「私有部署、不上云」的初衷相反。database/ 同样必须排除。
+ 历史上已生成在旧目录的备份仍留在 OneDrive 里，需要你决定是否迁走（见交付说明）。
 - 磁盘占用：8 × ~195MB ≈ 1.6GB。超过就开始轮转删旧的。
 
 ## 10. 车况提醒 → Hermes 推送

@@ -18,8 +18,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 KEEP="${BACKUP_KEEP:-8}"
-LOG="backups/backup.log"
-mkdir -p backups
+BACKUP_DIR="${TM_BACKUP_DIR:-/c/tm-backups}"
+LOG="$BACKUP_DIR/backup.log"
+mkdir -p "$BACKUP_DIR"
 
 log() { echo "$*" | tee -a "$LOG"; }
 
@@ -45,7 +46,7 @@ fi
 
 # 轮转：只清理 db-YYYYMMDD*.sql，保留 db-baseline-* 与当前最新一份
 mapfile -t OLD < <(
-  ls -1t backups/db-[0-9]*.sql 2>/dev/null | tail -n +$((KEEP + 1))
+  ls -1t "$BACKUP_DIR"/db-[0-9]*.sql 2>/dev/null | tail -n +$((KEEP + 1))
 )
 if [ "${#OLD[@]}" -gt 0 ]; then
   log "轮转清理（保留最近 $KEEP 份，db-baseline-* 永不动）："
@@ -57,7 +58,7 @@ else
 fi
 
 log "当前备份清单："
-ls -1t backups/*.sql 2>/dev/null | head -5 | while read -r f; do
+ls -1t "$BACKUP_DIR"/*.sql 2>/dev/null | head -5 | while read -r f; do
   log "  $f ($(du -h "$f" | cut -f1))"
 done
 log "──────── 完成"
