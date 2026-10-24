@@ -519,12 +519,19 @@ private fun LocationCard(
  */
 @Composable
 private fun TpmsCard(st: CarStatus) {
-    val fl = st.tpms_fl; val fr = st.tpms_fr; val rl = st.tpms_rl; val rr = st.tpms_rr
+    // ⚠️ v0.8.5：优先用 **Fleet API 的实时胎压**（车醒着时每 2 分钟一条，明显比
+    // TeslaMate 的稀疏采样新鲜），没有才回退 TeslaMate 的值。
+    val fl = st.tpms_live_fl ?: st.tpms_fl
+    val fr = st.tpms_live_fr ?: st.tpms_fr
+    val rl = st.tpms_live_rl ?: st.tpms_rl
+    val rr = st.tpms_live_rr ?: st.tpms_rr
     if (fl == null && fr == null && rl == null && rr == null) return // 一个都没有就不占版面
 
+    // 告警轮次：实时源的判定（Tesla 自己的 hard/soft warning）优先
+    val alertWheels = (st.tpms_live_alert_wheels + st.tpms_alert_wheels).toSet()
     val reading = TpmsReadingUi(
         fl, fr, rl, rr, st.tpms_min_bar, st.tpms_max_bar,
-        alertWheels = st.tpms_alert_wheels.toSet(),
+        alertWheels = alertWheels,
     )
 
     SectionCard(
