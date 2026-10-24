@@ -3,7 +3,7 @@
 Go 1.23 编写的只读 REST API，是 Android 客户端（`../app-android/`）的唯一后端。
 容器名 `teslamate-api-1`，端口 8090，接入 Tailscale 后手机在家/在外通用。
 
-## 文件职责（4 个 .go 文件，共约 1000 行）
+## 文件职责（6 个 .go 文件，共约 1300 行）
 
 | 文件 | 职责 | 改动频率 |
 |---|---|---|
@@ -11,6 +11,8 @@ Go 1.23 编写的只读 REST API，是 Android 客户端（`../app-android/`）�
 | `handlers.go` | 全部 HTTP 处理器 + 数据清洗（sanitizeCharge）+ 静态图代理 + LRU 缓存 | 高（加字段就动） |
 | `queries.go` | **全部 SQL 常量**。想改查询口径只看这一个文件 | 高 |
 | `models.go` | 全部响应结构体（json tag 即对 App 的契约） | 高 |
+| `tesla.go` | **Tesla Fleet API 只读客户端**（锁车状态）：换 token、拉车辆列表、拉 `lock_state`、refresh_token 轮换回写 `.env` | 低 |
+| `tesla_test.go` | `tesla.go` 的单元测试（`.env` 回写、响应解析、token 轮换） | 跟 `tesla.go` 一起改 |
 | `Dockerfile` | 多阶段构建（goproxy.cn 拉依赖 → alpine 运行，产物 ~15MB） | 极低 |
 
 ## 端点总览
@@ -57,6 +59,11 @@ GET /apk/…                         APK 下载（免鉴权，DownloadManager �
 8. **快慢充判定别用品牌**：本机 `charges.fast_charger_brand` 86.7% 是 `'<invalid>'`，
    判直流要看 `charger_phases`（直流为 NULL）+ `fast_charger_type`，
    且必须与 `sqlCharges.is_dc` 用同一条判据，否则两个接口会打架。
+9. **锁车状态不在数据库里**：`locked` / `locked_at` 来自 Tesla Fleet API（`tesla.go` 的后台轮询），
+   不是 TeslaMate 的表。没配 `TESLA_CLIENT_ID` / `TESLA_REFRESH_TOKEN` 时恒为 `null`（未知）——
+   **别把 `null` 当成 `false`**，那会把「不知道」显示成「没锁」。
+   `refresh_token` 是一次性的（刷新即轮换、有效期 3 个月），服务端会原子回写 `.env`，
+   写失败只降级不崩。
 
 ## 构建与部署
 

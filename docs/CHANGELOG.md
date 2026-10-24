@@ -5,6 +5,57 @@
 
 ---
 
+## 2026-10-24（v0.8.4：接入 Tesla Fleet API —— 锁车状态）
+
+> 本轮只动服务端（`api/`、`scripts/smoke.sh`、`docs/`），**既有字段一个没改**，只新增两个字段。
+> App 端（`app-android/`）本次未动，等服务端字段上线后再单独接。
+
+### 背景
+
+车况 App 一直看不到「车门锁没锁」，用户每次都得自己去特斯拉 App 里翻。
+原因很简单：**TeslaMate 的库里没有这个字段**——它只记行驶、充电、位置，
+锁车状态只有特斯拉云端知道，只能走 Tesla Fleet API 读。
+
+实测确认的几件事（中国区账号）：
+
+| 事实 | 影响 |
+|---|---|
+| `auth.tesla.cn` 用 `client_credentials` 换来的 token **不带任何 scope** | 所有 Fleet API 端点都是 `403 Unauthorized missing scopes`，这条路走不通 |
+| 中国区 `auth.tesla.cn` **不支持** `vehicle_token` grant | 只能走 `authorization_code` 换 refresh_token |
+| 中国区 legacy 端点（`owner-api.teslamotors.cn` / `api.tesla.cn`）**已不可达** | 没有退路 |
+| 读车辆实时数据的 scope 叫 **`vehicle_device_data`**（不是 `vehicle_data`） | scope 名写错就是 403 |
+| **refresh_token 是一次性的**：每次刷新都返回新的，旧的立刻失效，有效期 3 个月 | 刷新后必须落盘，否则 3 个月后要重走浏览器授权 |
+
+### 改动
+
+1. **新增 `api/tesla.go`**：Fleet API 只读客户端（只发 GET + 一次换 token 的 POST，绝不碰任何车控接口）。
+   - 后台 goroutine 每 2 分钟拉一次 `vehicle_data?endpoints=lock_state`；access_token 有效期 8 小时，剩余不足 1 小时才刷新。
+   - 轮换到新的 refresh_token → **原子写回 `.env` 的 `TESLA_REFRESH_TOKEN=` 行**（同目录临时文件 + `os.Rename`；保留原文件的 BOM、行尾与其它行。rename 不可用时退化为原地覆写，再不行就写兜底文件并打警告，**不会崩也不会把 .env 写坏**）。
+   - 全程降级友好：没凭据 / token 刷新失败 / 403 / 超时，都只是把锁车状态置为「未知」，按指数退避（30s → 15min 封顶）重试，**不影响主服务**。
+   - 车休眠（Fleet API 返回 408）不算故障：保留上次已知结果，用 `locked_at` 表达新鲜度。
+   - 日志里的令牌一律脱敏（连续 20 位以上的 token 字符整体打码）。
+2. **`api/models.go` + `api/handlers.go`**：`/api/v1/cars/{id}/status` 新增 `locked`（`*bool`）与 `locked_at`（`*time.Time`）。
+   **刻意不带 `omitempty`**——nil 必须原样输出成 `null`，否则 App 分不清「没锁」和「不知道」。
+3. **`scripts/smoke.sh`**：新增第 15 条断言（`locked` 字段必须存在，类型是 boolean 或 null）；原有 14 条断言不变。
+4. **新增 `api/tesla_test.go`**：覆盖 `.env` 回写（CRLF / BOM / 行尾 / 追加 / 不误伤同后缀键名）、Fleet 响应两种包封解析、408 判定、refresh_token 轮换落盘、日志脱敏。
+
+### 影响
+
+- **数据库零改动**（本服务对库只有 SELECT）。
+- **没配凭据也能跑**：容器照常启动，`locked` 返回 `null`（未知），其余 14 条断言照常通过。
+- 拿到凭据并接线后 `locked` 才有值。接线要求：`compose.yaml` 的 `api` 服务要透传 `TESLA_*` 环境变量，
+  并把 `.env` 以**可写**方式挂进容器（否则服务端没法把轮换后的 refresh_token 回写回来）。
+  没接线时锁车状态恒为 `null`，主服务不受影响。
+- **App 端本次未改**：`locked` / `locked_at` 是新增字段，旧版 App 会直接忽略，不影响使用。
+
+### 回滚
+
+- 服务端侧：`git revert` 本次提交后 `docker compose up -d api` 即可，
+  `/status` 不再返回 `locked` / `locked_at`（其余字段与行为完全不变）。
+- 只想关掉功能、不动代码：把 `TESLA_CLIENT_ID` / `TESLA_REFRESH_TOKEN` 从 `.env` 里去掉再 `docker compose up -d api`，
+  锁车状态回到 `null`（未知）。
+- 只想回滚轮换回写：删掉 `api/tesla.go` 里的 `persistRefreshToken` 调用即可，其余逻辑不依赖它。
+
 ## 2026-10-24（v0.8.2：UX 迭代第 4 轮 —— 充电站历史）
 
 > 本轮回应长途自驾党评审的一条点名：**决定「进不进这个服务区」的信息，App 里根本没有。**

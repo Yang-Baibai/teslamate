@@ -76,6 +76,16 @@ func main() {
 	if amapKey == "" {
 		log.Printf("⚠️  AMAP_KEY 未配置：/api/v1/app/staticmap 端点将不可用")
 	}
+	// Tesla Fleet API（锁车状态）：没配凭据也照常启动，只是 locked 恒为 null（未知）
+	tesla = newTeslaClient(loadTeslaConfig())
+	if tesla.configured() {
+		teslaCtx, cancelTesla := context.WithCancel(context.Background())
+		defer cancelTesla()
+		go tesla.Run(teslaCtx)
+		log.Printf("Tesla Fleet API 已启用（区域 %s，轮询 %s）", tesla.cfg.region, tesla.cfg.pollInterval)
+	} else {
+		log.Printf("⚠️  未配置 Tesla Fleet API 凭据（TESLA_CLIENT_ID / TESLA_REFRESH_TOKEN）：锁车状态恒为未知（null）")
+	}
 	log.Printf("API 服务就绪，端口 %s，时区 %s", cfg.port, cfg.timezone)
 
 	mux := http.NewServeMux()

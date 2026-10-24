@@ -42,6 +42,18 @@ assert d['tpms_min_bar'] < d['tpms_max_bar'], 'tpms range inverted'
 assert d['data_age_hours'] >= 0, 'negative data age'" 2>/dev/null \
   && ok "status 含告警判定字段" || fail "status 含告警判定字段"
 
+# 4c. v0.8.4：锁车状态（Tesla Fleet API）。
+# 没配 Fleet API 凭据时 locked 必须是 null（未知），不能是 false（那会被误读成「没锁」）。
+echo "$S" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'locked' in d, 'missing locked'
+v=d['locked']
+assert v is None or isinstance(v,bool), 'locked must be bool or null'
+assert 'locked_at' in d, 'missing locked_at'
+" 2>/dev/null \
+  && ok "status 含 locked 字段（bool 或 null）" || fail "status 含 locked 字段（bool 或 null）"
+
 # 5. 充电列表含损耗率
 CH=$(curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charges?limit=3")
 echo "$CH" | python -c "import json,sys;d=json.load(sys.stdin);assert len(d)>0 and 'loss_percent' in d[0]" 2>/dev/null \

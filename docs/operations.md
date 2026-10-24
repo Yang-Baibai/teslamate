@@ -137,9 +137,24 @@ curl -sI http://localhost:8090/apk/teslamate-app.apk | grep -iE "HTTP|content-ty
 | `AMAP_KEY` | 高德配额用尽/被封，换新 Key | `docker compose up -d api`（App 端不用动） |
 | `NOMINAL_BATTERY_KWH` | **换车**，填新车铭牌电池容量（kWh） | `docker compose up -d api`（App 端不用动） |
 | `TZ_NAME` | 统计口径的本地时区 | `docker compose up -d api` |
+| `TESLA_CLIENT_ID` | Tesla Fleet API 应用凭据（client id），换应用时改 | `docker compose up -d api`（App 端不用动） |
+| `TESLA_CLIENT_SECRET` | Tesla Fleet API 应用凭据（client secret），换应用时改 | `docker compose up -d api`（App 端不用动） |
+| `TESLA_REFRESH_TOKEN` | 锁车状态用的 refresh_token。**一次性、会轮换**，服务端刷新后自动回写本行 | 浏览器授权拿到后填这里 → `docker compose up -d api` |
+| `TESLA_REGION` | 账号区域：`cn`（默认）/ `na` / `eu` | `docker compose up -d api` |
+| `TESLA_VEHICLE_ID` | 指定车辆 id；不填就自动取车辆列表第一台 | `docker compose up -d api` |
 
 > 换车时记得同时改 `cars` 表里 TeslaMate 记录的 `efficiency`（车辆效率 kWh/km），
 > 否则能耗、电池容量反算都会偏。这个值在 TeslaMate 网页（4000 端口）里改。
+
+> **Fleet API 凭据的接线（v0.8.4 起）**
+> `compose.yaml` 的 `api` 服务目前只透传**显式列出**的环境变量，
+> 上面这几个 `TESLA_*` 不会自动进容器。要让锁车状态生效，需要在 `api` 服务里补上：
+>
+> 1. `env_file: - .env`（或逐条写 `environment: - TESLA_CLIENT_ID=${TESLA_CLIENT_ID}`）；
+> 2. 把 `.env` 以**可写**方式挂进容器（否则服务端没法把轮换后的 refresh_token 回写回来）。
+>
+> 没接线也不影响主服务：锁车状态恒为 `null`（未知），其余端点照常。
+> 回写失败时服务端会打警告并退化为「写兜底文件」，**不会崩、也不会把凭据写坏**。
 
 ## 4. 故障排查
 

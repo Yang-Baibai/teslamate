@@ -112,6 +112,10 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.DataAgeHours = age.Hours
 	s.DataStale = age.Stale
 
+	// 锁车状态来自 Tesla Fleet API 的后台轮询缓存（api/tesla.go）。
+	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。
+	s.Locked, s.LockedAt = teslaLockState()
+
 	writeJSON(w, s)
 }
 

@@ -84,12 +84,31 @@ API 返回：`tpms_alert`(bool) / `tpms_alert_wheels`(字符串数组) / `tpms_a
 - **车睡着了** —— 请求成功，只是车很久没上报 → App 显示蓝色提示，**推脚本不推**（正常）
 - **连不上服务器** —— 请求失败 → App 显示红色错误条，**推脚本也不推**（网络问题不是车况问题）
 
+## 3.6 锁车状态口径（v0.8.4 起，来源 Tesla Fleet API）
+
+| 字段 | 口径 |
+|---|---|
+| `locked` | 车门锁状态：`true`=已上锁 / `false`=未上锁 / **`null`=未知**。数据源是 Tesla Fleet API 的 `vehicle_data?endpoints=lock_state`（scope `vehicle_device_data`），**不是** TeslaMate 数据库——库里根本没有这个字段 |
+| `locked_at` | 本次状态的采集时刻（UTC）。车休眠时 Fleet API 返回 408，服务端保留上次已知结果，靠这个字段表达新鲜度；`null` = 从来没拿到过数据 |
+
+**为什么必须有 `null` 这一态**：锁车状态只有云端知道，而且车睡着时根本不给数据。
+把「不知道」压成 `false` 会让 App 显示「未上锁」——这是**危险的反向误报**
+（用户以为车没锁，其实只是没数据）。宁可显示「未知」，也不要猜。
+
+**刷新节奏**：服务端每 2 分钟拉一次（区域由 `TESLA_REGION` 决定，默认 `cn`）。
+凭据缺失时整个功能关闭，`locked` 恒为 `null`，主服务不受影响。
+
+**refresh_token 是一次性的**：Fleet API 的 refresh_token 每次刷新都会轮换，旧 token 立刻失效（有效期 3 个月）。
+服务端拿到新 token 会自动回写 `.env` 的 `TESLA_REFRESH_TOKEN=` 行（原子写，保留原格式与行尾），
+否则 3 个月后要重新走浏览器授权。
+
 ## 4. 本车基准值（.env 可改）
 | 项 | 值 | 存放 |
 |---|---|---|
 | 车辆 | Model 3 LR AWD Performance（P74D，2021） | cars 表 |
 | 车辆效率 | 0.146 kWh/km | cars.efficiency（TeslaMate 维护） |
 | **铭牌电池容量** | **76.8 kWh** | `.env` → `NOMINAL_BATTERY_KWH` |
+| 锁车状态 | Tesla Fleet API（scope `vehicle_device_data`） | `.env` → `TESLA_CLIENT_ID` / `TESLA_REFRESH_TOKEN` |
 | 地图 Key | 高德 Web 服务 Key | `.env` → `AMAP_KEY` |
 | 已知限制 | 高德账号未开通 markers 与 paths.fillcolor 子权限（20003） | 开通：lbs.amap.com 控制台加服务 |
 

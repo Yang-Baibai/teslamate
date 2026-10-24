@@ -45,6 +45,20 @@
 | **tpms_min_bar / tpms_max_bar** | **胎压正常范围（供 App 展示，避免两边各写一份阈值）** |
 | **data_age_hours** | **数据距今多少小时（整数）** |
 | **data_stale** | **数据是否已过期（超过 24 小时）** |
+| **locked** | **锁车状态：`true`=已上锁 / `false`=未上锁 / `null`=未知**（数据源：Tesla Fleet API，见下） |
+| **locked_at** | **本次锁车状态的采集时刻（UTC，ISO-8601）**。`null` = 从来没拿到过数据 |
+
+> **v0.8.4 新增的 `locked` / `locked_at` 来自 Tesla Fleet API，不是数据库。**
+> TeslaMate 的库里没有「车门锁没锁」这个字段，只有特斯拉云端知道，
+> 所以服务端每 2 分钟拉一次 `vehicle_data?endpoints=lock_state`（需 scope `vehicle_device_data`）并缓存。
+>
+> **三态语义必须严格区分**：`true`=已上锁、`false`=未上锁、**`null`=未知**。
+> `null` 出现在两种情况：没配 Fleet API 凭据、或者拉取失败。
+> **App 不能把 `null` 当成 `false`** —— 那会把「不知道」显示成「没锁」，属于危险的反向误报。
+>
+> 车处于休眠时 Fleet API 返回 408，服务端会**保留上次已知结果**，
+> 用 `locked_at` 表达新鲜度（`locked_at` 越旧说明数据越不可信）。
+> 凭据缺失时整个功能关闭，主服务照常工作。
 
 > **v0.7.0 新增的四个判定字段是「唯一事实源」。**
 > 告警阈值与判定逻辑只在服务端实现一次（`api/alerts.go`），

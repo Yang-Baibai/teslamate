@@ -45,6 +45,13 @@ type CarStatus struct {
 	TpmsRL *float64 `json:"tpms_rl"`
 	TpmsRR *float64 `json:"tpms_rr"`
 
+	// v0.8.4 新增：锁车状态（来源 Tesla Fleet API，后台轮询后缓存）
+	// 三态：true=已上锁 / false=未上锁 / null=未知（没配凭据或拉取失败）。
+	// 注意：不能用 omitempty——nil 必须原样输出成 null，否则 App 分不清
+	// 「没锁」和「不知道」。
+	Locked   *bool      `json:"locked"`
+	LockedAt *time.Time `json:"locked_at"` // 本次状态采集时刻（App 用它判断新鲜度）
+
 	// v0.7.0 新增：服务端算好的告警判定（唯一事实源，App 与推送脚本共用）
 	// 详见 alerts.go —— 阈值与判定逻辑只在服务端实现一次。
 	TpmsAlert       bool     `json:"tpms_alert"`
