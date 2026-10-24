@@ -7,7 +7,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 B="${REMOTE_HOST:-http://localhost:8090}"
-TOKEN=$(grep '^API_TOKEN=' .env | cut -d= -f2)
+# ⚠️ 必须去掉行尾的 \r：.env 在 Windows 上是 CRLF，`cut` 会把 \r 一起带进值里，
+# 于是 Authorization 头变成 "Bearer xxx\r" → 401，后面每条断言都会假失败。
+TOKEN=$(grep '^API_TOKEN=' .env | cut -d= -f2 | tr -d '\r')
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  ✗ $1"; }
@@ -54,6 +56,19 @@ assert 'locked_at' in d, 'missing locked_at'
 " 2>/dev/null \
   && ok "status 含 locked 字段（bool 或 null）" || fail "status 含 locked 字段（bool 或 null）"
 
+# 4d. v0.8.5：Fleet API 实时胎压（Tesla Fleet API 的 vehicle_state）。
+# 键必须存在；没配凭据 / 车休眠时值是 null（未知），不能缺键，也不能是 0。
+echo "$S" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+for k in ('tpms_live_fl','tpms_live_fr','tpms_live_rl','tpms_live_rr'):
+    assert k in d, 'missing '+k
+    v=d[k]
+    assert v is None or isinstance(v,(int,float)), k+' must be number or null'
+assert 'tpms_live_at' in d, 'missing tpms_live_at'
+" 2>/dev/null \
+  && ok "status 含 tpms_live 实时胎压字段" || fail "status 含 tpms_live 实时胎压字段"
+
 # 5. 充电列表含损耗率
 CH=$(curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charges?limit=3")
 echo "$CH" | python -c "import json,sys;d=json.load(sys.stdin);assert len(d)>0 and 'loss_percent' in d[0]" 2>/dev/null \
@@ -84,7 +99,7 @@ done
 
 # 7. 电池健康：铭牌容量口径
 BAT=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" $B/api/v1/cars/1/battery)
-NOM=$(grep '^NOMINAL_BATTERY_KWH=' .env | cut -d= -f2)
+NOM=$(grep '^NOMINAL_BATTERY_KWH=' .env | cut -d= -f2 | tr -d '\r')
 echo "$BAT" | python -c "
 import json,sys
 d=json.load(sys.stdin)

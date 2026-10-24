@@ -5,6 +5,69 @@
 
 ---
 
+## 2026-10-24（v0.8.5：Fleet API 实时胎压）
+
+> 本轮只动服务端（`api/`、`scripts/smoke.sh`、`docs/`）与 App 的**数据模型层**（`Api.kt`），
+> **既有字段一个没改**，只新增字段。App 的 UI（`ui/` 下的页面）本次未动。
+
+### 背景
+
+车况页的胎压数据来自 TeslaMate 的数据库，而 TeslaMate 只在**车开动/充电时**才记一条采样，
+于是「车停着的时候胎压是多少」经常是**几小时前的旧值** —— 慢撒气这种最该被发现的异常，
+恰恰发生在车停着的时候，旧值反而把问题掩盖了。
+
+实测（中国区 Fleet API `fleet-api.prd.cn.vn.cloud.tesla.cn`）：
+`GET /api/1/vehicles/{id}/vehicle_data`（**不带 `endpoints` 参数**）返回约 6.5 KB，
+`response.vehicle_state` 里除了 `locked`，还带着：
+
+| 字段 | 实测值 | 说明 |
+|---|---|---|
+| `tpms_pressure_fl/fr/rl/rr` | 2.95 / 2.875 / 2.875 / 2.85 | 四轮胎压（bar） |
+| `tpms_hard_warning_fl/fr/rl/rr` | false | **Tesla 服务端自己判定的硬告警** |
+| `tpms_soft_warning_fl/fr/rl/rr` | false | **Tesla 服务端自己判定的软告警**（接近阈值） |
+| `odometer` | 63041.137767 | 里程表 km |
+
+既然锁车状态已经每 2 分钟拉一次 `vehicle_data`，胎压就是**同一次响应里顺手拿**的事 —— 不用多花一次请求。
+
+### 改动
+
+1. **`api/tesla.go`**：`fetchLockState` → **`fetchVehicleState`**，一次请求拿全：
+   - 解析 `vehicle_state` 里的 `locked` / `timestamp` / `odometer` + **四轮实时胎压 + 硬/软告警位**；
+   - 新增 `teslaClient.TPMS()` 取值方法（与 `LockState()` 并排，缓存由 `stateMu` 保护）；
+   - **告警判定**：Tesla 自己的硬告警位优先于我们的阈值（硬→异常，软→接近阈值），
+     两者都没有时用 `alerts.go` 的阈值兜底（Tesla 只在告警时才给 warning 位，不告警时不会告诉你「快到了」）；
+   - **车休眠（408）时保留上一次已知值**（与锁车状态同样处理），拉取真正失败才连胎压一起清空。
+2. **`api/models.go` + `api/handlers.go`**：`/api/v1/cars/{id}/status` 新增
+   `tpms_live_fl/fr/rl/rr`、`tpms_live_at`，以及 live 值专属的告警字段
+   `tpms_live_alert`（三态）、`tpms_live_alert_wheels`、`tpms_live_alert_detail`、`tpms_live_warn_wheels`。
+   **刻意不带 `omitempty`** —— nil 必须原样输出成 `null`。
+   **与既有 `tpms_fl/fr/rl/rr` 是两个来源，不互相覆盖**：前者是 TeslaMate 的稀疏采样，后者是 Fleet API 的实时值。
+3. **`app-android/.../Api.kt`**：`CarStatus` 数据类补上对应字段（只动数据模型层，**没碰 `ui/` 下任何文件**）。
+4. **`scripts/smoke.sh`**：新增第 16 条断言（`tpms_live_fl/fr/rl/rr` 与 `tpms_live_at` 键必须存在，值可为 null）；原有 15 条断言不变。
+5. **`api/tesla_test.go`**：修掉 v0.8.4 遗留的**编译错误**（`fetchLockState` 改签名后测试没跟着改，`go vet` 直接不通过），
+   并补齐：胎压/告警位解析、缺字段=nil（不压成 0）、硬/软告警判定、车休眠保留上次值、
+   `CarStatus` 的 live 字段必须是 `null` 而不是缺键。
+
+### 影响
+
+- **数据库零改动**（本服务对库只有 SELECT）。
+- **没配凭据也能跑**：容器照常启动，`tpms_live_*` 全是 `null`（未知），原有 15 条断言照常通过。
+- **既有字段一个没改**：`tpms_alert*` 仍然只针对 TeslaMate 的采样值，
+  live 值有自己的一套 `tpms_live_alert*`，两套口径不混。
+- **旧版 App 不受影响**：新增字段对旧版 App 不可见（`ignoreUnknownKeys = true`）。
+- **限流没有变化**：胎压是搭锁车状态那次请求的便车，没有新增任何 Tesla 侧请求。
+
+### 回滚
+
+- 服务端侧：`git revert <本条目的提交 hash>`（提交信息：`feat(api): 接入 Tesla Fleet API 实时胎压`）后 `docker compose up -d api`，
+  `/status` 不再返回 `tpms_live_*`（其余字段与行为完全不变）。
+- 只想关掉功能、不动代码：把 `TESLA_CLIENT_ID` / `TESLA_REFRESH_TOKEN` 从 `.env` 里去掉再 `docker compose up -d api`，
+  `tpms_live_*` 恒为 `null`（未知）。
+- ⚠️ **App 端数据模型不在本条目这次提交里**：`Api.kt` 的 `tpms_live_*` 字段
+  被并行的 UI 改动一起提交到了 `43b37fe`（同一工作树、`git add -A` 把它带进去了）。
+  回滚 App 端字段要单独 revert 那一次提交。
+
+
 ## 2026-10-24（v0.8.4：接入 Tesla Fleet API —— 锁车状态）
 
 > 本轮只动服务端（`api/`、`scripts/smoke.sh`、`docs/`），**既有字段一个没改**，只新增两个字段。

@@ -88,7 +88,7 @@ API 返回：`tpms_alert`(bool) / `tpms_alert_wheels`(字符串数组) / `tpms_a
 
 | 字段 | 口径 |
 |---|---|
-| `locked` | 车门锁状态：`true`=已上锁 / `false`=未上锁 / **`null`=未知**。数据源是 Tesla Fleet API 的 `vehicle_data?endpoints=lock_state`（scope `vehicle_device_data`），**不是** TeslaMate 数据库——库里根本没有这个字段 |
+| `locked` | 车门锁状态：`true`=已上锁 / `false`=未上锁 / **`null`=未知**。数据源是 Tesla Fleet API 的 `vehicle_data`（scope `vehicle_device_data`），**不是** TeslaMate 数据库——库里根本没有这个字段 |
 | `locked_at` | 本次状态的采集时刻（UTC）。车休眠时 Fleet API 返回 408，服务端保留上次已知结果，靠这个字段表达新鲜度；`null` = 从来没拿到过数据 |
 
 **为什么必须有 `null` 这一态**：锁车状态只有云端知道，而且车睡着时根本不给数据。
@@ -101,6 +101,41 @@ API 返回：`tpms_alert`(bool) / `tpms_alert_wheels`(字符串数组) / `tpms_a
 **refresh_token 是一次性的**：Fleet API 的 refresh_token 每次刷新都会轮换，旧 token 立刻失效（有效期 3 个月）。
 服务端拿到新 token 会自动回写 `.env` 的 `TESLA_REFRESH_TOKEN=` 行（原子写，保留原格式与行尾），
 否则 3 个月后要重新走浏览器授权。
+
+## 3.7 实时胎压口径（v0.8.5 起，来源 Tesla Fleet API）
+
+| 字段 | 口径 |
+|---|---|
+| `tpms_live_fl` / `tpms_live_fr` / `tpms_live_rl` / `tpms_live_rr` | 四轮**实时**胎压（bar）。数据源是 Tesla Fleet API 的 `vehicle_state.tpms_pressure_*`（中国区实测），**不是** TeslaMate 数据库；`null` = 没读到（没配凭据 / 车休眠 / 还没拉到） |
+| `tpms_live_at` | 这批实时值的采集时刻（UTC）。车休眠时服务端保留上次已知结果，靠这个字段表达新鲜度；`null` = 从来没拿到过数据 |
+| `tpms_live_alert` | 实时胎压告警：`true`=有异常 / `false`=已知正常 / **`null`=未知**（没读到数据） |
+| `tpms_live_alert_wheels` / `tpms_live_alert_detail` | 异常轮次（如 `["左后"]`）与读数描述（如 `"左后 2.80 bar"`） |
+| `tpms_live_warn_wheels` | 接近阈值的轮次（Tesla 的软告警位 `tpms_soft_warning_*`），如 `["右前"]` |
+
+**两套胎压值并存，各有各的口径，不要混用**：
+
+| 字段组 | 来源 | 采样节奏 | 用途 |
+|---|---|---|---|
+| `tpms_fl/fr/rl/rr` | TeslaMate 数据库 | **稀疏**：车开动/充电时才记，数小时才有一条 | 历史趋势、离线时兜底 |
+| `tpms_live_fl/fr/rl/rr` | Tesla Fleet API | **实时**：车醒着时每 2 分钟一条 | 当前胎压、告警判定 |
+
+**App 端优先级：有 live 就用 live，没有才回退 `tpms_fl`**（live 明显更鲜，
+TeslaMate 的采样可能是几小时前的旧值 —— 用旧值判告警会误报）。
+
+**告警判定口径（服务端唯一事实源，`api/tesla.go`）**：
+
+1. **Tesla 服务端自己的硬告警位**（`tpms_hard_warning_*`）→ **异常**（优先于我们的阈值）
+2. **Tesla 服务端自己的软告警位**（`tpms_soft_warning_*`）→ **接近阈值**（只提示，不算异常）
+3. **阈值兜底**（复用 `api/alerts.go` 的判据）：`< 2.5` 或 `> 3.3 bar`、单胎比四轮中位数低 `0.2 bar` 以上 → 异常
+
+**为什么第 3 条不能省**：Tesla 只在**真的告警时**才给 warning 位，
+不告警时它不会告诉你「快到阈值了」——想知道「接近」只能自己拿阈值算。
+判据与既有的 `tpms_*` 完全一致（同一套 `TpmsMinBar` / `TpmsMaxBar` / `TpmsOutlierDelta`），
+所以两套值的告警口径不会漂移。
+
+**车休眠（Fleet API 返回 408）时保留上一次已知值**，
+和锁车状态一个处理：`tpms_live_at` 越旧说明数据越不可信，
+从来没有过数据时才是 `null`。
 
 ## 4. 本车基准值（.env 可改）
 | 项 | 值 | 存放 |

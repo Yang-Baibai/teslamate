@@ -52,6 +52,29 @@ type CarStatus struct {
 	Locked   *bool      `json:"locked"`
 	LockedAt *time.Time `json:"locked_at"` // 本次状态采集时刻（App 用它判断新鲜度）
 
+	// v0.8.5 新增：实时胎压（来源 Tesla Fleet API 的 vehicle_state，后台轮询后缓存）
+	//
+	// ⚠️ 与上面的 tpms_fl/fr/rl/rr 是**两个来源，不要互相覆盖**：
+	//   - tpms_fl…   = TeslaMate 的稀疏采样（车开动/充电时才记，数小时才有一条）
+	//   - tpms_live… = Fleet API 的实时值（车醒着时每 2 分钟一条，明显更鲜）
+	// App 端：live 有值就用 live，没有才回退 tpms_fl…。
+	//
+	// 同样不能用 omitempty：nil 必须原样输出成 null，
+	// 否则 App 分不清「没读到」和「读到 0」（0 bar 是不可能值）。
+	TpmsLiveFL *float64 `json:"tpms_live_fl"`
+	TpmsLiveFR *float64 `json:"tpms_live_fr"`
+	TpmsLiveRL *float64 `json:"tpms_live_rl"`
+	TpmsLiveRR *float64 `json:"tpms_live_rr"`
+	TpmsLiveAt *time.Time `json:"tpms_live_at"` // 这批实时值的采集时刻
+
+	// 实时胎压的告警判定（与服务端算好的 tpms_alert* 同口径，但只针对 live 值）。
+	// TpmsLiveAlert 三态：true=有异常 / false=已知正常 / null=未知（没读到数据）。
+	// 同样不用 omitempty：没数据时必须输出 null，让 App 区分「正常」和「不知道」。
+	TpmsLiveAlert       *bool    `json:"tpms_live_alert"`
+	TpmsLiveAlertWheels []string `json:"tpms_live_alert_wheels"` // 异常轮次，如 ["左后"]
+	TpmsLiveAlertDetail string   `json:"tpms_live_alert_detail"` // 如 "左后 2.80 bar"
+	TpmsLiveWarnWheels  []string `json:"tpms_live_warn_wheels"`  // 接近阈值的轮次（软告警）
+
 	// v0.7.0 新增：服务端算好的告警判定（唯一事实源，App 与推送脚本共用）
 	// 详见 alerts.go —— 阈值与判定逻辑只在服务端实现一次。
 	TpmsAlert       bool     `json:"tpms_alert"`

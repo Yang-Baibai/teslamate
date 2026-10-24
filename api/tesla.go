@@ -1,16 +1,16 @@
 package main
 
-// ---------- Tesla Fleet API 只读客户端（锁车状态） ----------
+// ---------- Tesla Fleet API 只读客户端（锁车状态 + 实时胎压） ----------
 //
 // 为什么需要它：
-//   TeslaMate 的库里没有「车门锁没锁」——它只记行驶、充电、位置。
-//   锁车状态只有特斯拉云端知道，只能走 Tesla Fleet API 读 vehicle_data。
+//   TeslaMate 的库里没有「车门锁没锁」，也没有实时胎压——它只记行驶、充电、位置。
+//   锁车状态与实时胎压只有特斯拉云端知道，只能走 Tesla Fleet API 读 vehicle_data。
 //
 // 三条硬约束（决定了下面所有设计）：
 //  1. 凭据可能没有。没有凭据必须照常启动，locked 返回 null（未知），绝不 panic。
 //  2. refresh_token 是一次性的：刷新后旧的立即失效，有效期 3 个月。
 //     每次刷新拿到新 token 都必须落盘，否则三个月后要重新走浏览器授权。
-//  3. 任何失败都不能影响主服务：锁车状态拿不到就是「未知」。
+//  3. 任何失败都不能影响主服务：锁车/胎压拿不到就是「未知」。
 //
 // 只读：本文件只发 GET 和一次换 token 的 POST，绝不调用任何车控接口。
 
@@ -85,7 +85,7 @@ type teslaConfig struct {
 
 // teslaClient Fleet API 只读客户端。
 //
-// 并发模型：令牌状态与锁车状态各一把读写锁。
+// 并发模型：令牌状态与车辆状态各一把读写锁。
 // 只有一个后台 goroutine 会写，HTTP handler 只读，所以读侧永远不加锁排队。
 type teslaClient struct {
 	cfg      teslaConfig
@@ -102,6 +102,29 @@ type teslaClient struct {
 	stateMu  sync.RWMutex
 	locked   *bool
 	lockedAt *time.Time
+	liveTPMS TeslaTPMS // 实时胎压快照（来源 Fleet API 的 vehicle_state）
+}
+
+// TeslaTPMSWheel 一只轮胎的实时读数与 Tesla 服务端的告警位。
+//
+// Pressure 为 nil = 没读到（字段缺失 / 车休眠），**不是 0** ——
+// 0 bar 是不可能值，压成 0 会让 App 显示「0 bar」这种一眼假的读数。
+type TeslaTPMSWheel struct {
+	Pressure *float64 // bar
+	Hard     bool     // tpms_hard_warning_*：Tesla 自己判定的硬告警
+	Soft     bool     // tpms_soft_warning_*：Tesla 自己判定的软告警（接近阈值）
+}
+
+// TeslaTPMS 一次拉回来的四轮实时胎压快照。
+//
+// 轮次固定为：左前 FL / 右前 FR / 左后 RL / 右后 RR。
+type TeslaTPMS struct {
+	FL TeslaTPMSWheel
+	FR TeslaTPMSWheel
+	RL TeslaTPMSWheel
+	RR TeslaTPMSWheel
+
+	At *time.Time // 这批数据的采集时刻（车端上报的 timestamp）
 }
 
 // 全局实例。nil 表示没初始化（此时锁车状态恒为未知）。
@@ -115,6 +138,16 @@ func teslaLockState() (*bool, *time.Time) {
 		return nil, nil
 	}
 	return tesla.LockState()
+}
+
+// teslaLiveTPMS 返回缓存的实时胎压快照。
+//
+// 没初始化（没配凭据）时返回零值：四轮 Pressure 全是 nil、At 是 nil = 未知。
+func teslaLiveTPMS() TeslaTPMS {
+	if tesla == nil {
+		return TeslaTPMS{}
+	}
+	return tesla.TPMS()
 }
 
 // loadTeslaConfig 从环境变量读配置。缺什么都不报错——缺了就是「未知」。
@@ -191,6 +224,16 @@ func (c *teslaClient) LockState() (*bool, *time.Time) {
 	return c.locked, c.lockedAt
 }
 
+// TPMS 返回缓存的实时胎压快照（读侧不加锁排队）。
+//
+// 返回的是快照副本：里面的指针指向的数值**再也不会被改写**
+// （每轮轮询都是新分配），所以调用方可以安全地持有它。
+func (c *teslaClient) TPMS() TeslaTPMS {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.liveTPMS
+}
+
 // setLockState 记下本次采集结果。
 func (c *teslaClient) setLockState(locked bool, at time.Time) {
 	c.stateMu.Lock()
@@ -201,12 +244,23 @@ func (c *teslaClient) setLockState(locked bool, at time.Time) {
 	c.lockedAt = &t
 }
 
-// clearLockState 降级成「未知」。
-func (c *teslaClient) clearLockState() {
+// setLiveTPMS 记下本次采集到的实时胎压。
+func (c *teslaClient) setLiveTPMS(t TeslaTPMS) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.liveTPMS = t
+}
+
+// clearVehicleState 降级成「未知」。
+//
+// 锁车与实时胎压来自同一次请求，成败一起 —— 一个留着旧值一个清空，
+// 反而会让 App 拼出「新的胎压 + 旧的锁车状态」这种自相矛盾的组合。
+func (c *teslaClient) clearVehicleState() {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	c.locked = nil
 	c.lockedAt = nil
+	c.liveTPMS = TeslaTPMS{}
 }
 
 // Run 后台轮询循环。ctx 取消即退出。
@@ -225,12 +279,12 @@ func (c *teslaClient) Run(ctx context.Context) {
 		case err == nil:
 			backoff = teslaBackoffInit
 		case errors.Is(err, errVehicleUnavailable):
-			// 车睡着了：保留上次已知结果，只提示一次，别刷屏
-			log.Printf("ℹ️  Tesla 车辆当前不可用（多半休眠）：锁车状态保留上次结果")
+			// 车睡着了：保留上次已知结果（锁车 + 实时胎压），只提示一次，别刷屏
+			log.Printf("ℹ️  Tesla 车辆当前不可用（多半休眠）：锁车与实时胎压保留上次结果")
 			backoff = teslaBackoffInit
 		default:
-			// 真失败：锁车状态降级成「未知」，退避重试
-			c.clearLockState()
+			// 真失败：锁车与实时胎压一起降级成「未知」，退避重试
+			c.clearVehicleState()
 			wait = backoff
 			backoff *= 2
 			if backoff > teslaBackoffMax {
@@ -246,7 +300,11 @@ func (c *teslaClient) Run(ctx context.Context) {
 	}
 }
 
-// pollOnce 跑一轮：刷新 token → 找车 → 拉锁车状态。
+// pollOnce 跑一轮：刷新 token → 找车 → 拉车辆实时状态（锁车 + 胎压 + 里程）。
+//
+// ⚠️ 一次请求拿全部：中国区的 vehicle_data 不支持 endpoints 参数，
+// 只能整包拉（约 6.5 KB），所以锁车与胎压本来就该在同一个响应里解析，
+// 没必要为了多拿几个字段再发一次请求（那只会平白多吃一倍限流额度）。
 func (c *teslaClient) pollOnce(ctx context.Context) error {
 	if err := c.ensureToken(ctx); err != nil {
 		return fmt.Errorf("刷新 access_token 失败: %w", err)
@@ -255,17 +313,21 @@ func (c *teslaClient) pollOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("获取车辆列表失败: %w", err)
 	}
-	locked, lockedAt, err := c.fetchLockState(ctx, vid)
+	st, err := c.fetchVehicleState(ctx, vid)
 	if err != nil {
-		return fmt.Errorf("获取锁车状态失败: %w", err)
+		return fmt.Errorf("获取车辆状态失败: %w", err)
 	}
 	// 采集时刻优先用车端上报的 timestamp（车端时钟，更接近数据真实时刻），
 	// 没有就用本地时间 —— 它只用于让 App 显示新鲜度。
-	if lockedAt == nil {
+	if st.LockedAt == nil {
 		now := time.Now().UTC()
-		lockedAt = &now
+		st.LockedAt = &now
+		st.TPMS.At = &now
 	}
-	c.setLockState(*locked, *lockedAt)
+	if st.Locked != nil {
+		c.setLockState(*st.Locked, *st.LockedAt)
+	}
+	c.setLiveTPMS(st.TPMS)
 	return nil
 }
 
@@ -469,12 +531,70 @@ func (f *flexString) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// fetchLockState 拉某辆车的锁车状态。
+// teslaVehicleState 一次 vehicle_data 拉回来的车辆状态快照。
+type teslaVehicleState struct {
+	Locked   *bool      // 车门锁状态
+	LockedAt *time.Time // 车端上报的采集时刻
+	Odometer *float64   // 里程表 km
+	TPMS     TeslaTPMS  // 四轮实时胎压
+}
+
+// vehicleStateJSON 中国区 vehicle_data 里的 vehicle_state 段。
+//
+// 全部用指针：缺字段 = 没读到（nil），而不是 0。
+// 胎压 0 bar 是不可能值，缺字段压成 0 会让 App 显示一眼假的读数。
+type vehicleStateJSON struct {
+	Locked    *bool    `json:"locked"`
+	Timestamp *int64   `json:"timestamp"` // 毫秒
+	Odometer  *float64 `json:"odometer"`  // km
+
+	// 实时胎压（bar）
+	PressureFL *float64 `json:"tpms_pressure_fl"`
+	PressureFR *float64 `json:"tpms_pressure_fr"`
+	PressureRL *float64 `json:"tpms_pressure_rl"`
+	PressureRR *float64 `json:"tpms_pressure_rr"`
+
+	// Tesla 服务端自己的告警判定（优先于我们自己的阈值计算）
+	HardFL *bool `json:"tpms_hard_warning_fl"`
+	HardFR *bool `json:"tpms_hard_warning_fr"`
+	HardRL *bool `json:"tpms_hard_warning_rl"`
+	HardRR *bool `json:"tpms_hard_warning_rr"`
+
+	SoftFL *bool `json:"tpms_soft_warning_fl"`
+	SoftFR *bool `json:"tpms_soft_warning_fr"`
+	SoftRL *bool `json:"tpms_soft_warning_rl"`
+	SoftRR *bool `json:"tpms_soft_warning_rr"`
+}
+
+// toState 把 vehicle_state 段转成内部快照。
+func (v *vehicleStateJSON) toState() teslaVehicleState {
+	st := teslaVehicleState{
+		Locked:   v.Locked,
+		Odometer: v.Odometer,
+	}
+	if v.Timestamp != nil && *v.Timestamp > 0 {
+		t := time.UnixMilli(*v.Timestamp).UTC()
+		st.LockedAt = &t
+	}
+	st.TPMS = TeslaTPMS{
+		FL: TeslaTPMSWheel{Pressure: v.PressureFL, Hard: boolOf(v.HardFL), Soft: boolOf(v.SoftFL)},
+		FR: TeslaTPMSWheel{Pressure: v.PressureFR, Hard: boolOf(v.HardFR), Soft: boolOf(v.SoftFR)},
+		RL: TeslaTPMSWheel{Pressure: v.PressureRL, Hard: boolOf(v.HardRL), Soft: boolOf(v.SoftRL)},
+		RR: TeslaTPMSWheel{Pressure: v.PressureRR, Hard: boolOf(v.HardRR), Soft: boolOf(v.SoftRR)},
+		At: st.LockedAt,
+	}
+	return st
+}
+
+// boolOf 把「可空布尔」变成普通布尔：nil = false（没告警）。
+func boolOf(b *bool) bool { return b != nil && *b }
+
+// fetchVehicleState 拉某辆车的实时状态（锁车 + 四轮胎压 + 里程表）。
 //
 // GET /api/1/vehicles/{id}/vehicle_data —— **不带 endpoints 参数**。
 //
 // ⚠️ 中国区（auth.tesla.cn / fleet-api.prd.cn.vn.cloud.tesla.cn）的实测行为
-// 与全球区文档不一致，两处都踩过：
+// 与全球区文档不一致，三处都踩过：
 //
 //  1. **不支持 endpoints**：带上 `?endpoints=lock_state` 只会返回 462 字节的
 //     车辆元数据（id/vin/state…），**完全没有 data 字段**，拿不到锁车状态。
@@ -483,64 +603,113 @@ func (f *flexString) UnmarshalJSON(b []byte) error {
 //     中国区把各状态组直接挂在 response 下，锁车在
 //     `response.vehicle_state.locked`（同组还有 timestamp、odometer、
 //     四轮胎压等）。全球区才是 `response.data.lock_state`。
+//  3. **实时胎压也在同一个 vehicle_state 里**（中国区实测）：
+//     `tpms_pressure_fl/fr/rl/rr`（bar）+ `tpms_hard_warning_*` +
+//     `tpms_soft_warning_*`。所以锁车与胎压一次请求就拿全了。
 //
-// 两种都认：先找 vehicle_state.locked，再回退到 data.lock_state。
+// 两种包封都认：先找 vehicle_state（同时带出胎压），再回退到 data.lock_state。
 //
 // 需要 scope vehicle_device_data。
-func (c *teslaClient) fetchLockState(ctx context.Context, vehicleID string) (*bool, *time.Time, error) {
+func (c *teslaClient) fetchVehicleState(ctx context.Context, vehicleID string) (teslaVehicleState, error) {
 	u := fmt.Sprintf("%s/api/1/vehicles/%s/vehicle_data",
 		c.fleetURL, url.PathEscape(vehicleID))
 	body, code, err := c.get(ctx, u)
 	if err != nil {
-		return nil, nil, err
+		return teslaVehicleState{}, err
 	}
 	if code == http.StatusRequestTimeout { // 408：车睡着了
-		return nil, nil, errVehicleUnavailable
+		return teslaVehicleState{}, errVehicleUnavailable
 	}
 	if code != http.StatusOK {
-		return nil, nil, fmt.Errorf("vehicle_data 返回 %d: %s", code, maskSecretText(truncate(string(body), 300)))
+		return teslaVehicleState{}, fmt.Errorf("vehicle_data 返回 %d: %s", code, maskSecretText(truncate(string(body), 300)))
 	}
 
 	// 包封见过 {"response":{...}} 与 {"data":{...}}，两种都认。
 	var wrapper map[string]json.RawMessage
 	if err := json.Unmarshal(body, &wrapper); err != nil {
-		return nil, nil, fmt.Errorf("vehicle_data 解析失败: %w", err)
+		return teslaVehicleState{}, fmt.Errorf("vehicle_data 解析失败: %w", err)
 	}
 	raw, ok := wrapper["response"]
 	if !ok {
 		raw, ok = wrapper["data"]
 	}
 	if !ok {
-		return nil, nil, errors.New("vehicle_data 响应里没有 response/data 字段")
+		return teslaVehicleState{}, errors.New("vehicle_data 响应里没有 response/data 字段")
 	}
 
-	// 中国区形态：状态平铺在 response 下，锁车在 vehicle_state 里。
+	// 中国区形态：状态平铺在 response 下，锁车与胎压都在 vehicle_state 里。
 	var flat struct {
-		VehicleState *struct {
-			Locked    *bool  `json:"locked"`
-			Timestamp *int64 `json:"timestamp"` // 毫秒
-		} `json:"vehicle_state"`
+		VehicleState *vehicleStateJSON `json:"vehicle_state"`
 	}
-	if err := json.Unmarshal(raw, &flat); err == nil && flat.VehicleState != nil && flat.VehicleState.Locked != nil {
-		var at *time.Time
-		if flat.VehicleState.Timestamp != nil && *flat.VehicleState.Timestamp > 0 {
-			t := time.UnixMilli(*flat.VehicleState.Timestamp).UTC()
-			at = &t
+	if err := json.Unmarshal(raw, &flat); err == nil && flat.VehicleState != nil {
+		st := flat.VehicleState.toState()
+		if st.Locked == nil {
+			return teslaVehicleState{}, errors.New("vehicle_data 响应里没有 lock_state")
 		}
-		return flat.VehicleState.Locked, at, nil
+		return st, nil
 	}
 
-	// 全球区形态：response.data.lock_state
+	// 全球区形态：response.data.lock_state（实测不含胎压字段）
 	var data struct {
 		LockState *bool `json:"lock_state"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, nil, fmt.Errorf("lock_state 解析失败: %w", err)
+		return teslaVehicleState{}, fmt.Errorf("lock_state 解析失败: %w", err)
 	}
 	if data.LockState == nil {
-		return nil, nil, errors.New("vehicle_data 响应里没有 lock_state")
+		return teslaVehicleState{}, errors.New("vehicle_data 响应里没有 lock_state")
 	}
-	return data.LockState, nil, nil
+	return teslaVehicleState{Locked: data.LockState}, nil
+}
+
+// LiveTpmsResult 实时胎压的判定结果。
+type LiveTpmsResult struct {
+	Alerting   bool     // 是否有异常
+	Wheels     []string // 异常轮次（中文名）
+	Values     []string // 异常轮次的读数描述
+	WarnWheels []string // 接近阈值的轮次（Tesla 的软告警）
+}
+
+// EvaluateLiveTpms 判定实时胎压（服务端唯一事实源）。
+//
+// 判据优先级：
+//  1. **Tesla 服务端自己的硬告警位**（tpms_hard_warning_*）——它说了算，优先于阈值
+//  2. **Tesla 服务端自己的软告警位**（tpms_soft_warning_*）——「接近阈值」的提示
+//  3. **阈值兜底**（复用 alerts.go 的 EvaluateTpms，判据与既有 tpms_* 完全一致）：
+//     Tesla 只在告警时才给 warning 位，不告警时不会告诉你「快到了」，
+//     所以越界（<2.5 / >3.3 bar）与单胎离群仍要自己算一遍。
+//
+// 硬告警 → 异常；软告警 → 接近阈值（提示，不算异常）。
+func EvaluateLiveTpms(tpms TeslaTPMS) LiveTpmsResult {
+	// 阈值兜底：判据与既有的 tpms_* 完全一致（见 alerts.go）
+	base := EvaluateTpms(tpms.FL.Pressure, tpms.FR.Pressure, tpms.RL.Pressure, tpms.RR.Pressure)
+	thresholdHit := map[string]bool{}
+	for _, w := range base.Wheels {
+		thresholdHit[w] = true
+	}
+
+	wheels := []struct {
+		name string
+		w    TeslaTPMSWheel
+	}{
+		{"左前", tpms.FL}, {"右前", tpms.FR}, {"左后", tpms.RL}, {"右后", tpms.RR},
+	}
+
+	res := LiveTpmsResult{}
+	for _, w := range wheels {
+		if w.w.Hard || thresholdHit[w.name] {
+			res.Alerting = true
+			res.Wheels = append(res.Wheels, w.name)
+			if w.w.Pressure != nil {
+				res.Values = append(res.Values, fmtBar(w.name, *w.w.Pressure))
+			}
+			continue
+		}
+		if w.w.Soft {
+			res.WarnWheels = append(res.WarnWheels, w.name)
+		}
+	}
+	return res
 }
 
 // get 发一个带 Bearer 头的 GET。

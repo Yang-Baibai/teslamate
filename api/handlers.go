@@ -116,6 +116,35 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。
 	s.Locked, s.LockedAt = teslaLockState()
 
+	// 实时胎压同样来自 Fleet API 的后台轮询缓存（同一个 vehicle_data 响应）。
+	// ⚠️ 与上面的 tpms_fl/fr/rl/rr 是两个来源，不互相覆盖：
+	//   tpms_fl…   = TeslaMate 的稀疏采样（数小时才有一条）
+	//   tpms_live… = Fleet API 的实时值（车醒着时每 2 分钟一条，明显更鲜）
+	// App 端：live 有值就用 live，没有才回退 tpms_fl…。
+	live := teslaLiveTPMS()
+	s.TpmsLiveFL = live.FL.Pressure
+	s.TpmsLiveFR = live.FR.Pressure
+	s.TpmsLiveRL = live.RL.Pressure
+	s.TpmsLiveRR = live.RR.Pressure
+	s.TpmsLiveAt = live.At
+	// 告警判定：Tesla 服务端自己的硬/软告警位优先，阈值兜底（见 alerts.go）。
+	// 四轮一个都没读到 = 未知（null），不能报成「正常」。
+	if live.FL.Pressure != nil || live.FR.Pressure != nil ||
+		live.RL.Pressure != nil || live.RR.Pressure != nil {
+		liveEval := EvaluateLiveTpms(live)
+		alerting := liveEval.Alerting
+		s.TpmsLiveAlert = &alerting
+		s.TpmsLiveAlertWheels = liveEval.Wheels
+		s.TpmsLiveAlertDetail = strings.Join(liveEval.Values, "  ")
+		s.TpmsLiveWarnWheels = liveEval.WarnWheels
+	}
+	if s.TpmsLiveAlertWheels == nil {
+		s.TpmsLiveAlertWheels = []string{}
+	}
+	if s.TpmsLiveWarnWheels == nil {
+		s.TpmsLiveWarnWheels = []string{}
+	}
+
 	writeJSON(w, s)
 }
 

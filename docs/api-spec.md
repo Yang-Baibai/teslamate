@@ -47,10 +47,37 @@
 | **data_stale** | **数据是否已过期（超过 24 小时）** |
 | **locked** | **锁车状态：`true`=已上锁 / `false`=未上锁 / `null`=未知**（数据源：Tesla Fleet API，见下） |
 | **locked_at** | **本次锁车状态的采集时刻（UTC，ISO-8601）**。`null` = 从来没拿到过数据 |
+| **tpms_live_fl / tpms_live_fr / tpms_live_rl / tpms_live_rr** | **实时胎压（bar）：`null`=没读到 / 数值=该轮读数**（数据源：Tesla Fleet API，见下） |
+| **tpms_live_at** | **这批实时胎压的采集时刻（UTC，ISO-8601）**。`null` = 从来没拿到过数据 |
+| **tpms_live_alert** | **实时胎压告警判定：`true`=有异常 / `false`=已知正常 / `null`=未知** |
+| **tpms_live_alert_wheels** | **异常轮次名数组，如 `["左后"]`**（只针对 live 值） |
+| **tpms_live_alert_detail** | **异常轮次读数，如 `"左后 2.80 bar"`**（只针对 live 值） |
+| **tpms_live_warn_wheels** | **接近阈值的轮次名数组**（Tesla 的软告警，如 `["右前"]`） |
+
+> **v0.8.5 新增的 `tpms_live_*` 是「Fleet API 的实时胎压」，不是数据库里的采样值。**
+>
+> | 字段组 | 来源 | 新鲜度 | 何时有值 |
+> |---|---|---|---|
+> | `tpms_fl/fr/rl/rr` | **TeslaMate 数据库**（稀疏采样） | 数小时才有一条，还可能是旧值 | 一直有（只要车开过） |
+> | `tpms_live_fl/fr/rl/rr` | **Tesla Fleet API**（`vehicle_state.tpms_pressure_*`） | 车醒着时每 2 分钟一条 | 车休眠 / 没配凭据时为 `null` |
+>
+> **两套值互不覆盖，各自保留。App 端：有 live 就用 live，没有才回退 `tpms_fl`。**
+> 告警判定同理：`tpms_alert*` 针对 TeslaMate 采样值，`tpms_live_alert*` 针对 live 值。
+>
+> **`null` 的含义是「不知道」，不是 0。** 车休眠时 Fleet API 返回 408，
+> 服务端会**保留上一次已知结果**（`tpms_live_at` 越旧说明数据越不可信）；
+> 从来没拿到过数据时才是 `null`。
+>
+> `tpms_live_alert` 的判定口径（服务端 `api/tesla.go`，唯一事实源）：
+> **Tesla 服务端自己的硬告警位优先**（`tpms_hard_warning_*` → 异常），
+> 软告警位（`tpms_soft_warning_*`）→ 接近阈值（只提示，不算异常），
+> 两者都没有时用阈值兜底（`< 2.5` 或 `> 3.3 bar`、单胎比四轮中位数低 `0.2 bar` 以上）。
 
 > **v0.8.4 新增的 `locked` / `locked_at` 来自 Tesla Fleet API，不是数据库。**
 > TeslaMate 的库里没有「车门锁没锁」这个字段，只有特斯拉云端知道，
-> 所以服务端每 2 分钟拉一次 `vehicle_data?endpoints=lock_state`（需 scope `vehicle_device_data`）并缓存。
+> 所以服务端每 2 分钟拉一次 `vehicle_data`（需 scope `vehicle_device_data`）并缓存。
+> ⚠️ **不带 `endpoints` 参数**：实测中国区带上它只会返回车辆元数据（拿不到状态）。
+> 锁车与实时胎压在同一个响应里（`response.vehicle_state.*`），一次请求拿全。
 >
 > **三态语义必须严格区分**：`true`=已上锁、`false`=未上锁、**`null`=未知**。
 > `null` 出现在两种情况：没配 Fleet API 凭据、或者拉取失败。

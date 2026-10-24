@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // ---------- .env 回写 ----------
@@ -97,8 +99,8 @@ func TestWriteEnvValueRoundTrip(t *testing.T) {
 
 // ---------- Fleet API 响应解析 ----------
 
-// TestFetchLockStateParsesWrappers response / data 两种包封都要认。
-func TestFetchLockStateParsesWrappers(t *testing.T) {
+// TestFetchVehicleStateParsesWrappers response / data 两种包封都要认。
+func TestFetchVehicleStateParsesWrappers(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
@@ -113,8 +115,10 @@ func TestFetchLockStateParsesWrappers(t *testing.T) {
 				if !strings.HasSuffix(r.URL.Path, "/api/1/vehicles/123/vehicle_data") {
 					t.Errorf("path = %q", r.URL.Path)
 				}
-				if got := r.URL.Query().Get("endpoints"); got != "lock_state" {
-					t.Errorf("endpoints = %q", got)
+				// ⚠️ 绝不能带 endpoints 参数：实测中国区带上它只返回
+				// 462 字节的车辆元数据，连 lock_state / 胎压都没有。
+				if got := r.URL.Query().Get("endpoints"); got != "" {
+					t.Errorf("endpoints = %q, 中国区不支持该参数", got)
 				}
 				if got := r.Header.Get("Authorization"); got != "Bearer tok" {
 					t.Errorf("Authorization = %q", got)
@@ -129,19 +133,19 @@ func TestFetchLockStateParsesWrappers(t *testing.T) {
 			c.accessToken = "tok"
 			c.mu.Unlock()
 
-			got, err := c.fetchLockState(context.Background(), "123")
+			st, err := c.fetchVehicleState(context.Background(), "123")
 			if err != nil {
-				t.Fatalf("fetchLockState: %v", err)
+				t.Fatalf("fetchVehicleState: %v", err)
 			}
-			if got == nil || *got != tc.want {
-				t.Fatalf("lock_state = %v, want %v", got, tc.want)
+			if st.Locked == nil || *st.Locked != tc.want {
+				t.Fatalf("lock_state = %v, want %v", st.Locked, tc.want)
 			}
 		})
 	}
 }
 
-// TestFetchLockStateVehicleUnavailable 车睡着（408）要能被上层识别出来。
-func TestFetchLockStateVehicleUnavailable(t *testing.T) {
+// TestFetchVehicleStateVehicleUnavailable 车睡着（408）要能被上层识别出来。
+func TestFetchVehicleStateVehicleUnavailable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusRequestTimeout)
 		io.WriteString(w, `{"error":"vehicle unavailable"}`)
@@ -154,8 +158,220 @@ func TestFetchLockStateVehicleUnavailable(t *testing.T) {
 	c.accessToken = "tok"
 	c.mu.Unlock()
 
-	if _, err := c.fetchLockState(context.Background(), "123"); err != errVehicleUnavailable {
+	if _, err := c.fetchVehicleState(context.Background(), "123"); err != errVehicleUnavailable {
 		t.Fatalf("err = %v, want errVehicleUnavailable", err)
+	}
+}
+
+// TestFetchVehicleStateParsesTPMS 中国区的 vehicle_state 里同时带着实时胎压与告警位。
+//
+// 形状来自真机实测（中国区 fleet-api.prd.cn.vn.cloud.tesla.cn）：
+// 胎压在 vehicle_state 里，字段名是 tpms_pressure_fl/fr/rl/rr（bar）。
+func TestFetchVehicleStateParsesTPMS(t *testing.T) {
+	body := `{"response":{"vehicle_state":{
+		"locked":true,
+		"timestamp":1792851782915,
+		"odometer":63041.137767,
+		"tpms_pressure_fl":2.95,"tpms_pressure_fr":2.875,
+		"tpms_pressure_rl":2.875,"tpms_pressure_rr":2.85,
+		"tpms_hard_warning_fl":false,"tpms_hard_warning_fr":false,
+		"tpms_hard_warning_rl":false,"tpms_hard_warning_rr":false,
+		"tpms_soft_warning_fl":false,"tpms_soft_warning_fr":false,
+		"tpms_soft_warning_rl":false,"tpms_soft_warning_rr":false
+	}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	c := newTeslaClient(teslaConfig{})
+	c.fleetURL = srv.URL
+	c.mu.Lock()
+	c.accessToken = "tok"
+	c.mu.Unlock()
+
+	st, err := c.fetchVehicleState(context.Background(), "123")
+	if err != nil {
+		t.Fatalf("fetchVehicleState: %v", err)
+	}
+	if st.Locked == nil || !*st.Locked {
+		t.Fatalf("locked = %v, want true", st.Locked)
+	}
+	if st.Odometer == nil || *st.Odometer < 63041 || *st.Odometer > 63042 {
+		t.Fatalf("odometer = %v, want ≈63041.14", st.Odometer)
+	}
+	if st.LockedAt == nil || st.LockedAt.UnixMilli() != 1792851782915 {
+		t.Fatalf("采集时刻 = %v, want 1792851782915", st.LockedAt)
+	}
+	want := map[string]float64{"FL": 2.95, "FR": 2.875, "RL": 2.875, "RR": 2.85}
+	got := map[string]*float64{
+		"FL": st.TPMS.FL.Pressure, "FR": st.TPMS.FR.Pressure,
+		"RL": st.TPMS.RL.Pressure, "RR": st.TPMS.RR.Pressure,
+	}
+	for k, w := range want {
+		p := got[k]
+		if p == nil || *p != w {
+			t.Fatalf("%s 胎压 = %v, want %v", k, p, w)
+		}
+	}
+	if st.TPMS.At == nil {
+		t.Fatal("实时胎压的采集时刻不该是 nil")
+	}
+}
+
+// TestFetchVehicleStateMissingPressure 缺字段 = 不知道（nil），不能压成 0。
+func TestFetchVehicleStateMissingPressure(t *testing.T) {
+	body := `{"response":{"vehicle_state":{"locked":false,"timestamp":1792851782915,
+		"tpms_pressure_fr":2.875}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	c := newTeslaClient(teslaConfig{})
+	c.fleetURL = srv.URL
+	c.mu.Lock()
+	c.accessToken = "tok"
+	c.mu.Unlock()
+
+	st, err := c.fetchVehicleState(context.Background(), "123")
+	if err != nil {
+		t.Fatalf("fetchVehicleState: %v", err)
+	}
+	if st.TPMS.FL.Pressure != nil {
+		t.Fatalf("缺失的胎压应是 nil，实际 %v", *st.TPMS.FL.Pressure)
+	}
+	if st.TPMS.FR.Pressure == nil || *st.TPMS.FR.Pressure != 2.875 {
+		t.Fatalf("右前胎压 = %v, want 2.875", st.TPMS.FR.Pressure)
+	}
+}
+
+// TestEvaluateLiveTpms 硬告警算异常，软告警算「接近阈值」，没有告警位时靠阈值兜底。
+func TestEvaluateLiveTpms(t *testing.T) {
+	f := func(v float64) *float64 { return &v }
+
+	// 1) Tesla 服务端的硬告警位 → 异常（哪怕读数还在正常范围内）
+	res := EvaluateLiveTpms(TeslaTPMS{RL: TeslaTPMSWheel{Pressure: f(2.9), Hard: true}})
+	if !res.Alerting || len(res.Wheels) != 1 || res.Wheels[0] != "左后" {
+		t.Fatalf("硬告警应判为异常，实际 %+v", res)
+	}
+	if len(res.Values) != 1 || !strings.Contains(res.Values[0], "左后") {
+		t.Fatalf("硬告警应带读数描述，实际 %+v", res.Values)
+	}
+
+	// 2) 软告警位 → 接近阈值（提示，不算异常）
+	res = EvaluateLiveTpms(TeslaTPMS{FL: TeslaTPMSWheel{Pressure: f(2.6), Soft: true}})
+	if res.Alerting {
+		t.Fatalf("软告警不该算异常，实际 %+v", res)
+	}
+	if len(res.WarnWheels) != 1 || res.WarnWheels[0] != "左前" {
+		t.Fatalf("软告警应进 WarnWheels，实际 %+v", res)
+	}
+
+	// 3) Tesla 不告警时不会告诉你「快到了」，越界仍要靠阈值兜底
+	res = EvaluateLiveTpms(TeslaTPMS{FL: TeslaTPMSWheel{Pressure: f(2.4)}})
+	if !res.Alerting || len(res.Wheels) != 1 || res.Wheels[0] != "左前" {
+		t.Fatalf("越界应判为异常，实际 %+v", res)
+	}
+
+	// 4) 一切正常 → 不异常
+	res = EvaluateLiveTpms(TeslaTPMS{
+		FL: TeslaTPMSWheel{Pressure: f(2.95)},
+		FR: TeslaTPMSWheel{Pressure: f(2.9)},
+		RL: TeslaTPMSWheel{Pressure: f(2.95)},
+		RR: TeslaTPMSWheel{Pressure: f(2.95)},
+	})
+	if res.Alerting || len(res.Wheels) != 0 || len(res.WarnWheels) != 0 {
+		t.Fatalf("正常值不该告警，实际 %+v", res)
+	}
+
+	// 5) 什么都没读到 → 不告警（由上层判成「未知」）
+	res = EvaluateLiveTpms(TeslaTPMS{})
+	if res.Alerting {
+		t.Fatalf("没数据时不该告警，实际 %+v", res)
+	}
+}
+
+// TestVehicleStateCacheKeepsLastValueWhenVehicleAsleep 车休眠（408）必须保留上次已知值。
+//
+// 为什么要测这个：车一停就是一片 null 的话，胎压功能等于没有。
+func TestVehicleStateCacheKeepsLastValueWhenVehicleAsleep(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusRequestTimeout)
+		io.WriteString(w, `{"error":"vehicle unavailable"}`)
+	}))
+	defer srv.Close()
+
+	c := newTeslaClient(teslaConfig{})
+	c.fleetURL = srv.URL
+	c.mu.Lock()
+	c.accessToken = "tok"
+	c.tokenExpiry = time.Now().Add(8 * time.Hour)
+	c.vehicleID = "123"
+	c.mu.Unlock()
+
+	// 模拟上一轮成功采集到的结果
+	fl := 2.95
+	at := time.Now().UTC()
+	c.setLiveTPMS(TeslaTPMS{FL: TeslaTPMSWheel{Pressure: &fl}, At: &at})
+	c.setLockState(true, at)
+
+	err := c.pollOnce(context.Background())
+	if !errors.Is(err, errVehicleUnavailable) {
+		t.Fatalf("err = %v, want errVehicleUnavailable", err)
+	}
+	got := c.TPMS()
+	if got.FL.Pressure == nil || *got.FL.Pressure != 2.95 {
+		t.Fatalf("车休眠后实时胎压应保留上次结果，实际 %v", got.FL.Pressure)
+	}
+	if got.At == nil {
+		t.Fatal("车休眠后实时胎压的采集时刻应保留")
+	}
+	if locked, _ := c.LockState(); locked == nil || !*locked {
+		t.Fatalf("车休眠后锁车状态应保留上次结果，实际 %v", locked)
+	}
+}
+
+// TestClearVehicleStateClearsTPMS 真失败要连胎压一起降级成「未知」。
+func TestClearVehicleStateClearsTPMS(t *testing.T) {
+	c := newTeslaClient(teslaConfig{})
+	fl := 2.95
+	at := time.Now().UTC()
+	c.setLiveTPMS(TeslaTPMS{FL: TeslaTPMSWheel{Pressure: &fl}, At: &at})
+	c.setLockState(true, at)
+
+	c.clearVehicleState()
+
+	if got := c.TPMS(); got.FL.Pressure != nil || got.At != nil {
+		t.Fatalf("降级后实时胎压应为空，实际 %+v", got)
+	}
+	if locked, _ := c.LockState(); locked != nil {
+		t.Fatalf("降级后锁车状态应为空，实际 %v", locked)
+	}
+}
+
+// TestCarStatusAlwaysEmitsLiveTpmsKeys 实时胎压字段必须原样输出（没数据时是 null，不能缺键）。
+func TestCarStatusAlwaysEmitsLiveTpmsKeys(t *testing.T) {
+	b, err := json.Marshal(CarStatus{CarID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, k := range []string{
+		"tpms_live_fl", "tpms_live_fr", "tpms_live_rl", "tpms_live_rr",
+		"tpms_live_at", "tpms_live_alert", "tpms_live_alert_wheels",
+		"tpms_live_alert_detail", "tpms_live_warn_wheels",
+	} {
+		if !strings.Contains(s, `"`+k+`":`) {
+			t.Fatalf("status 里缺 %s 键：%s", k, s)
+		}
+	}
+	// 没数据时必须是 null（不是 0、也不能缺键）
+	if !strings.Contains(s, `"tpms_live_fl":null`) {
+		t.Fatalf("没数据时 tpms_live_fl 应输出 null：%s", s)
+	}
+	if !strings.Contains(s, `"tpms_live_alert":null`) {
+		t.Fatalf("没数据时 tpms_live_alert 应输出 null：%s", s)
 	}
 }
 
