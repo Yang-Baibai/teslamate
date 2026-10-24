@@ -250,7 +250,7 @@ internal fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> U
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
                             .padding(horizontal = 2.dp)
-                            .size(14.dp),
+                            .size(16.dp),
                     )
                     Text(
                         endName,
@@ -326,14 +326,31 @@ internal fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> U
                 // 他的 18 次长途停靠，到达电量中位数只有 14%、5 次 ≤10% ——
                 // 这个数是「这次长途够不够」的答案，却只躺在详情页第三张卡里。
                 // end_soc <= 15 用琥珀色提示「到站偏低」。
-                d.end_soc?.let { soc ->
+                //
+                // ⚠️ v0.9.2（长途自驾党 N3）：行程行原来只写「到达 70%」，
+                // 而充电行写「电量 68 → 100%」—— 同一条时间轴上**两种口径**，
+                // 看的人得自己拼。现在统一成「电量 85→70%」（有起点就用起点）。
+                if (d.start_soc != null && d.end_soc != null) {
                     InlineMetric(
-                        "到达",
-                        "$soc%",
-                        valueColor = if (soc <= 15) accents.warnAmber else MaterialTheme.colorScheme.onSurface,
+                        "电量",
+                        "${d.start_soc}%→${d.end_soc}%",
+                        valueColor = if (d.end_soc <= 15) accents.warnAmber else MaterialTheme.colorScheme.onSurface,
                     )
+                } else {
+                    d.end_soc?.let { soc ->
+                        InlineMetric(
+                            "到达",
+                            "$soc%",
+                            valueColor = if (soc <= 15) accents.warnAmber else MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                 }
                 InlineMetric("最高", "${d.speed_max ?: "—"} km/h")
+            }
+            // ⚠️ v0.9.2：统一电量带 —— 所有事件画在**同一条 0~100% 标尺**上，
+            // 于是「85→70」和「70→55」的位置一致，能看出电在哪儿掉的、在哪儿补的。
+            if (d.start_soc != null && d.end_soc != null) {
+                SocDeltaBar(d.start_soc, d.end_soc, charging = false)
             }
         }
     }
@@ -405,7 +422,7 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                 )
             }
             Text(
-                "轨迹记录点（${track.size} 个）",
+                "轨迹采样点 ${track.size} 个",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -421,7 +438,7 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
 
         LazyColumn(
             Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 120.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             // ── 功率剖面 ──────────────────────────────────────────
@@ -436,6 +453,8 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                         val peakDown = powerProfile.minOf { it.powerKw }
                         PowerProfileChart(
                             samples = powerProfile,
+                            xStartKm = 0.0,
+                            xEndKm = drive.distance_km,
                             contentDescription = "功率随里程变化曲线，" +
                                 "全程 ${powerProfile.last().km.roundToInt()} 公里，" +
                                 "最高耗电 ${peakUp.roundToInt()} 千瓦，" +

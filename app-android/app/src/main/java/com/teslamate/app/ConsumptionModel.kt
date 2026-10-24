@@ -47,6 +47,21 @@ data class SpeedBucket(
     val maxKph: Int,
     val whPerKm: Double,
     val samples: Int,
+) {
+    /** 档位的可读名，如「90–110」。 */
+    val label: String get() = if (maxKph == Int.MAX_VALUE) "$minKph+" else "$minKph–$maxKph"
+}
+
+/**
+ * 取到的 Wh/km 样本 + **它是不是本档的**。
+ *
+ * ⚠️ v0.9.2（口径审计 S2-4）：`exact = false` 表示这是**借用**邻档的值，
+ * 界面必须说清楚 —— 见 [whSample]。
+ */
+@Serializable
+data class WhSample(
+    val bucket: SpeedBucket,
+    val exact: Boolean,
 )
 
 /**
@@ -68,20 +83,34 @@ class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
     /** 该模型由多少条行程构成（用于在 UI 上标注置信度） */
     val sampleCount: Int = buckets.sumOf { it.samples }
 
-    /** 按当前车速取实测 Wh/km；本档没样本时退到最近的档 */
-    fun whPerKm(speedKph: Double): SpeedBucket? {
+    /**
+     * 按当前车速取实测 Wh/km；本档没样本时退到最近的档。
+     *
+     * ⚠️ v0.9.2（口径审计 S2-4）：**借用邻档时必须知道自己在借**。
+     *
+     * 原来的失败模式不是「少说一点」，而是「悄悄换口径」：
+     * 车速落在所有桶外（比如 145 km/h，而桶只到 130）时借用最近的一档，
+     * 界面却标成「实测 183 Wh/km」—— 那个 183 是**别的速度档**的实测值。
+     *
+     * 现在返回 [WhSample]，带 `exact` 标记；界面据此改成「参考 …（借用 90–110 档）」。
+     */
+    fun whSample(speedKph: Double): WhSample? {
         if (buckets.isEmpty()) return null
         val exact = buckets.firstOrNull { speedKph >= it.minKph && speedKph < it.maxKph }
-        if (exact != null) return exact
+        if (exact != null) return WhSample(exact, exact = true)
         // 车速落在桶外（<30 或 >150）：取最近的一档
-        return buckets.minByOrNull { bucket ->
+        val nearest = buckets.minByOrNull { bucket ->
             when {
                 speedKph < bucket.minKph -> (bucket.minKph - speedKph).toDouble()
                 speedKph >= bucket.maxKph -> (speedKph - bucket.maxKph + 1).toDouble()
                 else -> 0.0
             }
-        }
+        } ?: return null
+        return WhSample(nearest, exact = false)
     }
+
+    /** 兼容旧调用点：只要数值，不要来源标记。 */
+    fun whPerKm(speedKph: Double): SpeedBucket? = whSample(speedKph)?.bucket
 
     /**
      * 真实可达里程（km）。

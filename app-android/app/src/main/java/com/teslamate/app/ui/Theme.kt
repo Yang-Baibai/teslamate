@@ -318,7 +318,7 @@ private val AppTypography = Typography(
     ),
     labelSmall = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium,
-        fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+        fontSize = 12.sp, lineHeight = 15.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
     ),
 )
 

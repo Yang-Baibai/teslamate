@@ -353,7 +353,7 @@ private fun TimelineRow(
             when (item) {
                 is RecordItem.DriveItem -> DriveItem(item.drive) { onClick() }
                 is RecordItem.ChargeItem -> {
-                    val stat = stationStats[(item.charge.place ?: "").firstSegment() ?: ""]
+                    val stat = stationStats[stationKey(item.charge)]
                     ChargeItem(item.charge, stat) { onClick() }
                 }
             }

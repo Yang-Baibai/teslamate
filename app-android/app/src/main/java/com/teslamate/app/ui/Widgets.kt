@@ -646,6 +646,58 @@ fun CollapsibleSection(
 }
 
 /**
+ * 电量变化条（画在一条固定的 0~100% 标尺上）。
+ *
+ * ⚠️ v0.9.2（长途自驾党 N3）：时间轴上要能**一眼看出每段行程/充电的电量变化**。
+ *
+ * 原来充电行写「电量 68 → 100%」，行程行只写「到达 70%」——
+ * **同一条时间轴上两种事件、两种口径**，看的人得自己拼。
+ *
+ * 现在：两行都用同一条 0~100% 的标尺，填充段画在**绝对位置**上 ——
+ * 于是「85→70」和「70→55」在同一条尺子上的位置一致，
+ * 能看出「电都在同一段区间掉掉的」，也能看出「充电是补回同一段」。
+ *
+ * @param charging true = 充电（绿色），false = 行程（能量蓝）
+ */
+@Composable
+fun SocDeltaBar(
+    startSoc: Int?,
+    endSoc: Int?,
+    modifier: Modifier = Modifier,
+    charging: Boolean = false,
+    height: Int = 6,
+) {
+    if (startSoc == null || endSoc == null) return
+    val accents = LocalAccentColors.current
+    val color = if (charging) accents.chargeGreen else accents.energyBlue
+    val lo = minOf(startSoc, endSoc).coerceIn(0, 100)
+    val hi = maxOf(startSoc, endSoc).coerceIn(0, 100)
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(height.dp)
+            .semantics {
+                contentDescription = "电量从 $startSoc% 到 $endSoc%"
+            }
+    ) {
+        Canvas(Modifier.fillMaxSize()) {
+            val r = androidx.compose.ui.geometry.CornerRadius(size.height / 2f)
+            // 轨道 = 整条 0~100 标尺
+            drawRoundRect(color = accents.chartTrack.copy(alpha = 0.30f), cornerRadius = r)
+            // 变化段：画在**绝对位置**上
+            val x0 = size.width * (lo / 100f)
+            val x1 = size.width * (hi / 100f)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(x0, 0f),
+                size = androidx.compose.ui.geometry.Size(x1 - x0, size.height),
+                cornerRadius = r,
+            )
+        }
+    }
+}
+
+/**
  * 页面标题。
  *
  * ⚠️ v0.8.1：加上 `heading()` 语义 —— 读屏用户（TalkBack）能按标题在页面间跳转，

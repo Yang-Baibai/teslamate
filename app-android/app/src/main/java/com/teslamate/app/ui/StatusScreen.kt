@@ -494,7 +494,11 @@ private fun RangeAndOdometer(
             ?: consumption?.cruiseKph
             ?: fallbackSpeedKph
             ?: 60.0
-        val whBucket = consumption?.whPerKm(refSpeed)
+        // ⚠️ v0.9.2（口径审计 S2-4）：**参考车速的来源要说清楚**。
+        // 原来的兜底链最后落到硬编码 60.0 —— 而 60 km/h 恰好落在**最低档**
+        // （171.8 Wh/km，是最乐观的一档），却和「实测巡航速度」用同一句话表述。
+        val speedAssumed = consumption?.cruiseKph == null && fallbackSpeedKph == null
+        val whSample = consumption?.whSample(refSpeed)
         // ⚠️ v0.8.6 修一个真 bug：模型里有爬升修正（≥200m ×1.05），
         // 但调用处**从来没传 ascentM** —— 参数默认 null，修正从未生效。
         // 爬升从最近一次行程取（车况页已经拉了 drives(200) 到 StatusStore）。
@@ -533,8 +537,20 @@ private fun RangeAndOdometer(
             }
             if (trueRange != null) {
                 append(" · 按平时 ${refSpeed.roundToInt()} km/h 估算")
+                // ⚠️ v0.9.2：60 km/h 是硬编码兜底，且它落在**最乐观的一档**。
+                // 必须标成「假设」，不能和「实测巡航速度」混为一谈。
+                if (speedAssumed) append("（假设值）")
                 st.outside_temp?.let { append(" · ${it.roundToInt()}°C") }
-                whBucket?.let { append(" · 实测 ${it.whPerKm.fmt(0)} Wh/km") }
+                // ⚠️ v0.9.2（口径审计 S2-4）：借用邻档时不能说「实测」。
+                whSample?.let { s ->
+                    append(
+                        if (s.exact) {
+                            " · 实测 ${s.bucket.whPerKm.fmt(0)} Wh/km（${s.bucket.label} 档）"
+                        } else {
+                            " · 参考 ${s.bucket.whPerKm.fmt(0)} Wh/km（借用 ${s.bucket.label} 档）"
+                        }
+                    )
+                }
                 append(" · 已留 10% 余量")
             }
         }

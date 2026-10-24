@@ -200,7 +200,7 @@ private fun ChargeList(
                                 )
                             }
                             items(charges, key = { it.id }) { c ->
-                                val stat = stats[(c.place ?: "").firstSegment() ?: ""]
+                                val stat = stats[stationKey(c)]
                                 ChargeItem(c, stat, Modifier.animateItem()) { onSelect(c) }
                             }
                         }
@@ -292,6 +292,12 @@ internal fun ChargeItem(
                         valueColor = MaterialTheme.colorScheme.onSurface,
                     )
                 }
+            }
+            // ⚠️ v0.9.2（长途自驾党 N3）：统一电量带 ——
+            // 充电行与行程行画在**同一条 0~100% 标尺**上，
+            // 于是「充到 100%」与「掉到 70%」在视觉上是对应的。
+            if (c.start_soc != null && c.end_soc != null) {
+                SocDeltaBar(c.start_soc, c.end_soc, charging = true)
             }
             // 站点历史：至少 2 次才显示
             if (stat != null && stat.sessions >= 2) {
@@ -456,7 +462,7 @@ internal fun ChargeDetail(
                     // 该站历史：峰值功率没有决策价值（国标直流桩典型 50~110 kW，
                     // 峰值只出现在起步那几分钟）。真正决定「值不值得进」的是
                     // 这个站**历史实测**的典型水平，以及你这次比中位快还是慢。
-                    val stat = stats[(charge.place ?: "").firstSegment() ?: ""]
+                    val stat = stats[stationKey(charge)]
                     if (stat != null && stat.sessions >= 2) {
                         Text(
                             stat.summary(),
@@ -469,6 +475,40 @@ internal fun ChargeDetail(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                        }
+                        // ⚠️ v0.9.2（长途自驾党 N2）：**「要等多久」要按本次的起始电量算**。
+                        //
+                        // 原来只有一个写死的「从 ≤50% 充到 80% 约 48 分钟」——
+                        // 我到站是 31%、想充到 90%，这个数对不上，界面就什么都不显示。
+                        // 现在用该站的典型功率与本车容量，现场折算：
+                        //   从 31% 充到 80%：约 43 分钟
+                        //   从 31% 充到 90%：约 62 分钟（多花 19 分钟）
+                        // 这是站在服务区最需要的两个数。
+                        val power = if (charge.is_dc) {
+                            stat.typicalPowerDcKw ?: stat.typicalPowerKw
+                        } else {
+                            stat.typicalPowerKw
+                        }
+                        val from = charge.start_soc
+                        if (from != null && from < 95) {
+                            val m80 = stat.minutesTo(from, 80, power)
+                            val m90 = stat.minutesTo(from, 90, power)
+                            if (m80 != null) {
+                                KV("从 $from% 充到 80%", "约 $m80 分钟")
+                            }
+                            if (m90 != null) {
+                                val extra = if (m80 != null) "（多花 ${m90 - m80} 分钟）" else ""
+                                KV("从 $from% 充到 90%", "约 $m90 分钟$extra")
+                            }
+                            // ⚠️ v0.9.2：「最坏情况我等多久」—— 中位数是乐观的一半。
+                            // P90 样本不足 5 次时不给（编数据比不给更危险）。
+                            stat.p90MinutesTo80?.let {
+                                Text(
+                                    "该站历史 P90（10 次里最慢的那次）：充到 80% 约 $it 分钟",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                     KV("峰值功率", charge.peak_power_kw?.let { "$it kW" } ?: "—")

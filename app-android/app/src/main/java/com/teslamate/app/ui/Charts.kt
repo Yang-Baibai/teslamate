@@ -652,6 +652,16 @@ fun statsChartDescription(title: String, pairs: List<Pair<String, Double>>): Str
 fun PowerProfileChart(
     samples: List<PowerSample>,
     modifier: Modifier = Modifier,
+    /**
+     * 里程轴的真实起点与终点（km）。
+     *
+     * ⚠️ v0.9.2（口径审计 S2-2）：不传就用分箱**中心**的首尾 ——
+     * 于是 4.51 km 的行程横轴显示成「1 / 2 / 5」，而「里程」栏写 4.51 km，
+     * 三个数对不上（起点被写成 1 km、终点被写成 5 km）。
+     * 传进来就能显示真实的「0 / 25 / 50」。
+     */
+    xStartKm: Double? = null,
+    xEndKm: Double? = null,
     contentDescription: String = "",
 ) {
     val textMeasurer = rememberTextMeasurer()
@@ -754,7 +764,9 @@ fun PowerProfileChart(
                     end = Offset(size.width, y),
                     strokeWidth = 1.dp.toPx(),
                 )
-                val txt = if (v == 0.0) "0" else "${kotlin.math.abs(v).roundToInt()}"
+                val txt = if (v == 0.0) "0" else "${v.roundToInt()}"
+                // ⚠️ v0.9.2：原来用 abs()，于是回收区的刻度显示成「9」而不是「-9」——
+                // 读者根本看不出那是**零线以下**（而这个图的核心就是正负两段）。
                 val layout = textMeasurer.measure(
                     text = txt,
                     style = TextStyle(fontSize = 9.sp, color = labelColor),
@@ -809,10 +821,13 @@ fun PowerProfileChart(
             }
 
             // X 轴：起点 / 中点 / 终点（里程）
+            // ⚠️ v0.9.2：首尾用**真实**里程（调用方传入），不用分箱中心。
+            val xFrom = xStartKm ?: samples.first().km
+            val xTo = xEndKm ?: totalKm
             listOf(
-                samples.first().km to 0,
-                totalKm / 2 to 1,
-                totalKm to 2,
+                xFrom to 0,
+                (xFrom + xTo) / 2 to 1,
+                xTo to 2,
             ).forEach { (km, align) ->
                 val txt = "${km.roundToInt()}"
                 val layout = textMeasurer.measure(
