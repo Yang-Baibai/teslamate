@@ -28,6 +28,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -178,7 +181,22 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
 
                     st != null -> {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            StateChip(st.state)
+                            // ⚠️ v0.8.4：状态行左边原来恒是「在线/休眠/离线」胶囊。
+                            //
+                            // 踩过的坑：**车停着不动时 TeslaMate 就报 state=offline**
+                            // （它把「车休眠/没活动」记成 offline，日志里天天
+                            //   "Start / :offline"）—— 也就是说「离线」是**常态**，
+                            // 不是需要特别提醒的异常。所以不能让它挤掉锁车状态。
+                            //
+                            // 现在：**有锁车数据就显示锁车**（这是这块屏上唯一一件
+                            // 「车停着不动还会变」的信息），并在后面附上车离线标记；
+                            // 只有锁车数据未知（没配 Fleet API / 取不到）时，
+                            // 才退回显示原来的状态胶囊。
+                            if (st.locked != null) {
+                                LockStateChip(st.locked, st.state)
+                            } else {
+                                StateChip(st.state)
+                            }
                             Spacer(Modifier.weight(1f))
                             Text(
                                 // ⚠️ v0.7.1：绝对时间看不出隔了多久，改相对时间
@@ -315,6 +333,54 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                 }
             }
         }
+    }
+}
+
+/**
+ * 锁车状态标签。
+ *
+ * 三态，且**不靠颜色单独表达**（WCAG 1.4.1）：
+ * - `true`  → 锁形图标 + 「已上锁」+ 中性灰
+ * - `false` → 开锁图标 + 「未上锁」+ 琥珀（图标和文字同时变化，色觉障碍用户也读得出）
+ * - `null`  → 问号图标 + 「锁车状态未知」+ 中性灰
+ *
+ * ⚠️ 未知**绝不能显示成「已上锁」或「未上锁」** —— 那是在编造一个安全相关的状态。
+ * 未取到数据就说没取到。
+ */
+@Composable
+private fun LockStateChip(locked: Boolean, vehicleState: String?) {
+    val accents = LocalAccentColors.current
+    val icon: androidx.compose.ui.graphics.vector.ImageVector
+    val text: String
+    val tint: androidx.compose.ui.graphics.Color
+    when (locked) {
+        true -> {
+            icon = Icons.Filled.Lock
+            text = "已上锁"
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        false -> {
+            icon = Icons.Filled.LockOpen
+            text = "未上锁"
+            tint = accents.warnAmber
+        }
+    }
+    // 车离线时补一个标记：「车停着不动」和「车真失联」是两回事，
+    // 但锁车状态本身是陈旧的，所以必须让用户看见这一点。
+    val suffix = if (vehicleState == "offline") " · 离线" else ""
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(15.dp),
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            "$text$suffix",
+            style = MaterialTheme.typography.labelMedium,
+            color = tint,
+        )
     }
 }
 

@@ -66,10 +66,24 @@ services:
       # 本车 = 小鹏/特斯拉 Model 3 LR AWD Performance (P74D)，铭牌 76.8 kWh。
       # 换车只需改这里，不用改代码。
       - NOMINAL_BATTERY_KWH=${NOMINAL_BATTERY_KWH}
+      # ── Tesla Fleet API（只读，用于锁车状态）────────────────────────
+      # 没配就整组留空 —— 服务端会优雅降级成「锁车状态未知」，主服务零影响。
+      # ⚠️ 这里**不能**用 env_file: .env 一次性全注入：
+      #    .env 里还有 POSTGRES_PASSWORD、AMAP_KEY 等，没必要给 api 容器。
+      #    显式列出需要的四个键，多余的密钥不进容器。
+      - TESLA_CLIENT_ID=${TESLA_CLIENT_ID}
+      - TESLA_CLIENT_SECRET=${TESLA_CLIENT_SECRET}
+      - TESLA_REFRESH_TOKEN=${TESLA_REFRESH_TOKEN}
+      - TESLA_REGION=${TESLA_REGION}
     ports:
       - "8090:8090"
     volumes:
       - ./apk:/apk:ro
+      # ⚠️ **可写**挂载：Fleet API 的 refresh_token 是**一次性**的（有效期 3 个月），
+      # 每次刷新服务端都会拿到新 token 并轮换回写这个文件 —— 写不回就等于 3 个月后
+      # 要重新走一遍浏览器授权。挂目录（而不是单文件）能让 rename 原子替换可用；
+      # 挂单文件时 rename 会 EBUSY，服务端会自动退化成原地覆写（仍能工作，只是不原子）。
+      - ./.env:/app/.env
 
   grafana:
     # 中文仪表盘版（https://github.com/wjsall/teslamate-chinese-dashboards）

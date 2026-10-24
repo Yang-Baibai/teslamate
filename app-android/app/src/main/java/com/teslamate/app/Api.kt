@@ -103,6 +103,19 @@ data class CarStatus(
     val tpms_alert_detail: String = "",
     val tpms_min_bar: Double = 2.5,
     val tpms_max_bar: Double = 3.3,
+    /**
+     * 锁车状态三态（Tesla Fleet API 提供，TeslaMate 不采集）。
+     *
+     * - `true` = 已上锁
+     * - `false` = 未上锁
+     * - **null = 未知**（未配置 Fleet API 凭据、令牌刷新失败、或 API 不可达）
+     *
+     * ⚠️ null 必须能表达「不知道」，不能默认 false —— 否则 App 会把
+     * 「没取到数据」说成「车没锁」，这是危险的假信息。
+     */
+    val locked: Boolean? = null,
+    /** 锁车状态的采集时刻（用于判断新鲜度） */
+    @Serializable(with = InstantSer::class) val locked_at: Instant? = null,
     val data_age_hours: Int = 0,
     val data_stale: Boolean = false,
     val active_charge: ActiveCharge? = null,

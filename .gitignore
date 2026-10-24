@@ -14,6 +14,9 @@ teslamate.env
 compose.yaml.bak.*
 *.pem
 *.key
+# .env 的原子写临时文件（Fleet API 的 refresh_token 轮换时产生）。
+# 如果进程恰好在写入瞬间被杀，目录里会留下 .env.tmpXXXX —— 里面是密钥，不能进库。
+.env.*
 
 # ── 运行数据（大且可再生；备份走 backups/，也不入库）──
 # PostgreSQL PGDATA ~300MB
