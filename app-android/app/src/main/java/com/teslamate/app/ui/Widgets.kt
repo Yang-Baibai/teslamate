@@ -62,7 +62,9 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -430,10 +432,27 @@ fun KV(k: String, v: String) {
             v,
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.End,
-            maxLines = 2,
+            // ⚠️ v0.8.0：2 行在大字号下会截断数值（WCAG 1.4.4 要求放大后不丢内容），
+            // 放宽到 3 行 —— 长数值如「412.35 km（+128 km）」在 1.3 倍字号下需要第三行。
+            maxLines = 3,
             overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+/**
+ * 页面标题。
+ *
+ * ⚠️ v0.8.0：加上 `heading()` 语义 —— 读屏用户（TalkBack）能按标题在页面间跳转，
+ * 否则整个 App 是一张没有结构的长列表，导航全靠从头滑。
+ */
+@Composable
+fun ScreenTitle(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        fontWeight = FontWeight.Bold,
+        modifier = modifier.semantics { heading() },
+    )
 }
 
 /**
@@ -595,8 +614,13 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier, charging: Boolean = false)
         label = "socRing",
     )
     val shown = animated.roundToInt()
+    // 圆环随 fontScale 一起放大 —— 否则大字号下 "100%" 会溢出圆环。
+    // ⚠️ v0.8.0：配合 AppRoot 把 fontScale 封顶从 1.15 提到 1.30，
+    // 这个环必须跟着长，否则解封的那部分字号就会在环里溢出去。
+    val fontScale = LocalDensity.current.fontScale
+    val ringSize = (168 * fontScale.coerceIn(1f, 1.3f)).dp
     Box(
-        modifier = modifier.size(168.dp)
+        modifier = modifier.size(ringSize)
             // ⚠️ v0.7.1：Canvas 画的环对屏幕阅读器完全不可达，
             // 加语义描述（电量 + 充电状态）。
             .semantics {
@@ -608,7 +632,7 @@ fun SocRing(soc: Int?, modifier: Modifier = Modifier, charging: Boolean = false)
             },
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(Modifier.size(168.dp)) {
+        Canvas(Modifier.size(ringSize)) {
             val stroke = 15.dp.toPx()
             val inset = stroke / 2 + 2.dp.toPx()
             val arcSize = androidx.compose.ui.geometry.Size(

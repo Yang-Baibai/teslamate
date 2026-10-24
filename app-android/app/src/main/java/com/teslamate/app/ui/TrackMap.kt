@@ -3,14 +3,20 @@ package com.teslamate.app.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
@@ -59,22 +65,57 @@ fun TrackMap(
     val url = buildStaticMapUrl(baseUrl, sampled, drawLine, width = 720, height = 480)
 
     Box(modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainer)) {
+        val dark = isDarkTheme()
         SubcomposeAsyncImage(
             model = ImageRequest.Builder(ctx)
                 .data(url)
                 .addHeader("Authorization", "Bearer $token")
                 .crossfade(true)
                 .build(),
-            contentDescription = "行程轨迹地图",
+            // ⚠️ v0.8.0：原来恒为「行程轨迹地图」。但车况页展开的是**车辆位置**（单点），
+            // 读屏用户听到"行程轨迹"会以为图里有一条轨迹。
+            // pointTitle 参数一直存在却从未被使用 —— 正是为此准备的。
+            contentDescription = if (drawLine) {
+                "行程轨迹地图：$startTitle 至 $endTitle"
+            } else {
+                pointTitle
+            },
             contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(RoundedCornerShape(12.dp))
+                // ⚠️ 高德静态图是**日间白底瓦片**，深色模式下一块刺眼白板。
+                // 这里叠一层暗色蒙版把它压进深色主题（不改服务端请求）。
+                // alpha 0.45：白底压到中灰，路名仍可读，又不至于在黑底上"发光"。
+                .then(
+                    if (dark) {
+                        Modifier.drawWithContent {
+                            drawContent()
+                            drawRect(Color.Black.copy(alpha = 0.45f))
+                        }
+                    } else Modifier
+                ),
             loading = {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("加载地图…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        "加载地图…",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        // 加载状态变化时播报一次（否则读屏用户不知道地图在加载）
+                        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                    )
                 }
             },
             error = {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("地图加载失败\n$url", color = MaterialTheme.colorScheme.error)
+                    // ⚠️ v0.8.0 安全修正：原来这里直接输出 `"地图加载失败\n$url"`。
+                    // 那个 URL 里含 `points=lng,lat;…`（**车辆实时经纬度**）和
+                    // 内网服务器地址 —— 一旦截图/录屏/读屏朗读，就等于泄露位置。
+                    // 现在只给通用文案，不暴露任何请求细节。
+                    Text(
+                        "地图加载失败\n请检查网络后下拉重试",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             },
         )

@@ -110,7 +110,7 @@ private fun ChargeList(
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("充电", fontWeight = FontWeight.Bold) },
+            title = { ScreenTitle("充电") },
         )
         when {
             error != null -> Column(Modifier.padding(16.dp)) { ErrorBanner(error!!) }
@@ -260,7 +260,7 @@ private fun ChargeDetail(charge: Charge, api: Api?, onClose: () -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("充电详情") },
+            title = { ScreenTitle("充电详情") },
             navigationIcon = {
                 IconButton(onClick = onClose) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")

@@ -79,7 +79,7 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
 
     Column(modifier) {
         TopAppBar(
-            title = { Text("设置", fontWeight = FontWeight.Bold) },
+            title = { ScreenTitle("设置") },
         )
         LazyColumn(
             Modifier.fillMaxSize(),

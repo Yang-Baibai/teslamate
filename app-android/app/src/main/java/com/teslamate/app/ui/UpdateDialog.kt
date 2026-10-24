@@ -39,7 +39,7 @@ fun UpdateDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("发现新版本 v${info.version_name}") },
+        title = { ScreenTitle("发现新版本 v${info.version_name}") },
         text = {
             if (info.mandatory) {
                 Text(

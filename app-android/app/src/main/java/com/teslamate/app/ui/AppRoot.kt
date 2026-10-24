@@ -100,11 +100,20 @@ fun TeslaMateApp() {
     TeslaMateTheme {
         // MIUI/HyperOS 大字号档会把 fontScale 提到 1.2~1.3，官方适配文档明确指出
         // 大档位会造成"布局错乱、重叠"（dev.mi.com 大字体适配说明）。
-        // 仪表盘类界面固定 dp 容器多，这里把 App 内字体缩放封顶到 1.15：
-        // 保留可读性增益，同时杜绝文字溢出/截断。
+        //
+        // ⚠️ v0.8.0：封顶从 **1.15 提到 1.30**。
+        // 之前的 1.15 把绝大多数用户的系统大字体档（1.15 / 1.2 / 1.3）**全部截断** ——
+        // 用户在系统里把字调到最大，App 里几乎没变化。
+        // IA 复核指出这违反 WCAG 1.4.4（Resize Text）。
+        // 现在 1.3 以内的系统设置**完全生效**（覆盖 MIUI/HyperOS 的常规大档），
+        // 并配合 SocRing 随 fontScale 放大圆环，避免大字号下数字溢出圆环。
+        //
+        // 仍封顶到 1.3（而非完全解封到 2.0）的原因：车况页是仪表盘布局，
+        // 电量环 + 续航 + 里程在 360dp 宽屏上，2.0 倍时纵向会挤爆。
+        // **完全满足 1.4.4 需要把仪表盘改成可弹性布局，属遗留项。**
         val baseDensity = LocalDensity.current
         val cappedDensity = remember(baseDensity) {
-            Density(baseDensity.density, fontScale = minOf(baseDensity.fontScale, 1.15f))
+            Density(baseDensity.density, fontScale = minOf(baseDensity.fontScale, 1.30f))
         }
         CompositionLocalProvider(
             LocalDensity provides cappedDensity,

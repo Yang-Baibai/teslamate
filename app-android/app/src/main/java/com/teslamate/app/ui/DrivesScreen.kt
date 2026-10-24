@@ -58,6 +58,7 @@ import com.teslamate.app.fmtShort
 import com.teslamate.app.minutesFmt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 @Composable
 fun DrivesScreen(settings: AppSettings, modifier: Modifier) {
@@ -103,7 +104,7 @@ private fun DriveList(
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("行程", fontWeight = FontWeight.Bold) },
+            title = { ScreenTitle("行程") },
         )
         when {
             error != null -> Column(Modifier.padding(16.dp)) { ErrorBanner(error!!) }
@@ -211,12 +212,16 @@ private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose:
         }
     }
 
+    // 功率剖面：把采样点转成「累计里程 → 净功率」，按 1 km 分箱取平均。
+    // ⚠️ X 轴必须是里程不是时间 —— 时间轴在堵车时会骗人（原地烧电画成"省电"）。
+    val powerProfile = remember(track) { track.toPowerProfile() }
+
     BackHandler { onClose() }
 
 
     Column(Modifier.fillMaxSize()) {
         TopAppBar(
-            title = { Text("行程详情") },
+            title = { ScreenTitle("行程详情") },
             navigationIcon = {
                 IconButton(onClick = onClose) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -254,6 +259,32 @@ private fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose:
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 120.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // ── 功率剖面 ──────────────────────────────────────────
+            // 长途自驾党在实测 43 条行程后选它当唯一最有价值的曲线：
+            // 一条线同时给出能耗、地形、回收三件事（海拔曲线是它的子集），
+            // 而且能解释 Wh/km 的异常 —— 看到某段爬坡功率跳到 48 kW，
+            // 下次跑同一条高速就会主动避开。
+            if (powerProfile.size >= 2) {
+                item {
+                    SectionCard("功率剖面 (kW · 对应里程)", Modifier.animateItem()) {
+                        val peakUp = powerProfile.maxOf { it.powerKw }
+                        val peakDown = powerProfile.minOf { it.powerKw }
+                        PowerProfileChart(
+                            samples = powerProfile,
+                            contentDescription = "功率随里程变化曲线，" +
+                                "全程 ${powerProfile.last().km.roundToInt()} 公里，" +
+                                "最高耗电 ${peakUp.roundToInt()} 千瓦，" +
+                                "最深回收 ${kotlin.math.abs(peakDown).roundToInt()} 千瓦",
+                        )
+                        Text(
+                            "正值 = 耗电（蓝）· 负值 = 能量回收（绿）" +
+                                (drive.wh_per_km?.let { " · 本程 ${it.fmt(0)} Wh/km" } ?: ""),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
             item {
                 SectionCard("时间与电量", Modifier.animateItem()) {
                     KV("开始", drive.start_date.fmtFull())

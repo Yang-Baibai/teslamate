@@ -72,7 +72,7 @@ fun StatsScreen(settings: AppSettings, modifier: Modifier) {
 
     Column(modifier) {
         TopAppBar(
-            title = { Text("统计", fontWeight = FontWeight.Bold) },
+            title = { ScreenTitle("统计") },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         )
         LazyColumn(

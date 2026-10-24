@@ -135,7 +135,7 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
 
     Column(modifier) {
         TopAppBar(
-            title = { Text("车况", fontWeight = FontWeight.Bold) },
+            title = { ScreenTitle("车况") },
             // ⚠️ v0.7.1：顶部栏原来用 M3 默认容器色（深色下是一块不透明 #1C1C1E），
             // 底部导航栏却是真毛玻璃 —— 同一个 App 里两套材质语言。
             // 现在顶部栏透明，与底部玻璃统一为「内容在上、材质在下」的一套语言。
@@ -258,94 +258,18 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                             }
                         }
 
-                        // 能量条 —— 特斯拉最易识别的视觉母题，充电中转绿
-                        EnergyBar(
-                            soc = st.battery_level,
-                            charging = st.active_charge != null,
-                            modifier = Modifier.padding(bottom = 4.dp),
-                        )
+                        // ═══ 首屏重排 ═══
+                        // ⚠️ v0.8.1：原来顺序是「电量 → 能量条 → 充电卡 → 位置 → 6 个信息块」，
+                        // 按 393×873dp 的机型算，**胎压和第三行信息块都在折叠线以下**，
+                        // 而折叠线以下的东西 = 用户看不到 = 等于没有。
+                        //
+                        // 效率型车主的实测诉求：首屏要能同时看到
+                        // 「电量 + 续航 + 位置 + 空调 + 车内温度」，**零滚动**。
+                        // 现在把「位置」「空调 / 车内温度」提到电量环之后，
+                        // 能量条与状态卡（充电中 / 行驶中）留在它们之后 ——
+                        // **信息一点没删，只是把高频答案提前了**。
+                        LocationCard(st, settings, showMap) { showMap = !showMap }
 
-                        st.active_charge?.let { ChargeNowCard(it) }
-                        st.active_drive?.let { DriveNowCard(it, st) }
-
-                        val lat = st.map_lat ?: st.lat
-                        val lng = st.map_lng ?: st.lng
-                        if (lat != null && lng != null) {
-                            val accents = LocalAccentColors.current
-                            Surface(
-                                shape = RoundedCornerShape(20.dp),
-                                color = accents.cardSurface,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .cardDepth()
-                                    .pressable(onClick = { showMap = !showMap }),
-                            ) {
-                                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(
-                                            "位置",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.weight(1f),
-                                        )
-                                        // ⚠️ v0.7.1：箭头原来孤零零吊在地点名**下方左对齐**，
-                                        // 看着像掉下来的图标。移进标题行右端，与标题垂直居中。
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                            contentDescription = if (showMap) "收起地图" else "展开地图",
-                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(20.dp),
-                                        )
-                                    }
-                                    // 地点名是完整邮编地址（"龙山九路, 西区街道, 惠州大亚湾…, 516083, 中国"），
-                                    // 占两行且没有信息增量 —— 主标题只取**第一段**，
-                                    // 完整地址降为一行灰色小字，信息一点不丢。
-                                    val fullPlace = st.location_name ?: "未命名地点"
-                                    val shortPlace = fullPlace
-                                        .substringBefore('，')
-                                        .substringBefore(',')
-                                        .trim()
-                                        .ifBlank { fullPlace }
-                                    Text(
-                                        shortPlace,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                    if (shortPlace != fullPlace) {
-                                        Text(
-                                            fullPlace,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                    }
-                                    AnimatedVisibility(
-                                        visible = showMap,
-                                        enter = expandVertically() + fadeIn(),
-                                        exit = shrinkVertically() + fadeOut(),
-                                    ) {
-                                        Column {
-                                            Spacer(Modifier.height(10.dp))
-                                            TrackMap(
-                                                points = listOf(GeoPt(lat, lng)),
-                                                drawLine = false,
-                                                settings = settings,
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .height(220.dp),
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            InfoTile("车外温度", st.outside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
-                            InfoTile("车内温度", st.inside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
-                        }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             InfoTile(
                                 "空调",
@@ -357,6 +281,21 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                                 },
                                 Modifier.weight(1f),
                             )
+                            InfoTile("车内温度", st.inside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
+                        }
+
+                        // 能量条 —— 特斯拉最易识别的视觉母题，充电中转绿
+                        EnergyBar(
+                            soc = st.battery_level,
+                            charging = st.active_charge != null,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
+
+                        st.active_charge?.let { ChargeNowCard(it) }
+                        st.active_drive?.let { DriveNowCard(it, st) }
+
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            InfoTile("车外温度", st.outside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
                             InfoTile("功率", st.power?.let { "$it kW" } ?: "—", Modifier.weight(1f))
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -373,6 +312,94 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier, store: StatusStore =
                         }
                         TpmsCard(st)
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 位置卡：地点名 + 点击展开地图。
+ *
+ * v0.8.1 从 StatusScreen 里抽出来 —— 首屏重排时它被提到电量环之后，
+ * 内联在页面里会让那个 Composable 长到 500 行，读不动。
+ */
+@Composable
+private fun LocationCard(
+    st: CarStatus,
+    settings: AppSettings,
+    showMap: Boolean,
+    onToggle: () -> Unit,
+) {
+    val lat = st.map_lat ?: st.lat
+    val lng = st.map_lng ?: st.lng
+    if (lat == null || lng == null) return
+    val accents = LocalAccentColors.current
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = accents.cardSurface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .cardDepth()
+            .pressable(onClick = onToggle),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "位置",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                // ⚠️ v0.7.1：箭头原来孤零零吊在地点名**下方左对齐**，
+                // 看着像掉下来的图标。移进标题行右端，与标题垂直居中。
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = if (showMap) "收起地图" else "展开地图",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            // 地点名是完整邮编地址（"龙山九路, 西区街道, 惠州大亚湾…, 516083, 中国"），
+            // 占两行且没有信息增量 —— 主标题只取**第一段**，
+            // 完整地址降为一行灰色小字，信息一点不丢。
+            val fullPlace = st.location_name ?: "未命名地点"
+            val shortPlace = fullPlace
+                .substringBefore('，')
+                .substringBefore(',')
+                .trim()
+                .ifBlank { fullPlace }
+            Text(
+                shortPlace,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (shortPlace != fullPlace) {
+                Text(
+                    fullPlace,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            AnimatedVisibility(
+                visible = showMap,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                Column {
+                    Spacer(Modifier.height(10.dp))
+                    TrackMap(
+                        points = listOf(GeoPt(lat, lng)),
+                        drawLine = false,
+                        pointTitle = "车辆位置：$shortPlace",
+                        settings = settings,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(220.dp),
+                    )
                 }
             }
         }

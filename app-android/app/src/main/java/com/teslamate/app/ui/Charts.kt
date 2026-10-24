@@ -533,3 +533,158 @@ fun statsChartDescription(title: String, pairs: List<Pair<String, Double>>): Str
         "（${max.first.substring(5)}），最低 ${min.second.fmt(1)}，平均 ${avg.fmt(1)}。" +
         "逐段：$head$tail"
 }
+
+/**
+ * 功率剖面图：Y 轴 = 电池净功率（kW），**零线居中**，双向填充。
+ *
+ * 正值（耗电）用能量蓝，负值（能量回收）用回收绿 —— 这是全 App 唯一需要
+ * 「一正一负」双语义同图的地方，所以零线必须居中，不能像普通折线那样从 0 起。
+ *
+ * X 轴是**累计里程**而不是时间：长途决策变量是「还剩多少公里到服务区」，
+ * 而且时间轴在堵车时会骗人（原地烧电被画成"省电了"）。
+ */
+@Composable
+fun PowerProfileChart(
+    samples: List<PowerSample>,
+    modifier: Modifier = Modifier,
+    contentDescription: String = "",
+) {
+    val textMeasurer = rememberTextMeasurer()
+    val accents = LocalAccentColors.current
+    val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val contentColor = LocalContentColor.current
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val density = LocalDensity.current
+    val yLabelWidth = with(density) { 34.dp.toPx() }
+    val xLabelHeight = with(density) { 16.dp.toPx() }
+
+    Box(
+        modifier = modifier.semantics {
+            if (contentDescription.isNotBlank()) this.contentDescription = contentDescription
+        }
+    ) {
+        Canvas(
+            Modifier
+                .fillMaxWidth()
+                .height(170.dp)
+        ) {
+            if (samples.size < 2) return@Canvas
+            val maxPos = samples.maxOf { it.powerKw }.coerceAtLeast(0.0)
+            val maxNeg = -samples.minOf { it.powerKw }.coerceAtLeast(0.0)
+            val maxAbs = maxOf(maxPos, maxNeg).coerceAtLeast(1.0)
+            val plotTop = 0f
+            val plotBottom = size.height - xLabelHeight
+            val plotHeight = plotBottom - plotTop
+            val plotLeft = yLabelWidth
+            val plotWidth = size.width - plotLeft
+            val totalKm = samples.last().km.coerceAtLeast(0.001)
+
+            // 零线位置**按实际正负范围自适应**，不是固定居中。
+            // ⚠️ v0.8.1：固定居中时，纯耗电行程（无回收）会浪费下半张图，
+            // 而且下方的 -maxAbs 刻度显示的是一个数据里根本不存在的值。
+            // 现在：没有回收时零线贴底（图形占满可用高度），没有耗电时贴顶。
+            val negRatio = if (maxNeg <= 0.001) 0f else (maxNeg / (maxNeg + maxPos)).toFloat()
+            val zeroY = plotTop + plotHeight * negRatio
+            val upH = plotBottom - zeroY
+            val downH = zeroY - plotTop
+
+            fun xAt(km: Double) = plotLeft + (km / totalKm).toFloat() * plotWidth
+            fun yAt(p: Double) = if (p >= 0) {
+                zeroY - (p / maxAbs).toFloat() * upH
+            } else {
+                zeroY + (-p / maxAbs).toFloat() * downH
+            }
+
+            // 网格线：+max / 0 / -max（只有存在负值时才画下半区）
+            val ticks = buildList {
+                if (maxPos > 0.001) add(maxPos)
+                add(0.0)
+                if (maxNeg > 0.001) add(-maxNeg)
+            }
+            ticks.forEach { v ->
+                val y = yAt(v)
+                drawLine(
+                    color = if (v == 0.0) contentColor.copy(alpha = 0.35f) else gridColor,
+                    start = Offset(plotLeft, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 1.dp.toPx(),
+                )
+                val txt = if (v == 0.0) "0" else "${kotlin.math.abs(v).roundToInt()}"
+                val layout = textMeasurer.measure(
+                    text = txt,
+                    style = TextStyle(fontSize = 9.sp, color = labelColor),
+                )
+                drawText(
+                    textLayoutResult = layout,
+                    topLeft = Offset(
+                        x = (plotLeft - layout.size.width - 4.dp.toPx()).coerceAtLeast(0f),
+                        y = y - layout.size.height / 2f,
+                    ),
+                )
+            }
+
+            // 折线
+            val path = Path()
+            samples.forEachIndexed { i, s ->
+                val p = Offset(xAt(s.km), yAt(s.powerKw))
+                if (i == 0) path.moveTo(p.x, p.y) else path.lineTo(p.x, p.y)
+            }
+            val firstX = xAt(samples.first().km)
+            val lastX = xAt(samples.last().km)
+
+            // 上半区 = 耗电（能量蓝）
+            clipRect(top = plotTop, bottom = zeroY) {
+                val fill = Path().apply {
+                    addPath(path)
+                    lineTo(lastX, zeroY)
+                    lineTo(firstX, zeroY)
+                    close()
+                }
+                drawPath(fill, color = accents.energyBlue.copy(alpha = 0.20f))
+                drawPath(
+                    path,
+                    color = accents.energyBlue,
+                    style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+                )
+            }
+            // 下半区 = 回收（回收绿）
+            clipRect(top = zeroY, bottom = plotBottom) {
+                val fill = Path().apply {
+                    addPath(path)
+                    lineTo(lastX, zeroY)
+                    lineTo(firstX, zeroY)
+                    close()
+                }
+                drawPath(fill, color = accents.chargeGreen.copy(alpha = 0.20f))
+                drawPath(
+                    path,
+                    color = accents.chargeGreen,
+                    style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round),
+                )
+            }
+
+            // X 轴：起点 / 中点 / 终点（里程）
+            listOf(
+                samples.first().km to 0,
+                totalKm / 2 to 1,
+                totalKm to 2,
+            ).forEach { (km, align) ->
+                val txt = "${km.roundToInt()}"
+                val layout = textMeasurer.measure(
+                    text = txt,
+                    style = TextStyle(fontSize = 9.sp, color = labelColor),
+                )
+                val rawX = xAt(km) - layout.size.width / 2f
+                val x = when (align) {
+                    0 -> plotLeft
+                    2 -> size.width - layout.size.width
+                    else -> rawX
+                }
+                drawText(
+                    textLayoutResult = layout,
+                    topLeft = Offset(x.coerceIn(0f, size.width - layout.size.width), plotBottom + 4.dp.toPx()),
+                )
+            }
+        }
+    }
+}
