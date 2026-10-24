@@ -1,5 +1,11 @@
 package com.teslamate.app.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -383,15 +389,19 @@ fun Modifier.pressable(
     val scale by animateFloatAsState(
         targetValue = if (pressed) scaleDown else 1f,
         animationSpec = tween(
-            durationMillis = if (pressed) 90 else 180,
+            durationMillis = if (pressed) 60 else 200,
             easing = FastOutSlowInEasing,
         ),
         label = "pressScale",
     )
     val fade by animateFloatAsState(
-        targetValue = if (pressed) 0.92f else 1f,
+        // ⚠️ v0.9.2（iOS 交互评审 P1-10）：iOS 列表行按下是**单通道**（变暗 ≈8%）。
+        // 原来 0.92（变暗 8%）+ 缩放 3.5% + M3 ripple **三通道叠加**，
+        // 而且 M3 的 ripple 在 touch-down 立刻绘制 —— 滚动列表时手指划过每张卡片
+        // 都会闪一下水波纹，看起来像渲染故障而不是反馈。
+        targetValue = if (pressed) 0.90f else 1f,
         animationSpec = tween(
-            durationMillis = if (pressed) 90 else 180,
+            durationMillis = if (pressed) 60 else 200,
             easing = FastOutSlowInEasing,
         ),
         label = "pressAlpha",
@@ -404,7 +414,11 @@ fun Modifier.pressable(
         }
         .clickable(
             interactionSource = interaction,
-            indication = androidx.compose.material3.ripple(),
+            // ⚠️ v0.9.2：**禁用 Material ripple**。
+            // AppRoot 早就把 M3 的选中胶囊去掉了（"纯 Material 味"），
+            // 这里又把 ripple 装了回来 —— 两处自相矛盾。
+            // iOS 的 list row highlight 是**纯变暗**，没有扩散水波纹。
+            indication = null,
             enabled = enabled,
             onClick = {
                 Haptics.tick(ctx)
@@ -466,6 +480,18 @@ fun SectionCard(
  * 填充块，是**纯 Material 味**，与整 App 的 iOS 语言冲突。
  * 现在：外层低对比容器 + 内部 2dp 间隙 + 选中块纯色（深 #3A3A3C / 浅 #FFFFFF），
  * 无描边、无 M3 指示器。
+ *
+ * ⚠️ **v0.9.2（苹果视觉 P0-4 + iOS 交互 P1-6）修三处**：
+ *
+ * 1. **大字号破版**：原来 `Text` 没有 `maxLines`，4 个 `weight(1f)` 的等分槽在
+ *    1.3~2.0 倍字号下必然换行 —— 「近 30 天」被折成「近 30 / 天」，
+ *    而且文字**与相邻段的白色选中胶囊贴死**（实测图 20）。
+ *    现在 `maxLines = 1` + `softWrap = false`：宁可省略号也不折行。
+ *    配合调用方把标签缩短（「近 30 天」→「30 天」），4 段在 2.0 倍下也不折。
+ * 2. **选中块硬切**：原来 `background(if (selected) selectedBg else Transparent)`
+ *    是静态值，切换瞬间跳变。现在用 `animateColorAsState` 220ms 过渡
+ *    —— iOS 的选中块是**滑过去**的，不是闪过去的。
+ * 3. **零触感**：与 Tab 切换的 `selection` 标准不一致。现在补上。
  */
 @Composable
 fun SegmentedTabs(
@@ -475,6 +501,7 @@ fun SegmentedTabs(
     modifier: Modifier = Modifier,
 ) {
     val dark = isDarkTheme()
+    val ctx = LocalContext.current
     val trackColor = if (dark) Color(0xFF1C1C1E) else Color(0xFFE9E9EC)
     val selectedBg = if (dark) Color(0xFF3A3A3C) else Color.White
     Row(
@@ -487,17 +514,30 @@ fun SegmentedTabs(
     ) {
         labels.forEachIndexed { index, label ->
             val selected = index == selectedIndex
+            // ⚠️ v0.9.2：选中块用动画色，不再硬切
+            val bg by animateColorAsState(
+                targetValue = if (selected) selectedBg else Color.Transparent,
+                animationSpec = tween(220, easing = FastOutSlowInEasing),
+                label = "segmentBg",
+            )
             Box(
                 Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(if (selected) selectedBg else Color.Transparent)
-                    .clickable { onSelect(index) }
-                    .padding(vertical = 9.dp),
+                    .background(bg)
+                    .clickable {
+                        Haptics.selection(ctx)
+                        onSelect(index)
+                    }
+                    .padding(vertical = 9.dp, horizontal = 2.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     label,
+                    // ⚠️ v0.9.2：大字号下不折行（折行会与相邻段的选中胶囊贴死）
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                     color = if (selected) MaterialTheme.colorScheme.onSurface
@@ -509,8 +549,38 @@ fun SegmentedTabs(
 }
 
 /** 键值行 */
+/**
+ * 键值行：灰标签 + 实数值。
+ *
+ * ⚠️ **v0.9.2（iOS 交互评审 P1-9）：大字号下改成上下堆叠**。
+ *
+ * 原来固定是「标签在左、数值在右」一行。大字号下标签被挤到只剩一个字，
+ * 数值折行后第二行孤零零右对齐悬空（实测「充入电量 44.4 度（快充 44.4 /
+ * 慢充 0.0）」那行）。
+ *
+ * 现在：fontScale > 1.15 时改成「标签一行、数值下一行左对齐」——
+ * 值不再需要靠右对齐，续行也就自然对齐，不会悬空。
+ */
 @Composable
 fun KV(k: String, v: String) {
+    val fontScale = LocalDensity.current.fontScale
+    if (fontScale > 1.15f) {
+        Column(Modifier.fillMaxWidth()) {
+            Text(
+                k,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                v,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        return
+    }
     Row(Modifier.fillMaxWidth()) {
         Text(k, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.weight(1f))
@@ -542,6 +612,9 @@ fun CollapsibleSection(
     content: @Composable () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    // ⚠️ v0.9.2：LocalContext.current 只能在 @Composable 作用域里取，
+    // 所以要先取出来，不能写在 .clickable 的 lambda 里（那不是 composable 上下文）。
+    val ctx = LocalContext.current
     Column(modifier) {
         Text(
             text = if (expanded) "$label ▾" else "$label ▸",
@@ -550,12 +623,23 @@ fun CollapsibleSection(
             // 一个折叠链接是红的看起来像出错了。可点性由 ▸/▾ 表达。
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
-                .clickable { expanded = !expanded }
+                .clickable {
+                    Haptics.tick(ctx)
+                    expanded = !expanded
+                }
                 .semantics {
                     contentDescription = if (expanded) "收起$label" else "展开$label"
                 },
         )
-        if (expanded) {
+        // ⚠️ v0.9.2（iOS 交互评审 P1-11）：展开/收起**要有过渡**。
+        // 原来 `if (expanded) { content() }` 是硬切 —— 内容瞬间出现/消失，
+        // 父容器高度瞬间跳变，把下方所有内容「顶」下去再弹回来，
+        // 这是最容易被感知的廉价感来源。
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn(tween(160)) + expandVertically(tween(220, easing = FastOutSlowInEasing)),
+            exit = fadeOut(tween(120)) + shrinkVertically(tween(180, easing = FastOutSlowInEasing)),
+        ) {
             content()
         }
     }

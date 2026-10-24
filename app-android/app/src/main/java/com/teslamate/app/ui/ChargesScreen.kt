@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Power
 import androidx.compose.material3.Card
@@ -255,6 +256,17 @@ internal fun ChargeItem(
                 )
                 Spacer(Modifier.width(10.dp))
                 ChargeTypeChip(c.is_dc)
+                // ⚠️ v0.9.2（iOS 交互评审 P1-8）：**可推入的卡片要有 disclosure indicator**。
+                // 这张卡会 push 出充电详情，但外观与纯展示卡完全一致 ——
+                // 唯一的线索是「按下去会缩放」，而按下之前用户根本不知道能点。
+                // iOS 惯例：会 push 的列表行右侧必须有 `›`。
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                    modifier = Modifier.size(18.dp),
+                )
             }
             Text(
                 "${c.start_date.fmtShort()} · ${minutesFmt(c.duration_min)}",
@@ -300,7 +312,11 @@ internal fun ChargeTypeChip(isDc: Boolean) {
     // ⚠️ v0.7.1：原来用 `primaryContainer`（深色下是一块 **深红** #93000A）——
     // 一条普通记录的快充标签，红色权重远大于信息量，而且和「告警红」撞语义。
     // 现在直流用充电绿（与能量条、充电态统一），交流用中性灰。
-    val tint = if (isDc) accents.chargeGreen else MaterialTheme.colorScheme.onSurfaceVariant
+    //
+    // ⚠️ v0.9.2（苹果视觉评审 P0-1）：这里要用 **chargeGreenText** 而不是 chargeGreen ——
+    // chargeGreen #1E9E62 压在自己的 16% 淡绿底上只有 2.85:1，
+    // 文字要 4.5:1、图形要 3:1，两边都不达标。
+    val tint = if (isDc) accents.chargeGreenText else MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = tint.copy(alpha = 0.16f),
@@ -413,14 +429,24 @@ internal fun ChargeDetail(
 
             item {
                 SectionCard("能量", Modifier.animateItem()) {
-                    // ⚠️ v0.9.0（新手车主复核）：「表计用电 vs 充入电量」两个名字
-                    // 新手完全分不清（"两个都像'用了多少电'"）。
-                    // 改成**说清是什么**：一个是真正进到电池里的，一个是桩上计的账，
-                    // 两者的差额就是损耗。
+                    // ⚠️ v0.9.2（口径审计 S2-1）：
+                    //   1)「桩上计的账」是**伪称谓** —— `charge_energy_used` 是 TeslaMate
+                    //      的**会话级网侧电量**（车端上报），**不是独立物理电表读数**。
+                    //      叫「计的账」会让人以为现场有块电表在计。改成中性描述。
+                    //   2) 损耗那一行要**带类型** —— AC 的差额 = 车载充电机效率（~7–10%），
+                    //      DC 的差额 = 桩 + 车路径（~5–8%），两条不同的物理路径，
+                    //      不带类型的话用户会拿 10% 和 5% 比。
                     KV("充进电池的电", charge.energy_added_kwh?.fmt(2, " 度") ?: "—")
-                    KV("桩上计的账", charge.energy_used_kwh?.fmt(2, " 度") ?: "—")
+                    KV("充电桩送出", charge.energy_used_kwh?.fmt(2, " 度") ?: "—")
                     charge.loss_percent?.let {
-                        KV("充电损耗", "${it.fmt(1)}%（多出来的部分）")
+                        KV("充电损耗", "${it.fmt(1)}%（${if (charge.is_dc) "直流" else "交流"}）")
+                    }
+                    if (charge.loss_percent != null) {
+                        Text(
+                            "交流约 10%、直流约 5%，属正常范围",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                 }
             }

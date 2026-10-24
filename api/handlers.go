@@ -808,16 +808,24 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 	//   Model 3 P74D 满电标定续航 454.59 km × 0.146 = 66.37 kWh，这是车机按
 	//   当前衰减后的可用容量上报的，与铭牌 76.8 kWh 差 15%，用它当基准同样失真。
 	//
-	// 未配置 NOMINAL_BATTERY_KWH 时回退到历史最大值（保持旧行为，并在此注释说明其不可信）。
+	// ⚠️ v0.9.2（口径审计 S1-1）：**删掉「回退到历史最大值」的兜底**。
+	//
+	// 原来这里是这样的：
+	//     base := h.NominalCapacityKwh
+	//     if base == nil { base = h.MaxCapacityKwh }
+	//
+	// 后果：任何一次**不带 .env 的重建**（换机 / 迁移 / 灾备 / CI 拉起），
+	// 健康度会从 85% 静默跳到 ~100%（当前/历史最大 这个比值永远接近 100%），
+	// 而且界面上**没有任何提示** —— 这是本项目唯一一个「数据缺失 → 数字变好」的路径。
+	//
+	// 现在：没有铭牌容量就**不给健康度**（null），由 App 明确显示「暂无基准」。
+	// 数据缺失时正确的结果是「不知道」，不是「看起来很好」。
 	if nominal := getenv("NOMINAL_BATTERY_KWH", ""); nominal != "" {
 		if n, err := strconv.ParseFloat(nominal, 64); err == nil && n > 0 {
 			h.NominalCapacityKwh = &n
 		}
 	}
 	base := h.NominalCapacityKwh
-	if base == nil {
-		base = h.MaxCapacityKwh // 兜底：未配铭牌容量时用历史最大值（口径不严谨，见上）
-	}
 	if last != nil && base != nil && *base > 0 {
 		v := *last * 100 / *base
 		h.HealthPercent = &v

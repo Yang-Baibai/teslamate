@@ -205,7 +205,19 @@ private fun MainScaffold(
                             .height(0.5.dp)
                             .background(accents.cardStroke)
                     )
-                    NavigationBar(containerColor = Color.Transparent) {
+                    NavigationBar(
+                        // ⚠️ v0.9.2（苹果视觉评审 P2-9）：**深色下 Tab Bar 需要「栏」的属性**。
+                        // 原来两种模式都是 Color.Transparent（靠毛玻璃透出内容），
+                        // 但深色页底是 #000000，玻璃叠上去还是 #000000 ——
+                        // Tab Bar 与页面**完全融在一起**，失去「这是一条栏」的读感
+                        // （浅色下是 #FFFFFF vs #F1F1F6，分离很清楚）。
+                        // 现在：深色给一层卡片面色，浅色保持透明（保留毛玻璃质感）。
+                        containerColor = if (isDarkTheme()) {
+                            MaterialTheme.colorScheme.surfaceContainer
+                        } else {
+                            Color.Transparent
+                        },
+                    ) {
                         Tab.entries.forEach { t ->
                             NavigationBarItem(
                                 selected = tab == t,

@@ -2,29 +2,40 @@
 
 package com.teslamate.app.ui
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -34,7 +45,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -45,11 +58,27 @@ import com.teslamate.app.Api
 import com.teslamate.app.AppSettings
 import com.teslamate.app.BuildConfig
 import com.teslamate.app.Car
+import com.teslamate.app.Haptics
 import com.teslamate.app.saveSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * 设置页。
+ *
+ * ⚠️ **v0.9.2（苹果视觉评审 P0-6 + iOS 交互评审 P1-9）：整页去 Material 味**。
+ *
+ * 原来这里直接用了 M3 的 `OutlinedTextField` / `Checkbox` / `RadioButton` ——
+ * 1dp 描边 + 标签在边框上开缺口的轮廓框、方框 Checkbox、红圈 RadioButton，
+ * 是全 App 里与 iOS 语言**唯一**的断层（其余页面全是自绘材质）。
+ *
+ * 现在：
+ * - 输入框 → [IosField]（无描边填充式：标签在上、值在下，圆角 12dp）
+ * - 「显示令牌」→ [IosSwitch]（51×31dp 胶囊，iOS 开关）
+ * - 「选择车辆」→ **整行可点 + 右侧对勾**（不是 radio 按钮）
+ * - 次要按钮 → 中性描边（原来「保存」是**红字描边**，和主按钮的实心红撞色）
+ */
 @Composable
 fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
     val ctx = LocalContext.current
@@ -106,28 +135,32 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
         ) {
             item {
                 SectionCard("服务器连接", Modifier.animateItem()) {
-                    OutlinedTextField(
+                    IosField(
+                        label = "服务器地址",
                         value = url,
                         onValueChange = { url = it; testOk = null; testMsg = null; savedHint = false },
-                        label = { Text("服务器地址") },
-                        placeholder = { Text("http://192.168.1.100:8090") },
-                        singleLine = true,
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = "http://192.168.1.100:8090",
                     )
-                    OutlinedTextField(
+                    IosField(
+                        label = "访问令牌 (API_TOKEN)",
                         value = token,
                         onValueChange = { token = it; testOk = null; testMsg = null; savedHint = false },
-                        label = { Text("访问令牌 (API_TOKEN)") },
-                        singleLine = true,
                         visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardType = KeyboardType.Password,
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = showToken, onCheckedChange = { showToken = it })
-                        Text("显示令牌", style = MaterialTheme.typography.bodySmall)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                Haptics.selection(ctx)
+                                showToken = !showToken
+                            }
+                            .padding(vertical = 4.dp),
+                    ) {
+                        IosSwitch(checked = showToken, onCheckedChange = { showToken = it })
+                        Text("显示令牌", style = MaterialTheme.typography.bodyMedium)
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
@@ -160,6 +193,7 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                                     testing = false
                                 }
                             },
+                            shape = RoundedCornerShape(12.dp),
                         ) {
                             if (testing) {
                                 CircularProgressIndicator(Modifier.width(16.dp), strokeWidth = 2.dp)
@@ -167,9 +201,16 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                             }
                             Text("测试连接")
                         }
+                        // ⚠️ v0.9.2：次要按钮**不再用红色**。
+                        // 原来「保存」是红字描边，与旁边实心红的「测试连接」撞色，
+                        // 两个按钮的层级完全分不出来。
                         OutlinedButton(
                             enabled = url.isNotBlank() && token.isNotBlank(),
                             onClick = { save() },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.onSurface,
+                            ),
                         ) {
                             Text("保存")
                         }
@@ -194,23 +235,50 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
             if (cars.isNotEmpty()) {
                 item {
                     SectionCard("选择车辆", Modifier.animateItem()) {
+                        // ⚠️ v0.9.2：M3 的 RadioButton（红圈红点）→ **整行可点 + 右侧对勾**。
+                        // 这是 iOS 设置页的标准范式，命中区也从一个小圆点变成整行。
                         cars.forEach { c ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                RadioButton(
-                                    selected = carId == c.id,
-                                    onClick = { carId = c.id; savedHint = false },
+                            val selected = carId == c.id
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        Haptics.selection(ctx)
+                                        carId = c.id
+                                        savedHint = false
+                                    }
+                                    .padding(vertical = 8.dp),
+                            ) {
+                                Text(
+                                    "${c.name}${c.marketing_name?.let { " · $it" } ?: ""}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f),
                                 )
-                                Text("${c.name}${c.marketing_name?.let { " · $it" } ?: ""}")
+                                if (selected) {
+                                    Icon(
+                                        Icons.Filled.Check,
+                                        contentDescription = "已选中",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
                             }
                         }
-                        TextButton(onClick = { save() }) { Text("保存车辆选择") }
+                        TextButton(
+                            onClick = { save() },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                        ) { Text("保存车辆选择") }
                     }
                 }
             }
 
             item {
                 // ⚠️ v0.9.0（新手车主复核）：
-                // 「上次保养是什么时候 / 什么时候该换胎 —— 全项目 0 命中。这是我最想要的。」
+                // 「上次保养是什么时候 / 什么时候该换胎 —— 全项目 0 命中。这是我最想要的」。
                 //
                 // 为什么放在**设置**里而不是服务端：
                 // 保养是车主的线下行为，没有任何机器能自动知道。
@@ -224,49 +292,42 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    OutlinedTextField(
+                    IosField(
+                        label = "上次保养时的里程（km）",
                         value = if (serviceOdo > 0) serviceOdo.toLong().toString() else "",
                         onValueChange = {
                             serviceOdo = it.trim().toDoubleOrNull() ?: 0.0
                             savedHint = false
                         },
-                        label = { Text("上次保养时的里程（km）") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardType = KeyboardType.Number,
                     )
-                    OutlinedTextField(
+                    IosField(
+                        label = "保养间隔（km）",
                         value = serviceInterval,
                         onValueChange = { serviceInterval = it.filter { c -> c.isDigit() }; savedHint = false },
-                        label = { Text("保养间隔（km）") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardType = KeyboardType.Number,
                     )
-                    OutlinedTextField(
+                    IosField(
+                        label = "上次换胎时的里程（km）",
                         value = if (tireOdo > 0) tireOdo.toLong().toString() else "",
                         onValueChange = {
                             tireOdo = it.trim().toDoubleOrNull() ?: 0.0
                             savedHint = false
                         },
-                        label = { Text("上次换胎时的里程（km）") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardType = KeyboardType.Number,
                     )
-                    OutlinedTextField(
+                    IosField(
+                        label = "轮胎更换间隔（km）",
                         value = tireInterval,
                         onValueChange = { tireInterval = it.filter { c -> c.isDigit() }; savedHint = false },
-                        label = { Text("轮胎更换间隔（km）") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardType = KeyboardType.Number,
                     )
-                    TextButton(onClick = { save() }) { Text("保存提醒设置") }
+                    TextButton(
+                            onClick = { save() },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            ),
+                        ) { Text("保存提醒设置") }
                 }
             }
 
@@ -293,5 +354,118 @@ fun SettingsScreen(settings: AppSettings, modifier: Modifier) {
                 }
             }
         }
+    }
+}
+
+/**
+ * iOS 风格的输入框：**无描边填充式**，标签在上、值在下。
+ *
+ * ⚠️ v0.9.2（苹果视觉评审 P0-6）：原来用 M3 的 `OutlinedTextField` ——
+ * 1dp 描边 + 标签在边框上开缺口，是最典型的「Material 味」符号。
+ *
+ * 现在：容器用 `cardInset`（与卡片内凹块同一层级）、圆角 12dp、**0dp 描边**，
+ * 标签是框外上方一行 13sp 灰字，值 17sp 亮字 —— 与 iOS 设置页一致。
+ */
+@Composable
+fun IosField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String = "",
+    keyboardType: KeyboardType = KeyboardType.Text,
+    visualTransformation: VisualTransformation = VisualTransformation.None,
+) {
+    val accents = LocalAccentColors.current
+    Column(modifier.fillMaxWidth()) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(accents.cardInset)
+                .padding(horizontal = 14.dp, vertical = 13.dp),
+        ) {
+            if (value.isEmpty() && placeholder.isNotEmpty()) {
+                Text(
+                    placeholder,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                visualTransformation = visualTransformation,
+                keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+/**
+ * iOS 开关（51×31dp 胶囊 + 27dp 滑块）。
+ *
+ * ⚠️ v0.9.2：原来用 M3 的 `Checkbox` —— 方框 + 灰描边，
+ * 是全 App 里 Material 味最重的一个元素。
+ */
+@Composable
+fun IosSwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accents = LocalAccentColors.current
+    // ⚠️ `LocalContext.current` 只能在 @Composable 作用域取，
+    // 所以先取出来，不能写在 .clickable 的 lambda 里。
+    val ctx = LocalContext.current
+    val knobOffset by animateDpAsState(
+        // ⚠️ v0.9.2：iOS 开关的**轨道宽度恒定**（51×31），只有滑块左右移动。
+        // 原来我把轨道也做成 51↔31 动画 —— 关掉时轨道变成 31×31 的**圆**，
+        // 看起来像一个空心圆圈，不是开关。
+        targetValue = if (checked) 22.dp else 2.dp,
+        animationSpec = tween(180),
+        label = "switchKnob",
+    )
+    val trackColor by animateFloatAsState(
+        targetValue = if (checked) 1f else 0f,
+        animationSpec = tween(180),
+        label = "switchColor",
+    )
+    val onColor = Color(0xFF34C759)
+    val offColor = accents.chartTrack
+    Box(
+        modifier
+            .width(51.dp)
+            .height(31.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(
+                androidx.compose.ui.graphics.lerp(offColor, onColor, trackColor) ?: offColor
+            )
+            .clickable {
+                Haptics.selection(ctx)
+                onCheckedChange(!checked)
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Box(
+            Modifier
+                .padding(start = knobOffset)
+                .size(27.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color.White)
+                .border(0.5.dp, Color(0x1A000000), RoundedCornerShape(14.dp)),
+        )
     }
 }

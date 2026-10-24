@@ -60,7 +60,11 @@ private fun chartProgress(hasData: Boolean): Float {
     return progress
 }
 
-/** 坐标轴公共绘制：Y 轴刻度 + 网格线 + X 轴标签 */
+/**
+ * 坐标轴公共绘制：Y 轴刻度 + 网格线 + X 轴标签
+ *
+ * @param ticks Y 轴刻度值（**由调用方用 [niceAxis] 算好**）
+ */
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAxes(
     yMax: Float,
     yUnit: String,
@@ -70,26 +74,20 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAxes(
     gridColor: Color,
     labelColor: Color,
     textMeasurer: androidx.compose.ui.text.TextMeasurer,
-    /**
-     * Y 轴刻度的最大值。
-     *
-     * ⚠️ v0.7.1：它和「绘图区上界」**故意不是同一个值**。
-     * 绘图区上界留 8% 顶部空白给峰值标注，否则顶格柱的标注只能压在柱身上；
-     * 但刻度标签要显示**真实数据最大值**（1002），不能因为留白就显示 1082 ——
-     * 那会让读者以为数据到过 1082。
-     */
-    tickMax: Float = yMax,
+    ticks: List<Float>,
+    /** Y 轴下界（默认 0；细窄数据范围时会贴住数据，见 LineChart） */
+    yBottom: Float = 0f,
 ) {
     val plotLeft = yLabelWidth
     val plotRight = size.width
     val plotTop = 0f
     val plotBottom = size.height - xLabelHeight
     val plotHeight = plotBottom - plotTop
+    val ySpan = (yMax - yBottom).coerceAtLeast(0.0001f)
 
-    // 水平网格线 + Y 轴刻度值（0 / 中 / 最大）
-    val ticks = listOf(0f, tickMax / 2f, tickMax)
+    // 水平网格线 + Y 轴刻度值
     ticks.forEach { t ->
-        val y = plotBottom - (if (yMax > 0f) t / yMax else 0f) * plotHeight
+        val y = plotBottom - ((t - yBottom) / ySpan) * plotHeight
         drawLine(
             color = gridColor,
             start = Offset(plotLeft, y),
@@ -129,6 +127,62 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAxes(
             )
         }
     }
+}
+
+/**
+ * 取一个「好看」的刻度步长（1 / 2 / 5 × 10ⁿ）。
+ *
+ * 例：3.6 → 5；36 → 50；0.45 → 0.5；120 → 200。
+ */
+private fun niceStep(v: Float): Float {
+    if (v <= 0f || !v.isFinite()) return 1f
+    var base = 1f
+    while (base * 10f <= v) base *= 10f
+    val n = v / base
+    return (when {
+        n <= 1f -> 1f
+        n <= 2f -> 2f
+        n <= 5f -> 5f
+        else -> 10f
+    }) * base
+}
+
+/**
+ * 算「好看的」Y 轴刻度（**只在绘图区内部**，不含上界）。
+ *
+ * ⚠️ v0.9.1：原来刻度是 `0 / max/2 / max`，直接取自数据最大值 ——
+ * 于是「充入电量」图的刻度是 **23.7 / 11.9 / 0**。
+ * 读者看到「23.7 度」根本读不出量级（是 20 还是 25？），中间那条 11.9 更糟。
+ *
+ * 现在刻度取 **1 / 2 / 5 × 10ⁿ** 的整数步长，且**只取严格小于上界**的那些：
+ *   - 上界 23.7 → 刻度 0 / 10 / 20（峰值 23.7 由图下方的摘要行给出）
+ *   - 上界 47.4 → 刻度 0 / 20 / 40
+ *   - 上界 1002 → 刻度 0 / 500 / 1000
+ *
+ * ⚠️ **上界本身不动**（仍是真实数据最大值）——
+ * v0.7.1 特意这么定过：把上界取整会让读者以为数据到过那个数
+ * （1002 → 1500 就是凭空多出来 50%）。现在只让**刻度**变好看。
+ */
+private fun niceTicks(maxValue: Float, targetTicks: Int = 4): List<Float> {
+    if (maxValue <= 0f || !maxValue.isFinite()) return listOf(0f)
+    val rawStep = maxValue / targetTicks
+    // base = 10^floor(log10(rawStep)) —— 用循环算，避免依赖 log10/pow 的重载解析。
+    var base = 1f
+    while (base * 10f <= rawStep) base *= 10f
+    val n = rawStep / base
+    val step = (when {
+        n <= 1f -> 1f
+        n <= 2f -> 2f
+        n <= 5f -> 5f
+        else -> 10f
+    }) * base
+    val out = ArrayList<Float>()
+    var v = step
+    while (v < maxValue - step * 0.001f) {
+        out += v
+        v += step
+    }
+    return listOf(0f) + out
 }
 
 private fun trimNum(v: Float): String {
@@ -198,6 +252,19 @@ fun StackedBarChart(
             val gap = 3.dp.toPx()
             val bw = (size.width - plotLeft - gap * (n - 1)) / n
 
+            // ⚠️ v0.9.2（苹果视觉评审 P1-4）：**绘图区铺一层极淡的底**。
+            //
+            // 原来空槽是全高色块、槽间 3dp 缝隙直接露出**卡片面** ——
+            // 浅色下露白、深色下露黑，于是**贯穿全高的竖条读起来像划痕**，
+            // 不像刻度（实测 08 图浅色底 #F5F5F6 + 竖线 #FFFFFF）。
+            // 现在：缝隙露的是这层「底」，与空槽只差一点点明度 → 竖条消失。
+            drawRoundRect(
+                color = trackColor.copy(alpha = 0.08f),
+                topLeft = Offset(plotLeft, plotTop),
+                size = Size(size.width - plotLeft, plotHeight),
+                cornerRadius = CornerRadius(4.dp.toPx()),
+            )
+
             drawAxes(
                 yMax = yMax,
                 yUnit = yUnit,
@@ -207,9 +274,10 @@ fun StackedBarChart(
                 gridColor = gridColor,
                 labelColor = labelColor,
                 textMeasurer = textMeasurer,
-                // 有基准线时用 yMax 作刻度（基准锚定场景本来就该按基准读数）；
-                // 无基准线时用真实数据最大值，别让顶部留白变成"数据到过 1082"的错觉。
-                tickMax = if (referenceValue != null) yMax else dataMax,
+                // ⚠️ v0.9.1：刻度取整数步长（0/10/20 而不是 0/11.9/23.7），
+                // 但**上界不变** —— v0.7.1 特意让上界等于真实数据最大值，
+                // 取整会让读者以为数据到过那个数。
+                ticks = niceTicks(yMax),
             )
 
             // 基准线（虚线感：用短划线绘制）
@@ -247,10 +315,12 @@ fun StackedBarChart(
             totals.forEachIndexed { i, t ->
                 val x = plotLeft + i * (bw + gap)
                 // 空槽只是"这里有量程"的结构提示，不是数据。
-                // ⚠️ v0.7.1：原来用实色 surfaceContainerHighest —— 30 根实心灰条铺满绘图区，
-                // 视觉上变成"条纹背景"，把真正的数据柱淹没。改成很淡的一层。
+                // ⚠️ v0.9.1 修正：原来空槽是**全高**色块、槽间 3dp 缝隙直接露出卡片面 ——
+                // 浅色下露白、深色下露黑，**贯穿全高的竖条读起来像划痕/缝隙**，不像刻度。
+                // 现在：绘图区先铺一层极淡的底，缝隙露的是底而不是卡片面，
+                // 空槽本身也压到 0.22 —— 竖条消失，量程结构还在。
                 drawRoundRect(
-                    color = trackColor.copy(alpha = 0.45f),
+                    color = trackColor.copy(alpha = 0.22f),
                     topLeft = Offset(x, plotTop),
                     size = Size(bw, plotHeight),
                     cornerRadius = CornerRadius(4.dp.toPx()),
@@ -334,15 +404,42 @@ fun LineChart(
             if (values.size < 2) return@Canvas
             val present = values.filterNotNull()
             if (present.isEmpty()) return@Canvas
+            val dataMin = present.min()
             val dataMax = present.max().coerceAtLeast(0.001f)
-            val yMax = referenceValue?.let { max(dataMax, it * 1.3f) } ?: dataMax
-            val yTop = max(yMax, dataMax)
+            val rawTop = referenceValue?.let { max(dataMax, it * 1.3f) } ?: dataMax
 
             val plotTop = 0f
             val plotBottom = size.height - xLabelHeight
             val plotHeight = plotBottom - plotTop
             val plotLeft = yLabelWidth
             val plotWidth = size.width - plotLeft
+
+            // ⚠️ v0.9.2（口径审计 S3-3）：**细窄的数据范围不能从 0 起**。
+            //
+            // 电池健康曲线是 65.2 → 66.7 度（变化 1.5 度，占 2%），
+            // 从 0 起画出来是**一条几乎不可见的平线** ——
+            // 而这张图要表达的就是「它在缓慢下降」。
+            // （旧注释写「锚定到标称容量的 1.3 倍后，衰减趋势一眼可见」，
+            //  实际效果与这句话**相反**。）
+            //
+            // 现在：范围窄于最大值的一半时，Y 轴**贴住数据**（放大到能看出趋势）；
+            // 范围宽时仍然从 0 起（柱状图必须从 0 起，折线图也要保持量级诚实）。
+            val zoomed = dataMin > 0f && (dataMax - dataMin) < dataMax * 0.5f && referenceValue == null
+            val (yTop, yBottom, yTicks) = if (zoomed) {
+                val step = niceStep((dataMax - dataMin) * 1.6f)
+                val lo = kotlin.math.floor((dataMin - (dataMax - dataMin) * 0.3f) / step) * step
+                val hi = kotlin.math.ceil((dataMax + (dataMax - dataMin) * 0.3f) / step) * step
+                Triple(
+                    hi,
+                    lo,
+                    generateSequence(lo) { it + step }
+                        .takeWhile { it <= hi + step * 0.001f }
+                        .toList(),
+                )
+            } else {
+                Triple(rawTop, 0f, niceTicks(rawTop))
+            }
+            val yMax = yTop
 
             // X 位置：按真实时间权重（xWeights）分配，无权重则等距
             val weights: List<Float> = if (xWeights != null && xWeights.size == values.size) {
@@ -354,10 +451,11 @@ fun LineChart(
                 List(values.size) { it / (values.size - 1f) }
             }
             fun xAt(i: Int) = plotLeft + weights[i] * plotWidth
-            fun yAt(v: Float) = plotBottom - (v / yTop) * plotHeight
+            fun yAt(v: Float) = plotBottom - ((v - yBottom) / (yTop - yBottom).coerceAtLeast(0.0001f)) * plotHeight
 
             drawAxes(
                 yMax = yMax,
+                yBottom = yBottom,
                 yUnit = yUnit,
                 xLabels = xLabels,
                 yLabelWidth = plotLeft,
@@ -365,7 +463,8 @@ fun LineChart(
                 gridColor = gridColor,
                 labelColor = labelColor,
                 textMeasurer = textMeasurer,
-                tickMax = if (referenceValue != null) yMax else dataMax,
+                // ⚠️ v0.9.1：刻度取整数步长，上界不变（同 StackedBarChart）
+                ticks = yTicks,
             )
 
             // 基准线
@@ -869,8 +968,11 @@ fun SocStrip(
                     .coerceIn(0f, (size.width - layout.size.width).coerceAtLeast(0f))
                 drawText(textLayoutResult = layout, topLeft = Offset(tx, ty))
             }
-            mark(milestones.kmAt20, "到达 20% @ ${milestones.kmAt20?.roundToInt()} km", accents.warnAmber)
-            mark(milestones.kmAt10, "到达 10% @ ${milestones.kmAt10?.roundToInt()} km", accents.danger)
+            // ⚠️ v0.9.2（口径审计 S2-2）：措辞用「约」。
+            // SOC 是整数百分比（1 个百分点 ≈ 3.65 km），加上 1 km 分箱的箱中心量化，
+            // 真实不确定度约 ±2 km —— 写成精确的「第 243 公里」是把误差当成了精度。
+            mark(milestones.kmAt20, "约第 ${milestones.kmAt20?.roundToInt()} 公里降到 20%", accents.warnAmber)
+            mark(milestones.kmAt10, "约第 ${milestones.kmAt10?.roundToInt()} 公里降到 10%", accents.danger)
 
             // 右侧电量刻度（第二 Y 轴）
             listOf(100 to "100%", 0 to "0%").forEach { (lvl, txt) ->

@@ -44,6 +44,19 @@ data class AccentColors(
     val energyBlue: Color,
     /** 充电绿：仅表示「正在充电」 */
     val chargeGreen: Color,
+    /**
+     * 充电绿的**文字/图标专用**色。
+     *
+     * ⚠️ v0.9.2（苹果视觉评审 P0-1）：`chargeGreen` #1E9E62 画在
+     * 「直流快充」芯片底色（绿 @16% ≈ #DBEFE6）上只有 **2.85:1** ——
+     * 文字要 4.5:1、图形要 3:1，**两边都不达标**。
+     *
+     * 所以**不改动** [chargeGreen] 本体（它是图标/进度条填充，3:1 已达标），
+     * 而是另开一个「压在淡绿底上的绿」：
+     *   浅 #0F6B41 on #D9E7E0 = **5.17:1** ✓
+     *   深 #5FD69A on #273A32 = **6.50:1** ✓
+     */
+    val chargeGreenText: Color,
     /** 琥珀：电量 < 20%（浅色下用深一档，保证 ≥3:1） */
     val warnAmber: Color,
     /** 危险红：电量 < 10%、胎压异常 */
@@ -93,19 +106,25 @@ private val LightAccents = AccentColors(
     teslaRedLight = Color(0xFFFF6B6B),
     energyBlue = Color(0xFF2F5FD0),
     chargeGreen = Color(0xFF1E9E62),
+    chargeGreenText = Color(0xFF0F6B41),
     warnAmber = Color(0xFFB26A00),
     danger = Color(0xFFD13438),
     fastCharge = Color(0xFFD70012),
     slowCharge = Color(0xFF2F5FD0),
-    chartTrack = Color(0xFF8E8E93),
+    chartTrack = Color(0xFF77777D),
     chartBaseline = Color(0xFF9AA1A8),
     glassTint = Color(0x99FFFFFF),
     glassHighlight = Color(0x66FFFFFF),
     shadowAmbient = Color(0x14000000),
     shadowKey = Color(0x0A000000),
-    // iOS grouped 浅色三级：页面底 #F2F2F7 → 卡片面 #FFFFFF → 内凹 #F2F2F4
+    // iOS grouped 浅色三级：页面底 #F2F2F7 → 卡片面 #FFFFFF → 内凹 #EBEBF0
     cardSurface = Color(0xFFFFFFFF),
-    cardInset = Color(0xFFF2F2F4),
+    // ⚠️ v0.9.2（苹果视觉评审 P1-3）：内凹块原来 #F2F2F4，与卡片面 #FFFFFF 的
+    // ΔL* 只有约 2.6（肉眼几乎同色）—— 于是内凹的可见性**完全由那圈 0.5dp 描边承担**，
+    // 正好违反「层次靠材质不靠描边」。提到 #EBEBF0 后 ΔL* ≈ 6.8，
+    // 文字 #1C1C1E on #EBEBF0 = 14.3:1 ✓，深浅两侧的层级强度也终于对等
+    // （深色 #1C1C1E vs #0B0B0D 的 ΔL* = 7.4）。
+    cardInset = Color(0xFFEBEBF0),
     // 浅色下描边必须**是黑不是白** —— 白描白卡等于没有边界（之前就是白 55%，肉眼全隐形）
     cardStroke = Color(0x14000000),
     cardStrokeEnd = Color(0x08000000),
@@ -116,6 +135,7 @@ private val DarkAccents = AccentColors(
     teslaRedLight = Color(0xFFFF8A80),
     energyBlue = Color(0xFF5B8DEF),
     chargeGreen = Color(0xFF2FBF71),
+    chargeGreenText = Color(0xFF5FD69A),
     warnAmber = Color(0xFFF5A623),
     danger = Color(0xFFE5484D),
     fastCharge = Color(0xFFFF453A),
@@ -184,7 +204,7 @@ private val LightColors = lightColorScheme(
     onTertiaryContainer = Color(0xFF141C22),
     error = Color(0xFFBA1A1A),
     onError = Color(0xFFFFFFFF),
-    errorContainer = Color(0xFFFFDAD6),
+    errorContainer = Color(0xFFFFE1DE),
     onErrorContainer = Color(0xFF410002),
     background = Color(0xFFF2F2F7),        // iOS systemGroupedBackground
     onBackground = Color(0xFF1C1C1E),
@@ -216,8 +236,12 @@ private val DarkColors = darkColorScheme(
     onTertiaryContainer = Color(0xFFDCE6EE),
     error = Color(0xFFFF453A),
     onError = Color(0xFF2B0A08),
-    errorContainer = Color(0xFF93000A),
-    onErrorContainer = Color(0xFFFFDAD6),
+    // ⚠️ v0.9.2（苹果视觉评审 P1-2）：深色 errorContainer 原来 #93000A ——
+    // 一整块饱和深红，是全 App 深色模式下**唯一的彩色块**，重量压过所有内容
+    // （对比度虽然达标 7.2:1，问题在 tonal 重量）。
+    // 改成 iOS dark tinted background 的做法：暗红底 #3A1518 + 亮字 #FFB4AE（9.47:1）。
+    errorContainer = Color(0xFF3A1518),
+    onErrorContainer = Color(0xFFFFB4AE),
     // iOS 深色是**纯黑**分层（#000000 / #1C1C1E / #2C2C2E），
     // 此前用灰蓝底 (#101214) 显得"灰蒙蒙"，且卡片与底色分离度不够。
     background = Color(0xFF000000),
@@ -274,15 +298,15 @@ private val AppTypography = Typography(
     ),
     bodyLarge = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal,
-        fontSize = 17.sp, lineHeight = 22.sp, letterSpacing = 0.sp,
+        fontSize = 17.sp, lineHeight = 22.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
     ),
     bodyMedium = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal,
-        fontSize = 15.sp, lineHeight = 20.sp, letterSpacing = 0.sp,
+        fontSize = 15.sp, lineHeight = 20.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
     ),
     bodySmall = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal,
-        fontSize = 13.sp, lineHeight = 18.sp, letterSpacing = 0.sp,
+        fontSize = 13.sp, lineHeight = 18.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
     ),
     labelLarge = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium,
@@ -290,11 +314,11 @@ private val AppTypography = Typography(
     ),
     labelMedium = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium,
-        fontSize = 13.sp, lineHeight = 16.sp, letterSpacing = 0.sp,
+        fontSize = 13.sp, lineHeight = 16.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
     ),
     labelSmall = TextStyle(
         fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium,
-        fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.sp,
+        fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
     ),
 )
 

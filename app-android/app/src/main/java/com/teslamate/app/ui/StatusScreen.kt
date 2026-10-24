@@ -8,6 +8,13 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -55,6 +62,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
@@ -68,6 +76,7 @@ import com.teslamate.app.ActiveCharge
 import com.teslamate.app.AppSettings
 import com.teslamate.app.CarStatus
 import com.teslamate.app.ConsumptionModel
+import com.teslamate.app.Haptics
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtShort
 import com.teslamate.app.fmtThousands
@@ -96,6 +105,9 @@ fun StatusScreen(
 ) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
+    // ⚠️ v0.9.2：LocalContext.current 要在 @Composable 作用域取一次，
+    // 不能写在 onClick lambda 里（那不是 composable 上下文）。
+    val ctx = LocalContext.current
     // 数据存在 App 级 store 里：切 Tab 回来时旧数据还在，
     // 直接显示并后台刷新 —— 不再闪一次骨架屏。
     // store 内部用 mutableStateOf 持有，所以在 @Composable 里直接读就会订阅变化。
@@ -174,8 +186,29 @@ fun StatusScreen(
             // 现在顶部栏透明，与底部玻璃统一为「内容在上、材质在下」的一套语言。
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
             actions = {
-                IconButton(onClick = { refresh() }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+                // ⚠️ v0.9.2（iOS 交互评审 P1-7）：刷新按钮原来点了**零反馈** ——
+                // 图标不转、按钮不禁用（刷新中再点会并发再发一次请求）、也没有触感。
+                // 用户点完刷新，屏幕上什么变化都看不到。
+                val spin = rememberInfiniteTransition(label = "refreshSpin")
+                val angle by spin.animateFloat(
+                    0f, 360f,
+                    infiniteRepeatable(tween(900, easing = androidx.compose.animation.core.LinearEasing)),
+                    label = "refreshAngle",
+                )
+                IconButton(
+                    onClick = {
+                        Haptics.tick(ctx)
+                        refresh()
+                    },
+                    enabled = !refreshing,
+                ) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = "刷新",
+                        modifier = Modifier.graphicsLayer {
+                            rotationZ = if (refreshing) angle else 0f
+                        },
+                    )
                 }
             },
         )
@@ -493,6 +526,7 @@ private fun RangeAndOdometer(
         // 现在：主数字**只给答案**，怎么算的收在一行「怎么算的 ▸」里，
         // 点开才展开 —— 规划长途时它是关键，平时它是干扰。
         var showExplain by remember { mutableStateOf(false) }
+        val explainCtx = LocalContext.current
         val explainText = buildString {
             if (ratedRange != null && ratedRange > 0) {
                 append("官方标称 ${ratedRange.fmt(0)} 公里")
@@ -512,7 +546,10 @@ private fun RangeAndOdometer(
             // 看起来像出错了。可点性由 ▸/▾ 本身表达（iOS 就是这么做的）。
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
-                .clickable { showExplain = !showExplain }
+                .clickable {
+                    Haptics.tick(explainCtx)
+                    showExplain = !showExplain
+                }
                 .semantics {
                     contentDescription = if (showExplain) {
                         "收起续航计算方式"
@@ -521,7 +558,14 @@ private fun RangeAndOdometer(
                     }
                 },
         )
-        if (showExplain) {
+        // ⚠️ v0.9.2（iOS 交互评审 P1-11）：展开要有过渡。
+        // 原来 `if (showExplain) { Text(...) }` 是硬切 —— 父容器高度瞬间跳变，
+        // 把下方所有卡片「顶」下去再弹回来（这是最容易被感知的廉价感来源）。
+        AnimatedVisibility(
+            visible = showExplain,
+            enter = fadeIn(tween(160)) + expandVertically(tween(220, easing = FastOutSlowInEasing)),
+            exit = fadeOut(tween(120)) + shrinkVertically(tween(180, easing = FastOutSlowInEasing)),
+        ) {
             Text(
                 explainText.ifBlank { "暂无足够数据估算" },
                 style = MaterialTheme.typography.labelSmall,

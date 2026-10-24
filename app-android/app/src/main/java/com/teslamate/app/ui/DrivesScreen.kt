@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -27,6 +28,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -48,7 +50,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.teslamate.app.Api
 import com.teslamate.app.AppSettings
@@ -214,26 +218,94 @@ internal fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> U
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.Top) {
-                Text(
-                    // 起终点只取地址第一段（完整邮编地址在详情页里保留）
-                    "${d.start_place.firstSegment() ?: "?"} → ${d.end_place.firstSegment() ?: "?"}",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    "${d.distance_km?.fmt(1) ?: "—"} km",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    // ⚠️ v0.8.3：原来用 primary（特斯拉红）。列表里重复几十次的红色数字
-                    // 是「一眼看出是套模板」的廉价感来源 —— 红色在本 App 的语义里只表示
-                    // 告警/品牌点缀，不该用来标里程。
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+            // ⚠️ v0.9.2（苹果视觉评审 P0-3 + P2-6）：**起点与终点不允许被拆开**。
+            //
+            // 原来是一行文字「龙翔大道 → 永丰社区」，大字号下断行落在
+            // 「永」和「丰社区」之间 —— 起点与终点被劈成两行，
+            // 读起来像两个不相干的地名（「红棉路 → 龙岗大 / 道」同理）。
+            //
+            // 现在：
+            //   - 文字箭头「→」换成 **chevron 图标**（12dp，固定宽度）——
+            //     文字箭头与地名同字号同重，是纯噪点；
+            //   - 起点 / chevron / 终点是一个**不换行的整体**（中间不许断），
+            //     整体过长时在**终点名尾部**省略；
+            //   - fontScale 大时**距离另起一行**（右对齐），不再与标题抢同一行。
+            val fontScale = LocalDensity.current.fontScale
+            val stacked = fontScale >= 1.15f
+            val startName = d.start_place.firstSegment() ?: "?"
+            val endName = d.end_place.firstSegment() ?: "?"
+            Column(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        startName,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = "到",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .padding(horizontal = 2.dp)
+                            .size(14.dp),
+                    )
+                    Text(
+                        endName,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                }
+                if (stacked) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${d.distance_km?.fmt(1) ?: "—"} km",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                } else {
+                    Spacer(Modifier.width(10.dp))
+                }
+            }
+            if (!stacked) {
+                // 常规字号：距离与标题同一行右对齐
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${d.distance_km?.fmt(1) ?: "—"} km",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        // ⚠️ v0.8.3：原来用 primary（特斯拉红）。列表里重复几十次的红色数字
+                        // 是「一眼看出是套模板」的廉价感来源 —— 红色在本 App 的语义里只表示
+                        // 告警/品牌点缀，不该用来标里程。
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    // ⚠️ v0.9.2：disclosure indicator（会 push 出详情）
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
             Text(
                 "${d.start_date.fmtShort()} · ${minutesFmt(d.duration_min)}",
@@ -359,7 +431,7 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
             // 下次跑同一条高速就会主动避开。
             if (powerProfile.size >= 2) {
                 item {
-                    SectionCard("用电曲线 (kW · 对应里程)", Modifier.animateItem()) {
+                    SectionCard("用电曲线（kW · 对应里程）", Modifier.animateItem()) {
                         val peakUp = powerProfile.maxOf { it.powerKw }
                         val peakDown = powerProfile.minOf { it.powerKw }
                         PowerProfileChart(
@@ -382,34 +454,54 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                         // 功率图答的是「为什么」，电量条答的是「还能撑多远」——
                         // 共享同一条里程横轴，两块图上下对齐，同一公里是同一列。
                         val milestones = remember(powerProfile) { powerProfile.socMilestones() }
-                        if (powerProfile.any { it.soc != null }) {
+                        // ⚠️ v0.9.2（长途自驾党 N4 + 口径审计 S2-2）：**短途不画电量条**。
+                        //
+                        // 4.51 km 的行程电量是 99% → 98%，画出来是一条贴在轴顶的平线，
+                        // 20%/10% 的参考线毫无意义、交叉点标注永远不会出现 ——
+                        // 这张图是纯噪音。规则：距离 < 30 km 或全程跌幅 < 5 个百分点 → 不渲染。
+                        val socValues = powerProfile.mapNotNull { it.soc }
+                        val socDrop = if (socValues.size >= 2) socValues.first() - socValues.last() else 0
+                        val tooShortForSoc = (drive.distance_km ?: 0.0) < 30.0 || socDrop < 5
+                        if (socValues.size >= 2 && tooShortForSoc) {
+                            Text(
+                                "本趟仅掉 ${socDrop} 个百分点（${drive.distance_km?.fmt(1) ?: "—"} km），" +
+                                    "短途不适用长途规划",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        } else if (socValues.size >= 2) {
                             Spacer(Modifier.height(10.dp))
                             SocStrip(
                                 samples = powerProfile,
                                 milestones = milestones,
                                 contentDescription = buildString {
                                     append("电量随里程下降曲线")
-                                    milestones.kmAt20?.let { append("，第 ${it.roundToInt()} 公里降到 20%") }
-                                    milestones.kmAt10?.let { append("，第 ${it.roundToInt()} 公里降到 10%") }
+                                    milestones.kmAt20?.let { append("，约第 ${it.roundToInt()} 公里降到 20%") }
+                                    milestones.kmAt10?.let { append("，约第 ${it.roundToInt()} 公里降到 10%") }
                                 },
                             )
                             // ⚠️ v0.9.0：图上已经标了「到达 20% @ N km」，
                             // 这里再给一行**纯文字**的结论 ——
                             // 很多长途行程压根掉不到 20%（比如 82% → 70%），
                             // 那时图上不会有标记，但「全程最低多少」依然是个有用的答案。
-                            val lowestSoc = powerProfile.minOf { it.soc ?: Int.MAX_VALUE }
-                                .let { if (it == Int.MAX_VALUE) null else it }
+                            //
+                            // ⚠️ v0.9.2（口径审计 S2-2）：措辞改「约」——
+                            // SOC 是整数百分比，1 个百分点约等于 3.65 km，
+                            // 加上 1 km 分箱的箱中心量化，真实不确定度约 ±2 km。
+                            // 写成精确的「第 243 公里」是把 ±2 km 当成整数公里显示。
+                            val lowestSoc = socValues.min()
                             Text(
                                 buildString {
                                     append("电量 (%) · 同一横轴 = 同一公里")
                                     milestones.kmAt20?.let {
-                                        append(" · 到达 20% 在第 ${it.roundToInt()} 公里")
-                                    } ?: lowestSoc?.let {
+                                        append(" · 约第 ${it.roundToInt()} 公里降到 20%")
+                                    } ?: lowestSoc.let {
                                         append(" · 全程最低 $it%（未到 20%）")
                                     }
                                     milestones.kmAt10?.let {
-                                        append(" · 到达 10% 在第 ${it.roundToInt()} 公里")
+                                        append(" · 约第 ${it.roundToInt()} 公里降到 10%")
                                     }
+                                    append(" · 1 km 分箱，精度约 ±2 km")
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -426,7 +518,11 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                     KV("里程", drive.distance_km?.fmt(2, " km") ?: "—")
                     KV("电量变化", "${drive.start_soc ?: "—"}% → ${drive.end_soc ?: "—"}%")
                     KV("标定续航变化", rangeDelta(drive.start_rated_range_km, drive.end_rated_range_km))
-                    KV("预估续航变化", rangeDelta(drive.start_ideal_range_km, drive.end_ideal_range_km))
+                    // ⚠️ v0.9.2（口径审计 S4-2）：删掉「预估续航变化」这一行。
+                    // 它取的是 ideal_range_km，而 ideal 与 rated 在 55,669 行里
+                    // **逐行完全相同**（差异数 = 0）—— 两行显示的是同一个数，
+                    // 一个叫「标定」一个叫「预估」，看起来像两种不同的续航。
+                    // 车况页早就改叫「现在能开 / 官方标称」了，这里是残留。
                 }
             }
             item {

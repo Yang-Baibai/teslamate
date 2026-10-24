@@ -187,21 +187,41 @@ fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
                         modifier = Modifier.fillMaxSize(),
                     ) {
                         when {
-                            error != null -> Column(Modifier.fillMaxSize().padding(16.dp)) { ErrorBanner(error!!) }
-                            loading -> ListSkeleton(items = 7)
-                            records.isEmpty() -> Column(Modifier.padding(16.dp)) {
-                                SectionCard { Text("暂无充电或行程记录") }
-                            }
-                            else -> TimelineList(
-                                records = records,
-                                stationStats = stationStats,
-                                onSelect = { item ->
+                            // ⚠️ v0.9.2（iOS 交互评审 P0-4）：错误**不再替换整列列表**。
+                            // 原来 `error != null -> ErrorBanner` 把 200 条历史记录全换成了
+                            // 一条横幅 —— 用户原本有数据，断网后一条都看不到，
+                            // 而且横幅**没有任何出口**（车况页有「重试」，这里没有）。
+                            // 现在：横幅叠在列表**上面**，列表照常显示。
+                            error != null -> Column(Modifier.fillMaxSize()) {
+                                ErrorBanner(
+                                    error!!,
+                                    modifier = Modifier.padding(16.dp),
+                                    actionLabel = "重试",
+                                    onAction = {
+                                        scope.launch {
+                                            refreshing = true
+                                            load()
+                                            refreshing = false
+                                        }
+                                    },
+                                )
+                                RecordTimeline(records, stationStats, onSelect = { item ->
                                     selected = when (item) {
                                         is RecordItem.DriveItem -> Selection.Dr(item.drive)
                                         is RecordItem.ChargeItem -> Selection.Ch(item.charge)
                                     }
-                                },
-                            )
+                                })
+                            }
+                            loading -> ListSkeleton(items = 7)
+                            records.isEmpty() -> Column(Modifier.padding(16.dp)) {
+                                SectionCard { Text("暂无充电或行程记录") }
+                            }
+                            else -> RecordTimeline(records, stationStats, onSelect = { item ->
+                                selected = when (item) {
+                                    is RecordItem.DriveItem -> Selection.Dr(item.drive)
+                                    is RecordItem.ChargeItem -> Selection.Ch(item.charge)
+                                }
+                            })
                         }
                     }
                 }
@@ -211,6 +231,15 @@ fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
     }
+}
+
+@Composable
+private fun RecordTimeline(
+    records: List<RecordItem>,
+    stationStats: Map<String, StationStat>,
+    onSelect: (RecordItem) -> Unit,
+) {
+    TimelineList(records = records, stationStats = stationStats, onSelect = onSelect)
 }
 
 /**
