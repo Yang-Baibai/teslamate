@@ -4,6 +4,14 @@ package com.teslamate.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.material3.Surface
+import android.net.Uri
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Color
+import android.content.Intent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -420,6 +428,50 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                     startTitle = "起点：${drive.start_place?.take(20) ?: "?"}",
                     endTitle = "终点：${drive.end_place?.take(20) ?: "?"}",
                 )
+                // ⚠️ v0.13.0（iOS 交互评审 P1-4）：**「在地图里打开」出口**。
+                //
+                // 那张「地图」其实是**一张 PNG**（高德静态图 API）—— 不能拖、不能缩、不能点。
+                // 但车主看完这趟轨迹，下一步最自然的动作是「把这趟路在地图里再走一遍」，
+                // 而界面上根本没有这个出口。
+                // 现在给一个 geo: 按钮（系统标准的地理 URI，高德/百度/Google 地图都能接）。
+                val mapCtx = LocalContext.current
+                val endPt = track.lastOrNull()
+                if (endPt != null) {
+                    val lat = endPt.map_lat ?: endPt.lat
+                    val lng = endPt.map_lng ?: endPt.lng
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(10.dp),
+                    ) {
+                        Row(
+                            Modifier
+                                .clickable {
+                                    val uri = Uri.parse("geo:$lat,$lng?q=$lat,$lng")
+                                    runCatching {
+                                        mapCtx.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                                    }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(
+                                Icons.Filled.Place,
+                                contentDescription = "在地图里打开",
+                                tint = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "在地图里打开",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                }
             }
             Text(
                 "轨迹采样点 ${track.size} 个",
@@ -436,6 +488,14 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
             Box(Modifier.padding(horizontal = 16.dp)) { ErrorBanner(it) }
         }
 
+        // ⚠️ v0.13.0（iOS 交互评审 P1-3）：**顶部渐隐蒙版**。
+        //
+        // 原来 LazyColumn 的顶边是**硬裁切线**（clipToBounds），内容滑到那里会被
+        // 沿字形中间切断 —— 实测那行「电量（%）· 同一横轴 = 同一公里…」只露出上半截，
+        // 读起来像渲染 bug。而它上方 260dp 的地图是不动的。
+        //
+        // 现在加一层 14dp 的渐隐：内容是「渐隐进入」，不是「被切」。
+        Box(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 24.dp),
@@ -604,6 +664,19 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                     }
                 }
             }
+        }
+        // 顶部渐隐蒙版
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(14.dp)
+                .align(Alignment.TopCenter)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(MaterialTheme.colorScheme.background, Color.Transparent)
+                    )
+                )
+        )
         }
     }
 }

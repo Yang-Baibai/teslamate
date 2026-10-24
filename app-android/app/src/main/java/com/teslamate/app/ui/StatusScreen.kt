@@ -307,6 +307,30 @@ fun StatusScreen(
                             )
                         }
 
+                        // ⚠️ v0.13.0（iOS 交互评审 P1-12）：**告警排在中性提示之前**。
+                        //
+                        // 原来顺序是「锁车未知（中性横幅）」→「车没上报（中性横幅）」→「保养超期（红色告警）」——
+                        // 唯一的红色告警排第三，用户第一眼扫到的是两条中性信息，
+                        // 主角数字（电量环）被推到第三屏。
+                        //
+                        // iOS 惯例：告警类信息最靠近拇指、排在最前；中性信息后置或降级为行内文字。
+                        //
+                        // ⚠️ v0.9.0：保养 / 换胎提醒。
+                        // 只有**需要行动**时（超期或 2000 km 内到期）才挂横幅 ——
+                        // 信号优先，平时不制造噪音。完整数字在页面底部的卡片里。
+                        val reminders = remember(st.odometer, settings) {
+                            maintenanceReminders(st.odometer, settings)
+                        }
+                        reminders.firstOrNull { it.needsAction }?.let { r ->
+                            // ⚠️ 超期是**该行动**的事（红色），快到了只是提醒（中性）。
+                            // 两者都挂横幅，但力度不同 —— 用同一种样式会让「超期」显得像例行公事。
+                            if (r.overdue) {
+                                ErrorBanner("${r.label}已超期 ${kotlin.math.abs(r.remainingKm).roundToInt()} 公里")
+                            } else {
+                                NoticeBanner("${r.label}还有 ${r.remainingKm.roundToInt()} 公里到期")
+                            }
+                        }
+
                         // 数据新鲜度：让「车睡着了（正常）」和「连不上服务器」不再长得一样。
                         // 连不上服务器的情况由上面的 ErrorBanner 负责（那是请求失败）；
                         // 这里说明的是「请求成功了，但车本身很久没上报」——多半是车停着不动。
@@ -354,22 +378,6 @@ fun StatusScreen(
                                     }
                                 }
                             )
-                        }
-
-                        // ⚠️ v0.9.0：保养 / 换胎提醒。
-                        // 只有**需要行动**时（超期或 2000 km 内到期）才在顶部挂横幅 ——
-                        // 信号优先，平时不制造噪音。完整数字在页面底部的卡片里。
-                        val reminders = remember(st.odometer, settings) {
-                            maintenanceReminders(st.odometer, settings)
-                        }
-                        reminders.firstOrNull { it.needsAction }?.let { r ->
-                            // ⚠️ 超期是**该行动**的事（红色），快到了只是提醒（中性）。
-                            // 两者都挂横幅，但力度不同 —— 用同一种样式会让「超期」显得像例行公事。
-                            if (r.overdue) {
-                                ErrorBanner("${r.label}已超期 ${kotlin.math.abs(r.remainingKm).roundToInt()} 公里")
-                            } else {
-                                NoticeBanner("${r.label}还有 ${r.remainingKm.roundToInt()} 公里到期")
-                            }
                         }
 
                         // ⚠️ v0.9.0：**弹性首屏** —— 大字号时电量环与续航**上下排**，
@@ -659,7 +667,11 @@ private fun LockStateChip(locked: Boolean?, lockedAt: Instant?) {
             icon,
             contentDescription = null,
             tint = tint,
-            modifier = Modifier.size(15.dp),
+            // ⚠️ v0.13.0：15dp → 18dp。
+            // 「锁车状态未知」那行的 HelpOutline 是个**细线圆圈**，
+            // 15dp 下画出来只有 ~10dp，和 App 内其他 18~20dp 的实心图标不同类，
+            // 看起来像一个小小的问号噪点。
+            modifier = Modifier.size(18.dp),
         )
         Spacer(Modifier.width(5.dp))
         Text(
