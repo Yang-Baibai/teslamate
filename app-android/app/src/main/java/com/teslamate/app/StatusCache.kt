@@ -72,15 +72,55 @@ class StatusCache(context: Context) {
         }
     }
 
+    /**
+     * 缓存续航推算上下文（实测能耗模型 + 最近一次爬升）。
+     *
+     * 与 [save] 分开写：它更新得**更频繁**（每次拉到行程就更新），
+     * 而且体积小得多。
+     */
+    fun saveRangeContext(ctx: CachedRangeContext) {
+        runCatching {
+            prefs.edit()
+                .putString(KEY_RANGE, json.encodeToString(CachedRangeContext.serializer(), ctx))
+                .apply()
+        }
+    }
+
+    /** 读出续航推算上下文；没有或已损坏返回 null。 */
+    fun loadRangeContext(): CachedRangeContext? {
+        val raw = prefs.getString(KEY_RANGE, null) ?: return null
+        return runCatching { json.decodeFromString(CachedRangeContext.serializer(), raw) }.getOrNull()
+    }
+
     private companion object {
         const val PREFS = "tm_status_cache"
         const val KEY_STATUS = "last_status"
         const val KEY_SAVED_AT = "last_saved_at"
+        const val KEY_RANGE = "last_range_ctx"
     }
 }
 
-/** 一次缓存命中：数据 + 它被缓存下来的时刻。 */
+/**
+ * 一次缓存命中：数据 + 它被缓存下来的时刻。
+ */
 data class CachedStatus(
     val status: CarStatus,
     val savedAt: Instant,
+)
+
+/**
+ * 缓存的「续航推算上下文」。
+ *
+ * ⚠️ v0.9.0（故障注入实测）：只缓存 `status` 是不够的 ——
+ * 「真实可达」要用的实测能耗模型是从行程列表现算的，
+ * 服务器挂掉时行程列表拿不到 → 模型为 null → 界面退化成「官方标称」，
+ * **比真实可达乐观 50%**，而且口径无声地变了。
+ *
+ * 所以这里把**模型本身**（只有 4~5 个分桶）连同最近一次行程的爬升一起缓存。
+ */
+@kotlinx.serialization.Serializable
+data class CachedRangeContext(
+    val consumption: ConsumptionModel,
+    /** 最近一次行程的累计爬升（米），用于爬升修正 */
+    val recentAscentM: Int? = null,
 )

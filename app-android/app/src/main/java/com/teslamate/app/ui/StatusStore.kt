@@ -4,7 +4,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.teslamate.app.ApiErrorKind
+import com.teslamate.app.CachedRangeContext
 import com.teslamate.app.CarStatus
+import com.teslamate.app.ConsumptionModel
 import com.teslamate.app.Drive
 import com.teslamate.app.StatusCache
 import com.teslamate.app.UserFacingException
@@ -64,6 +66,20 @@ class StatusStore(private val cache: StatusCache? = null) {
     var drives by mutableStateOf<List<Drive>>(emptyList())
         private set
 
+    /**
+     * 实测能耗模型（由 [drives] 推导）。
+     *
+     * ⚠️ v0.9.0：它是 **App 级状态**而不是页面的 `remember` ——
+     * 因为它要**落盘**：服务器挂掉时行程列表拿不到，
+     * 模型就为 null → 续航退化成「官方标称」（比真实可达乐观 50%）。
+     */
+    var consumption by mutableStateOf<ConsumptionModel?>(null)
+        private set
+
+    /** 最近一次行程的累计爬升（米），用于爬升修正。 */
+    var recentAscentM by mutableStateOf<Int?>(null)
+        private set
+
     /** 已有可用数据时为 true —— UI 据此决定是显示骨架屏还是直接显示旧数据。 */
     val hasData: Boolean get() = status != null
 
@@ -78,6 +94,10 @@ class StatusStore(private val cache: StatusCache? = null) {
         cache?.load()?.let { hit ->
             status = hit.status
             cachedAt = hit.savedAt
+        }
+        cache?.loadRangeContext()?.let { ctx ->
+            consumption = ctx.consumption
+            recentAscentM = ctx.recentAscentM
         }
     }
 
@@ -106,5 +126,12 @@ class StatusStore(private val cache: StatusCache? = null) {
 
     internal fun updateDrives(list: List<Drive>) {
         drives = list
+        // ⚠️ v0.9.0：模型在这里建（而不是页面里 `remember`），
+        // 这样才能一起落盘 —— 服务器挂掉时续航口径不变。
+        consumption = ConsumptionModel.from(list)
+        recentAscentM = list.firstOrNull()?.ascent_m
+        consumption?.let {
+            cache?.saveRangeContext(CachedRangeContext(it, recentAscentM))
+        }
     }
 }

@@ -1,5 +1,7 @@
 package com.teslamate.app
 
+import kotlinx.serialization.Serializable
+
 /**
  * 实测能耗模型 —— 把 EPA 标定续航换算成**你自己跑出来的真实可达里程**。
  *
@@ -39,6 +41,7 @@ package com.teslamate.app
  * 取**中位数**而不是均值：单条异常行程（逆行、堵车爬坡、忘记关空调）会把均值拖飞，
  * 而中位数对离群值免疫。样本不足 2 条的桶不建。
  */
+@Serializable
 data class SpeedBucket(
     val minKph: Int,
     val maxKph: Int,
@@ -46,6 +49,20 @@ data class SpeedBucket(
     val samples: Int,
 )
 
+/**
+ * ⚠️ v0.9.0：加 @Serializable —— 能耗模型要能**落盘**。
+ *
+ * 故障注入实测发现的 bug：服务器挂掉时，车况来自落盘缓存（有 rated_range_km），
+ * 但「真实可达」要用的能耗模型是从 `drives` 现算的，而 drives 没缓存 →
+ * 模型为 null → 界面退化成「官方标称 308 公里」。
+ *
+ * 那是**比真实可达乐观 50%** 的数字，而且口径无声地变了
+ * （「现在能开」变成「官方标称」），正是新手车主最怕的那种误导：
+ * 「官方说 312，App 说 206，我到底该信哪个？」
+ *
+ * 模型本身只有 4~5 个分桶，缓存它比缓存 200 条 drives 划算得多。
+ */
+@Serializable
 class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
 
     /** 该模型由多少条行程构成（用于在 UI 上标注置信度） */

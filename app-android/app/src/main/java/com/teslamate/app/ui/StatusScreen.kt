@@ -112,7 +112,12 @@ fun StatusScreen(
         }
     }
     val drives = store.drives
-    val consumption = remember(drives) { ConsumptionModel.from(drives) }
+    // ⚠️ v0.9.0：能耗模型改从 store 取（App 级 + **已落盘**），
+    // 不用页面里的 `remember(drives) { ConsumptionModel.from(drives) }` ——
+    // 那样服务器挂掉时模型为 null，续航会退化成「官方标称」（乐观 50%）。
+    val consumption = store.consumption
+    val recentAscent = store.recentAscentM
+    val fallbackSpeed = store.drives.firstOrNull()?.avg_speed_kph?.toDouble()
 
     // ⚠️ 修正：地图展开时按返回键原本会直接退出 App（没有 BackHandler）。
     BackHandler(enabled = showMap) { showMap = false }
@@ -353,7 +358,7 @@ fun StatusScreen(
                             ) {
                                 SocRing(st.battery_level, charging = st.active_charge != null)
                                 Spacer(Modifier.height(16.dp))
-                                RangeAndOdometer(st, consumption, drives, Modifier.fillMaxWidth())
+                                RangeAndOdometer(st, consumption, recentAscent, fallbackSpeed, Modifier.fillMaxWidth())
                             }
                         } else {
                             Row(
@@ -362,7 +367,7 @@ fun StatusScreen(
                             ) {
                                 SocRing(st.battery_level, charging = st.active_charge != null)
                                 Spacer(Modifier.width(28.dp))
-                                RangeAndOdometer(st, consumption, drives, Modifier.weight(1f))
+                                RangeAndOdometer(st, consumption, recentAscent, fallbackSpeed, Modifier.weight(1f))
                             }
                         }
 
@@ -434,7 +439,9 @@ fun StatusScreen(
 private fun RangeAndOdometer(
     st: CarStatus,
     consumption: ConsumptionModel?,
-    drives: List<com.teslamate.app.Drive>,
+    recentAscent: Int?,
+    /** 最近一次行程的均速（参考车速的最后一档兜底） */
+    fallbackSpeedKph: Double? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
@@ -452,13 +459,12 @@ private fun RangeAndOdometer(
         //  整段均速会让人在高速时按市区桶估，偏乐观约 12 km）。
         val refSpeed = st.speed?.takeIf { it > 5 }?.toDouble()
             ?: consumption?.cruiseKph
-            ?: drives.firstOrNull()?.avg_speed_kph?.toDouble()
+            ?: fallbackSpeedKph
             ?: 60.0
         val whBucket = consumption?.whPerKm(refSpeed)
         // ⚠️ v0.8.6 修一个真 bug：模型里有爬升修正（≥200m ×1.05），
         // 但调用处**从来没传 ascentM** —— 参数默认 null，修正从未生效。
         // 爬升从最近一次行程取（车况页已经拉了 drives(200) 到 StatusStore）。
-        val recentAscent = drives.firstOrNull()?.ascent_m
         val trueRange = consumption?.trueRangeKm(
             ratedRangeKm = ratedRange,
             speedKph = refSpeed,
