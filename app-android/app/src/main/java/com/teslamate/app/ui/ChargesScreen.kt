@@ -322,7 +322,14 @@ internal fun ChargeTypeChip(isDc: Boolean) {
     // ⚠️ v0.9.2（苹果视觉评审 P0-1）：这里要用 **chargeGreenText** 而不是 chargeGreen ——
     // chargeGreen #1E9E62 压在自己的 16% 淡绿底上只有 2.85:1，
     // 文字要 4.5:1、图形要 3:1，两边都不达标。
-    val tint = if (isDc) accents.chargeGreenText else MaterialTheme.colorScheme.onSurfaceVariant
+    // ⚠️ v0.17.0（苹果 HIG P0-2 + 口径审计）：直流快充芯片改用**能量蓝**。
+    //
+    // 原来用 `chargeGreenText`（绿）—— 但绿色在这个 App 的语义里只表示
+    //「**正在充电**」，而这里是**历史**充电记录；
+    // 更要紧的是：用量页图表里「直流快充」的柱子也是能量蓝，
+    // 同一个概念两个颜色（评审原话：「颜色在说假话」）。
+    // 现在两处统一用能量蓝，交流慢充用中性灰。
+    val tint = if (isDc) accents.energyBlue else MaterialTheme.colorScheme.onSurfaceVariant
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = tint.copy(alpha = 0.16f),

@@ -175,6 +175,10 @@ fun RecordsScreen(
         val tpl = pickRouteTemplate(buildRouteTemplates(drives))
         tpl?.let { buildRoutePlan(it, charges, stationStats) }
     }
+    // ⚠️ v0.17.0（车队运营评审 P0-1）：**按线路分组的历史** ——
+    // 「这趟比上趟好吗」的分组信息本来就该有（`buildRouteTemplates` 已经在按起止分组），
+    // 这里用**同一份分组**做对比，避免两处口径不一致。
+    val routeHistoryMap = remember(drives) { buildRouteHistory(drives) }
 
     // ⚠️ v0.9.0：一次拉两份数据（原来两个 Tab 各拉各的）
     suspend fun load() {
@@ -190,7 +194,7 @@ fun RecordsScreen(
         }
         runCatching {
             withContext(Dispatchers.IO) {
-                api.drives(settings.carId, 200) to api.charges(settings.carId, 200)
+                api.drives(settings.carId, 500) to api.charges(settings.carId, 300)
             }
         }.onSuccess { (d, c) ->
             drives = d
@@ -265,7 +269,7 @@ fun RecordsScreen(
                                         }
                                     },
                                 )
-                                RecordTimeline(records, stationStats, routePlan, onSelect = { item ->
+                                RecordTimeline(records, stationStats, routePlan, routeHistoryMap, onSelect = { item ->
                                     onSelectionChange(
                                         when (item) {
                                             is RecordItem.DriveItem -> RecordSelection.Dr(item.drive)
@@ -278,7 +282,7 @@ fun RecordsScreen(
                             records.isEmpty() -> Column(Modifier.padding(16.dp)) {
                                 SectionCard { Text("暂无充电或行程记录") }
                             }
-                            else -> RecordTimeline(records, stationStats, routePlan, onSelect = { item ->
+                            else -> RecordTimeline(records, stationStats, routePlan, routeHistoryMap, onSelect = { item ->
                                 onSelectionChange(
                                     when (item) {
                                         is RecordItem.DriveItem -> RecordSelection.Dr(item.drive)
@@ -289,7 +293,13 @@ fun RecordsScreen(
                         }
                     }
                 }
-                is RecordSelection.Dr -> DriveDetail(sel.drive, api, settings) { onSelectionChange(null) }
+                is RecordSelection.Dr -> DriveDetail(
+                    sel.drive,
+                    api,
+                    settings,
+                    // ⚠️ v0.17.0：同线路的历史行程（对比用）
+                    routeHistory = routeKeyOf(sel.drive)?.let { routeHistoryMap[it] }.orEmpty(),
+                ) { onSelectionChange(null) }
                 is RecordSelection.Ch -> ChargeDetail(sel.charge, api, stationStats) { onSelectionChange(null) }
             }
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
@@ -302,12 +312,14 @@ private fun RecordTimeline(
     records: List<RecordItem>,
     stationStats: Map<String, StationStat>,
     routePlan: RoutePlan? = null,
+    routeHistory: Map<RouteKey, List<Drive>> = emptyMap(),
     onSelect: (RecordItem) -> Unit,
 ) {
     TimelineList(
         records = records,
         stationStats = stationStats,
         routePlan = routePlan,
+        routeHistory = routeHistory,
         onSelect = onSelect,
     )
 }
@@ -323,6 +335,7 @@ private fun TimelineList(
     records: List<RecordItem>,
     stationStats: Map<String, StationStat>,
     routePlan: RoutePlan? = null,
+    routeHistory: Map<RouteKey, List<Drive>> = emptyMap(),
     onSelect: (RecordItem) -> Unit,
 ) {
     // 按月份分组，但保持整体的时间倒序
@@ -376,10 +389,18 @@ private fun TimelineList(
                 items = itemsInMonth,
                 key = { _, it -> it.key },
             ) { index, item ->
+                // ⚠️ v0.17.0：同线路对比的**摘要**（列表行只给一行灰字）。
+                val cmp = (item as? RecordItem.DriveItem)?.let { di ->
+                    routeKeyOf(di.drive)
+                        ?.let { k -> routeHistory[k] }
+                        ?.takeIf { it.size >= 2 }
+                        ?.let { compareWithRouteHistory(di.drive, it) }
+                }
                 TimelineRow(
                     item = item,
                     stationStats = stationStats,
                     isLast = index == itemsInMonth.lastIndex,
+                    comparison = cmp,
                     // animateItem() 是 LazyItemScope 的扩展，必须在列表作用域里取
                     modifier = Modifier.animateItem(),
                     onClick = { onSelect(item) },
@@ -397,6 +418,14 @@ private fun TimelineRow(
     item: RecordItem,
     stationStats: Map<String, StationStat>,
     isLast: Boolean,
+    /**
+     * ⚠️ v0.17.0（车队运营评审 P0-1）：**同线路对比的摘要**。
+     *
+     * 次位展示：详情页给完整结论，这里只给一行灰字
+     * 「同线路第 3 次 · 比常跑水平省 8%」——
+     * 列表是**扫读位**，一行就够；完整口径留给详情页。
+     */
+    comparison: RouteComparison? = null,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
@@ -418,19 +447,22 @@ private fun TimelineRow(
         }
     }
 
-    Row(
-        modifier
-            .fillMaxWidth()
-            // IntrinsicSize.Min：让左侧竖线的高度**跟着右边内容走**，
-            // 否则竖线只有图标那么高，串不起来。
-            .height(IntrinsicSize.Min)
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier
-                .width(26.dp)
-                .fillMaxHeight(),
-        ) {
+    // ⚠️ v0.17.0（渲染实测）：**竖线改成画在内容后面**，不再用 `IntrinsicSize` 定行高。
+    //
+    // 原来整行是 `Row(Modifier.height(IntrinsicSize.Min))`：
+    //   · `IntrinsicSize.Min` 取的是**最小**内在高度 —— 带 `maxLines = 1` 的
+    //     `Text` 最小内在高度只有一行；
+    //   · 而卡片内部 `Arrangement.spacedBy(8.dp)` 的间距**根本不计入内在高度**。
+    // 两个因素叠加，行高永远比卡片的真实高度矮一截 —— **卡片底部被裁掉**：
+    //   · 每张卡的底部内边距被吃掉（电量带紧贴卡片边缘）；
+    //   · 加在卡片末尾的摘要行（对比结论）**完全渲染不出来**。
+    // 换成 `IntrinsicSize.Max` 也不够 —— 间距照样不算。
+    //
+    // 现在：外层 `Box` 的高度 = 卡片的高度（自然测量），
+    // 竖线用 `matchParentSize()` 画在**后面**，高度自然等于内容高度 ——
+    // 既不用猜行高，也不会裁内容。
+    Box(modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth().padding(start = 26.dp)) {
             Box(
                 Modifier
                     .size(22.dp)
@@ -440,23 +472,35 @@ private fun TimelineRow(
             ) {
                 Icon(icon, contentDescription = null, tint = nodeTint, modifier = Modifier.size(13.dp))
             }
-            if (!isLast) {
-                Box(
-                    Modifier
-                        .width(2.dp)
-                        .weight(1f)
-                        .background(railColor)
-                )
+            Spacer(Modifier.width(10.dp))
+            Box(Modifier.weight(1f)) {
+                when (item) {
+                    is RecordItem.DriveItem -> DriveItem(
+                        item.drive,
+                        // ⚠️ v0.17.0：摘要行放在**卡片内部**（不在外面）。
+                        footnote = comparison?.shortLabel(),
+                    ) { onClick() }
+                    is RecordItem.ChargeItem -> {
+                        val stat = stationStats[stationKey(item.charge)]
+                        ChargeItem(item.charge, stat) { onClick() }
+                    }
+                }
             }
         }
-        Spacer(Modifier.width(10.dp))
-        Box(Modifier.weight(1f)) {
-            when (item) {
-                is RecordItem.DriveItem -> DriveItem(item.drive) { onClick() }
-                is RecordItem.ChargeItem -> {
-                    val stat = stationStats[stationKey(item.charge)]
-                    ChargeItem(item.charge, stat) { onClick() }
-                }
+        // 竖线：从节点圆圈下方一直连到下一条 —— 高度 = 卡片高度（matchParentSize）
+        //
+        // ⚠️ `matchParentSize` 必须**套一层 Box**：它把元素尺寸强制成父尺寸，
+        // 如果 `background` 画在同一个元素上，背景会铺满整块父区域（把卡片盖成灰块）。
+        // 所以外层只负责「占满父尺寸」，线画在内层。
+        if (!isLast) {
+            Box(Modifier.matchParentSize()) {
+                Box(
+                    Modifier
+                        .padding(start = 12.dp, top = 26.dp, end = 12.dp)
+                        .width(2.dp)
+                        .fillMaxHeight()
+                        .background(railColor)
+                )
             }
         }
     }

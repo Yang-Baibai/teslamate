@@ -126,7 +126,7 @@ fun StatusScreen(
     LaunchedEffect(api, settings.carId) {
         if (api != null) {
             runCatching {
-                withContext(Dispatchers.IO) { api.drives(settings.carId, 200) }
+                withContext(Dispatchers.IO) { api.drives(settings.carId, 500) }
             }.onSuccess { store.updateDrives(it) }
         }
     }

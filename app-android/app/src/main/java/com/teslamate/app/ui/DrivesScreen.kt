@@ -215,7 +215,13 @@ private fun DriveList(
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Unit) {
+internal fun DriveItem(
+    d: Drive,
+    modifier: Modifier = Modifier,
+    /** ⚠️ v0.17.0：卡片底部的一行灰字摘要（放在**卡片内部**）。 */
+    footnote: String? = null,
+    onClick: () -> Unit,
+) {
     val accents = LocalAccentColors.current
     Card(
         modifier = modifier
@@ -373,12 +379,39 @@ internal fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> U
             if (d.start_soc != null && d.end_soc != null) {
                 SocDeltaBar(d.start_soc, d.end_soc, charging = false)
             }
+            // ⚠️ v0.17.0（车队运营评审 P0-1）：**同线路对比的摘要**（列表里的一行灰字）。
+            //
+            // ⚠️ 必须放在**卡片内部**：原来放在卡片外面（TimelineRow 的 Column 里），
+            // 而那�� Row 用 `IntrinsicSize.Min` + 左侧 `fillMaxHeight()`，
+            // 右边被裁掉 —— 摘要行**根本渲染不出来**。
+            // 放进卡片内部就没有这个问题，而且视觉上更完整（是卡的一部分，不是浮在外面）。
+            footnote?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
         }
     }
 }
 
 @Composable
-internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose: () -> Unit) {
+internal fun DriveDetail(
+    drive: Drive,
+    api: Api?,
+    settings: AppSettings,
+    /**
+     * ⚠️ v0.17.0（车队运营评审 P0-1）：**同线路的历史行程**（含本趟）。
+     *
+     * 用来回答「这趟比上趟好吗」—— 数据其实早就有了
+     * （`buildRouteTemplates` 按起止分组），只是取出来之后丢掉。
+     * 空列表 → 不显示对比（没有可比的历史）。
+     */
+    routeHistory: List<Drive> = emptyList(),
+    onClose: () -> Unit,
+) {
     var track by remember { mutableStateOf<List<TrackPoint>>(emptyList()) }
     var err by remember { mutableStateOf<String?>(null) }
     // 充电记录：用来关联「这趟行程到达时充的是哪一次电」
@@ -686,6 +719,33 @@ internal fun DriveDetail(drive: Drive, api: Api?, settings: AppSettings, onClose
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                    // ⚠️ v0.17.0（车队运营评审 P0-1）：**同线路历史对比**。
+                    //
+                    // 「这趟比上趟好吗」是每周复盘的第一问，
+                    // 而这里的数据早就齐了（客户端持有全部 drives 字段，零新增请求）。
+                    val cmp = remember(drive.id, routeHistory) {
+                        if (routeHistory.size < 2) null else compareWithRouteHistory(drive, routeHistory)
+                    }
+                    cmp?.let { c ->
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            c.headline,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (c.hasVerdict) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        c.note?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
