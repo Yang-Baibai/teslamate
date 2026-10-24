@@ -255,11 +255,17 @@ func (c *teslaClient) pollOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("获取车辆列表失败: %w", err)
 	}
-	locked, err := c.fetchLockState(ctx, vid)
+	locked, lockedAt, err := c.fetchLockState(ctx, vid)
 	if err != nil {
 		return fmt.Errorf("获取锁车状态失败: %w", err)
 	}
-	c.setLockState(*locked, time.Now().UTC())
+	// 采集时刻优先用车端上报的 timestamp（车端时钟，更接近数据真实时刻），
+	// 没有就用本地时间 —— 它只用于让 App 显示新鲜度。
+	if lockedAt == nil {
+		now := time.Now().UTC()
+		lockedAt = &now
+	}
+	c.setLockState(*locked, *lockedAt)
 	return nil
 }
 
@@ -420,7 +426,9 @@ func (c *teslaClient) resolveVehicleID(ctx context.Context) (string, error) {
 	}
 	var out struct {
 		Response []struct {
-			ID string `json:"id"`
+			// ⚠️ 中国区的 id 是**数字**（实测 <fleet车辆ID>），
+			// 全球区是字符串（"12345678901234567"）。用 flexString 两种都收。
+			ID flexString `json:"id"`
 		} `json:"response"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
@@ -429,7 +437,7 @@ func (c *teslaClient) resolveVehicleID(ctx context.Context) (string, error) {
 	if len(out.Response) == 0 {
 		return "", errors.New("车辆列表为空")
 	}
-	vid = out.Response[0].ID
+	vid = string(out.Response[0].ID)
 	c.mu.Lock()
 	c.vehicleID = vid
 	c.mu.Unlock()
@@ -437,46 +445,102 @@ func (c *teslaClient) resolveVehicleID(ctx context.Context) (string, error) {
 	return vid, nil
 }
 
+// flexString 收「字符串或数字」的 JSON 值，统一的字符串形式。
+//
+// 中国区 Fleet API 的 id / vehicle_id 是裸数字（如 <fleet车辆ID>），
+// 全球区是带引号的字符串。用 string 直接 Unmarshal 会在中国区报
+// "json: cannot unmarshal number into Go struct field .response.id of type string"。
+type flexString string
+
+func (f *flexString) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "null" || s == "" {
+		return nil
+	}
+	if strings.HasPrefix(s, `"`) {
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			return err
+		}
+		*f = flexString(str)
+		return nil
+	}
+	*f = flexString(s)
+	return nil
+}
+
 // fetchLockState 拉某辆车的锁车状态。
 //
-// GET /api/1/vehicles/{id}/vehicle_data?endpoints=lock_state
+// GET /api/1/vehicles/{id}/vehicle_data —— **不带 endpoints 参数**。
+//
+// ⚠️ 中国区（auth.tesla.cn / fleet-api.prd.cn.vn.cloud.tesla.cn）的实测行为
+// 与全球区文档不一致，两处都踩过：
+//
+//  1. **不支持 endpoints**：带上 `?endpoints=lock_state` 只会返回 462 字节的
+//     车辆元数据（id/vin/state…），**完全没有 data 字段**，拿不到锁车状态。
+//     不带参数才会返回约 6.5 KB 的完整状态。
+//  2. **状态是平铺的**，不是 `response.data.lock_state`：
+//     中国区把各状态组直接挂在 response 下，锁车在
+//     `response.vehicle_state.locked`（同组还有 timestamp、odometer、
+//     四轮胎压等）。全球区才是 `response.data.lock_state`。
+//
+// 两种都认：先找 vehicle_state.locked，再回退到 data.lock_state。
+//
 // 需要 scope vehicle_device_data。
-func (c *teslaClient) fetchLockState(ctx context.Context, vehicleID string) (*bool, error) {
-	u := fmt.Sprintf("%s/api/1/vehicles/%s/vehicle_data?endpoints=lock_state",
+func (c *teslaClient) fetchLockState(ctx context.Context, vehicleID string) (*bool, *time.Time, error) {
+	u := fmt.Sprintf("%s/api/1/vehicles/%s/vehicle_data",
 		c.fleetURL, url.PathEscape(vehicleID))
 	body, code, err := c.get(ctx, u)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if code == http.StatusRequestTimeout { // 408：车睡着了
-		return nil, errVehicleUnavailable
+		return nil, nil, errVehicleUnavailable
 	}
 	if code != http.StatusOK {
-		return nil, fmt.Errorf("vehicle_data 返回 %d: %s", code, maskSecretText(truncate(string(body), 300)))
+		return nil, nil, fmt.Errorf("vehicle_data 返回 %d: %s", code, maskSecretText(truncate(string(body), 300)))
 	}
 
-	// 包封在不同版本/区域里见过 {"response":{...}} 与 {"data":{...}}，两种都认。
+	// 包封见过 {"response":{...}} 与 {"data":{...}}，两种都认。
 	var wrapper map[string]json.RawMessage
 	if err := json.Unmarshal(body, &wrapper); err != nil {
-		return nil, fmt.Errorf("vehicle_data 解析失败: %w", err)
+		return nil, nil, fmt.Errorf("vehicle_data 解析失败: %w", err)
 	}
 	raw, ok := wrapper["response"]
 	if !ok {
 		raw, ok = wrapper["data"]
 	}
 	if !ok {
-		return nil, errors.New("vehicle_data 响应里没有 response/data 字段")
+		return nil, nil, errors.New("vehicle_data 响应里没有 response/data 字段")
 	}
+
+	// 中国区形态：状态平铺在 response 下，锁车在 vehicle_state 里。
+	var flat struct {
+		VehicleState *struct {
+			Locked    *bool  `json:"locked"`
+			Timestamp *int64 `json:"timestamp"` // 毫秒
+		} `json:"vehicle_state"`
+	}
+	if err := json.Unmarshal(raw, &flat); err == nil && flat.VehicleState != nil && flat.VehicleState.Locked != nil {
+		var at *time.Time
+		if flat.VehicleState.Timestamp != nil && *flat.VehicleState.Timestamp > 0 {
+			t := time.UnixMilli(*flat.VehicleState.Timestamp).UTC()
+			at = &t
+		}
+		return flat.VehicleState.Locked, at, nil
+	}
+
+	// 全球区形态：response.data.lock_state
 	var data struct {
 		LockState *bool `json:"lock_state"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, fmt.Errorf("lock_state 解析失败: %w", err)
+		return nil, nil, fmt.Errorf("lock_state 解析失败: %w", err)
 	}
 	if data.LockState == nil {
-		return nil, errors.New("vehicle_data 响应里没有 lock_state")
+		return nil, nil, errors.New("vehicle_data 响应里没有 lock_state")
 	}
-	return data.LockState, nil
+	return data.LockState, nil, nil
 }
 
 // get 发一个带 Bearer 头的 GET。
