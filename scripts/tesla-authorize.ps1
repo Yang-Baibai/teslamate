@@ -94,7 +94,11 @@ if ($Code -and (Test-Path $pkceFile)) {
     try {
         $cached = Get-Content $pkceFile -Raw | ConvertFrom-Json
         $age = (Get-Date) - [datetime]::Parse($cached.created_at)
-        if ($age.TotalMinutes -lt 120) { $reuse = $cached }
+        # 窗口 24 小时：授权码本身有效期很短（Tesla 侧约 10 分钟），
+        # 但车主可能过几小时才把 code 贴回来 —— verifier 只要和授权时那一组
+        # 相同就能通过 PKCE 校验，没有额外时效限制。
+        if ($age.TotalHours -lt 24) { $reuse = $cached }
+        else { Write-Host "⚠ 缓存的 PKCE 已超过 24 小时，请重新生成授权链接" -ForegroundColor Yellow }
     } catch {}
 }
 if ($reuse) {
@@ -178,6 +182,11 @@ $form = [ordered]@{
     client_id     = $clientId
     client_secret = $clientSecret
     code          = $Code
+    # ⚠️ code_verifier 必须带上！漏了它 Tesla 会回
+    #    {"error":"invalid_request","error_description":"Invalid code_verifier"} ——
+    #    因为 authorize 阶段用 SHA256(verifier) 登记了 code_challenge，
+    #    换 token 阶段必须交出原始 verifier 让它重算比对。
+    code_verifier = $verifier
     audience      = $fleetBase
     redirect_uri  = $RedirectUri
 }
