@@ -171,8 +171,14 @@ fun RecordsScreen(
     // 出发前 5 分钟真正要看的那张表：这条线路历史上真实发生过哪些充电、
     // 每次到站时剩多少、充到多少、在第几公里。
     // 数据全部来自**已经发生的**记录（行程 + 充电），不编。
-    val routePlan = remember(drives, charges, stationStats) {
-        val tpl = pickRouteTemplate(buildRouteTemplates(drives))
+    // ⚠️ v0.18.0（长途自驾党 P0-1）：**线路可选择**。
+    //
+    // 原来只取 `templates.firstOrNull()` —— 卡片永远显示「上次开的长途」，
+    // 不是「我这次要开的那条」。出发前 5 分钟，App 替你猜线路是没用的。
+    val routeTemplates = remember(drives) { buildRouteTemplates(drives) }
+    var selectedRouteKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val routePlan = remember(drives, charges, stationStats, selectedRouteKey) {
+        val tpl = pickRouteTemplate(routeTemplates, selectedRouteKey)
         tpl?.let { buildRoutePlan(it, charges, stationStats) }
     }
     // ⚠️ v0.17.0（车队运营评审 P0-1）：**按线路分组的历史** ——
@@ -269,7 +275,12 @@ fun RecordsScreen(
                                         }
                                     },
                                 )
-                                RecordTimeline(records, stationStats, routePlan, routeHistoryMap, onSelect = { item ->
+                                RecordTimeline(
+                    records, stationStats, routePlan, routeHistoryMap,
+                    routeTemplates = routeTemplates,
+                    selectedRouteKey = selectedRouteKey,
+                    onSelectRouteKey = { selectedRouteKey = it },
+                    onSelect = { item ->
                                     onSelectionChange(
                                         when (item) {
                                             is RecordItem.DriveItem -> RecordSelection.Dr(item.drive)
@@ -282,7 +293,12 @@ fun RecordsScreen(
                             records.isEmpty() -> Column(Modifier.padding(16.dp)) {
                                 SectionCard { Text("暂无充电或行程记录") }
                             }
-                            else -> RecordTimeline(records, stationStats, routePlan, routeHistoryMap, onSelect = { item ->
+                            else -> RecordTimeline(
+                                records, stationStats, routePlan, routeHistoryMap,
+                                routeTemplates = routeTemplates,
+                                selectedRouteKey = selectedRouteKey,
+                                onSelectRouteKey = { selectedRouteKey = it },
+                                onSelect = { item ->
                                 onSelectionChange(
                                     when (item) {
                                         is RecordItem.DriveItem -> RecordSelection.Dr(item.drive)
@@ -313,6 +329,9 @@ private fun RecordTimeline(
     stationStats: Map<String, StationStat>,
     routePlan: RoutePlan? = null,
     routeHistory: Map<RouteKey, List<Drive>> = emptyMap(),
+    routeTemplates: List<RouteTemplate> = emptyList(),
+    selectedRouteKey: String? = null,
+    onSelectRouteKey: (String) -> Unit = {},
     onSelect: (RecordItem) -> Unit,
 ) {
     TimelineList(
@@ -320,6 +339,9 @@ private fun RecordTimeline(
         stationStats = stationStats,
         routePlan = routePlan,
         routeHistory = routeHistory,
+        routeTemplates = routeTemplates,
+        selectedRouteKey = selectedRouteKey,
+        onSelectRouteKey = onSelectRouteKey,
         onSelect = onSelect,
     )
 }
@@ -336,6 +358,9 @@ private fun TimelineList(
     stationStats: Map<String, StationStat>,
     routePlan: RoutePlan? = null,
     routeHistory: Map<RouteKey, List<Drive>> = emptyMap(),
+    routeTemplates: List<RouteTemplate> = emptyList(),
+    selectedRouteKey: String? = null,
+    onSelectRouteKey: (String) -> Unit = {},
     onSelect: (RecordItem) -> Unit,
 ) {
     // 按月份分组，但保持整体的时间倒序
@@ -372,6 +397,9 @@ private fun TimelineList(
                         plan = routePlan,
                         onClick = { expanded = true },
                         modifier = Modifier.animateItem(),
+                        templates = routeTemplates,
+                        selectedKey = selectedRouteKey,
+                        onSelectKey = onSelectRouteKey,
                     )
                 }
             }

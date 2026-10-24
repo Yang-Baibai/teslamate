@@ -1,6 +1,10 @@
 package com.teslamate.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -316,10 +320,84 @@ fun buildRoutePlan(
 private fun medianOf(values: List<Double>): Double? = com.teslamate.app.medianOf(values)
 
 /**
- * 找出最值得看的线路模板：**长途优先**，其次是最近走过的。
+ * 找出要显示的线路模板。
+ *
+ * ⚠️ v0.18.0（长途自驾党 P0-1）：**可选择线路**。
+ *
+ * 原来 `pickRouteTemplate` 直接取 `templates.firstOrNull()` ——
+ * 卡片永远显示「**上次**开的长途」，不是「我这次要开的那条」。
+ * 出发前 5 分钟，App 替你猜一条线路是没用的。
+ *
+ * 现在：传了 [selectedKey] 就用它；没传才回落到「最近走过的那条」。
  */
-fun pickRouteTemplate(templates: List<RouteTemplate>): RouteTemplate? =
-    templates.firstOrNull()
+fun pickRouteTemplate(
+    templates: List<RouteTemplate>,
+    selectedKey: String? = null,
+): RouteTemplate? =
+    selectedKey?.let { k -> templates.firstOrNull { it.key == k } } ?: templates.firstOrNull()
+
+/**
+ * 线路选择 chips（横向可滑）。
+ *
+ * ⚠️ v0.18.0（长途自驾党 P0-1）：多条线路时给用户**选**的能力。
+ * 只在有 2 条以上线路时出现 —— 单一线路给选择器是噪音。
+ */
+@Composable
+fun RoutePlanChips(
+    templates: List<RouteTemplate>,
+    selectedKey: String?,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (templates.size < 2) return
+    val accents = LocalAccentColors.current
+    LazyRow(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        items(templates) { t ->
+            val selected = t.key == selectedKey
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = if (selected) accents.energyBlue.copy(alpha = 0.16f) else accents.cardInset,
+                // ⚠️ 选中态再加一道主色描边 —— 光靠底色深浅，在浅色模式下差别太弱。
+                border = if (selected) {
+                    androidx.compose.foundation.BorderStroke(1.dp, accents.energyBlue.copy(alpha = 0.55f))
+                } else {
+                    null
+                },
+                modifier = Modifier.clickable { onSelect(t.key) },
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "${t.fromLabel} → ${t.toLabel}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (t.occurrences > 1) {
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            "×${t.occurrences}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
 /**
  * ⚠️ v0.14.0（苹果 HIG P1 + 新手车主 P1-2）：**折叠态的一行摘要**。
@@ -336,6 +414,12 @@ fun RoutePlanSummaryRow(
     plan: RoutePlan,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** ⚠️ v0.18.0：全部线路模板（用于选择 chips）。 */
+    templates: List<RouteTemplate> = emptyList(),
+    /** ⚠️ v0.18.0：当前选中的线路 key。 */
+    selectedKey: String? = null,
+    /** ⚠️ v0.18.0：切换选中的线路。 */
+    onSelectKey: (String) -> Unit = {},
 ) {
     val accents = LocalAccentColors.current
     val t = plan.template
@@ -344,34 +428,51 @@ fun RoutePlanSummaryRow(
         color = accents.cardSurface,
         modifier = modifier
             .fillMaxWidth()
-            .cardDepth()
-            .clickable(onClick = onClick),
+            .cardDepth(),
     ) {
-        Row(
-            Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "线路余量表 · ${t.fromLabel} → ${t.toLabel}",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    // 结论句直接写在摘要行里 —— 出发前 5 分钟只读这一行就够。
-                    plan.verdict(),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = accents.energyBlue,
-                    fontWeight = FontWeight.Bold,
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .clickable(onClick = onClick),
+                ) {
+                    Text(
+                        "线路余量表 · ${t.fromLabel} → ${t.toLabel}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        // 结论句直接写在摘要行里 —— 出发前 5 分钟只读这一行就够。
+                        plan.verdict(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = accents.energyBlue,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Icon(
+                    Icons.Filled.ExpandMore,
+                    contentDescription = "展开线路余量表",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .size(22.dp)
+                        .clickable(onClick = onClick),
                 )
             }
-            Spacer(Modifier.width(8.dp))
-            Icon(
-                Icons.Filled.ExpandMore,
-                contentDescription = "展开线路余量表",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(22.dp),
-            )
+            // ⚠️ v0.18.0（长途自驾党 P0-1）：**线路选择 chips** ——
+            // 卡片永远显示「上次开的那条」没用，出发前要选的是「我这次要开的那条」。
+            // 只在有 2 条以上线路时出现。
+            if (templates.size >= 2) {
+                Spacer(Modifier.height(8.dp))
+                RoutePlanChips(
+                    templates = templates,
+                    // ⚠️ 没手动选过时，**当前显示的那条**就是选中态 ——
+                    // 否则用户看到卡片显示 A 路，chips 里却没有 A 路被选中。
+                    selectedKey = selectedKey ?: plan.template.key,
+                    onSelect = onSelectKey,
+                )
+            }
         }
     }
 }
