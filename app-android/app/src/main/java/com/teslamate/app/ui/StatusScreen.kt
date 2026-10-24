@@ -2,6 +2,7 @@
 
 package com.teslamate.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -16,11 +17,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -67,6 +70,9 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
     var error by remember { mutableStateOf<String?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     var showMap by remember { mutableStateOf(false) }
+
+    // ⚠️ 修正：地图展开时按返回键原本会直接退出 App（没有 BackHandler）。
+    BackHandler(enabled = showMap) { showMap = false }
 
     suspend fun load() {
         if (api == null) {
@@ -119,7 +125,15 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                 Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
+                    .padding(
+                        start = 16.dp,
+                        end = 16.dp,
+                        top = 16.dp,
+                        // ⚠️ 底部必须留出导航栏高度：导航栏是半透明毛玻璃，
+                        // 内容会滚到它下面；不留 padding 的话最后一项（胎压卡）
+                        // 永远被盖住且滚不到。
+                        bottom = 16.dp + navBarBottom(),
+                    ),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 error?.let { ErrorBanner(it) }
@@ -143,18 +157,19 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                             )
                         }
 
-                        // 数据新鲜度：让「车睡着了（正常）」和「数据不新」不再长得一样。
+                        // 数据新鲜度：让「车睡着了（正常）」和「连不上服务器」不再长得一样。
                         // 连不上服务器的情况由上面的 ErrorBanner 负责（那是请求失败）；
                         // 这里说明的是「请求成功了，但车本身很久没上报」——多半是车停着不动。
-                        // 小时数由服务端算（api/alerts.go），App 不自己算时间差。
+                        // ⚠️ 措辞用「数据未更新」而不是「离线」——「离线」在状态胶囊里指的是
+                        //    车辆离线，两个意思混用会让人张冠李戴。
                         val staleHours = st.data_age_hours
                         if (staleHours >= 24) {
                             NoticeBanner(
-                                "车辆已 $staleHours 小时没有上报数据。" +
-                                    "车停着不动属正常；若你人在外地，也可能是网络不通，请留意上方是否有红色提示。"
+                                "数据已 $staleHours 小时未更新。车停着不动属正常；" +
+                                    "若你人在外地，也可能是网络不通，请留意上方是否有红色提示。"
                             )
                         } else if (staleHours >= 6) {
-                            NoticeBanner("车辆已离线约 $staleHours 小时，数据可能不是最新的。")
+                            NoticeBanner("数据已 $staleHours 小时未更新，可能不是最新的。")
                         }
 
                         Row(
@@ -164,11 +179,21 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                             SocRing(st.battery_level)
                             Spacer(Modifier.width(28.dp))
                             Column {
-                                BigStat(st.rated_range_km?.fmt(0) ?: "—", "续航 (km)")
+                                // 续航用「预估」口径（est → ideal → rated 依次降级）。
+                                // 标定续航是 EPA 上限，车机实际显示的预估会随近期能耗浮动。
+                                val range = st.est_range_km ?: st.ideal_range_km ?: st.rated_range_km
+                                BigStat(range?.fmt(0) ?: "—", "预估续航 (km)")
                                 Spacer(Modifier.height(20.dp))
-                                BigStat(st.odometer?.fmt(0) ?: "—", "总里程 (km)")
+                                BigStat(st.odometer?.fmt(0) ?: "—", "里程表 (km)")
                             }
                         }
+
+                        // 能量条 —— 特斯拉最易识别的视觉母题，充电中转绿
+                        EnergyBar(
+                            soc = st.battery_level,
+                            charging = st.active_charge != null,
+                            modifier = Modifier.padding(bottom = 4.dp),
+                        )
 
                         st.active_charge?.let { ChargeNowCard(it) }
                         st.active_drive?.let { DriveNowCard(it, st) }
@@ -213,11 +238,14 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                                             )
                                         }
                                     }
+                                    // ⚠️ 原来这里写「点击展开地图」——开发者口吻，
+                                    // 而且整块已经可点了，不需要额外解释。
                                     if (!showMap) {
-                                        Text(
-                                            "点击展开地图",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                            contentDescription = "展开地图",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(20.dp),
                                         )
                                     }
                                 }
@@ -229,7 +257,16 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
                             InfoTile("车内温度", st.inside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            InfoTile("空调", if (st.is_climate_on == true) "开启" else "关闭", Modifier.weight(1f))
+                            InfoTile(
+                                "空调",
+                                // 车没上报时是 null，显示"关闭"会骗人 —— 必须区分「未知」
+                                when (st.is_climate_on) {
+                                    true -> "开启"
+                                    false -> "关闭"
+                                    null -> "未知"
+                                },
+                                Modifier.weight(1f),
+                            )
                             InfoTile("功率", st.power?.let { "$it kW" } ?: "—", Modifier.weight(1f))
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -253,37 +290,70 @@ fun StatusScreen(settings: AppSettings, modifier: Modifier) {
 }
 
 /**
- * 胎压卡（2×2 网格：左前/右前/左后/右后）。
- * 胎压是家用车最有价值的安全仪表——胎压异常（过高/过低/单胎明显偏低）
- * 会用红色高亮提示，这是 Tesla App 也没有做但确实有用的一环。
+ * 胎压卡：俯视车辆 + 四轮数值。
  *
- * ⚠️ 判定完全由服务端算好（api/alerts.go），App 只读结果并按轮胎着色。
- * 阈值也只有服务端一份——避免 App 和推送脚本两边各写一套、改一处忘一处。
+ * 俯视图是本 App **唯一能超越官方 Tesla App** 的地方（官方不展示四轮胎压）。
+ * 异常轮用危险红实心 + 呼吸动画，接近阈值用琥珀，正常用中性灰。
+ * 判定完全由服务端算好（api/alerts.go），App 只读结果——阈值也只有服务端一份。
  */
 @Composable
 private fun TpmsCard(st: CarStatus) {
     val fl = st.tpms_fl; val fr = st.tpms_fr; val rl = st.tpms_rl; val rr = st.tpms_rr
     if (fl == null && fr == null && rl == null && rr == null) return // 一个都没有就不占版面
 
-    val bad = st.tpms_alert_wheels
-    fun alerting(name: String) = bad.contains(name)
+    val reading = TpmsReadingUi(fl, fr, rl, rr, st.tpms_min_bar, st.tpms_max_bar)
 
     SectionCard(
         title = if (st.tpms_alert) "轮胎胎压 · 建议检查" else "轮胎胎压",
     ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            TpmsCell("左前", fl, alerting("左前"), Modifier.weight(1f))
-            TpmsCell("右前", fr, alerting("右前"), Modifier.weight(1f))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            VehicleTopView(reading = reading, modifier = Modifier.weight(0.9f))
+            Column(Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                TpmsValue("左前", fl, reading.isAlerting(fl))
+                TpmsValue("右前", fr, reading.isAlerting(fr))
+                TpmsValue("左后", rl, reading.isAlerting(rl))
+                TpmsValue("右后", rr, reading.isAlerting(rr))
+            }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            TpmsCell("左后", rl, alerting("左后"), Modifier.weight(1f))
-            TpmsCell("右后", rr, alerting("右后"), Modifier.weight(1f))
+        // 告警不能只靠颜色（WCAG 1.4.1）——服务端已算好这句文案，直接用
+        st.tpms_alert_detail?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                "⚠ $it",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
         Text(
             "正常范围 ${st.tpms_min_bar}–${st.tpms_max_bar} bar（冷胎）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun TpmsValue(label: String, value: Double?, alert: Boolean) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(34.dp),
+        )
+        Text(
+            value?.let { "${it.fmt(2)} bar" } ?: "—",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = if (alert) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+        )
+        if (alert) {
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "⚠",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
     }
 }
 

@@ -7,12 +7,15 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.DirectionsCar
@@ -37,15 +40,21 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import com.teslamate.app.AppLatest
 import com.teslamate.app.AppSettings
 import com.teslamate.app.BuildConfig
+import com.teslamate.app.Haptics
 import com.teslamate.app.settingsFlow
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.haze
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -92,18 +101,24 @@ fun TeslaMateApp() {
         val cappedDensity = remember(baseDensity) {
             Density(baseDensity.density, fontScale = minOf(baseDensity.fontScale, 1.15f))
         }
-        CompositionLocalProvider(LocalDensity provides cappedDensity) {
-            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        CompositionLocalProvider(
+            LocalDensity provides cappedDensity,
+            LocalHazeState provides remember { HazeState() },
+        ) {
+            Box(Modifier.fillMaxSize()) {
                 val s = settings
                 if (s == null) {
-                    CircularProgressIndicator()
+                    // ⚠️ 修正：原来这个转圈出现在左上角（Surface 默认 contentAlignment=TopStart）。
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
                 } else {
                     MainScaffold(s)
                     updateInfo?.let { info ->
                         UpdateDialog(
                             info = info,
                             onDismiss = { if (!info.mandatory) updateInfo = null },
-                            onUpdate = { url -> ctx.downloadAndInstall(url) },
+                            onUpdate = { url -> updateInfo = null; ctx.downloadAndInstall(url) },
                         )
                     }
                 }
@@ -116,32 +131,61 @@ fun TeslaMateApp() {
 @Composable
 private fun MainScaffold(settings: AppSettings) {
     var tab by remember { mutableStateOf(Tab.STATUS) }
+    val ctx = LocalContext.current
+    val density = LocalDensity.current
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Bottom),
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
-                Tab.entries.forEach { t ->
-                    NavigationBarItem(
-                        selected = tab == t,
-                        onClick = { tab = t },
-                        icon = { Icon(t.icon, contentDescription = t.label) },
-                        label = { Text(t.label) },
-                    )
+            // 毛玻璃导航栏（iOS bar material）
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .glassSurface(GlassLevel.Bar, RoundedCornerShape(0.dp), realBlur = true)
+            ) {
+                NavigationBar(containerColor = Color.Transparent) {
+                    Tab.entries.forEach { t ->
+                        NavigationBarItem(
+                            selected = tab == t,
+                            onClick = {
+                                if (tab != t) {
+                                    Haptics.selection(ctx)
+                                    tab = t
+                                }
+                            },
+                            icon = {
+                                // contentDescription = null：可见的文字标签已提供可访问名称，
+                                // 再给图标一份会导致 TalkBack 念「车况,车况」（WCAG 2.5.3）
+                                Icon(t.icon, contentDescription = null)
+                            },
+                            label = { Text(t.label, style = MaterialTheme.typography.labelSmall) },
+                        )
+                    }
                 }
             }
         },
     ) { padding ->
-        // Play 式 Tab 过渡：淡入 + 按导航方向的轻水平滑
+        // ⚠️ iOS UITabBar 切换是**无位移**的（瞬时或极轻 cross-dissolve）。
+        // 原实现有 12.5% 的水平滑动，那是 Play 商店味，与 iOS 相反。改为固定 16dp 位移。
         AnimatedContent(
             targetState = tab,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
+                .padding(padding)
+                // 页面内容 = 毛玻璃的「模糊源」；底部导航栏是它的兄弟节点，作模糊效果。
+                // ⚠️ haze 与 hazeChild 不可互为父子，所以源必须挂在内容区而不是根容器。
+                .haze(LocalHazeState.current),
             transitionSpec = {
                 val dir = if (targetState.ordinal >= initialState.ordinal) 1 else -1
-                (fadeIn(tween(220)) + slideInHorizontally(tween(240)) { dir * it / 8 }) togetherWith
-                    (fadeOut(tween(160)))
+                val shift = with(density) { 16.dp.toPx() }.toInt()
+                val shiftOut = with(density) { 8.dp.toPx() }.toInt()
+                (
+                    fadeIn(tween(140, delayMillis = 40)) +
+                        slideInHorizontally(tween(200)) { dir * shift }
+                    ) togetherWith (
+                    fadeOut(tween(120)) +
+                        slideOutHorizontally(tween(180)) { -dir * shiftOut }
+                    )
             },
             label = "tabSwitch",
         ) { current ->

@@ -3,6 +3,8 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 触感反馈：Tab 切换、列表按下、告警等 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!--
       注意：不再申请 POST_NOTIFICATIONS。
       推送与提醒由本机的 Hermes 负责（scripts/watch-car.ps1 → 飞书/微信），

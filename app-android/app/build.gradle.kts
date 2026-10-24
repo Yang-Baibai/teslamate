@@ -49,6 +49,8 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+    // 毛玻璃（真实 RenderEffect 模糊，API 31+；以下自动退化为半透明）
+    implementation("dev.chrisbanes.haze:haze-android:1.0.0")
     // 不再引入 WorkManager：后台推送与提醒改由本机的 Hermes 负责
     // （项目根 scripts/watch-car.ps1 + Windows 计划任务），App 只做查看。
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")

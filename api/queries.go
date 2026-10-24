@@ -28,6 +28,28 @@ WITH lp AS (
          wgs84_to_gcj02_lat(latitude::float8, longitude::float8) AS map_lat,
          wgs84_to_gcj02_lng(latitude::float8, longitude::float8) AS map_lng
   FROM positions WHERE car_id = $1 ORDER BY date DESC LIMIT 1
+), rx AS (
+  -- ⚠️ 「最近已知值」兜底 CTE。
+  --   TeslaMate 只在特斯拉 API 响应里**包含该字段**时才写对应列，
+  --   所以 positions 表里续航/胎压/温度/海拔这些列极度稀疏（实测非空率仅 3.5%）。
+  --   结果是「最新一条 position」里这些列常常是 NULL，界面就显示「—」——
+  --   胎压卡甚至整块不显示（因为 App 判空后直接 return）。
+  --   这里在最近 500 条里，对每个稀疏列各取「最后一个非空值」。
+  --   500 条足够：行驶时 positions 约每秒一条。
+  SELECT
+    (array_agg(ideal_battery_range_km ORDER BY date DESC) FILTER (WHERE ideal_battery_range_km IS NOT NULL))[1] AS ideal_battery_range_km,
+    (array_agg(est_battery_range_km  ORDER BY date DESC) FILTER (WHERE est_battery_range_km  IS NOT NULL))[1] AS est_battery_range_km,
+    (array_agg(rated_battery_range_km ORDER BY date DESC) FILTER (WHERE rated_battery_range_km IS NOT NULL))[1] AS rated_range_km,
+    (array_agg(tpms_pressure_fl ORDER BY date DESC) FILTER (WHERE tpms_pressure_fl IS NOT NULL))[1] AS tpms_fl,
+    (array_agg(tpms_pressure_fr ORDER BY date DESC) FILTER (WHERE tpms_pressure_fr IS NOT NULL))[1] AS tpms_fr,
+    (array_agg(tpms_pressure_rl ORDER BY date DESC) FILTER (WHERE tpms_pressure_rl IS NOT NULL))[1] AS tpms_rl,
+    (array_agg(tpms_pressure_rr ORDER BY date DESC) FILTER (WHERE tpms_pressure_rr IS NOT NULL))[1] AS tpms_rr,
+    (array_agg(outside_temp ORDER BY date DESC) FILTER (WHERE outside_temp IS NOT NULL))[1] AS outside_temp,
+    (array_agg(inside_temp ORDER BY date DESC) FILTER (WHERE inside_temp IS NOT NULL))[1] AS inside_temp,
+    (array_agg(elevation ORDER BY date DESC) FILTER (WHERE elevation IS NOT NULL))[1] AS elevation
+  FROM (
+    SELECT * FROM positions WHERE car_id = $1 ORDER BY date DESC LIMIT 500
+  ) recent
 ), ls AS (
   SELECT state, start_date FROM states WHERE car_id = $1 ORDER BY start_date DESC LIMIT 1
 ), ac AS (
@@ -70,10 +92,19 @@ WITH lp AS (
   ) na ON true
 )
 SELECT lp.date, lp.battery_level, lp.usable_battery_level,
-       lp.ideal_battery_range_km, lp.est_battery_range_km, lp.rated_range_km,
-       lp.odometer, lp.speed, lp.power, lp.outside_temp, lp.inside_temp,
-       lp.is_climate_on, lp.elevation, lp.lat, lp.lng, lp.map_lat, lp.map_lng,
-       lp.tpms_fl, lp.tpms_fr, lp.tpms_rl, lp.tpms_rr,
+       COALESCE(lp.ideal_battery_range_km, rx.ideal_battery_range_km) AS ideal_battery_range_km,
+       COALESCE(lp.est_battery_range_km, rx.est_battery_range_km) AS est_battery_range_km,
+       COALESCE(lp.rated_range_km, rx.rated_range_km) AS rated_range_km,
+       lp.odometer, lp.speed, lp.power,
+       COALESCE(lp.outside_temp, rx.outside_temp) AS outside_temp,
+       COALESCE(lp.inside_temp, rx.inside_temp) AS inside_temp,
+       lp.is_climate_on,
+       COALESCE(lp.elevation, rx.elevation) AS elevation,
+       lp.lat, lp.lng, lp.map_lat, lp.map_lng,
+       COALESCE(lp.tpms_fl, rx.tpms_fl) AS tpms_fl,
+       COALESCE(lp.tpms_fr, rx.tpms_fr) AS tpms_fr,
+       COALESCE(lp.tpms_rl, rx.tpms_rl) AS tpms_rl,
+       COALESCE(lp.tpms_rr, rx.tpms_rr) AS tpms_rr,
        loc.name,
        ls.state, ls.start_date,
        ac.charge_id, ac.start_date, ac.energy_added, ac.charger_power,
@@ -81,6 +112,7 @@ SELECT lp.date, lp.battery_level, lp.usable_battery_level,
        ac.fast_charger_present, ac.battery_level,
        ad.drive_id, ad.start_date
 FROM lp
+LEFT JOIN rx ON true
 LEFT JOIN ls ON true
 LEFT JOIN ac ON true
 LEFT JOIN ad ON true

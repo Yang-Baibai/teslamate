@@ -2,86 +2,284 @@ package com.teslamate.app.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import dev.chrisbanes.haze.haze
 
 /**
- * 设计语言：Material 3（Telegram / Google Play 式）。
- * - 层级用 tonal surface 色调区分，不用阴影
- * - 主色特斯拉红仅做点缀（选中态、进度、强调）
- * - 深色模式对 OLED 友好（近黑底）
+ * 设计语言 v2（2026-10-24 重做）
+ *
+ * 目标：**苹果式系统质感** —— 简洁、直观、高级、毛玻璃、3D。
+ * 参照 iOS 的三条底层原则：
+ *  1. **层次靠材质，不靠描边和阴影**（对应：surfaceContainer* 色阶 + 毛玻璃）
+ *  2. **强调色只能有一个**（此前 primary 红 + tertiary 青两个强调色打架，已收敛）
+ *  3. **数字用等宽字形**（tabular figures），否则 33%→34% 时数字宽度变化会左右抖
  */
 
+// ── 品牌与图表色（不占用 M3 语义角色，避免和 primary/tertiary 混用）──
+@Immutable
+data class AccentColors(
+    /** 特斯拉红：强调 / 危险 / 品牌点缀（**不用于表达健康电量**） */
+    val teslaRed: Color,
+    /** 红上的高光（3D 感） */
+    val teslaRedLight: Color,
+    /** 能量蓝：电量、功率、SOC 曲线 —— 「正常」的统一表达 */
+    val energyBlue: Color,
+    /** 充电绿：仅表示「正在充电」 */
+    val chargeGreen: Color,
+    /** 琥珀：电量 < 20%（浅色下用深一档，保证 ≥3:1） */
+    val warnAmber: Color,
+    /** 危险红：电量 < 10%、胎压异常 */
+    val danger: Color,
+    /** 直流快充 */
+    val fastCharge: Color,
+    /** 交流慢充 */
+    val slowCharge: Color,
+    /** 图表网格线 / 轨道 */
+    val chartTrack: Color,
+    /** 图表参考线（中位数/基准） */
+    val chartBaseline: Color,
+    /** 玻璃面（半透明底色） */
+    val glassTint: Color,
+    /** 玻璃面上的高光描边（顶部 1px） */
+    val glassHighlight: Color,
+    /** 卡片投影的环境光 */
+    val shadowAmbient: Color,
+    /** 卡片投影的主光 */
+    val shadowKey: Color,
+)
+
+private val LightAccents = AccentColors(
+    teslaRed = Color(0xFFD70012),
+    teslaRedLight = Color(0xFFFF6B6B),
+    energyBlue = Color(0xFF2F5FD0),
+    chargeGreen = Color(0xFF1E9E62),
+    warnAmber = Color(0xFFB26A00),
+    danger = Color(0xFFD13438),
+    fastCharge = Color(0xFFD70012),
+    slowCharge = Color(0xFF2F5FD0),
+    chartTrack = Color(0xFFE6E8EB),
+    chartBaseline = Color(0xFF9AA1A8),
+    glassTint = Color(0x99FFFFFF),
+    glassHighlight = Color(0x66FFFFFF),
+    shadowAmbient = Color(0x14000000),
+    shadowKey = Color(0x0A000000),
+)
+
+private val DarkAccents = AccentColors(
+    teslaRed = Color(0xFFFF453A),
+    teslaRedLight = Color(0xFFFF8A80),
+    energyBlue = Color(0xFF5B8DEF),
+    chargeGreen = Color(0xFF2FBF71),
+    warnAmber = Color(0xFFF5A623),
+    danger = Color(0xFFE5484D),
+    fastCharge = Color(0xFFFF453A),
+    slowCharge = Color(0xFF5B8DEF),
+    chartTrack = Color(0xFF26262A),
+    chartBaseline = Color(0xFF6E6E76),
+    glassTint = Color(0x8C1C1C1E),
+    glassHighlight = Color(0x33FFFFFF),
+    shadowAmbient = Color(0x40000000),
+    shadowKey = Color(0x66000000),
+)
+
+val LocalAccentColors = staticCompositionLocalOf { LightAccents }
+
+/** 毛玻璃状态。整个 App 共用一个，根容器作 source，玻璃面作 effect。 */
+val LocalHazeState = staticCompositionLocalOf<HazeState> {
+    error("HazeState 未初始化")
+}
+
+/** 当前主题对应的毛玻璃样式（tint + 模糊半径）。 */
+@Composable
+fun rememberHazeStyle(
+    blurDp: Int,
+    alpha: Float,
+    tint: Color,
+): HazeStyle = HazeStyle(
+    backgroundColor = Color.Transparent,
+    tints = listOf(HazeTint(tint)),
+    blurRadius = blurDp.dp,
+    noiseFactor = 0f,
+    fallbackTint = HazeTint(tint.copy(alpha = alpha)),
+)
+
+// ── 配色 ─────────────────────────────────────────────────────────
 private val LightColors = lightColorScheme(
-    primary = Color(0xFFC00016),          // 特斯拉红（tone 压暗，白底可读）
+    primary = Color(0xFFD70012),           // 特斯拉红（略压暗保证白字对比度）
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFFFDAD5),
+    primaryContainer = Color(0xFFFFDAD6),
     onPrimaryContainer = Color(0xFF410001),
-    secondary = Color(0xFF3F5B62),
+    // ⚠️ tertiary 原本是青色，与 primary 红形成"两个强调色"打架。
+    // 收敛为中性冷灰蓝，让红色成为唯一强调色。
+    secondary = Color(0xFF3A4750),
     onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFC2E8ED),
-    onSecondaryContainer = Color(0xFF002024),
-    tertiary = Color(0xFF00658F),
+    secondaryContainer = Color(0xFFDCE3E8),
+    onSecondaryContainer = Color(0xFF101A20),
+    tertiary = Color(0xFF4A5760),
     onTertiary = Color(0xFFFFFFFF),
-    tertiaryContainer = Color(0xFFC7E7FF),
-    onTertiaryContainer = Color(0xFF001E31),
+    tertiaryContainer = Color(0xFFE2E7EB),
+    onTertiaryContainer = Color(0xFF141C22),
     error = Color(0xFFBA1A1A),
     onError = Color(0xFFFFFFFF),
     errorContainer = Color(0xFFFFDAD6),
     onErrorContainer = Color(0xFF410002),
-    background = Color(0xFFFAFAFA),        // Telegram 式干净底
-    onBackground = Color(0xFF1A1C1D),
-    surface = Color(0xFFFAFAFA),
-    onSurface = Color(0xFF1A1C1D),
-    surfaceVariant = Color(0xFFEDEFF1),
-    onSurfaceVariant = Color(0xFF41484C),
+    background = Color(0xFFF7F7F9),        // iOS systemGroupedBackground
+    onBackground = Color(0xFF1C1C1E),
+    surface = Color(0xFFF7F7F9),
+    onSurface = Color(0xFF1C1C1E),
+    surfaceVariant = Color(0xFFEBEBEE),
+    onSurfaceVariant = Color(0xFF6B6B70),
     surfaceContainerLowest = Color(0xFFFFFFFF),
-    surfaceContainerLow = Color(0xFFF4F5F7),
-    surfaceContainer = Color(0xFFEEEFF2),  // 卡片主色
-    surfaceContainerHigh = Color(0xFFE8EAED),
-    surfaceContainerHighest = Color(0xFFE2E4E8),
-    outline = Color(0xFF72787D),
-    outlineVariant = Color(0xFFC1C7CC),
+    surfaceContainerLow = Color(0xFFFFFFFF),
+    surfaceContainer = Color(0xFFFFFFFF),
+    surfaceContainerHigh = Color(0xFFF0F0F2),
+    surfaceContainerHighest = Color(0xFFE8E8EB),
+    outline = Color(0xFFB0B0B6),
+    outlineVariant = Color(0xFFE0E0E5),
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFFFB4AB),           // 柔红，深底不刺眼
-    onPrimary = Color(0xFF690002),
-    primaryContainer = Color(0xFF93000B),
-    onPrimaryContainer = Color(0xFFFFDAD5),
-    secondary = Color(0xFFA3CDD3),
-    onSecondary = Color(0xFF04363C),
-    secondaryContainer = Color(0xFF224C53),
-    onSecondaryContainer = Color(0xFFBFE9EF),
-    tertiary = Color(0xFF8ACEFF),
-    onTertiary = Color(0xFF00344F),
-    tertiaryContainer = Color(0xFF004B70),
-    onTertiaryContainer = Color(0xFFC7E7FF),
-    error = Color(0xFFFFB4AB),
-    onError = Color(0xFF690005),
+    primary = Color(0xFFFF453A),           // iOS dark 下的系统红
+    onPrimary = Color(0xFF2B0A08),
+    primaryContainer = Color(0xFF93000A),
+    onPrimaryContainer = Color(0xFFFFDAD6),
+    secondary = Color(0xFFB6C4CE),
+    onSecondary = Color(0xFF1A232A),
+    secondaryContainer = Color(0xFF2A353D),
+    onSecondaryContainer = Color(0xFFD7E3EC),
+    tertiary = Color(0xFFA9B7C1),
+    onTertiary = Color(0xFF16202A),
+    tertiaryContainer = Color(0xFF243039),
+    onTertiaryContainer = Color(0xFFDCE6EE),
+    error = Color(0xFFFF453A),
+    onError = Color(0xFF2B0A08),
     errorContainer = Color(0xFF93000A),
     onErrorContainer = Color(0xFFFFDAD6),
-    background = Color(0xFF101214),        // 近黑
-    onBackground = Color(0xFFE2E2E5),
-    surface = Color(0xFF101214),
-    onSurface = Color(0xFFE2E2E5),
-    surfaceVariant = Color(0xFF41484C),
-    onSurfaceVariant = Color(0xFFC1C7CC),
-    surfaceContainerLowest = Color(0xFF0B0D0F),
-    surfaceContainerLow = Color(0xFF181B1E),
-    surfaceContainer = Color(0xFF1C1F22),  // 卡片主色
-    surfaceContainerHigh = Color(0xFF26292D),
-    surfaceContainerHighest = Color(0xFF313438),
-    outline = Color(0xFF8B9196),
-    outlineVariant = Color(0xFF41484C),
+    // iOS 深色是**纯黑**分层（#000000 / #1C1C1E / #2C2C2E），
+    // 此前用灰蓝底 (#101214) 显得"灰蒙蒙"，且卡片与底色分离度不够。
+    background = Color(0xFF000000),
+    onBackground = Color(0xFFF2F2F7),
+    surface = Color(0xFF000000),
+    onSurface = Color(0xFFF2F2F7),
+    surfaceVariant = Color(0xFF2C2C2E),
+    onSurfaceVariant = Color(0xFF98989F),
+    surfaceContainerLowest = Color(0xFF000000),
+    surfaceContainerLow = Color(0xFF0B0B0D),
+    surfaceContainer = Color(0xFF1C1C1E),
+    surfaceContainerHigh = Color(0xFF242426),
+    surfaceContainerHighest = Color(0xFF2C2C2E),
+    outline = Color(0xFF48484A),
+    outlineVariant = Color(0xFF38383A),
+)
+
+// ── 排版（iOS 尺度）────────────────────────────────────────────────
+// 关键：所有数字用 tabular figures（tnum），否则数值刷新时宽度变化会左右抖动。
+private val Tnum = "tnum"
+
+private val AppTypography = Typography(
+    displayLarge = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.Bold,
+        fontSize = 34.sp, lineHeight = 41.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+    ),
+    displayMedium = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.Bold,
+        fontSize = 28.sp, lineHeight = 34.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+    ),
+    headlineLarge = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.Bold,
+        fontSize = 26.sp, lineHeight = 32.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+    ),
+    headlineMedium = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.SemiBold,
+        fontSize = 22.sp, lineHeight = 28.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+    ),
+    headlineSmall = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.SemiBold,
+        fontSize = 20.sp, lineHeight = 25.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+    ),
+    titleLarge = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.SemiBold,
+        fontSize = 20.sp, lineHeight = 25.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+    ),
+    titleMedium = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.SemiBold,
+        fontSize = 17.sp, lineHeight = 22.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+    ),
+    titleSmall = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.SemiBold,
+        fontSize = 15.sp, lineHeight = 20.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+    ),
+    bodyLarge = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal,
+        fontSize = 17.sp, lineHeight = 22.sp, letterSpacing = 0.sp,
+    ),
+    bodyMedium = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal,
+        fontSize = 15.sp, lineHeight = 20.sp, letterSpacing = 0.sp,
+    ),
+    bodySmall = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.Normal,
+        fontSize = 13.sp, lineHeight = 18.sp, letterSpacing = 0.sp,
+    ),
+    labelLarge = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium,
+        fontSize = 15.sp, lineHeight = 20.sp, letterSpacing = 0.sp, fontFeatureSettings = Tnum,
+    ),
+    labelMedium = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium,
+        fontSize = 13.sp, lineHeight = 16.sp, letterSpacing = 0.sp,
+    ),
+    labelSmall = TextStyle(
+        fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium,
+        fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.sp,
+    ),
+)
+
+// ── 形状（iOS 连续圆角观感）─────────────────────────────────────
+private val AppShapes = Shapes(
+    extraSmall = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+    small = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+    medium = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+    large = androidx.compose.foundation.shape.RoundedCornerShape(22.dp),
+    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
 )
 
 @Composable
 fun TeslaMateTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
-        content = content,
-    )
+    val dark = isSystemInDarkTheme()
+    CompositionLocalProvider(
+        LocalAccentColors provides if (dark) DarkAccents else LightAccents,
+    ) {
+        MaterialTheme(
+            colorScheme = if (dark) DarkColors else LightColors,
+            typography = AppTypography,
+            shapes = AppShapes,
+            content = content,
+        )
+    }
 }
+
+/** 取得当前的品牌/图表色 */
+val accents: AccentColors
+    @Composable get() = LocalAccentColors.current
+
+/** 便捷：给任意 Modifier 挂上"模糊源"（在根容器调用一次） */
+fun Modifier.hazeSource(state: HazeState): Modifier = haze(state)
