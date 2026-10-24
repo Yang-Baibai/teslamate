@@ -7,6 +7,8 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -165,6 +167,7 @@ private fun DriveList(
  * **能耗与最高速**（数据控车主最关心的两项）永远看不到。
  * 改成三层结构：路线（可两行）→ 时间与时长 → 三个并排指标。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val accents = LocalAccentColors.current
@@ -204,7 +207,14 @@ private fun DriveItem(d: Drive, modifier: Modifier = Modifier, onClick: () -> Un
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            // ⚠️ v0.8.10：原来用 Row(spacedBy(16.dp)) 横排各项，真机上放不下 ——
+            // 最后一项被压成**竖排**（每个字符一行）。真机字体缩放大时才暴露。
+            // 改用 FlowRow：放不下就自动换行，绝不挤压。
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 InlineMetric("耗电", "${d.energy_kwh?.fmt(1) ?: "—"} kWh")
                 InlineMetric("能耗", "${d.wh_per_km?.fmt(0) ?: "—"} Wh/km")
                 // ⚠️ v0.8.6（长途自驾党复核）：把**到站电量**放进列表行。

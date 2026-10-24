@@ -13,6 +13,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -184,6 +186,7 @@ private fun ChargeList(
  * ⚠️ **v0.8.2 新增**：第四行是该站**历史**表现（典型 kW + 充到 80% 耗时）——
  * 这是决定「进不进这个服务区」的唯一信息，只存在于单次充电的字段里是不够的。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChargeItem(
     c: Charge,
@@ -221,7 +224,14 @@ private fun ChargeItem(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            // ⚠️ v0.8.10：原来用 Row(spacedBy(16.dp)) 横排各项，真机上放不下 ——
+            // 最后一项被压成**竖排**（每个字符一行）。真机字体缩放大时才暴露。
+            // 改用 FlowRow：放不下就自动换行，绝不挤压。
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 InlineMetric("充入", "${c.energy_added_kwh?.fmt(1) ?: "—"} kWh")
                 InlineMetric("电量", "${c.start_soc ?: "—"}→${c.end_soc ?: "—"}%")
                 if (c.cost != null) {
