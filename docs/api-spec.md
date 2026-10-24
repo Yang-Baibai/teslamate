@@ -16,8 +16,9 @@
 | GET | /api/v1/drives/{id}/track | 单次行程轨迹（自动降采样 ≤1500 点） |
 | GET | /api/v1/cars/{id}/charges?limit=&offset= | 充电记录（默认 20，最大 200） |
 | GET | /api/v1/charges/{id}/curve | 单次充电分钟级曲线 |
-| GET | /api/v1/cars/{id}/stats?period=week\|month\|year | 桶聚合统计（周=7 天/月=30 天/年=12 月） |
+| GET | /api/v1/cars/{id}/stats?period=week\|month\|year | 桶聚合统计（周=含今天的近 7 个自然日 / 月=近 30 个自然日 / 年=近 12 个自然月，当月为进行中数据） |
 | GET | /api/v1/cars/{id}/battery | 电池容量趋势与健康度 |
+| GET | /api/v1/app/latest | App 自更新用的版本元数据（版本号 / APK 地址 / 更新说明） |
 
 错误统一格式：`{"error":"人类可读原因"}`，配合 HTTP 401/404/500。
 
@@ -40,7 +41,7 @@
 | active_drive | 行驶中才有：drive_id/started_at |
 | **tpms_alert** | **服务端算好的胎压异常判定（bool）** |
 | **tpms_alert_wheels** | **异常轮次名数组，如 `["左后"]`** |
-| **tpms_alert_detail** | **异常轮次读数，如 `"左后 2.80 bar"`** |
+| **tpms_alert_detail** | **异常轮次读数，如 `"左后 2.80 bar"`；多个异常轮之间用两个空格连接**（服务端 `strings.Join(values, "  ")`） |
 | **tpms_min_bar / tpms_max_bar** | **胎压正常范围（供 App 展示，避免两边各写一份阈值）** |
 | **data_age_hours** | **数据距今多少小时（整数）** |
 | **data_stale** | **数据是否已过期（超过 24 小时）** |
@@ -88,6 +89,14 @@
   "summary": { ... 同结构合计 ... }
 }
 ```
+
+**周期口径**（`period` 决定桶的粒度与数量；窗口按 `TZ_NAME`（默认 `Asia/Shanghai`）的自然日 / 自然月切）：
+
+| period | 桶粒度 | 桶数 | 覆盖范围 | 说明 |
+|---|---|---|---|---|
+| `week` | 日 | 7 | **含今天的近 7 个自然日** | `buckets[0]` 是 6 天前，`buckets[6]` 就是今天 |
+| `month` | 日 | 30 | **近 30 个自然日**（含今天） | 默认值——`period` 缺省或非法都落到这一档 |
+| `year` | 月 | 12 | **近 12 个自然月** | 当月是**进行中**数据，数值会随当月继续增长 |
 
 ### /battery
 `current_capacity_kwh`（最近一次估算）`max_capacity_kwh`（历史最佳）`health_percent`（当前/最佳）
@@ -137,9 +146,9 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/cars/1/st
 ### `/cars/{id}/status`
 | 字段 | 说明 |
 |---|---|
-| `tpms_fl` `tpms_fr` `tpms_rl` `tpms_rr` | 四轮胎压（bar）。App 侧异常判定：超出 2.4–2.9 或单胎比中位数低 0.2 bar 以上 → 红色告警 |
+| `tpms_fl` `tpms_fr` `tpms_rl` `tpms_rr` | 四轮胎压（bar）。**异常判定在服务端**（`api/alerts.go`，唯一事实源）：越界 <2.5 或 >3.3 bar，或单胎比四轮中位数低 0.2 bar 以上。App 只读 `tpms_alert` / `tpms_alert_wheels` / `tpms_alert_detail`，不再本地算阈值 |
 | `usable_battery_level` | 可用电量 %（与标称电量可能不同，Model 3 LR 常见两者相等） |
-| `elevation` | 海拔 m。平原地区常为 null，App 显示「—」 |
+| `elevation` | 海拔 m。**v0.7.0 起服务端会回填**：在最近 500 条 positions 里取最后一个非空值（`rx` CTE + `COALESCE`），只有这 500 条全为空时才返回空，App 显示「—」 |
 
 ### `/cars/{id}/charges`
 | 字段 | 说明 |

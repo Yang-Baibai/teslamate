@@ -27,6 +27,7 @@
 | 充电损耗率 | `(energy_used − energy_added) / energy_used × 100` | 仅当 added ≤ used 且结果 ∈ [0,60) 才输出；慢充 ~10%，快充 ~5% |
 | 电池当前容量 | `rated_battery_range_km × efficiency × 100 ÷ usable_battery_level` | 仅取充至 ≥90% 的会话，取该会话最后一条采样 |
 | **电池健康度** | `当前容量 ÷ NOMINAL_BATTERY_KWH × 100` | **分母是铭牌容量（.env 配置），不是历史最大值**——历史最大值本身随衰减漂移，用它健康度虚高（本项目曾 98% vs 实际 85.2%） |
+| **真实可达续航**（App 端口径，`app-android` 的 `ConsumptionModel.kt`） | `标定续航 × 146 ÷ 实测 Wh/km × 温度修正 × 爬升修正 × 0.9` | `146` = 本车 `cars.efficiency`（0.146 kWh/km）。实测 Wh/km 由 App 自己按**车速分桶取中位数**算（数据源 `/drives?limit=200`）。温度修正只做热的：`× (1 + 0.006 × max(0, 气温 − 22))`，上限 +10%；爬升 ≥200m：`× 1.05`。**这是展示口径，不是数据库字段**：服务端 `est_battery_range_km` 全库仅 0.085% 有值，`ideal_battery_range_km` 与 `rated_battery_range_km` 逐行相同，实际显示的一直是 EPA 标定值（夏季高速乐观 25%~40%）。样本不足时回退显示标定续航 |
 | 位置命名 | geofence 命中（半径内）→ 否则 300m 内最近 address | Haversine，acos 参数已做 [-1,1] 钳制 |
 
 ## 3. 特殊值与占位符（"看起来是数据，其实不是"）
@@ -52,8 +53,12 @@
 | 越界 | 读数 < **2.5 bar** 或 > **3.3 bar** |
 | 单胎离群 | 该轮比四轮**中位数**低 **0.2 bar** 以上 |
 
-API 返回：`tpms_alert`(bool) / `tpms_alert_wheels`(字符串数组) / `tpms_alert_detail`(读数描述)
-/ `tpms_min_bar` / `tpms_max_bar`（阈值本身也返回，App 只用于显示说明文字）。
+API 返回：`tpms_alert`(bool) / `tpms_alert_wheels`(字符串数组) / `tpms_alert_detail`(读数描述，多个异常轮之间用**两个空格**连接)
+/ `tpms_min_bar` / `tpms_max_bar`。
+
+**App 侧怎么用（v0.8.0 起）**：告警判定**优先读服务端**的 `tpms_alert` / `tpms_alert_wheels` /
+`tpms_alert_detail`；`tpms_min_bar` / `tpms_max_bar` 用于显示「正常范围 X–Y bar（冷胎）」这句说明文字，
+**只在服务端没给出判定结果时**才作为本地兜底阈值。
 
 **为什么不是通用的 2.4–2.9**：那个范围是网上抄来的，与本车实际工况不符。
 查 51434 个真实采样点，本车范围 **2.50–3.30、平均 2.96 bar**，
@@ -92,7 +97,7 @@ API 返回：`tpms_alert`(bool) / `tpms_alert_wheels`(字符串数组) / `tpms_a
 |---|---|---|
 | `geofences` | 0 行 | 「起点/终点围栏名」不命中（「超充经过」已改里程关联，不依赖 geofence） |
 | `tou_rates` | 0 行 | 分时电价统计不可用；充电费用全 NULL（App 已隐藏该字段） |
-| `positions.elevation` | 深圳平原常为 null | 海拔显示"—"属正常 |
+| `positions.elevation` | 原始列常为 null（TeslaMate 只在上报里带海拔时才写这一列） | **v0.7.0 起服务端会回填**：在最近 500 条 positions 里取最后一个非空值（`rx` CTE + `COALESCE`），只有这 500 条全为空时才返回空，App 显示「—」属正常 |
 | `charging_processes.cost` | 65 条全 NULL | 配置 tou_rates 后可恢复显示 |
 
 ## 6. 变更流程

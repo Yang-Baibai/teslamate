@@ -44,5 +44,5 @@
 ## 三条规矩
 
 1. **口径改动必须三方同步**：`data-dictionary.md` + `api-spec.md` + `CHANGELOG.md`。
-2. **改完必跑** `bash scripts/smoke.sh`，12 项全过才算完。
+2. **改完必跑** `bash scripts/smoke.sh`，14 项全过才算完。
 3. **决策不埋在流水里**：重要的架构选择进 `adr.md`，一行索引 + 指向 CHANGELOG 详情。
