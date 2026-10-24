@@ -69,10 +69,37 @@ assert 'tpms_live_at' in d, 'missing tpms_live_at'
 " 2>/dev/null \
   && ok "status 含 tpms_live 实时胎压字段" || fail "status 含 tpms_live 实时胎压字段"
 
+# 4e. v0.21.0：Fleet 是否配置 + 车端里程表。
+# fleet_enabled 必须存在且是 bool —— App 靠它区分「没装这个功能」与「这会儿读不到」，
+# 缺了这个字段，App 只能一律说「没读到」（车主会以为是车机故障）。
+echo "$S" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'fleet_enabled' in d, 'missing fleet_enabled'
+assert isinstance(d['fleet_enabled'], bool), 'fleet_enabled must be bool'
+assert 'odometer_vehicle' in d, 'missing odometer_vehicle'
+v=d['odometer_vehicle']
+assert v is None or isinstance(v,(int,float)), 'odometer_vehicle must be number or null'
+" 2>/dev/null \
+  && ok "status 含 fleet_enabled 与车端里程表" || fail "status 含 fleet_enabled 与车端里程表"
+
 # 5. 充电列表含损耗率
 CH=$(curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charges?limit=3")
 echo "$CH" | python -c "import json,sys;d=json.load(sys.stdin);assert len(d)>0 and 'loss_percent' in d[0]" 2>/dev/null \
   && ok "charges 含 loss_percent" || fail "charges 含 loss_percent"
+
+# 5a. v0.21.0：时间加权平均功率 + 会话级 is_dc。
+# ① avg_power_kw_true 必须存在（按采样时长加权，不是按采样点数）；
+# ② is_dc 必须是会话级判定 —— 用「电缆类型是 GB_AC 的会话绝不能是直流」来断言。
+echo "$CH" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'avg_power_kw_true' in d[0], 'missing avg_power_kw_true'
+assert 'is_dc' in d[0], 'missing is_dc'
+bad=[x for x in d if x.get('cable_type')=='GB_AC' and x.get('is_dc')]
+assert not bad, 'AC session misclassified as DC: '+str([x['id'] for x in bad])
+" 2>/dev/null \
+  && ok "charges 含时间加权功率且 is_dc 为会话级" || fail "charges 含时间加权功率且 is_dc 为会话级"
 
 # 5b. v0.7.1：行程的充电关联字段（里程口径，不是时间窗）
 # 旧口径 charges.date BETWEEN drives.start_date AND drives.end_date 恒为 false，
@@ -90,10 +117,22 @@ assert any(x['charge_after_trip'] for x in d), 'no drive matched a charge'
 " 2>/dev/null \
   && ok "drives 含充电关联字段（里程口径）" || fail "drives 含充电关联字段（里程口径）"
 
+# 5b2. v0.21.0：**负能耗护栏**。
+# 标定续航不降反升的行程会算出负的 wh_per_km（实测 11 条），
+# 界面上会印出「能耗 −5.5 kWh/100km」这种物理上不可能的数。
+# 现在服务端一律给 null，App 显示「—」。
+echo "$DR" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+bad=[x['id'] for x in d if x.get('wh_per_km') is not None and x['wh_per_km'] <= 0]
+assert not bad, 'negative wh_per_km: '+str(bad[:10])
+" 2>/dev/null \
+  && ok "drives 无负能耗（护栏生效）" || fail "drives 无负能耗（护栏生效）"
+
 # 6. 统计三档都出 summary
 for p in week month year; do
   curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/stats?period=$p" \
-    | python -c "import json,sys;d=json.load(sys.stdin);assert d.get('summary')" 2>/dev/null \
+    | python -c "import json,sys;d=json.load(sys.stdin);assert d.get('summary');assert d.get('server_timezone'),'missing server_timezone'" 2>/dev/null \
     && ok "stats $p" || fail "stats $p"
 done
 

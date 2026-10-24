@@ -158,6 +158,24 @@ data class CarStatus(
     /** 锁车状态的采集时刻（用于判断新鲜度） */
     @Serializable(with = InstantSer::class) val locked_at: Instant? = null,
     /**
+     * ⚠️ v0.21.0：**车端里程表**（km，来源 Tesla Fleet API 的 `vehicle_state.odometer`）。
+     *
+     * 与 [odometer]（TeslaMate 按 GPS 点累计）不同：
+     * 车端那个数是**车辆自己**记的，保养基准应该对齐它 ——
+     * 基准是车主的知识（他记的是仪表盘上的数），
+     * 拿一个偏了几百公里的数去套，告警会偏同样多公里。
+     */
+    val odometer_vehicle: Double? = null,
+    /**
+     * ⚠️ v0.21.0：**服务端是否配置了 Fleet API 凭据**。
+     *
+     * false = 这台服务器**没有实时状态源** → 锁车与实时胎压恒为「未知」。
+     * 这与「这会儿读不到」是两件事：
+     * 前者是「没装这个功能」，后者是「暂时读不到」。
+     * （原来 App 一律说「没读到」，车主会以为是车机或网络故障。）
+     */
+    val fleet_enabled: Boolean? = null,
+    /**
      * **实时胎压**（bar，来源 Tesla Fleet API 的 `vehicle_state`）。
      *
      * ⚠️ 与上面的 [tpms_fl] 等是**两个来源，不要互相覆盖**：
@@ -291,7 +309,21 @@ data class Charge(
     val start_odometer_km: Double? = null,
     val end_odometer_km: Double? = null,
     val peak_power_kw: Int? = null,
+    /**
+     * ⚠️ v0.21.0：**采样均值**平均功率（按采样点数算术平均）。
+     *
+     * 采样间隔不均匀（高功率段 5 秒一个点、掉功率段几十秒一个点），
+     * 所以它**系统性高估**（实测 18%~50%）。保留只是为了兼容旧服务端，
+     * 新代码请用 [avg_power_kw_true]。
+     */
     val avg_power_kw: Int? = null,
+    /**
+     * ⚠️ v0.21.0：**时间加权**平均功率 —— 真正的「这个桩平均能跑多少 kW」。
+     *
+     * 它是「从 X% 充到 80% 约 N 分钟」的唯一来源，
+     * 采样均值高估 45% 就意味着**等待时间低估 31%**。
+     */
+    val avg_power_kw_true: Int? = null,
     val peak_voltage: Int? = null,
     val avg_voltage: Int? = null,
     val peak_current: Int? = null,
@@ -339,6 +371,14 @@ data class Stats(
     val granularity: String,
     val buckets: List<StatsBucket> = emptyList(),
     val summary: StatsBucket? = null,
+    /**
+     * ⚠️ v0.21.0：**服务端分日用的时区**（如 "Asia/Shanghai"）。
+     *
+     * 服务端按这个时区分桶，App 的时间戳却按**手机时区**显示 ——
+     * 对非该时区的用户，同一件事在时间轴与图表里会落到不同的日子。
+     * 有了它，App 才能把话说准（「按北京时间分日」）。
+     */
+    val server_timezone: String? = null,
 )
 
 @Serializable

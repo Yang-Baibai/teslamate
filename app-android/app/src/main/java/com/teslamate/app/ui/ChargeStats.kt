@@ -108,19 +108,24 @@ fun buildStationStats(charges: List<Charge>): Map<String, StationStat> {
         // 长途新服务区的常态。结果：出发前最想知道的那个站，
         // 界面上只有「到站 16%」三个字，没有 kW、没有分钟。
         // 现在 1 次也保留，界面负责标注「仅 1 次」。
-        val powers = list.mapNotNull { it.avg_power_kw }.filter { it > 1.0 }
+        val powers = list.mapNotNull { it.effectiveAvgPowerKw() }.filter { it > 1.0 }
         if (powers.isEmpty()) return@mapNotNull null
         val typicalPower = medianOf(powers.map { it.toDouble() }) ?: return@mapNotNull null
 
         // ⚠️ v0.9.2：直流与交流**分开统计**。
         // AC 典型约 7 kW、DC 典型约 55 kW，混在一起取中位数得到的数两边都不是。
-        val dcPowers = list.filter { it.is_dc }.mapNotNull { it.avg_power_kw }.filter { it > 1.0 }
+        val dcPowers = list.filter { it.is_dc }.mapNotNull { it.effectiveAvgPowerKw() }.filter { it > 1.0 }
         val typicalPowerDc = if (dcPowers.size >= 2) medianOf(dcPowers.map { it.toDouble() }) else null
 
         // 从 ≤50% 出发的充电：算充到 80% 需要多久
+        //
+        // ⚠️ v0.21.0：**必须用时间加权功率** ——
+        // 采样均值系统性高估（实测 18%~50%），
+        // 而这个数是「我要等多久」的直接来源：高估 45% → 耗时低估 31%。
+        // 例：会话 76（15%→100%）真实 72 分钟，采样均值算法只给 48 分钟。
         val minutes = list.mapNotNull { c ->
             val start = c.start_soc ?: return@mapNotNull null
-            val kw = c.avg_power_kw ?: return@mapNotNull null
+            val kw = c.effectiveAvgPowerKw() ?: return@mapNotNull null
             if (start > 50 || kw <= 1.0) return@mapNotNull null
             val needKwh = (80 - start) / 100.0 * capacity
             needKwh / kw * 60.0
@@ -154,6 +159,21 @@ fun stationKey(c: Charge): String {
     }
     return "nm:${c.place.firstSegment() ?: ""}"
 }
+
+/**
+ * ⚠️ v0.21.0：**有效平均功率** —— 优先用时间加权值。
+ *
+ * `avg_power_kw` 是**按采样点数**的算术平均，而采样间隔不均匀
+ * （高功率段 5 秒一个点、掉功率段几十秒一个点），所以它**系统性高估**
+ * （实测 18%~50%）。
+ *
+ * 而这个数是「从 X% 充到 80% 约 N 分钟」的**唯一来源** ——
+ * 功率高估 45% 就意味着**等待时间低估 31%**。
+ * 「服务区还要等多久」乐观了近三分之一。
+ *
+ * 旧服务端没有 `avg_power_kw_true` 时回落到采样均值（行为退化但不崩）。
+ */
+internal fun Charge.effectiveAvgPowerKw(): Int? = avg_power_kw_true ?: avg_power_kw
 
 /**
  * 中位数。

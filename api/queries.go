@@ -118,23 +118,66 @@ LEFT JOIN ac ON true
 LEFT JOIN ad ON true
 CROSS JOIN loc`
 
+// ⚠️ v0.21.0：**会话级**「是否直流快充」的判据（sqlDrives / sqlCharges / sqlStatsCharges 三处共用）。
+//
+// ## 为什么必须是会话级
+//
+// 原来的判据是：
+//
+//	bool_or(NULLIF(ch.charger_phases,0) IS NULL AND ch.fast_charger_type <> 'ACSingleWireCAN')
+//
+// 这是**单点 or 语义**：一个异常采样点就能把整场会话翻成直流。
+//
+// 实测（charging_processes.id=61）：
+//
+//	conn_charge_cable = GB_AC（交流）
+//	101 个采样点里 100 个有相数（=1 相）、只有 1 个为 NULL
+//	→ 就这 1 个点让整场会话被标成「直流快充」
+//
+// 后果有三处，**同一份数据、三个地方同时说错**：
+//   - 充电列表上的「直流快充」标签
+//   - 用量页「充入电量」里的直流柱（那 0.70 度被算进直流）
+//   - drive_link 的 has_supercharger → 这趟行程被挂上「终点有超充」
+//
+// ## 新判据（按可靠性排序）
+//
+//  1. **电缆类型** conn_charge_cable：GB_DC → 直流，GB_AC → 交流（最可靠）
+//  2. 没有电缆类型时：**超充品牌** fast_charger_brand = 'Tesla' → 直流
+//  3. 再兜底：**相数多数票**（交流桩报相数，直流桩不报）
+//
+// 三处共用同一份 CTE 定义，所以口径**不可能**再分叉 ——
+// 原来三处各写一遍判据，正是它们分叉的原因。
+const cteChargeDC = `
+charge_dc AS (
+  SELECT charging_process_id,
+         CASE
+           WHEN bool_or(conn_charge_cable = 'GB_DC') THEN true
+           WHEN bool_or(conn_charge_cable = 'GB_AC') THEN false
+           WHEN bool_or(fast_charger_brand = 'Tesla') THEN true
+           WHEN count(*) FILTER (WHERE NULLIF(charger_phases, 0) IS NOT NULL)
+              > count(*) FILTER (WHERE NULLIF(charger_phases, 0) IS NULL) THEN false
+           ELSE true
+         END AS is_dc
+  FROM charges
+  GROUP BY charging_process_id
+)`
+
 const sqlDrives = `
-WITH charge_link AS (
+WITH` + cteChargeDC + `,
+charge_link AS (
   -- 每个充电会话的「起始里程」+ 是否直流快充。
   -- TeslaMate 的 charging_processes 没有 start_odo 列，
   -- 起始里程取 cp.position_id 指向的那条 positions.odometer。
   SELECT cp.id AS charge_id,
          cp.car_id,
          sp.odometer::float8 AS start_odo,
-         -- 与 sqlCharges.is_dc 用同一条判据，两个接口口径必须一致：
-         -- 直流桩不报相数（charger_phases 为 NULL）且不是 ACSingleWireCAN
-         COALESCE(bool_or(
-           NULLIF(ch.charger_phases, 0) IS NULL
-           AND ch.fast_charger_type <> 'ACSingleWireCAN'
-         ), false) AS is_dc
+         -- ⚠️ v0.21.0：is_dc 改用**会话级**判据（见 cteChargeDC），
+         -- 不再是「任一采样点」的 or —— 一个异常点就能把交流标成直流。
+         -- ⚠️ PG 没有 max(boolean)，用 bool_or 聚合。
+         COALESCE(bool_or(cd.is_dc), false) AS is_dc
   FROM charging_processes cp
   JOIN positions sp ON sp.id = cp.position_id
-  LEFT JOIN charges ch ON ch.charging_process_id = cp.id
+  LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
   WHERE cp.car_id = $1
   GROUP BY cp.id, cp.car_id, sp.odometer
 ), drive_sc AS (
@@ -167,8 +210,23 @@ SELECT d.id, d.start_date, d.end_date, d.duration_min, d.distance,
        COALESCE(sg.name, sa.display_name) AS start_place,
        COALESCE(eg.name, ea.display_name) AS end_place,
        sp.battery_level, ep.battery_level,
-       ((d.start_rated_range_km - d.end_rated_range_km)::float8 * c.efficiency) AS energy_kwh,
-       CASE WHEN d.distance > 0 THEN
+       -- ⚠️ v0.21.0：**负能耗护栏**。
+       --
+       -- 能耗是「标定续航的减少量 × 车辆效率」。但标定续航**不降反升**的行程
+       -- （标定续航受温度、胎压、驾驶模式影响，充电后重算可能变高）会算出**负数**：
+       --   实测 362 条有效行程里 11 条 start_rated_range_km < end_rated_range_km，
+       --   例：id=346 跑 30.2 km，标定续航 357.34 → 368.72（**涨了 11.4 km**）
+       --   → wh_per_km = −55.0，energy_kwh = −1.66。
+       --
+       -- 后果：App 会显示「能耗 **−5.5** kWh/100km」——
+       -- 物理上不可能的数被印在屏幕上，而且「比上趟省 137%」这类结论会从它身上长出来。
+       --
+       -- 现在：**差值 ≤ 0 时给 NULL**（而不是 0，也不是负数），
+       -- App 显示「能耗 —」—— 不知道就写不知道。
+       CASE WHEN d.start_rated_range_km > d.end_rated_range_km THEN
+         (d.start_rated_range_km - d.end_rated_range_km)::float8 * c.efficiency
+       END AS energy_kwh,
+       CASE WHEN d.distance > 0 AND d.start_rated_range_km > d.end_rated_range_km THEN
          (d.start_rated_range_km - d.end_rated_range_km)::float8 * c.efficiency * 1000.0 / d.distance
        END AS wh_per_km,
        d.speed_max, d.outside_temp_avg::float8,
@@ -217,21 +275,51 @@ WITH ch_agg AS (
          (array_agg(charger_voltage ORDER BY date DESC))[1] AS last_voltage,
          (array_agg(charger_actual_current ORDER BY date DESC))[1] AS last_current,
          (array_agg(conn_charge_cable ORDER BY date DESC))[1] AS cable_type,
-         (array_agg(fast_charger_brand ORDER BY date DESC))[1] AS brand,
-         bool_or(NULLIF(charger_phases, 0) IS NULL AND fast_charger_type <> 'ACSingleWireCAN') AS any_dc
+         (array_agg(fast_charger_brand ORDER BY date DESC))[1] AS brand
   FROM charges GROUP BY charging_process_id
-)
+), ch_pw AS (
+  -- ⚠️ v0.21.0：**时间加权**平均功率（真正的「这个桩平均能跑多少 kW」）。
+  --
+  -- 采样间隔**不均匀**：实测 min 4.9s / avg 8.5~10.1s / max 59.2s
+  -- —— 高功率段采得密（5 秒一个点）、掉功率段采得稀（几十秒一个点）。
+  -- 所以「按点数平均」必然**高估**。
+  --
+  -- 实测对照（真实时间均值 = charge_energy_added ÷ (end − start)）：
+  --   会话 4  ：采样均值 58 kW vs 真实 39.3 kW  → **高估 48%**
+  --   会话 76 ：采样均值 53 kW vs 真实 35.3 kW  → **高估 50%**
+  --   63 场直流中位数：65 kW vs 55 kW          → **高估 18%**
+  --
+  -- 为什么这很重要：它不是装饰数字 —— 它是
+  -- 「从 X% 充到 80% 约 N 分钟」的唯一来源。
+  -- **功率高估 45% → 耗时低估 31%**：会话 76（15%→100%）真实 72 分钟，
+  -- 旧算法给 48 分钟 —— 「服务区还要等多久」乐观了近三分之一。
+  --
+  -- 算法：Σ(Δt × P) ÷ Σ(Δt)，Δt 用 LAG(date) 求。
+  SELECT charging_process_id,
+         round(
+           SUM(EXTRACT(EPOCH FROM (date - prev)) * charger_power)
+           / NULLIF(SUM(EXTRACT(EPOCH FROM (date - prev))), 0)
+         )::int AS avg_power_kw_true
+  FROM (
+    SELECT charging_process_id, date, charger_power,
+           LAG(date) OVER (PARTITION BY charging_process_id ORDER BY date) AS prev
+    FROM charges
+  ) t
+  WHERE prev IS NOT NULL AND charger_power > 0
+  GROUP BY charging_process_id
+),` + cteChargeDC + `
 SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
        cp.charge_energy_added::float8, cp.charge_energy_used::float8, cp.cost::float8,
        cp.start_battery_level, cp.end_battery_level,
        COALESCE(g.name, a.display_name) AS place,
        wgs84_to_gcj02_lat(sp.latitude::float8, sp.longitude::float8) AS map_lat,
        wgs84_to_gcj02_lng(sp.latitude::float8, sp.longitude::float8) AS map_lng,
-       COALESCE(ch_agg.any_dc, false) AS is_dc,
+       COALESCE(cd.is_dc, false) AS is_dc,
        g.name AS geofence_name,
        cp.start_rated_range_km::float8, cp.end_rated_range_km::float8,
        sp.odometer::float8, ep.odometer::float8,
        ch_agg.peak_power_kw, ch_agg.avg_power_kw,
+       ch_pw.avg_power_kw_true,
        ch_agg.peak_voltage, ch_agg.avg_voltage,
        ch_agg.peak_current, ch_agg.avg_current,
        sp.outside_temp::float8, ep.outside_temp::float8,
@@ -245,6 +333,8 @@ LEFT JOIN geofences g ON g.id = cp.geofence_id
 LEFT JOIN positions sp ON sp.id = cp.position_id
 LEFT JOIN positions ep ON ep.id = (SELECT id FROM positions WHERE car_id = cp.car_id AND date <= cp.end_date ORDER BY date DESC LIMIT 1)
 LEFT JOIN ch_agg ON ch_agg.charging_process_id = cp.id
+LEFT JOIN ch_pw ON ch_pw.charging_process_id = cp.id
+LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
 WHERE cp.car_id = $1 AND cp.charge_energy_added > 0.01
 ORDER BY cp.start_date DESC
 LIMIT $2 OFFSET $3`
@@ -261,7 +351,11 @@ const sqlStatsDrives = `
 SELECT to_char(date_trunc($2, (d.start_date AT TIME ZONE 'UTC') AT TIME ZONE $3), 'YYYY-MM-DD') AS bucket,
        COALESCE(SUM(d.distance), 0)::float8 AS km,
        COALESCE(SUM(d.duration_min), 0)::float8 AS minutes,
-       COALESCE(SUM((d.start_rated_range_km - d.end_rated_range_km) * c.efficiency), 0)::float8 AS kwh,
+       -- ⚠️ v0.21.0：**负能耗护栏**（与 sqlDrives 同一套判据）。
+       -- 标定续航不降反升的行程会算出负的 kWh，汇总时会把真实用量**拉低**。
+       -- 实测 30 天窗口里负值污染了 −11.78 度（1.3%）。
+       COALESCE(SUM(CASE WHEN d.start_rated_range_km > d.end_rated_range_km
+         THEN (d.start_rated_range_km - d.end_rated_range_km) * c.efficiency END), 0)::float8 AS kwh,
        COUNT(*)
 FROM drives d
 JOIN cars c ON c.id = d.car_id
@@ -270,17 +364,16 @@ WHERE d.car_id = $1 AND d.distance >= 0.1
 GROUP BY 1 ORDER BY 1`
 
 const sqlStatsCharges = `
+WITH` + cteChargeDC + `
 SELECT to_char(date_trunc($2, (cp.start_date AT TIME ZONE 'UTC') AT TIME ZONE $3), 'YYYY-MM-DD') AS bucket,
        COALESCE(SUM(cp.charge_energy_added), 0)::float8,
-       COALESCE(SUM(CASE WHEN EXISTS (
-         SELECT 1 FROM charges ch
-         WHERE ch.charging_process_id = cp.id
-           AND NULLIF(ch.charger_phases, 0) IS NULL
-           AND ch.fast_charger_type <> 'ACSingleWireCAN'
-       ) THEN cp.charge_energy_added ELSE 0 END), 0)::float8 AS dc_kwh,
+       -- ⚠️ v0.21.0：直流/交流的判定改用**会话级**判据（cteChargeDC），
+       -- 不再是「任一采样点相数为 NULL」的 or —— 一个异常点就能把交流算进直流。
+       COALESCE(SUM(CASE WHEN cd.is_dc THEN cp.charge_energy_added ELSE 0 END), 0)::float8 AS dc_kwh,
        COALESCE(SUM(cp.cost), 0)::float8,
        COUNT(*)
 FROM charging_processes cp
+LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
 WHERE cp.car_id = $1 AND cp.charge_energy_added > 0.01 AND cp.end_date IS NOT NULL
   AND (cp.start_date AT TIME ZONE 'UTC') >= $4
 GROUP BY 1 ORDER BY 1`

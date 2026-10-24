@@ -109,6 +109,13 @@ type teslaClient struct {
 	locked   *bool
 	lockedAt *time.Time
 	liveTPMS TeslaTPMS // 实时胎压快照（来源 Fleet API 的 vehicle_state）
+	// ⚠️ v0.21.0：车端里程表（km），同样来自 Fleet API 的 vehicle_state.odometer。
+	//
+	// 为什么需要它：TeslaMate 的 `positions.odometer` 是**按 GPS 点累计**的里程表，
+	// 与车端真实里程表有偏差（实测差几百公里）。
+	// 保养超期是拿里程表算的 —— 基准是车主的知识，
+	// 拿一个偏了的数去套，会让告警**偏**同样多公里。
+	odoVehicle *float64
 
 	// ⚠️ v0.9.0：轮询健康状态。
 	//   fleetErr    非空 = 轮询失败时的原因（空 = 正常）
@@ -172,6 +179,32 @@ func teslaFleetStatus() (string, *time.Time) {
 		return "", nil
 	}
 	return tesla.FleetStatus()
+}
+
+// ⚠️ v0.21.0：是否**配置了** Fleet API 凭据。
+//
+// 为什么需要它：没配凭据时，锁车状态与实时胎压**永远**是「未知」——
+// 它不是「这会儿没取到」，是「这台服务器压根没有实时状态源」。
+// App 原来一律显示「没读到车机的锁车状态 —— 这不代表车没锁」，
+// 车主会以为是车机或网络出了故障，刷新两次、怀疑车没锁。
+//
+// 有了这个标志，App 才能把「**没装这个功能**」与「**暂时读不到**」分开说。
+func teslaFleetEnabled() bool {
+	if tesla == nil {
+		return false
+	}
+	return tesla.configured()
+}
+
+// ⚠️ v0.21.0：车端里程表（km）。
+//
+// 与 `positions.odometer`（TeslaMate 按 GPS 点累计）的区别：
+// 车端里程表是**车辆自己**记的，是保养基准应该对齐的那个数。
+func teslaOdometer() *float64 {
+	if tesla == nil {
+		return nil
+	}
+	return tesla.Odometer()
 }
 
 // FleetStatus 返回轮询健康状态（读侧不加锁排队）。
@@ -296,6 +329,25 @@ func (c *teslaClient) setLiveTPMS(t TeslaTPMS) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	c.liveTPMS = t
+}
+
+// setOdometer 记下本次采集到的车端里程表。
+//
+// ⚠️ v0.21.0：nil = 没读到（车休眠 / 字段缺失），**不是 0**。
+func (c *teslaClient) setOdometer(km *float64) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.odoVehicle = km
+}
+
+// Odometer 返回缓存的车端里程表（读侧不加锁排队）。
+//
+// ⚠️ v0.21.0：与 [LockState] 同一套「**失败也保留上次已知**」策略 ——
+// 车端里程表是**单调递增**的量，保留旧值比清空更安全。
+func (c *teslaClient) Odometer() *float64 {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.odoVehicle
 }
 
 // clearVehicleState 降级成「未知」。
@@ -428,6 +480,11 @@ func (c *teslaClient) pollOnce(ctx context.Context) error {
 		c.setLockState(*st.Locked, *st.LockedAt)
 	}
 	c.setLiveTPMS(st.TPMS)
+	// ⚠️ v0.21.0：车端里程表与胎压来自**同一个** vehicle_data 响应，
+	// 一并缓存（里程表是单调递增的量，保留旧值比清空安全）。
+	if st.Odometer != nil {
+		c.setOdometer(st.Odometer)
+	}
 	return nil
 }
 

@@ -52,6 +52,24 @@ type CarStatus struct {
 	Locked   *bool      `json:"locked"`
 	LockedAt *time.Time `json:"locked_at"` // 本次状态采集时刻（App 用它判断新鲜度）
 
+	// ⚠️ v0.21.0：**车端里程表**（km），来源 Fleet API 的 vehicle_state.odometer。
+	//
+	// 与 `odometer`（TeslaMate 按 GPS 点累计）的区别：
+	// 车端里程表是**车辆自己**记的数，保养基准应该对齐它 ——
+	// 基准是车主的知识（他记的是仪表盘上的数），
+	// 拿一个偏了几百公里的数去套，告警会偏同样多公里。
+	//
+	// nil = 没读到（没配 Fleet 凭据 / 车在休眠），**不是 0**。
+	OdometerVehicle *float64 `json:"odometer_vehicle"`
+
+	// ⚠️ v0.21.0：**是否配置了 Fleet API 凭据**。
+	//
+	// false = 这台服务器**没有实时状态源** → 锁车与实时胎压恒为「未知」。
+	// 这与「暂时读不到」是**两件事**，App 必须分开说：
+	// 前者是「没装这个功能」，后者是「这会儿读不到」。
+	// （原来 App 一律说「没读到」，车主会以为是车机或网络故障。）
+	FleetEnabled *bool `json:"fleet_enabled"`
+
 	// v0.8.5 新增：实时胎压（来源 Tesla Fleet API 的 vehicle_state，后台轮询后缓存）
 	//
 	// ⚠️ 与上面的 tpms_fl/fr/rl/rr 是**两个来源，不要互相覆盖**：
@@ -189,6 +207,15 @@ type Charge struct {
 	EndOdoKm      *float64 `json:"end_odometer_km"`
 	PeakPowerKw   *int     `json:"peak_power_kw"`
 	AvgPowerKw    *int     `json:"avg_power_kw"`
+	// ⚠️ v0.21.0：**时间加权**平均功率（kW）—— 真正的「这个桩平均能跑多少 kW」。
+	//
+	// `avg_power_kw` 是**按采样点数**的算术平均，而采样间隔不均匀
+	// （高功率段 5 秒一个点、掉功率段几十秒一个点），所以它**系统性高估**（实测 18%~50%）。
+	// 它是「从 X% 充到 80% 约 N 分钟」的唯一来源 ——
+	// 功率高估 45% 就意味着**等待时间低估 31%**。
+	//
+	// 保留旧字段是为了兼容旧客户端；新代码请用这个。
+	AvgPowerKwTrue *int `json:"avg_power_kw_true"`
 	PeakVoltage   *int     `json:"peak_voltage"`
 	AvgVoltage    *int     `json:"avg_voltage"`
 	PeakCurrent   *int     `json:"peak_current"`
@@ -234,6 +261,12 @@ type Stats struct {
 	Granularity string         `json:"granularity"`
 	Buckets     []*StatsBucket `json:"buckets"`
 	Summary     *StatsBucket   `json:"summary"`
+	// ⚠️ v0.21.0：**服务端分日用的时区**（如 "Asia/Shanghai"）。
+	//
+	// 服务端按这个时区分桶，App 的时间戳却按**手机时区**显示 ——
+	// 对非该时区的用户，同一件事在时间轴与图表里会落到不同的日子。
+	// 显式下发，客户端才能把话说准（「按北京时间分日」）。
+	ServerTimezone string `json:"server_timezone"`
 }
 
 type BatteryPoint struct {

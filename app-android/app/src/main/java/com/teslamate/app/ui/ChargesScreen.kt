@@ -491,7 +491,7 @@ internal fun ChargeDetail(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        stat.compareTo(charge.avg_power_kw?.toDouble())?.let {
+                        stat.compareTo(charge.effectiveAvgPowerKw()?.toDouble())?.let {
                             Text(
                                 "本次：$it",
                                 style = MaterialTheme.typography.labelSmall,
@@ -534,7 +534,25 @@ internal fun ChargeDetail(
                         }
                     }
                     KV("峰值功率", charge.peak_power_kw?.let { "$it kW" } ?: "—")
-                    KV("平均功率", charge.avg_power_kw?.let { "$it kW" } ?: "—")
+                    // ⚠️ v0.21.0：用**时间加权**平均功率（不是采样均值）。
+                    //
+                    // 采样均值按**采样点数**算，而采样间隔不均匀
+                    // （高功率段 5 秒一个点、掉功率段几十秒一个点），
+                    // 所以它系统性**高估**（实测 18%~50%）。
+                    // 而这个数是「从 X% 充到 80% 约 N 分钟」的唯一来源 ——
+                    // 功率高估 45% 就意味着等待时间**低估 31%**。
+                    KV(
+                        "平均功率",
+                        charge.effectiveAvgPowerKw()?.let { "$it kW" } ?: "—",
+                    )
+                    // 说明口径：不然「平均功率」又是黑箱。
+                    if (charge.effectiveAvgPowerKw() != null) {
+                        Text(
+                            "平均功率按采样时长加权（不是按采样点数），这是「还要等多久」的依据。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     val cableCn = when (charge.cable_type) {
                         "GB_AC" -> "国标交流桩"
                         "GB_DC" -> "国标直流桩"

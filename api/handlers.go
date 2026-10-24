@@ -129,6 +129,17 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	// 让它能说清「这会儿没取到，显示的是 X 分钟前的数据」。
 	s.FleetError, s.FleetLastOK = teslaFleetStatus()
 
+	// ⚠️ v0.21.0：**是否配置了 Fleet API 凭据**。
+	// false = 这台服务器**没有实时状态源**，锁车与实时胎压恒为「未知」——
+	// 这与「这会儿读不到」是两件事，App 必须分开说。
+	fleetEnabled := teslaFleetEnabled()
+	s.FleetEnabled = &fleetEnabled
+
+	// ⚠️ v0.21.0：**车端里程表**（Fleet API 的 vehicle_state.odometer）。
+	// 与 `s.Odometer`（TeslaMate 按 GPS 点累计）不同：
+	// 车端那个数是车辆自己记的，保养基准应该对齐它。
+	s.OdometerVehicle = teslaOdometer()
+
 	// 锁车状态来自 Tesla Fleet API 的后台轮询缓存（api/tesla.go）。
 	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。
 	s.Locked, s.LockedAt = teslaLockState()
@@ -261,7 +272,7 @@ func handleCharges(w http.ResponseWriter, r *http.Request) {
 			&c.GeofenceName,
 			&c.StartRangeKm, &c.EndRangeKm,
 			&c.StartOdoKm, &c.EndOdoKm,
-			&c.PeakPowerKw, &c.AvgPowerKw,
+			&c.PeakPowerKw, &c.AvgPowerKw, &c.AvgPowerKwTrue,
 			&c.PeakVoltage, &c.AvgVoltage,
 			&c.PeakCurrent, &c.AvgCurrent,
 			&c.StartOutsideT, &c.EndOutsideT,
@@ -283,12 +294,9 @@ func handleCharges(w http.ResponseWriter, r *http.Request) {
 // 一旦 V<10 或 A<1，视为桩未上报 V/A，置 nil 让 App 显示"—"。
 // 功率单独保留（这部分数据一般是真的）。
 func sanitizeCharge(c *Charge) *Charge {
-	if c.ChargerVolts != nil && *c.ChargerVolts < 10 {
-		c.ChargerVolts = nil
-	}
-	if c.ChargerAmps != nil && *c.ChargerAmps < 1 {
-		c.ChargerAmps = nil
-	}
+	// ⚠️ v0.21.0：V/A 清洗抽成 [sanitizeVA] —— 充电会话与**充电曲线**共用同一套阈值，
+	// 免得曲线端点又是「直接 Scan 就返回」（实测 82.3% 的曲线点是 2V 握手占位）。
+	sanitizeVA(&c.ChargerVolts, &c.ChargerAmps)
 	if c.PeakVoltage != nil && *c.PeakVoltage < 10 {
 		c.PeakVoltage = nil
 	}
@@ -664,9 +672,34 @@ func handleChargeCurve(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// ⚠️ v0.21.0：曲线端点也走**占位值清洗**（ADR #15）。
+		//
+		// 原来只有 `sanitizeCharge`（充电会话）做了清洗，曲线端点直接 Scan 就返回 ——
+		// 而实测 22,912 个曲线采样点里 **18,861 个（82.3%）** 的 `charger_voltage`
+		// 是握手占位值 **2 V**、`charger_actual_current = 0`。
+		//
+		// 现在 App 只画功率与 SOC，所以这是**潜伏**的；
+		// 但任何「V/A 曲线」或「V/A 实时显示」的新功能一上线，
+		// 画出来的就是一条恒定 2 V / 0 A 的直线。
+		//
+		// 功率**不**清洗 —— 功率这部分数据一般是真的。
+		sanitizeVA(&p.Voltage, &p.Current)
 		pts = append(pts, &p)
 	}
 	writeJSON(w, pts)
+}
+
+// sanitizeVA 把不真实的占位值置 nil（ADR #15）。
+//
+// 特斯拉 API 对非超充的直流桩常常只返 2V/0A 的握手占位（功率却正常）。
+// 一旦 V<10 或 A<1，视为桩未上报 V/A，置 nil 让 App 显示「—」。
+func sanitizeVA(volts, amps **int) {
+	if volts != nil && *volts != nil && **volts < 10 {
+		*volts = nil
+	}
+	if amps != nil && *amps != nil && **amps < 1 {
+		*amps = nil
+	}
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
@@ -719,6 +752,16 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stats := &Stats{Granularity: granularity}
+	// ⚠️ v0.21.0：**把服务端时区显式告诉客户端**。
+	//
+	// 背景：服务端按 `TZ_NAME` 分日桶（默认 Asia/Shanghai），
+	// 而 App 的时间戳按**手机时区**显示/分组。
+	// 对 CST 用户两者一致（本机主人就是），但对任何非 CST 时区用户，
+	// 同一个事件在时间轴上属于 10-06、在图表里却落到 10-07 ——
+	// 「跨页跨日错位」，用户对不上账。
+	//
+	// 客户端无法自己猜服务端用哪个时区，所以这里显式下发。
+	stats.ServerTimezone = tz
 	for i := 0; i < buckets; i++ {
 		bucketStart := windowStart
 		if granularity == "month" {

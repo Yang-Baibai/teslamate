@@ -360,8 +360,12 @@ fun StatusScreen(
                         // ⚠️ v0.9.0：保养 / 换胎提醒。
                         // 只有**需要行动**时（超期或 2000 km 内到期）才挂横幅 ——
                         // 信号优先，平时不制造噪音。完整数字在页面底部的卡片里。
-                        val reminders = remember(st.odometer, settings) {
-                            maintenanceReminders(st.odometer, settings)
+                        val reminders = remember(st.odometer, st.odometer_vehicle, settings) {
+                            // ⚠️ v0.21.0：**优先用车端里程表** ——
+                            // 车主填的保养基准是他**仪表盘上看到的数**（车端），
+                            // 拿 TeslaMate 按 GPS 点累计的数去套，会偏几百公里。
+                            // 车端读不到时（车休眠 / 没配 Fleet 凭据）才回落 GPS 值。
+                            maintenanceReminders(st.odometer_vehicle ?: st.odometer, settings)
                         }
                         reminders.firstOrNull { it.needsAction }?.let { r ->
                             // ⚠️ v0.20.0（车主 P1-1）：**保养超期不再用红色** ——
@@ -435,10 +439,25 @@ fun StatusScreen(
                         // 而它的**位置**也按 iOS 惯例调了：
                         // 红色告警排第一（要动手的事最靠前），**中性信息后置** ——
                         // HIG「Deference」：每屏唯一视觉锚点，其余信息让位。
-                        val fleetNotice = remember(st.locked, st.fleet_error, st.fleet_last_ok) {
+                        // ⚠️ v0.21.0：**区分「没装这个功能」与「这会儿读不到」**。
+                        //
+                        // 车主原话：「每天早上第一眼看到「锁车状态未知」，
+                        // 下面一条灰横幅说「没读到车机的锁车状态」，
+                        // 于是我以为是车机或网络出了故障，刷新两次、怀疑车没锁；
+                        // 其实这台服务器压根没配 Fleet API 凭据，
+                        // 这个状态**永远**不会变。」
+                        //
+                        // 服务端现在显式下发 `fleet_enabled`：
+                        //   false → 「这台车没连实时状态源」—— 原因说准，且它**不会变**
+                        //   true  → 「这会儿没取到」—— 原因另说（fleet_error）
+                        val fleetNotice = remember(st.locked, st.fleet_error, st.fleet_last_ok, st.fleet_enabled) {
                             buildString {
                                 if (st.locked == null) {
-                                    append("没读到车机的锁车状态 —— 这不代表车没锁。")
+                                    if (st.fleet_enabled == false) {
+                                        append("这台车没连实时状态源，锁车与实时胎压拿不到 —— 不是车的问题。")
+                                    } else {
+                                        append("没读到车机的锁车状态 —— 这不代表车没锁。")
+                                    }
                                 }
                                 if (st.fleet_error.isNotBlank()) {
                                     if (isNotEmpty()) append(" ")
@@ -749,7 +768,35 @@ private fun RangeAndOdometer(
             // 同一屏里保养横幅写「99000 公里」「101455 公里」，
             // 这行却写「101,455 km」—— 两种单位 + 两种数字格式，
             // 用户会以为是两个数。
-            "里程表 ${st.odometer?.fmtThousands() ?: "—"} 公里",
+            //
+            // ⚠️ v0.21.0：**把 GPS 里程表与车端里程表分开说** ——
+            // 车主原话：「我拿 App 的里程表和特斯拉 App 对，两个数差着几百公里，
+            // 于是我怀疑车被人动了、或者 App 在瞎报。」
+            //
+            // 两个数都不是错的，只是**来源不同**：
+            //   st.odometer          = TeslaMate 按 GPS 点累计（估算）
+            //   st.odometer_vehicle  = 车辆自己记的（真值）
+            // 说清楚来源，比只给一个数更让人放心。
+            buildString {
+                append("里程表 ")
+                append(st.odometer?.fmtThousands() ?: "—")
+                append(" 公里")
+                val veh = st.odometer_vehicle
+                if (veh != null) {
+                    append("（GPS 估算）· 车端 ")
+                    append(veh.fmtThousands())
+                    append(" 公里")
+                    val gps = st.odometer
+                    if (gps != null) {
+                        val diff = gps - veh
+                        if (kotlin.math.abs(diff) >= 1.0) {
+                            append(" · 差 ")
+                            append(kotlin.math.abs(diff).toLong())
+                            append(" 公里")
+                        }
+                    }
+                }
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

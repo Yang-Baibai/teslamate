@@ -241,6 +241,26 @@ fun StatsScreen(
                 return@LazyColumn
             }
 
+            // ⚠️ v0.21.0：**标明分日用的时区** ——
+            // 服务端按 `server_timezone` 分日桶，而时间轴上的时间戳
+            // 按**手机时区**显示。对非该时区的用户，
+            // 同一个事件在时间轴属于 10-06、在图表里却落到 10-07 ——
+            // 「跨页跨日错位」，用户对不上账。
+            //
+            // 客户端没法自己猜服务端用哪个时区，所以服务端显式下发，
+            // 这里如实告诉用户（与手机时区一致时就不说了 —— 说了是噪音）。
+            val serverTz = s.server_timezone
+            if (!serverTz.isNullOrBlank() && serverTz != java.time.ZoneId.systemDefault().id) {
+                item {
+                    Text(
+                        "按服务端时区 $serverTz 分日",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                    )
+                }
+            }
+
             // ⚠️ v0.8.5：服务端的 summary 是**整个窗口**的汇总，切段后不适用。
             // 现在统一用切片后的 buckets 自己汇总 —— 这样「今天」段显示的
             // 确实是今天的数，而不是「把今天塞进 30 天窗口里算的平均」。
