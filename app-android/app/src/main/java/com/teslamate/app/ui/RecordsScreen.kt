@@ -112,15 +112,40 @@ fun mergeRecords(drives: List<Drive>, charges: List<Charge>): List<RecordItem> {
     return out
 }
 
-/** 记录页选中项（充电或行程，二选一）。 */
-private sealed interface Selection {
-    data class Dr(val drive: Drive) : Selection
-    data class Ch(val charge: Charge) : Selection
+/**
+ * 记录页选中项（充电或行程，二选一）。
+ *
+ * ⚠️ v0.13.0：从 `private` 提到**公开** —— 选中态要提升到 App 级，
+ * 这样「点当前 Tab 回到根」（iOS 惯例）才有地方可复位，
+ * 而且**切 Tab 时详情页不会凭空消失**。
+ */
+sealed interface RecordSelection {
+    data class Dr(val drive: Drive) : RecordSelection
+    data class Ch(val charge: Charge) : RecordSelection
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
+fun RecordsScreen(
+    settings: AppSettings,
+    modifier: Modifier,
+    /**
+     * 当前选中的记录（详情页）。
+     *
+     * ⚠️ v0.13.0（iOS 交互评审 P0-1 / P0-2）：**由 App 级持有**，不放在页面里。
+     *
+     * 原来 `selected` 是页面局部状态，而 Tab 切换用 `AnimatedContent(targetState = tab)` ——
+     * 切走的页面在淡出结束后**被 dispose**。于是：
+     *   1. 在行程详情页点「用量」→ 再点回「记录」→ **详情页凭空消失**，
+     *      没有任何反向 push 动画；
+     *   2. 列表滚动位置也一起丢了。
+     *
+     * iOS 惯例：每个 Tab 持有自己的 `UINavigationController` 栈，
+     * 切 Tab 再回来，**栈和滚动位置必须原样保留**。
+     */
+    selection: RecordSelection? = null,
+    onSelectionChange: (RecordSelection?) -> Unit = {},
+) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
     var drives by remember { mutableStateOf<List<Drive>>(emptyList()) }
@@ -128,7 +153,7 @@ fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var refreshing by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf<Selection?>(null) }
+    val selected = selection
 
     val records = remember(drives, charges) { mergeRecords(drives, charges) }
     // 该站历史统计（充电页原来用它）
@@ -214,10 +239,12 @@ fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
                                     },
                                 )
                                 RecordTimeline(records, stationStats, routePlan, onSelect = { item ->
-                                    selected = when (item) {
-                                        is RecordItem.DriveItem -> Selection.Dr(item.drive)
-                                        is RecordItem.ChargeItem -> Selection.Ch(item.charge)
-                                    }
+                                    onSelectionChange(
+                                        when (item) {
+                                            is RecordItem.DriveItem -> RecordSelection.Dr(item.drive)
+                                            is RecordItem.ChargeItem -> RecordSelection.Ch(item.charge)
+                                        }
+                                    )
                                 })
                             }
                             loading -> ListSkeleton(items = 7)
@@ -225,16 +252,18 @@ fun RecordsScreen(settings: AppSettings, modifier: Modifier) {
                                 SectionCard { Text("暂无充电或行程记录") }
                             }
                             else -> RecordTimeline(records, stationStats, routePlan, onSelect = { item ->
-                                selected = when (item) {
-                                    is RecordItem.DriveItem -> Selection.Dr(item.drive)
-                                    is RecordItem.ChargeItem -> Selection.Ch(item.charge)
-                                }
+                                onSelectionChange(
+                                    when (item) {
+                                        is RecordItem.DriveItem -> RecordSelection.Dr(item.drive)
+                                        is RecordItem.ChargeItem -> RecordSelection.Ch(item.charge)
+                                    }
+                                )
                             })
                         }
                     }
                 }
-                is Selection.Dr -> DriveDetail(sel.drive, api, settings) { selected = null }
-                is Selection.Ch -> ChargeDetail(sel.charge, api, stationStats) { selected = null }
+                is RecordSelection.Dr -> DriveDetail(sel.drive, api, settings) { onSelectionChange(null) }
+                is RecordSelection.Ch -> ChargeDetail(sel.charge, api, stationStats) { onSelectionChange(null) }
             }
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }

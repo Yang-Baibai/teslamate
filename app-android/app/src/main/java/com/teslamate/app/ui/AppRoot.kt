@@ -45,6 +45,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -98,6 +99,10 @@ fun TeslaMateApp() {
     // 而设置页是第 4 个 Tab，横幅在第 1 个 Tab 里，
     // 不把这个状态提上来就没法跳过去（可靠性复核：「401 无出口」）。
     var tab by remember { mutableStateOf(Tab.STATUS) }
+    // ⚠️ v0.13.0（iOS 交互评审 P0-1 / P0-2）：记录页的详情选中态也提到 App 级。
+    //   - 切 Tab 再回来，详情页**不会凭空消失**（iOS：每个 Tab 持有自己的导航栈）；
+    //   - 「点当前 Tab = 回到根」才有地方可复位。
+    var recordSelection by remember { mutableStateOf<RecordSelection?>(null) }
 
     LaunchedEffect(Unit) {
         ctx.settingsFlow().collect { settings = it }
@@ -149,8 +154,23 @@ fun TeslaMateApp() {
                     MainScaffold(
                         settings = s,
                         tab = tab,
+                        recordSelection = recordSelection,
+                        onRecordSelectionChange = { recordSelection = it },
                         onTabChange = { t ->
-                            if (t != tab) {
+                            // ⚠️ v0.13.0（iOS 交互评审 P0-2）：**点当前已选中的 Tab = 回到根**。
+                            //
+                            // 原来 `if (t != tab) { ... tab = t }` 把「点当前 Tab」整个吞掉了 ——
+                            // 零反馈、零动作。而用户看到「记录」是选中态，
+                            // 理所当然会去点它想回到列表，
+                            // 唯一的出路是左上角那个 20dp 的箭头。
+                            //
+                            // iOS 惯例（UITabBarController）：再点一次当前 Tab → 该栈 pop 到根。
+                            if (t == tab) {
+                                if (tab == Tab.RECORDS && recordSelection != null) {
+                                    Haptics.selection(ctx)
+                                    recordSelection = null   // 反向 push 动画由 AnimatedContent 自动播
+                                }
+                            } else {
                                 Haptics.selection(ctx)
                                 tab = t
                             }
@@ -174,6 +194,8 @@ fun TeslaMateApp() {
 private fun MainScaffold(
     settings: AppSettings,
     tab: Tab,
+    recordSelection: RecordSelection?,
+    onRecordSelectionChange: (RecordSelection?) -> Unit,
     onTabChange: (Tab) -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -248,6 +270,14 @@ private fun MainScaffold(
         // ⚠️ iOS UITabBar 切换是**无位移**的（瞬时或极轻 cross-dissolve）。
         // v0.7.0 把 12.5% 改成了固定 16dp 位移，注释说"无位移"、实现却是有位移 ——
         // 注释与实现相反，比注释错更糟。v0.7.1 彻底去掉位移，只留交叉淡入淡出。
+        //
+        // ⚠️ v0.13.0（iOS 交互评审 P0-1）：用 [SaveableStateHolder] 保住每个 Tab 的状态。
+        //
+        // 原来 Tab 切换用 `AnimatedContent(targetState = tab)` ——
+        // 切走的页面在淡出结束后**被 dispose**，于是列表的滚动位置全丢：
+        // 在记录页滚到 10 月，切到「用量」再切回来，又回到顶部。
+        // iOS 惯例：每个 Tab 持有自己的导航栈，切回来时**栈和滚动位置原样保留**。
+        val stateHolder = rememberSaveableStateHolder()
         AnimatedContent(
             targetState = tab,
             modifier = Modifier
@@ -261,17 +291,24 @@ private fun MainScaffold(
             },
             label = "tabSwitch",
         ) { current ->
-            when (current) {
-                Tab.STATUS -> StatusScreen(
-                    settings = settings,
-                    modifier = Modifier.fillMaxSize(),
-                    store = statusStore,
-                    // 令牌失效时给用户一个直达设置的出口（见 ApiErrorKind.AUTH）
-                    onOpenSettings = { onTabChange(Tab.SETTINGS) },
-                )
-                Tab.RECORDS -> RecordsScreen(settings, Modifier.fillMaxSize())
-                Tab.USAGE -> StatsScreen(settings, Modifier.fillMaxSize())
-                Tab.SETTINGS -> SettingsScreen(settings, Modifier.fillMaxSize())
+            stateHolder.SaveableStateProvider(current.name) {
+                when (current) {
+                    Tab.STATUS -> StatusScreen(
+                        settings = settings,
+                        modifier = Modifier.fillMaxSize(),
+                        store = statusStore,
+                        // 令牌失效时给用户一个直达设置的出口（见 ApiErrorKind.AUTH）
+                        onOpenSettings = { onTabChange(Tab.SETTINGS) },
+                    )
+                    Tab.RECORDS -> RecordsScreen(
+                        settings = settings,
+                        modifier = Modifier.fillMaxSize(),
+                        selection = recordSelection,
+                        onSelectionChange = { onRecordSelectionChange(it) },
+                    )
+                    Tab.USAGE -> StatsScreen(settings, Modifier.fillMaxSize())
+                    Tab.SETTINGS -> SettingsScreen(settings, Modifier.fillMaxSize())
+                }
             }
         }
     }
