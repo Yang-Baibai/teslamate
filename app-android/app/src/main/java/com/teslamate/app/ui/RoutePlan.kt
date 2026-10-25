@@ -514,6 +514,70 @@ data class RoutePlan(
     val climbEverests: Double
         get() = if (climbAscentM > 0) climbAscentM / 8849.0 else 0.0
 
+    /**
+     * ⚠️ **v0.39.0（第 23 轮车主复审 C6）：全程最低点的**落点**。**
+     *
+     * 原来只说「全程最低 5%（第 1237 公里）」——
+     * 而那个公里数**不在任何一个站上**，用户看到 5% 也不知道「我在哪一站少充了」。
+     * 复审原话：「我看到 5% 也不知道它在哪儿 —— 这是"半句话"，比没有更让人卡。」
+     *
+     * 现在算出它属于**哪一跳**：找出 `kmAlongRoute ≤ 最低点公里` 的最后一个站，
+     * 落点就是「离开那个站之后」。
+     */
+    val lowestHopFrom: String? get() {
+        val lowest = lowestPoint?.first ?: return null
+        val before = stops.filter { it.kmAlongRoute <= lowest }.maxByOrNull { it.kmAlongRoute }
+        return before?.name
+    }
+
+    /**
+     * ⚠️ **v0.39.0（第 23 轮车主复审 P2-2）：这条线上有**几跳无解**。**
+     *
+     * 折叠态只显示**最长那一跳**的无解提示，而实测那条线有 **2 跳**无解
+     * （建设南路 req 103、修文县 req 108）—— 另一跳被藏起来了。
+     */
+    val impossibleHopCount: Int get() = stops.count { (it.requiredSocHere ?: 0) > 100 }
+
+    /**
+     * ⚠️ **v0.39.0（第 23 轮车主复审 P2-3）：**需要处理**的那几跳。**
+     *
+     * 复审的批评很直接：
+     * > 「展开态是 36 站按里程排的清单，**没有「下一站」锚点、没有跳转**。
+     * > 出发前 5 分钟要在 15 屏里找「下一站」，和 v0.34 的问题性质相同。」
+     *
+     * 全量列表不能删（数据一点没丢是原则），但**要处理的那几跳必须能一眼找到**：
+     * ① 这一跳**充满也到不了**（必须提前加一站）；
+     * ② 估算到站**低于保底**；
+     * ③ 估算说够、但**上次实测低于保底**（模型偏乐观的跳）。
+     *
+     * 实测那条线有 36 跳，其中**只有 4 跳**需要处理 —— 摘要就是这 4 跳。
+     */
+    val actionableHops: List<RouteHop>
+        get() {
+            val out = mutableListOf<RouteHop>()
+            for (i in stops.indices) {
+                val s = stops[i]
+                val gap = s.gapToNextKm ?: continue
+                if (gap < 2.0) continue
+                val est = s.socAtNextStop
+                val real = s.nextStopRealSoc
+                val impossible = (s.requiredSocHere ?: 0) > 100
+                val estLow = est != null && est < RESERVE_SOC
+                val realLowHidden = real != null && real < RESERVE_SOC && (est ?: 0) >= RESERVE_SOC
+                if (!impossible && !estLow && !realLowHidden) continue
+                out += RouteHop(
+                    fromName = s.name,
+                    toName = stops.getOrNull(i + 1)?.name ?: "终点",
+                    km = gap,
+                    realSoc = s.nextStopRealSoc,
+                    estSoc = est,
+                    needPct = s.gapNeedPct,
+                    requiredSoc = s.requiredSocHere,
+                )
+            }
+            return out
+        }
+
     /** 最低点（不含充电跳升后的值） */
     val lowestSoc: Int? get() = profile.minByOrNull { it.soc }?.soc
 
@@ -706,7 +770,12 @@ data class RoutePlan(
         // ⚠️ **车主复审明确说「全程最低 5%（第 1237 公里）」是他会读的两个数之一** ——
         // 所以这条**保留**，只砍掉重复的日期。
         lowestPoint?.let { (km, soc) ->
-            sb.append("全程最低 ").append(soc).append("%（第 ").append(km.roundToInt()).append(" 公里）")
+            sb.append("全程最低 ").append(soc).append("%（第 ").append(km.roundToInt()).append(" 公里")
+            // ⚠️ **v0.39.0（第 23 轮车主复审 C6）：给**落点**。**
+            lowestHopFrom?.let { from ->
+                sb.append(" · ").append(from).append("之后")
+            }
+            sb.append("）")
         }
         return sb.toString()
     }
@@ -1552,7 +1621,17 @@ fun RoutePlanSummaryRow(
                         val req = hop.requiredSoc
                         if (req != null && req > 100) {
                             Text(
-                                "这一跳要 ${hop.needPct} 个点 · 充满也到不了 —— 得在前面加一站",
+                                buildString {
+                                    append("这一跳要 ").append(hop.needPct).append(" 个点")
+                                    append(" · 充满也到不了 —— 得在前面加一站")
+                                    // ⚠️ **v0.39.0（第 23 轮车主复审 P2-2）：还有几跳无解要说清。**
+                                    // 折叠态只显示**最长那一跳**的无解提示，
+                                    // 而实测那条线有 **2 跳**无解 —— 另一跳被藏起来了。
+                                    val others = plan.impossibleHopCount - 1
+                                    if (others > 0) {
+                                        append(" · 这条线上还有 ").append(others).append(" 跳无解")
+                                    }
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = accents.warnAmberText,
                             )
@@ -1727,7 +1806,15 @@ fun RoutePlanCard(
                 // 否则它比官方更不可信 —— 因为它看起来更精确。」
                 //
                 // 这里的数是**模型自己的残差 90 分位**换算出来的，不是拍脑袋写的。
-                (plan.modelErrorPoints?.let { "；余量估计的实测误差约 ±$it 个点" } ?: ""),
+                // ⚠️ **v0.39.0（第 23 轮数据自洽性审计 P2-5）：口径写准，别夸大。**
+                //
+                // 这个 ±N 是**模型自身残差**的 90 分位，
+                // 而**端到端**的到站误差还包含爬升修正的误差 ——
+                // 黑盒审计实测那条线：偏差中位 +4.5 点、最大 **+26 点**（偏乐观）。
+                //
+                // 所以只说「模型残差」，不说「实测误差」——
+                // 否则就变成了**低报**风险。
+                (plan.modelErrorPoints?.let { "；余量估计的模型残差约 ±$it 个点" } ?: ""),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1808,6 +1895,38 @@ fun RoutePlanCard(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // ⚠️ **v0.39.0（第 23 轮车主复审 P2-3）：**需要处理的那几跳**放在列表最上面。**
+                //
+                // 复审原话：「出发前 5 分钟要在 15 屏里找"下一站"。」
+                // 全量列表不删（数据一点没丢是原则），但**要动手的那几跳**必须一眼能找到。
+                plan.actionableHops.takeIf { it.isNotEmpty() }?.let { hops ->
+                    Text(
+                        "需要注意的 ${hops.size} 跳",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = accents.warnAmberText,
+                    )
+                    hops.forEach { h ->
+                        Text(
+                            buildString {
+                                append(h.fromName).append(" → ").append(h.toName)
+                                append(" · ").append(h.km.roundToInt()).append(" 公里")
+                                val req = h.requiredSoc
+                                when {
+                                    req != null && req > 100 ->
+                                        append(" · 充满也到不了（要 ").append(h.needPct).append(" 个点）")
+                                    h.estSoc != null && h.estSoc < RESERVE_SOC ->
+                                        append(" · 到站估 ").append(h.estSoc).append("%")
+                                    h.realSoc != null && h.realSoc < RESERVE_SOC ->
+                                        append(" · 上次实测只剩 ").append(h.realSoc).append("%")
+                                }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            color = accents.warnAmberText,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                }
                 plan.stops.forEachIndexed { stopIdx, s ->
                     // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-1）：证据行默认**收起**。**
                     //
@@ -1895,19 +2014,59 @@ fun RoutePlanCard(
                             // 读者只会以为 App 算错了。负数改说成「还差 N 个点」。
                             val rawSoc = s.socAtNextStop
                             s.gapToNextKm?.let { gap ->
-                                val nextTxt = buildString {
-                                    append("距下一站 ${gap.roundToInt()} 公里")
-                                    s.nextStopName?.let { append("（$it）") }
+                                // ⚠️ **v0.39.0（第 23 轮车主复审 C7 + 视觉评审 P1-4）：
+                                // **处方每一站都可见，但不新增行。**
+                                //
+                                // 原来：决策行 1 行 + 处方行 1 行（只有 11/35 跳有）⇒ 3~4 行/站，
+                                // 36 站在 fs=2.0 时是 **15.5 屏**。
+                                // 复审原话：「我站在桩前的那个问题永远是"充到多少"，
+                                // 不是"能不能到"。24 跳现在什么都不给。」
+                                //
+                                // 现在：**固定 2 行/站** ——
+                                //   L1（决策）：下一站 · 里程 · **充到多少**
+                                //   L2（证据）：估算 · 真值
+                                // 处方并进 L1 ⇒ 每站都看得见，版面还少了一半。
+                                val need = s.gapNeedPct
+                                val req = s.requiredSocHere
+                                val impossible = req != null && req > 100
+                                val l1 = buildString {
+                                    append("下一站 ")
+                                    s.nextStopName?.let { append(it).append(" · ") }
+                                    append(gap.roundToInt()).append(" 公里")
+                                    if (need != null && req != null) {
+                                        append(" · ")
+                                        if (impossible) {
+                                            append("充满也到不了 · 得在前面加一站")
+                                        } else {
+                                            append("充到 ").append(req).append("%")
+                                        }
+                                    }
+                                }
+                                Text(
+                                    l1,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (impossible) {
+                                        accents.warnAmberText
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                )
+                                // ── L2：估算 vs 真值 ─────────────────────────────────
+                                val l2 = buildString {
                                     rawSoc?.let { soc ->
                                         if (soc >= 0) {
-                                            append(" · 估到站剩 $soc%")
-                                            if (soc < RESERVE_SOC) append(" ⚠ 低于 $RESERVE_SOC% 保底")
+                                            append("估 ").append(soc).append("%")
+                                            if (soc < RESERVE_SOC) {
+                                                append(" ⚠ 低于 ").append(RESERVE_SOC).append("% 保底")
+                                            }
                                         } else {
-                                            append(" · 估：到下一站到不了（还差 ${-soc} 个点）")
+                                            append("估：到不了（还差 ").append(-soc).append(" 个点）")
                                         }
                                     }
                                     s.nextStopRealSoc?.let { real ->
-                                        append(" · 上次实测到站剩 $real%")
+                                        if (isNotEmpty()) append(" · ")
+                                        append("实测 ").append(real).append("%")
                                         // ⚠️ **v0.38.0（第 23 轮车主复审 P1-1）：危险方向的提示。**
                                         //
                                         // 原来那句「比上次实测低 N 个点」的判据是 `估 − 真 ≤ −3`，
@@ -1919,63 +2078,22 @@ fun RoutePlanCard(
                                         // 这条判据已被本机验证：11 个「低于 20% 保底」告警 **11/11 成立**、
                                         // 误报 **0** —— 所以它比「差值门槛」可信得多。
                                         if (real < RESERVE_SOC && (rawSoc ?: 0) >= RESERVE_SOC) {
-                                            append(" ⚠ 上次实测也低于 $RESERVE_SOC% 保底")
+                                            append(" ⚠ 实测也低于保底")
                                         }
                                     }
                                 }
-                                Text(
-                                    nextTxt,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Medium,
-                                    color = if ((rawSoc ?: 100) < RESERVE_SOC ||
-                                        (s.nextStopRealSoc ?: 100) < RESERVE_SOC
-                                    ) {
-                                        accents.warnAmberText
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    },
-                                )
-                                // ── 处方行 ──────────────────────────────────────
-                                //
-                                // ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-3）：给**处方**，不只给诊断。**
-                                //
-                                // 原来只有诊断（「到下一站剩 -6%」），用户没法行动。
-                                // 复审要的是「充到多少才够」——
-                                // 那才决定他在桩前待 20 分钟还是 40 分钟。
-                                //
-                                // ⚠️ **P0-2：原来写「这段必须再充一次」，那是**错的动作**。**
-                                // 实测：修文县 → G210那 351 公里要 **88 个点**，
-                                // 而修文县充满也只有 100 个 —— **在修文县怎么充都到不了**。
-                                // 用户照做 → 多充 4% → 仍然到不了 → 路上趴窝。
-                                //
-                                // 现在分两种情况说：
-                                //   · `need + 保底 > 100` → **这一跳无解**，明说「得在前面加一站」；
-                                //   · 否则 → 「至少充到 X% 才够」。
-                                s.gapNeedPct?.let { need ->
-                                    val req = s.requiredSocHere ?: (need + RESERVE_SOC)
-                                    val txt = if (req > 100) {
-                                        "这一跳要 $need 个点 · 充满也到不了 —— 得在前面加一站"
-                                    } else if ((rawSoc ?: 100) < RESERVE_SOC) {
-                                        // ⚠️ v0.36.0（视觉评审 P2-5）：加逗号 ——
-                                        // 「留 20% 保底至少充到 108%」读起来是两个动作黏在一起。
-                                        //
-                                        // ⚠️ **v0.36.0（车主复审 C8）：给**误差带**。**
-                                        // 复审原话：「要么给区间，要么把上次实际值并排放」——
-                                        // 这里的误差是**模型自己的残差 90 分位**，不是拍脑袋的数。
-                                        "这一跳要 $need 个点 · 留 $RESERVE_SOC% 保底，" +
-                                            "至少充到 $req%" +
-                                            (s.gapErrorPoints?.let { "（±$it 个点）" } ?: "") +
-                                            (s.socAfter?.let { "（上次充到 $it%）" } ?: "")
-                                    } else {
-                                        ""
-                                    }
-                                    if (txt.isNotEmpty()) {
-                                        Text(
-                                            txt,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = accents.warnAmberText,
-                                        )
-                                    }
+                                if (l2.isNotEmpty()) {
+                                    Text(
+                                        l2,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if ((rawSoc ?: 100) < RESERVE_SOC ||
+                                            (s.nextStopRealSoc ?: 100) < RESERVE_SOC
+                                        ) {
+                                            accents.warnAmberText
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                    )
                                 }
                             }
                             // ⚠️ **v0.36.0（第 21 轮一线车主复审 C4）：终点前那一段也要给余量。**
@@ -2094,29 +2212,31 @@ fun RoutePlanCard(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                                // ⚠️ **v0.36.0（第 21 轮一线车主复审 C7）：处方**每站都看得到**。**
+                                // ⚠️ **v0.39.0（第 23 轮车主复审 C7）：处方**长版**在这里。**
                                 //
-                                // 复审原话：「我站在桩前的那个问题永远是"充到多少"，
-                                // 不是"能不能到"。24 跳现在什么都不给。」
-                                //
-                                // 而**内联**显示（每站多一行）会把这张卡撑成十几屏
-                                // （第 21 轮视觉评审实测 fs=2.0 时 13 屏）。
-                                // 折中：**无解/不够的跳内联**（那两行是行动指令），
-                                // 其余的**在详情里**（一次点击就到，不占版面）。
+                                // 决策行给的是短版（「充到 70%」）—— 每站都看得见；
+                                // 这里是完整版：这一跳要几个点、误差带、上次实际充到多少。
                                 s.gapNeedPct?.let { need ->
                                     val req = s.requiredSocHere ?: (need + RESERVE_SOC)
-                                    val need2 = req > 100
-                                    val shownInline = req > 100 || (s.socAtNextStop ?: 100) < RESERVE_SOC
-                                    if (!need2 && !shownInline) {
-                                        Text(
-                                            "这一跳要 $need 个点 · 留 $RESERVE_SOC% 保底，" +
-                                                "至少充到 $req%" +
-                                                (s.gapErrorPoints?.let { "（±$it 个点）" } ?: "") +
-                                                (s.socAfter?.let { "（上次充到 $it%）" } ?: ""),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
+                                    val txt = if (req > 100) {
+                                        "这一跳要 $need 个点 · 充满也到不了 —— 得在前面加一站"
+                                    } else {
+                                        // ⚠️ v0.36.0（视觉评审 P2-5）：加逗号 ——
+                                        // 「留 20% 保底至少充到 108%」读起来是两个动作黏在一起。
+                                        //
+                                        // ⚠️ **v0.36.0（车主复审 C8）：给**误差带**。**
+                                        // 复审原话：「要么给区间，要么把上次实际值并排放」——
+                                        // 这里的误差是**模型自己的残差 90 分位**，不是拍脑袋的数。
+                                        "这一跳要 $need 个点 · 留 $RESERVE_SOC% 保底，" +
+                                            "至少充到 $req%" +
+                                            (s.gapErrorPoints?.let { "（±$it 个点）" } ?: "") +
+                                            (s.socAfter?.let { "（上次充到 $it%）" } ?: "")
                                     }
+                                    Text(
+                                        txt,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                                 // ⚠️ **v0.34.0（第 21 轮视觉评审 P0-2）：档位标签与它后面的数字必须**同源**。**
                                 //

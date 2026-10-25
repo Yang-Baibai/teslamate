@@ -171,12 +171,51 @@ class RoutePlanLogicTest {
                 RouteSocPoint(2000.0, 30),
             ),
         )
+        // ⚠️ v0.39.0（第 23 轮车主复审 C6）：最低点要带上**落点** ——
+        // 「第 1237 公里」不在任何一个站上，用户看到 5% 也不知道在哪一站少充了。
+        assertEquals("全程最低 5%（第 1237 公里 · A之后）", p.verdictDetail())
+        assertEquals("A", p.lowestHopFrom)
+    }
+
+    @Test
+    fun `最低点没有落点时就不写落点`() {
+        val p = plan(
+            listOf(stop("A", 5000.0, gapKm = 100.0)),
+            profile = listOf(
+                RouteSocPoint(0.0, 100),
+                RouteSocPoint(1237.0, 5),
+            ),
+        )
+        // 最低点在**所有站之前** ⇒ 没有「从哪一站之后」可说
+        assertNull(p.lowestHopFrom)
         assertEquals("全程最低 5%（第 1237 公里）", p.verdictDetail())
     }
 
     @Test
     fun `保底电量只有一个出处`() {
         assertEquals(20, RESERVE_SOC)
+    }
+
+    @Test
+    fun `需要注意的跳只包含真正要动手的那几跳`() {
+        val p = plan(
+            listOf(
+                // ① 充满也到不了
+                stop("A", 0.0, gapKm = 351.0, need = 88, required = 108, realSoc = 13, estSoc = 8),
+                // ② 估算到站低于保底
+                stop("B", 351.0, gapKm = 206.0, need = 50, required = 70, realSoc = 12, estSoc = 18),
+                // ③ 估算说够、上次实测低于保底（模型偏乐观）
+                stop("C", 557.0, gapKm = 128.0, need = 45, required = 65, realSoc = 17, estSoc = 21),
+                // ④ 一切正常
+                stop("D", 685.0, gapKm = 100.0, need = 40, required = 60, realSoc = 42, estSoc = 45),
+            ),
+        )
+        val hops = p.actionableHops
+        // ④ 不该在里面
+        assertEquals(3, hops.size)
+        assertEquals(listOf("A", "B", "C"), hops.map { it.fromName })
+        // 无解跳的数量
+        assertEquals(1, p.impossibleHopCount)
     }
 
     @Test
