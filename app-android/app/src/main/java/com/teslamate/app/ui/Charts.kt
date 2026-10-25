@@ -632,7 +632,10 @@ fun batteryChartDescription(b: com.teslamate.app.BatteryHealth): String {
     val last = valid.last()
     val maxV = valid.maxOf { it.capacity_kwh!! }
     val nominal = b.nominal_capacity_kwh
-    return "电池可用容量曲线：共 ${valid.size} 个满充记录，" +
+    // ⚠️ **R31 复审**：原来写「共 N 个满充记录」，但 N 是**所有有容量的点**（29 个），
+    // 真正充到 100% 的只有 17 个 —— 读屏会读错。
+    return "电池可用容量曲线：共 ${valid.size} 个测量点，" +
+        "其中 ${valid.count { it.end_soc != null && it.end_soc!! >= 100 }} 个充到 100%，" +
         // ⚠️ v0.14.0（单位审校 P1-4）：无障碍朗读里的 **kWh 改成「度」** ——
         // 屏幕上写的是「现在还能装 65.4 度」，TalkBack 却念「65.4 kWh」，
         // 屏幕阅读器用户拿到一个 App 里其他地方不存在的单位。

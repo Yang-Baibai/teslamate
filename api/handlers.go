@@ -1361,7 +1361,9 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 			//
 			// K 与 `cars.efficiency` **无关**（能量反推口径不需要 kWh/km 常数），
 			// 所以用它推出的「出厂满电标定续航」不受那个可改常数影响。
-			// 实测本机 K = 6.8686 km/kWh（严格档满充点（16 个，其中 15 个有能量口径），相对离散度 1.51%）。
+			// 实测本机 K = 6.8686 km/kWh
+		// （严格档满充点 16 个，其中 15 个有能量口径 —— 有一个 ΔSOC=4 被 SQL 的 `ΔSOC>=5` 过滤掉；
+		//  离散度：MAD/中位数 = 0.59%，σ/中位数 = 1.33%）。
 			// ⚠️ **v0.62.0 修正**：只用**严格档**（充到 100%）的点。
 			//
 			// 90~98% 的点里，`rated_range_km` 是**那一刻的读数**（不是满电读数），
@@ -1514,9 +1516,10 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 	//
 	// 为什么要有这个数：
 	//   ① 车主最关心的单位是「公里」，不是「度」；
-	//   ② 它与车机读数**同一套刻度**，所以「现在 446 km vs 出厂 526 km」
-	//      才是**同一把尺子**下的对照 —— 而官方 CLTC 627 km 是**另一把尺子**
-	//      （实测刻度差 +19%），不能直接比。
+	//   ② 它与车机读数**同一套刻度**，所以「现在 446 km vs 出厂 527 km」
+	//      才是**同一把尺子**下的对照 —— 而**官方标称续航是新车认证值**，
+	//      不是本车当前这把尺子上的读数（车机读数是保守估计，低于认证值属正常），
+	//      两者**不能直接相除**。
 	//   ③ K **不需要 `cars.efficiency`** —— 车主改那个常数不影响这个数。
 	if h.NominalCapacityKwh != nil {
 		h.FactoryRatedRangeKm = factoryRatedRangeKm(*h.NominalCapacityKwh, scaleRatios)

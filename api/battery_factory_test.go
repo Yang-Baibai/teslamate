@@ -79,22 +79,32 @@ func TestFactoryRatedRangeKm_NonFullPointBiasesLow(t *testing.T) {
 	}
 }
 
-// ⚠️ **官方 CLTC 刻度与本车刻度不是同一把尺子** —— 差 19%。
+// ⚠️ **官方标称续航不能直接和车机读数比** —— 官方是**新车认证值**，
+// 不是本车当前这把尺子上的读数（车机读数是保守估计，低于认证值属正常 derate）。
 //
-// 若有人误把 CLTC 627 km 当成本车刻度，
-// 算出来的「剩余比例」会是 446.37/627 = 71.2% —— 那是假结论。
-// 真实是 446.37/527.51 = 84.6%（≈ health_percent 84.86%）。
+// 若误用官方认证续航（600~700 km 区间）去算「剩余比例」，
+// 会得到 64%~74% 的**假结论**；真实是 446.37/527.51 = **84.6%**
+// （≈ health_percent 84.86%）。
+//
+// ⚠️ 这条测试**不锁死任何一个具体官方公里数** —— 各年款官方 CLTC 不同，
+// 锁死会让官方数字一改就假失败。要锁的是**原则**：用官方值算出来的比例
+// 必须显著低于同刻度 SOH。
 func TestFactoryRatedRangeKm_RejectsCltcScale(t *testing.T) {
 	got := factoryRatedRangeKm(76.8, fixtureFactoryStrict)
 	if got == nil {
 		t.Fatal("期望有值")
 	}
 	sohReal := 446.37 / *got * 100
-	sohCltc := 446.37 / 627.0 * 100
 	if math.Abs(sohReal-84.6) > 0.5 {
 		t.Errorf("同刻度 SOH = %.2f%%，期望 ≈ 84.6%%", sohReal)
 	}
-	if sohCltc > 75 {
-		t.Errorf("CLTC 口径 %.2f%% 应显著偏低（<75%%），说明两把尺子确实不同", sohCltc)
+	// 官方认证续航取值区间（不同年款不同），每个都必须显著低于同刻度 SOH。
+	for _, official := range []float64{600, 623, 627, 647, 675} {
+		sohOfficial := 446.37 / official * 100
+		if sohOfficial > sohReal-10 {
+			t.Errorf("官方认证续航 %.0f km 算出的 %.2f%% 不应与同刻度 SOH %.2f%% 接近 —— "+
+				"官方值是新车认证值，不是本车这把尺子上的读数",
+				official, sohOfficial, sohReal)
+		}
 	}
 }

@@ -884,7 +884,10 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         // 实测那个 66.7 度正是一个 e_soc=96 的点。
                         val strictMax = b.max_capacity_kwh_strict ?: b.max_capacity_kwh
                         KV("历史最好时", "${strictMax?.fmt(1)} 度")
-                        b.nominal_capacity_kwh?.let { KV("新电池标称", "${it.fmt(1)} 度") }
+                        // ⚠️ **v0.63.0（R31 视觉复审 P1-4）**：「新电池」原来一个词指两个量 ——
+                        // 「新电池标称 76.8 度」和下面「新电池同口径 527 km」单位不同、换算系数没给，
+                        // 用户自己对不上。现在把容量那行的名字写全。
+                        b.nominal_capacity_kwh?.let { KV("新电池标称可用容量", "${it.fmt(1)} 度") }
                         // ⚠️ v0.22.0（P0-2）：**「健康度」改名为「占铭牌」** ——
                         //
                         // 原来的注解写「新车即约 95%，低于 90% 才需要关注」——
@@ -934,44 +937,61 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             .sortedBy { it.capacity_kwh }
                             .getOrNull(1)?.date?.fmtDate()
                         b.health_percent_of_baseline?.let {
-                            // ⚠️ **v0.62.0**：降级为「近期趋势」——
-                            // 98.4% 这个数**很容易被读成「电池还有 98.4%」**，
-                            // 而它只是「比 2026-08-02 那次测的低了多少」，
-                            // 那个起点**当时车就已经开了 4 个月**。
-                            // 名字里必须带「趋势」，否则它会盖过上面那个真正的健康度。
+                            // ⚠️ **v0.63.0（R31 视觉复审 P1-1）**：**数字的形状本身就是误读入口**。
+                            //
+                            // 「98.4%」这个形状会被读成「电池还有 98.4%」——
+                            // 改名字不够，**必须换形状**：显示**变化量** −1.6%。
+                            // 换完之后整张卡**只有 84.9% 一个百分比**，主角唯一。
+                            //
+                            // 语义不变：它仍然只是「比首测那次低了多少」，
+                            // 首测时车**已经开了 4 个月**（见下面说明）。
+                            val delta = 100.0 - it
                             KV(
-                                "近期趋势（相对首测" + (baselineDate?.let { d -> " $d" } ?: "") + "）",
-                                "${it.fmt(1)}%",
+                                "近期趋势（自 " + (baselineDate?.let { d -> d } ?: "首测") + "）",
+                                (if (delta >= 0) "−" else "+") + kotlin.math.abs(delta).fmt(1) + "%",
                             )
                         }
                         // ⚠️ **v0.62.0（第 31 轮电池出厂态核查）**：**满电标定续航**。
                         //
-                        // 这是车主最关心的单位（「公里」），而且可以和「出厂折算」比 ——
-                        // 因为两者**同一套刻度**（车机自己报的那把尺子）。
+                        // 车主最关心的单位（「公里」）。
                         //
-                        // ⚠️ 官方 CLTC（2021 款 P74D 中国版 627 km）**不能**直接比：
-                        // 实测本车刻度系数 K = 6.8446 km/kWh（17 个满充点，离散 1.51%），
-                        // 若刻度是 CLTC，K 应为 627/76.8 = 8.164 —— **差 19%**。
-                        // 那是**两把不同的尺子**，拿官方数字直接比会得出「只剩 71%」的假结论。
+                        // ⚠️ **v0.63.0（R31 视觉复审 P0-2 / P1-5）**：原来把
+                        // 「现在 / 出厂折算 / 少多少」全塞进**一个值**里 ——
+                        // 29 个字符在 15sp 的值列里撑破布局：标签和值只隔 3.5dp
+                        // （比值内部的词间距 6.1dp 还小，看着像粘成一个词），
+                        // 第二行只剩「81 km）」孤零零右对齐。
+                        // 现在拆成**两行同名**（现在 / 出厂折算），每个值都很短，
+                        // 「少多少」降级到下面的说明里。
                         val latestFullPoint = b.series.orEmpty()
                             .filter { it.end_soc != null && it.end_soc!! >= 100 && it.rated_range_km != null }
                             .maxByOrNull { it.date }
                         val nowRatedKm = latestFullPoint?.rated_range_km
                         if (nowRatedKm != null) {
-                            val factoryRatedKm = b.factory_rated_range_km
-                            KV(
-                                "满电标定续航",
+                            KV("满电标定续航（现在）", "${nowRatedKm.toInt()} km")
+                            b.factory_rated_range_km?.let { factoryKm ->
+                                KV("满电标定续航（出厂折算）", "${factoryKm.toInt()} km")
+                            }
+                        }
+                        if (nowRatedKm != null && b.factory_rated_range_km != null) {
+                            // ⚠️ **v0.63.0（R31 视觉复审 P1-3）**：「少 81 km」是**精确值假象** ——
+                            // 满充读数本身有 445~455 km 的温度波动，同一份数据可能算出 73~82 km。
+                            // 所以改成「约 80 km」，并把日期与波动区间一起说清楚。
+                            val gapKm = b.factory_rated_range_km!! - nowRatedKm
+                            Text(
                                 buildString {
-                                    append(nowRatedKm.toInt())
-                                    append(" km")
-                                    if (factoryRatedKm != null) {
-                                        append("（新电池同口径 ")
-                                        append(factoryRatedKm.toInt())
-                                        append(" km，少 ")
-                                        append((factoryRatedKm - nowRatedKm).toInt())
-                                        append(" km）")
-                                    }
+                                    append("「满电标定续航」= 车机在满电时自己报的读数")
+                                    latestFullPoint?.date?.let { append("（${it.fmtDate()} 那次满充）") }
+                                    append("。")
+                                    append("按出厂容量折算，同一把尺子下新电池应是 ")
+                                    append(b.factory_rated_range_km!!.toInt())
+                                    append(" km —— 大约少 ")
+                                    append((gapKm / 5.0 * 5.0).toInt())
+                                    append(" km。")
+                                    append("满充读数本身有 445~455 km 的温度波动，所以这个差是一个区间，不是一个精确值。")
+                                    append("官方标称续航是新车认证值，不是这台车这把尺子上的读数，两者不能直接相除。")
                                 },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Text(
@@ -986,8 +1006,12 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                 // （0.146 → 0.153 会让这个数从 84.9% 跳到 88.9%）。
                                 // 不说清楚，读者会以为它是「测出来的」。
                                 append("分子里的效率常数（cars.efficiency）可在服务端改，改了这个数就变。")
+                                // ⚠️ **v0.63.0（R31 视觉复审 P0-3）**：原来这里写「本车实测上限 86.4%」——
+                                // 改名为「（相对出厂）」之后，它和上面的 84.9% **成了同一个口径的两个数**，
+                                // 用户会以为有一个是错的。现在把关系写进句子里：
+                                // 它是「天花板」，不是第二个健康度。
                                 if (b.nominal_capacity_kwh != null && strictMax != null) {
-                                    append("本车实测上限 ")
+                                    append("这台车有史以来最好的一次，也只到出厂的 ")
                                     append((strictMax * 100 / b.nominal_capacity_kwh).fmt(1))
                                     append("%。")
                                 }
@@ -998,10 +1022,12 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         if (b.health_percent_of_baseline != null) {
                             Text(
                                 buildString {
-                                    append("「近期趋势（相对首测）」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
-                                    append("不受行驶能耗常数影响，是看衰减更准的那个数。")
+                                    append("「近期趋势」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
+                                    append("不受行驶能耗常数影响。")
+                                    append("它只衡量这段时间里的变化，和上面的「相对出厂」不是同一段时间 —— ")
+                                    append("要回答「相对出厂衰减了多少」，看的是上面那个健康度。")
                                     if (baselineDate != null) {
-                                        append("⚠️ 首测（$baselineDate）不是新车容量 —— ")
+                                        append("注意：首测（$baselineDate）不是新车容量 —— ")
                                         append("它只回答「比 $baselineDate 那次测的低了多少」。")
                                     }
                                 },

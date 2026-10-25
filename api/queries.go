@@ -904,7 +904,8 @@ SELECT cp.end_date,
        -- 导致「电池健康」这件事没法用车主自己的语言说清楚。
        --
        -- 同时它是**判定官方 CLTC 能不能直接对比**的唯一证据：
-       -- 库里这个刻度与官方 CLTC（627 km）**不是同一套**（实测比值差 20%），
+       -- 官方标称续航是**新车认证值**，不是这把尺子上的读数（车机读数偏低属正常 derate），
+        -- 两者**不能直接相除**；
        -- 所以绝不能拿官方 CLTC 去比车机读数。
        ch.rated_battery_range_km::float8 AS rated_range_km,
        cp.end_battery_level,
