@@ -37,6 +37,7 @@ import com.teslamate.app.firstSegment
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtDate
 import com.teslamate.app.fmtKwh100
+import com.teslamate.app.medianOf
 import java.time.Instant
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -214,6 +215,15 @@ data class RouteStop(
      * 用「平均爬升」会同时错报平路段和最陡段，所以必须**逐段**给。
      */
     val gapAscentM: Int? = null,
+    /**
+     * ⚠️ **v0.32.0（第 20 轮规划复审 P1-3）：这一段用的是哪一档 Wh/km。**
+     *
+     * 原来只显示「按 X km/h 档」—— 措辞不准（档是 60–90，X 是选档速度）。
+     * 现在直接给**档名**（「90–110」），并说明是不是**借用**邻档。
+     */
+    val gapBucketLabel: String? = null,
+    /** 借用邻档（不是本档实测） */
+    val gapSpeedBorrowed: Boolean = false,
     /**
      * ⚠️ **v0.30.0（长途自驾党 P0-1）：算 [socAtNextStop] 用到的车速（km/h）。**
      *
@@ -408,16 +418,29 @@ data class RoutePlan(
         // 按「平均每 164 公里」准备，会在**最长那 348 公里**那段毫无准备。
         //
         // 现在给真实区间 + 中位 + **最长一段**（那才是要提前安排的）。
+        //
+        // ⚠️ **v0.32.0（第 20 轮规划复审 P1-2）：口径再收紧三处。**
+        //
+        // ① 只取**站与站之间**的间距 —— 原来把「起点→首站」「末站→终点」
+        //    两个**半段**也算进去，于是 616 公里那条的中位被拉到 88
+        //    （站与站之间的真中位是 **133**）。
+        // ② 剔除 **< 2 公里**的间距 —— 那是**同一个站充了两次**
+        //    （实测修文县 2.5 km、稻城 2.1 km、新城路→中国石化 2.47 km），
+        //    不是「站间距可以短到 2 公里」。
+        // ③ 中位改用 [medianOf]（偶数取两中位平均）——
+        //    项目在 `Stats.kt` 已统一成这个口径，这里原是**第四种**实现。
+        //
+        // ⚠️ **P1-1：`**` 会被 Compose 原样显示**（Text 不解析 Markdown）。
+        // 同一文件下面就写着这条教训，这里又犯了一次 —— 去掉星号。
         val rhythm = if (stops.size >= 2) {
-            val points = (listOf(0.0) + stops.map { it.kmAlongRoute } + listOf(template.distanceKm))
-                .sorted()
-            val gaps = points.zipWithNext { a, b -> b - a }.filter { it > 0.5 }
+            val stationKms = stops.map { it.kmAlongRoute }.sorted()
+            val gaps = stationKms.zipWithNext { a, b -> b - a }.filter { it >= 2.0 }
             if (gaps.isEmpty()) "" else {
                 val maxGap = gaps.max()
                 val minGap = gaps.min()
-                val medGap = gaps.sorted()[gaps.size / 2]
-                "（真实站间距 ${minGap.roundToInt()}～${maxGap.roundToInt()} 公里，" +
-                    "中位 ${medGap.roundToInt()}；**最长一段 ${maxGap.roundToInt()} 公里**）"
+                val medGap = medianOf(gaps.map { it }) ?: gaps.sorted()[gaps.size / 2]
+                "（站与站之间 ${minGap.roundToInt()}～${maxGap.roundToInt()} 公里，" +
+                    "中位 ${medGap.roundToInt()}；最长一段 ${maxGap.roundToInt()} 公里）"
             }
         } else {
             ""
@@ -607,11 +630,40 @@ fun buildRoutePlan(
         // 到达后的那次充电没有「下一站」。
         val next = journeyStops.getOrNull(idx + 1)?.takeIf { !js.isEndpoint }
         val gapKm = next?.let { it.kmAlong - js.kmAlong }?.takeIf { it > 0.5 }
+        // ⚠️ **v0.32.0（第 20 轮规划复审 P1-3）：这一段的能耗必须按**这一段**的速度算。**
+        //
+        // 原来用**整条线路**的均速选 Wh/km 档 —— 而最长的那几段恰恰是高速段：
+        // 实测 6227 公里那条整条均速 66 km/h（落 60–90 档 174.3 Wh/km），
+        // 而 348 公里那段真实均速 **96 km/h**（90–110 档 183.0）、
+        // 229 公里那段 **112.7 km/h**（110–130 档 197.4）。
+        //
+        // 用整条均速算 = **系统性乐观 4.78%**，在长途最长的几段上结论直接反转：
+        // 实测 37 段里有 **8 段**在数学上到不了下一站，
+        // 而界面说「看着够」。
+        val gapLegs = if (gapKm != null) {
+            template.legs.filter { leg ->
+                val s = leg.startKm - journeyStartKm
+                val e = leg.endKm - journeyStartKm
+                e > js.kmAlong && s < js.kmAlong + gapKm
+            }
+        } else {
+            emptyList()
+        }
+        val gapMinutes = gapLegs.sumOf { it.durationMin ?: 0 }
+        val gapSegSpeed = if (gapLegs.isNotEmpty() && gapMinutes > 0) {
+            gapLegs.sumOf { it.distanceKm } / (gapMinutes / 60.0)
+        } else {
+            null
+        }
+        val gapSample = gapSegSpeed?.let { v -> consumption?.whSample(v) }
+        // 优先用**这一段**的档；这一段没数据时回落到整条线路的速度。
+        val gapWh = gapSample?.bucket?.whPerKm ?: whPerKm
+        val gapSpeedForDisplay = gapSegSpeed ?: planSpeedKph
         // 充到 socAfter 后，到下一站还剩多少电（%）
-        val socAtNext = if (gapKm != null && whPerKm != null && batteryCapacityKwh != null
+        val socAtNext = if (gapKm != null && gapWh != null && batteryCapacityKwh != null
             && batteryCapacityKwh > 0 && c.end_soc != null
         ) {
-            val needKwh = gapKm * whPerKm / 1000.0
+            val needKwh = gapKm * gapWh / 1000.0
             val needPct = (needKwh / batteryCapacityKwh * 100).roundToInt()
             (c.end_soc - needPct).coerceIn(-100, 100)
         } else {
@@ -672,13 +724,16 @@ fun buildRoutePlan(
             // 「到下一站剩 34%」不交代前提就只是个数字 ——
             // 它是按「这段线路历史均速 → 对应 Wh/km 档」算的，
             // **没做**温度修正、**没做**爬升修正、**没留**安全余量。
-            assumedSpeedKph = planSpeedKph,
-            assumedWhPerKm = whPerKm,
+            assumedSpeedKph = gapSpeedForDisplay,
+            assumedWhPerKm = gapWh,
             // ⚠️ v0.31.0：从上一个站到这一站爬了多高
             gapAscentM = ascentBetween(
                 if (idx == 0) 0.0 else journeyStops[idx - 1].kmAlong,
                 js.kmAlong,
             ),
+            // ⚠️ v0.32.0：这一段用到的 Wh/km 档（界面要交代「按哪一档算的」）
+            gapBucketLabel = gapSample?.bucket?.label,
+            gapSpeedBorrowed = gapSample?.exact == false,
         )
     }
 
@@ -994,6 +1049,17 @@ fun RoutePlanCard(
             fontWeight = FontWeight.Bold,
             color = accents.energyBlue,
         )
+        // ⚠️ **v0.32.0（第 20 轮规划复审 P2-1）：卡片级前提，只说一次。**
+        //
+        // 原来这段前提挂在**每个沿途站**下面 —— 38 站的那张卡把同一句话重复 37 遍。
+        // 现在共同前提（未做气温修正）提到卡片级；**逐段**的档位信息留在各站那一行
+        // （因为各段速度不同、命中的档也不同）。
+        Text(
+            "余量按各段真实均速取本车实测 Wh/km；" +
+                "已按爬升量给出参考值，但未做气温修正（本车 ≤10°C 只有 1 条样本）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text(
             // ⚠️ Compose 的 Text 不解析 Markdown —— 之前写了 **粗体**，
             // 结果界面上直接出现两个星号。
@@ -1097,10 +1163,16 @@ fun RoutePlanCard(
                                     //
                                     // 这是按**整场平均功率**做的**线性折算**，
                                     // 而直流桩在高 SOC 段会**降功率**（曲线是弯的）——
-                                    // 线性折算必然**高估**时间。
-                                    // 实测某桩：App 显示「充到 80% 约 54 分钟」，
-                                    // 同口径曲线**实测**中位是 **37.5 分钟**（**高估 44%**），
-                                    // 单场最高高估 **94%**。
+                                    // 线性折算的偏差**方向不固定**。
+                                    //
+                                    // ⚠️ **v0.32.0（第 20 轮规划复审 P2-5）：注释里原来写「高估 44%」——不准。**
+                                    // 实测全库 65 场：线性折算与实测的偏差**中位是 −9%（略偏小）**，
+                                    // 区间 **−58%（严重低估）~ +80%（高估）**。
+                                    //
+                                    // 真正危险的不是高估，是**低估**：
+                                    // 黄金坪那个站说「典型 4 kW · 约 257 分钟」，
+                                    // 同一场实测 **617 分钟** —— **低估 58%**，
+                                    // 而长途党正是按这个数决定「值不值得等」。
                                     //
                                     // 现在明说它是折算 —— 不标的话，
                                     // 它会和充电详情页的**实测**分钟数并排出现而互相矛盾。
@@ -1154,20 +1226,18 @@ fun RoutePlanCard(
                                 // ⚠️ **v0.30.0（长途自驾党 P0-1）：必须交代前提。**
                                 //
                                 // 「到下一站剩 34%」是全 App **唯一像预测**的一句，
-                                // 也是出发前 5 分钟真正会读的那句 ——
-                                // 而它只按「车速档的 Wh/km」算：
-                                // **零**温度修正、**零**爬升修正、**零**安全余量。
+                                // 也是出发前 5 分钟真正会读的那句。
                                 //
-                                // 实测：90 km/h 档 183.0 Wh/km vs 110–130 档 197.4（差 7.9%），
-                                // 128 公里站距上就是 **2.8 个百分点**的到达电量差；
-                                // 再叠加 616 公里那条的 896 m 爬升（按 App 自己的 600m+ 档口径 +4.7%）。
-                                //
-                                // 不说清楚，用户会把这个数当**保证值**。
-                                if (s.socAtNextStop != null && s.assumedWhPerKm != null) {
+                                // ⚠️ **v0.32.0（第 20 轮规划复审 P2-1）：前提行从「每站一行」提到「每卡一行」。**
+                                // 原来 38 站的那张卡把同一句话重复了 37 遍 —— 那是噪音，不是诚实。
+                                // 现在这一行只说**这一段**的档位（因为各段速度不同，档位也不同），
+                                // 共同的前提（未做气温修正）由卡片顶部统一交代。
+                                s.gapBucketLabel?.let { label ->
+                                    val speedTxt = s.assumedSpeedKph?.roundToInt()?.let { "$it km/h" } ?: "该段"
                                     Text(
-                                        "（按 ${s.assumedSpeedKph?.roundToInt() ?: 90} km/h 档 " +
-                                            "${s.assumedWhPerKm.fmtKwh100()} kWh/100km 算，" +
-                                            "未做气温/爬升修正，未留安全余量）",
+                                        "这段均速 $speedTxt · $label 档" +
+                                            "${s.assumedWhPerKm?.fmtKwh100() ?: "—"} kWh/100km" +
+                                            (if (s.gapSpeedBorrowed) "（借用邻档）" else ""),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
@@ -1207,17 +1277,25 @@ fun RoutePlanCard(
                 }
             }
         }
-        plan.lowestSoc?.let { low ->
+        plan.lowestPoint?.let { (km, soc) ->
             Spacer(Modifier.height(4.dp))
-            val below = plan.belowFloorKm
+            // ⚠️ **v0.32.0（第 20 轮规划复审 P0-1）：公里与电量必须来自**同一个点**。**
+            //
+            // 原来这里写的是 `plan.lowestSoc`（全局最低）配 `plan.belowFloorKm`
+            // （第一个跌破 20% 的公里）—— **两个不同的点被拼在了一起**：
+            // 6227 公里那条会同时出现
+            // 「全程最低 5%（第 1237 公里）」与「全程最低 5%（在第 227 公里）」。
+            //
+            // 这正是 v0.29.0 P0-3 修过的那类错，**只是在另一处又犯了一次**。
+            // 现在两处都用 [lowestPoint]（公里与电量同源）。
             Text(
-                if (low < 20 && below != null) {
-                    "全程最低 $low%（在第 ${below.roundToInt()} 公里，低于 20% 保底）"
+                if (soc < 20) {
+                    "全程最低 $soc%（在第 ${km.roundToInt()} 公里，低于 20% 保底）"
                 } else {
-                    "全程最低 $low%"
+                    "全程最低 $soc%（在第 ${km.roundToInt()} 公里）"
                 },
                 style = MaterialTheme.typography.labelSmall,
-                color = if (low < 20) accents.warnAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (soc < 20) accents.warnAmber else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

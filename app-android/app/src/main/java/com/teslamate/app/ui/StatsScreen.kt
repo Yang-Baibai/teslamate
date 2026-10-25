@@ -567,8 +567,8 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                         "分母说明：这 $filledBuckets $bucketUnit 里 App 记录到 " +
                                             "${kmDrives.roundToInt()} 公里行驶，" +
                                             "而里程表走了 ${kmOdo.roundToInt()} 公里 —— " +
-                                            "差的 $gap% 是 **TeslaMate 没在记录**的遥测断档" +
-                                            "（那些路车真开了，但没记行程），所以每公里成本是**区间**。",
+                                            "差的 $gap% 是 TeslaMate 没在记录的遥测断档" +
+                                            "（那些路车真开了，但没记行程），所以每公里成本是区间。",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.padding(bottom = 4.dp),
@@ -902,7 +902,7 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     append("「相对首测」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
                                     append("不受行驶能耗常数影响，是看衰减更准的那个数。")
                                     if (baselineDate != null) {
-                                        append("⚠️ 首测（$baselineDate）**不是新车容量** —— ")
+                                        append("⚠️ 首测（$baselineDate）不是新车容量 —— ")
                                         append("它只回答「比 $baselineDate 那次测的低了多少」。")
                                     }
                                 },

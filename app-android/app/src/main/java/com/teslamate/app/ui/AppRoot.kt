@@ -464,7 +464,7 @@ private fun MainScaffold(
                 // ⚠️ v0.24.0（性能评审 P0-2 第 3 条）：**SizeTransform(clip = false)** ——
                 // 淡入淡出时新旧两页**同时组合**，且尺寸不同会互相触发布局。
                 // 加上 `clip = false` 让内容不被裁剪框限制，减少一轮额外布局。
-                (fadeIn(tween(140)) togetherWith fadeOut(tween(120)))
+                (fadeIn(tween(Motion.TabFadeIn)) togetherWith fadeOut(tween(Motion.TabFadeOut)))
                     .using(SizeTransform(clip = false))
             },
             label = "tabSwitch",

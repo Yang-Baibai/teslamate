@@ -1180,7 +1180,7 @@ private fun SettingsRatesPage(
             item {
                 SectionCard("电价" + (carName?.let { " · $it" } ?: ""), Modifier.animateItem()) {
                     Text(
-                        "填上你的电价，App 就能给出「每公里成本」的**估算**" +
+                        "填上你的电价，App 就能给出「每公里成本」的估算" +
                             "（分母是 App 记录的行驶里程，可能漏记）—— " +
                             "这个数官方 Tesla App 给不了。",
                         style = MaterialTheme.typography.bodySmall,
@@ -1198,7 +1198,7 @@ private fun SettingsRatesPage(
                     // 现在：**家充有真凭据**（TeslaMate 的充电围栏），
                     // 没有归属的交流由下面的开关决定按哪个价算。
                     Text(
-                        "家充按 TeslaMate 的**充电围栏**判定（命中围栏的才算家充）。" +
+                        "家充按 TeslaMate 的充电围栏判定（命中围栏的才算家充）。" +
                             "没有围栏归属的交流慢充，App 不知道它是在家还是在酒店/路边 —— " +
                             "用下面的开关决定按哪个价算。",
                         style = MaterialTheme.typography.labelSmall,
@@ -1228,7 +1228,7 @@ private fun SettingsRatesPage(
                         )
                     }
                     Text(
-                        "默认按**公共桩价**算 —— 因为实测本机 5 场交流慢充全部在 286 公里以外，" +
+                        "默认按公共桩价算 —— 因为实测本机 5 场交流慢充全部在 286 公里以外，" +
                             "「交流 = 家充」这个假设 5/5 是错的。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1303,11 +1303,11 @@ private fun SettingsRatesPage(
                         )
                     }
                     Text(
-                        "服务区快充普遍按**分钟**收服务费（占位时间也要钱）。" +
+                        "服务区快充普遍按分钟收服务费（占位时间也要钱）。" +
                             "本机实测：按分钟 ≈ ¥1,094.50、按度 ≈ ¥902.76 —— " +
-                            "这两个**服务费金额**之间差 21.2%；" +
-                            "换成**总费用**看是 ¥3,295.67 vs ¥3,103.93（差 5.8%）。" +
-                            "**不填服务费会低估约 33%**。家用交流桩反过来必须按度算。",
+                            "这两个服务费金额之间差 21.2%；" +
+                            "换成总费用看是 ¥3,295.67 vs ¥3,103.93（差 5.8%）。" +
+                            "不填服务费会低估约 33%。家用交流桩反过来必须按度算。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1467,12 +1467,12 @@ fun IosSwitch(
         // 原来我把轨道也做成 51↔31 动画 —— 关掉时轨道变成 31×31 的**圆**，
         // 看起来像一个空心圆圈，不是开关。
         targetValue = if (checked) 22.dp else 2.dp,
-        animationSpec = tween(180),
+        animationSpec = tween(Motion.SwitchToggle),
         label = "switchKnob",
     )
     val trackColor by animateFloatAsState(
         targetValue = if (checked) 1f else 0f,
-        animationSpec = tween(180),
+        animationSpec = tween(Motion.SwitchToggle),
         label = "switchColor",
     )
     // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-1）：开关轨道的开态绿从 #34C759 降到 #2E9E4F。**

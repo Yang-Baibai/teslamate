@@ -142,11 +142,26 @@ fun EnergyProfileCard(
         // 原来两个标签可能落在**相邻**槽位（每槽只有 21.64dp），
         // 而「28.4」在 200% 字号下宽 43.12dp → 两个数字会**压在一起**。
         // 现在：相邻时只标**最省电**那一个，另一个数字写进下面的说明文字。
+        //
+        // ⚠️ **v0.32.0（第 20 轮规划复审 P2-7）：护栏从 |Δ|≤1 放宽到 |Δ|≤2。**
+        // 实测几何：14 档的槽宽 21.64dp、节距 23.64dp；
+        // 标签 11sp 四字符在 fs=2.0 时宽 46.1dp（每侧溢出 12.2dp）。
+        // |Δ|=2 时两个标签的中心距 47.29dp vs 半宽和 46.1dp → **只剩 1.2dp 余量**，
+        // 字号再大一点就贴字。宁少标一个，也不压字。
+        //
+        // ⚠️ 被护栏丢掉的数值**不会**出现在下面的明细里（只有最省/最费档在窗口内才有），
+        // 所以这里同时把丢掉的那个数补进说明文字 —— 不能让它凭空消失。
         val bestIdx = bands.indexOfFirst { isBest(it) }
         val worstIdx = worstBand?.let { bands.indexOf(it) } ?: -1
         val labelIdxs = if (bestIdx < 0) emptySet() else {
-            if (worstIdx >= 0 && kotlin.math.abs(bestIdx - worstIdx) <= 1) setOf(bestIdx)
+            if (worstIdx >= 0 && kotlin.math.abs(bestIdx - worstIdx) <= 2) setOf(bestIdx)
             else setOf(bestIdx, worstIdx)
+        }
+        /** 被护栏丢掉的另一档（要写进说明文字，不能凭空消失） */
+        val droppedLabel = if (labelIdxs.size == 1 && worstIdx >= 0 && worstIdx != bestIdx) {
+            bands.getOrNull(worstIdx)?.let { "${it.label} km/h ${it.wh_per_km_gross.fmtKwh100()}" }
+        } else {
+            null
         }
         Column(Modifier.fillMaxWidth()) {
             Row(
@@ -239,7 +254,7 @@ fun EnergyProfileCard(
         Spacer(Modifier.height(6.dp))
         Text(
             buildString {
-                append("口径：车轮功率**毛耗电**（`max(P,0)×Δt`，不含下坡回充抵扣；")
+                append("口径：车轮功率毛耗电（`max(P,0)×Δt`，不含下坡回充抵扣；")
                 append("净值是梯形积分，两者在明细行分开标），")
                 append("1 km 分箱、按箱内里程表跨度算距离。")
                 // ⚠️ v0.30.0（P0-2）：分母用**剖面覆盖里程**（与分子同源），
@@ -247,10 +262,14 @@ fun EnergyProfileCard(
                 append("剖面覆盖 ${profile?.covered_km?.roundToInt() ?: 0} 公里")
                 append("（全车 ${profile?.total_km?.roundToInt() ?: 0} 公里），")
                 append("毛耗电 ${profile?.overall_wh_per_km_gross?.fmtKwh100() ?: "—"} kWh/100km。")
-                append("官方 App 只有**平均** Wh/km，这条曲线它给不了。")
-                append("⚠️ 每一档是「**平均速度**落在该区间的 1 公里箱」，")
+                append("官方 App 只有平均 Wh/km，这条曲线它给不了。")
+                append("⚠️ 每一档是「平均速度落在该区间的 1 公里箱」，")
                 append("箱内含加速与减速（实测 40–50 那一档有 518/522 个箱越界），")
                 append("不是「以 45 km/h 匀速跑」的能耗。")
+                // ⚠️ v0.32.0：被护栏丢掉的档位不能凭空消失
+                droppedLabel?.let {
+                    append("（最费电那档 $it kWh/100km 与最省电那档太近，柱上只标了一个）")
+                }
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

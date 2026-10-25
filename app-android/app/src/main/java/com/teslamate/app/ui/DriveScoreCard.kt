@@ -239,14 +239,14 @@ fun DriveScoreCard(
         Text(
             "分数 = 100 − 急刹车(≤30) − 急加速(≤20) − ≥${profile.params.over_speed_kph}km/h(≤20)" +
                 " − 能耗(≤15) − 夜驾(≤15)。" +
-                "两条**免赔线**：≥${profile.params.over_speed_kph} km/h 的占比**超过 3 个百分点的部分**" +
+                "两条免赔线：≥${profile.params.over_speed_kph} km/h 的占比超过 3 个百分点的部分" +
                 "每 1 个百分点扣 1 分；能耗 150 Wh/km（即 15 kWh/100km）以下不扣。" +
                 "硬加/硬刹 = 2 秒内车速变化 ≥${profile.params.hard_event_threshold_kmh_per_2s} km/h" +
                 "（噪声底 ±12，有 8 倍余量）；" +
                 "夜间 ${profile.params.night_start_hour}:00–${profile.params.night_end_hour}:00、" +
                 "≥${profile.params.over_speed_kph} km/h —— " +
-                "都是**行业惯例值**，不是从这辆车拟合出来的。" +
-                "⚠️ 120 km/h 是国内高速的**合法限速**，这一项扣的是「开得比限速快」，不是「违法」。",
+                "都是行业惯例值，不是从这辆车拟合出来的。" +
+                "⚠️ 120 km/h 是国内高速的合法限速，这一项扣的是「开得比限速快」，不是「违法」。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

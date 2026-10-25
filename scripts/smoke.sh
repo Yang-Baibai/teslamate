@@ -313,7 +313,17 @@ for l in d.get('legs', []):
     assert 'ascent_m' in l and 'descent_m' in l, 'leg missing ascent'
 " 2>/dev/null \
   && ok "route_profile 爬升（ascent/descent）" || fail "route_profile 爬升"
-# 18. 自更新元数据
+# 18. 客户端回归闸门（文案禁星号 + 电量环几何金标准）
+# ⚠️ 本项目**没有** JVM 单测（app-android 无 src/test / src/androidTest），
+# 这两条脚本闸门是唯一能挡住客户端文案/几何回归的机制。
+if bash scripts/client-gates.sh > /tmp/client-gates.log 2>&1; then
+  ok "客户端闸门（文案 + 几何）"
+  grep -E '✓' /tmp/client-gates.log | sed 's/^/    /'
+else
+  fail "客户端闸门"
+  cat /tmp/client-gates.log | sed 's/^/    /'
+fi
+# 19. 自更新元数据
 L=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" $B/api/v1/app/latest)
 echo "$L" | python -c "import json,sys;d=json.load(sys.stdin);assert d['version_code'].isdigit()" 2>/dev/null \
   && ok "app/latest 元数据" || fail "app/latest 元数据"

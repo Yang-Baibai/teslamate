@@ -661,7 +661,7 @@ internal fun ChargeDetail(
                             }
                             if (measuredMed != null || m80 != null) {
                                 Text(
-                                    "折算 = 用该站典型功率线性外推；直流桩在 80% 附近会降功率，所以折算通常**偏大**。" +
+                                    "折算 = 用该站典型功率线性外推；直流桩在 80% 附近会降功率，所以折算通常偏大。" +
                                         "「实测」读自充电曲线的真实时间戳。",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -164,9 +164,9 @@ fun StayPointsCard(
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            "停留时长由**相邻行程的时间间隙**推断 —— 车睡着后 TeslaMate 不再记位置，" +
+            "停留时长由相邻行程的时间间隙推断 —— 车睡着后 TeslaMate 不再记位置，" +
                 "所以这不是实时停车时长。App 也分不出哪个是「家」、哪个是「公司」，" +
-                "这里只按**停过几次**排。",
+                "这里只按停过几次排。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

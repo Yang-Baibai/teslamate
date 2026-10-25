@@ -99,7 +99,7 @@ object BatteryDecay {
                 append("%.1f".format(e))
                 append(" 倍")
                 if (!trendVerdict) {
-                    append("。样本量不够，现在这条线**先当区间看**")
+                    append("。样本量不够，现在这条线先当区间看")
                 } else {
                     append("。可以当趋势看")
                 }

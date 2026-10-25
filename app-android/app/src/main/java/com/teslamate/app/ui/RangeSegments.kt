@@ -281,9 +281,9 @@ fun RangeSegmentsCard(
                 // 原来这里硬编码「官方标称 448 公里」，而上面那行是**动态算**出来的 ——
                 // 车端标称一变，两处自相矛盾。
                 Text(
-                    "这是**折算值**：把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电，" +
-                        "所以**含没充满就走的段**（比如 50%→29%）。" +
-                        (official?.let { "官方标称 ${it.roundToInt()} 公里是**车机满电时报的数**，" } ?: "") +
+                    "这是折算值：把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电，" +
+                        "所以含没充满就走的段（比如 50%→29%）。" +
+                        (official?.let { "官方标称 ${it.roundToInt()} 公里是车机满电时报的数，" } ?: "") +
                         "两者是「折算 vs 实测」的关系。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -344,7 +344,7 @@ fun RangeSegmentsCard(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "口径：一次充电结束到下一次充电开始，按掉电百分比折算到满电。" +
-                        "这是**折算值**，不是某一次满电实跑；" +
+                        "这是折算值，不是某一次满电实跑；" +
                         "市区与高速差 1.7 倍，中位数不代表任何一次具体出行。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
