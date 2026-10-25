@@ -417,36 +417,64 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                     Modifier.animateItem(),
                 ) {
                     if (sum != null) {
-                        // ⚠️ v0.17.0（苹果 HIG P0-1）：**一屏一个主角数字**。
+                        // ⚠️ **v0.48.0（第 28 轮通勤车主评审 P1-1）：零行驶日给**专属空态**。**
                         //
-                        // 原来 7 行**等权**排布 —— 扫一眼没有落点，
-                        // 主角不成立（评审原话：「任意一屏截图缩略到 200px 宽，
-                        // 灰度化后仍能一眼指出唯一的最深/最大文字块」）。
+                        // 真实数据：87 天里 **42 天零行驶（48.3%）** ——
+                        // 「今天」段**有一半概率**是空的，而空的形态是「0.0 公里 · 今天」，
+                        // 那看起来像 **App 出故障**，而不是「今天没开车」。
                         //
-                        // 现在：里程升为主角（44sp Bold），其余降为次级行。
-                        BigStat(
-                            sum.km.fmt(1),
-                            "公里 · $periodLabel",
-                            hero = true,
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        // ⚠️ v0.14.0（单位审校 P1-1 / P1-3）：
-                        // 「行车用电」→「行驶耗电」（与下面图表同名）——
-                        // 原来同一个量在汇总卡叫「行车用电」、在图表叫「行驶耗电」，
-                        // 用户会以为是两个量。
-                        // 「总里程」→「行驶里程」——
-                        // 「总里程」在中文里会被读成「这车一辈子跑了多少」。
-                        KV("行驶耗电", "${sum.kwh_used.fmt(1)} 度")
+                        // 现在：主角位换成一句话；「行驶耗电 / 充入电量」在
+                        // **真的没有数据**时给「—」，而不是「0.0 度」。
+                        //
+                        // ⚠️ 费用分支**不动** —— v0.31.0 已经把它修对了：
+                        // 「没有里程」≠「没有费用数据」，
+                        // 今天没充过电，费用就是 ¥0，那句「这段时间没有充电记录」是**对的**。
+                        if (sum.drive_count == 0) {
+                            Text(
+                                emptyWindowText(periodLabel),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            KV("行驶耗电", "—")
+                        } else {
+                            // ⚠️ v0.17.0（苹果 HIG P0-1）：**一屏一个主角数字**。
+                            //
+                            // 原来 7 行**等权**排布 —— 扫一眼没有落点，主角不成立
+                            // （评审原话：「任意一屏截图缩略到 200px 宽，
+                            // 灰度化后仍能一眼指出唯一的最深/最大文字块」）。
+                            //
+                            // 现在：里程升为主角（44sp Bold），其余降为次级行。
+                            BigStat(
+                                sum.km.fmt(1),
+                                "公里 · $periodLabel",
+                                hero = true,
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            // ⚠️ v0.14.0（单位审校 P1-1 / P1-3）：
+                            // 「行车用电」→「行驶耗电」（与下面图表同名）——
+                            // 原来同一个量在汇总卡叫「行车用电」、在图表叫「行驶耗电」，
+                            // 用户会以为是两个量。
+                            // 「总里程」→「行驶里程」——
+                            // 「总里程」在中文里会被读成「这车一辈子跑了多少」。
+                            KV("行驶耗电", "${sum.kwh_used.fmt(1)} 度")
+                        }
                         // ⚠️ v0.14.0（单位审校 P2-4）：慢充为 0 时**不显示该分段**。
                         KV(
                             "充入电量",
-                            buildString {
-                                append("${sum.charge_kwh.fmt(1)} 度")
-                                if (sum.dc_kwh > 0.05 || sum.ac_kwh > 0.05) {
-                                    append("（快充 ${sum.dc_kwh.fmt(1)}")
-                                    if (sum.ac_kwh > 0.05) append(" / 慢充 ${sum.ac_kwh.fmt(1)}")
-                                    append("）")
-                                }
+                            if (sum.charge_count == 0) {
+                                // ⚠️ v0.48.0：没有充电记录时给「—」，不是「0.0 度」
+                                "—"
+                            } else {
+                                buildString {
+                                    append("${sum.charge_kwh.fmt(1)} 度")
+                                    if (sum.dc_kwh > 0.05 || sum.ac_kwh > 0.05) {
+                                        append("（快充 ${sum.dc_kwh.fmt(1)}")
+                                        if (sum.ac_kwh > 0.05) append(" / 慢充 ${sum.ac_kwh.fmt(1)}")
+                                        append("）")
+                                    }
+    }
                             },
                         )
                         // ⚠️ **v0.26.0（第 17 轮通勤车主 P0-1）：「充电费用」只能出现一次。**
@@ -1084,6 +1112,24 @@ private fun PeriodSegmented(
 /**
  * 按切片后的 buckets 汇总（服务端 summary 只覆盖整窗口，切段后不适用）。
  */
+/**
+ * ⚠️ **v0.48.0（第 28 轮通勤车主评审 P1-1）**：用量页汇总卡的**零行驶日空态**文案。
+ *
+ * 真实数据：87 天里 **42 天零行驶（48.3%）** ——
+ * 「今天」段有一半概率是空的，而「0.0 公里 · 今天」看起来像 App 出故障。
+ *
+ * ⚠️ 「今天」与更长的窗口**用不同的说法**：
+ * 「今天还没开车」是一个**时点**的判断，
+ * 而「7 天没有行程记录」是一个**区间**的判断 ——
+ * 混用会把「这个区间没开车」说成「现在还没开车」。
+ */
+fun emptyWindowText(periodLabel: String): String =
+    // ⚠️ Kotlin 的字符串模板：**必须**用 `${}` ——
+    // `"$periodLabel没有行程记录"` 会被解析成变量名 `periodLabel没有行程记录`
+    // （中文字符是合法的标识符字符！）⇒ 编译报「Unresolved reference」。
+    if (periodLabel == "今天") "今天还没开车" else "${periodLabel}没有行程记录"
+
+
 private fun summarizeBuckets(buckets: List<StatsBucket>): StatsBucket? {
     if (buckets.isEmpty()) return null
     val km = buckets.sumOf { it.km }
