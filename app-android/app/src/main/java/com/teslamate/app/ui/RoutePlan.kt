@@ -34,6 +34,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.teslamate.app.Charge
 import com.teslamate.app.Drive
 import com.teslamate.app.firstSegment
@@ -570,15 +571,25 @@ data class RoutePlan(
         // 「结论句直接写在摘要行里 —— 出发前 5 分钟只读这一行就够」。
         //
         // 现在拆成三段：
-        // - [verdict()] —— **决策句**（一行）：最长的一段 + 上次到站剩多少；
+        // - [verdict()] —— **决策句**（一行）：真值 + 估算并排；
         // - [verdictDetail()] —— **细节行**：来源限定 + 全程最低；
         // - [stationRhythm()] —— **站间距分布**：只留在**展开卡**里。
+        //
+        // ⚠️ **v0.35.0**：折叠态的主角（44sp）已经显示了「最长一段 + 站名」，
+        // 所以这里**不再重复**那部分，只说电量。
         val hop = longestHop
         if (hop != null) {
             val sb = StringBuilder()
-            sb.append("最长一段 ").append(hop.km.roundToInt()).append(" 公里")
-            sb.append("（").append(hop.fromName).append(" → ").append(hop.toName).append("）")
-            hop.realSoc?.let { sb.append(" · 上次到站剩 ").append(it).append("%") }
+            hop.realSoc?.let { sb.append("上次到站剩 ").append(it).append("%") }
+            hop.estSoc?.let { soc ->
+                if (sb.isNotEmpty()) sb.append(" · ")
+                if (soc >= 0) {
+                    sb.append("估算剩 ").append(soc).append("%")
+                } else {
+                    sb.append("估算到不了（差 ").append(-soc).append(" 个点）")
+                }
+            }
+            if (sb.isEmpty()) sb.append("这条线路上没有站间数据")
             return sb.toString()
         }
         val low = lowestSoc ?: return "算不出结论（没有足够的电量记录）"
@@ -1287,6 +1298,46 @@ fun RoutePlanSummaryRow(
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
+                    // ⚠️ **v0.35.0（第 21 轮视觉评审 P1-6）：给记录页一个**真正的**视觉锚点。**
+                    //
+                    // 原来这一屏最大的数字是 **34sp**，而且在**折叠线以下**；
+                    // 首屏的落点是一句 15sp 的灰字结论 —— **没有主角**。
+                    //
+                    // 现在把「**最长那一跳的公里数**」提成 **44sp 主角**：
+                    // 它既是复审里车主说「我真的会读」的两个数之一，
+                    // 也是这一屏唯一需要「一眼看到」的东西。
+                    //
+                    // ⚠️ 为什么不是把「实测满电续航」提成 44sp（评审的原建议）——
+                    // 那张卡在折叠线**下面**，提上去会把**首屏**的主角挤到第二屏；
+                    // 而且车主说出发前 5 分钟要读的是**最长一段**。
+                    // 现在：记录页唯一 44sp = 最长那一跳；下面那张卡降到 26sp。
+                    plan.longestHop?.let { hop ->
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                hop.km.roundToInt().toString(),
+                                fontSize = 44.sp,
+                                lineHeight = 48.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = (-0.4).sp,
+                                style = MaterialTheme.typography.displayLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "公里 · 最长一段",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    "${hop.fromName} → ${hop.toName}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
                     // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-7）：决策句要短。**
                     //
                     // 原来这里是 85 字的一整句（折 4~9 行）；

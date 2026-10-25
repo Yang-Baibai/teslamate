@@ -147,6 +147,38 @@ assert abs(d['nominal_capacity_kwh'] - $NOM) < 0.01, 'nominal mismatch'
 assert d.get('health_percent') and 50 < d['health_percent'] <= 100, 'health out of range'" 2>/dev/null \
   && ok "battery 铭牌口径（$NOM kWh）" || fail "battery 铭牌口径"
 
+# 7b. ⚠️ v0.35.0：电池衰减判定（严格档 + t 检验 + 阶跃检测）
+#
+# 这条断言守的是本项目**最容易被悄悄改坏**的一个数：
+# 「连续衰减速率」。它必须满足：
+#   ① 只用**严格档**（end_soc == 100）的点；
+#   ② 置信区间要么不含 0（显著）、要么明确标出跨过 0；
+#   ③ **扣掉阶跃后的速率**不得比朴素速率更悲观（阶跃只会让朴素速率偏高）。
+echo "$BAT" | python -c "
+import json,sys
+d=json.load(sys.stdin)['decay']
+assert d, 'missing decay block'
+assert d['n'] == d['strict_n'], 'decay must use strict tier only'
+assert d['n'] >= 8, 'too few strict points: %s' % d['n']
+assert d['excluded_n'] >= 0, 'bad excluded count'
+assert d['span_km'] > 0, 'bad span'
+# 朴素线性
+assert d['naive_ci_lo'] <= d['naive_per_1000km'] <= d['naive_ci_hi'], 'naive ci does not bracket the estimate'
+# 阶跃
+if d['has_step']:
+    assert d['step_ci_lo'] <= d['step_kwh'] <= d['step_ci_hi'], 'step ci does not bracket the estimate'
+    assert d['r2_step'] >= d['r2_linear'], 'step model must fit at least as well'
+    # 阶跃只会让朴素速率**偏悲观** —— 连续速率的绝对值不应大于朴素速率
+    assert abs(d['underlying_per_1000km']) <= abs(d['naive_per_1000km']) + 1e-6, \
+        'underlying rate must not be more pessimistic than the naive one'
+    assert d['underlying_ci_lo'] <= d['underlying_per_1000km'] <= d['underlying_ci_hi'], 'underlying ci bad'
+# 显著性标记必须与置信区间一致（跨过 0 就不该标显著）
+if not d['naive_significant']:
+    assert d['naive_ci_lo'] <= 0 <= d['naive_ci_hi'], 'naive significance flag disagrees with the CI'
+assert d.get('method') and d.get('caveat'), 'missing method/caveat'
+" 2>/dev/null \
+  && ok "battery 衰减判定（严格档 + 阶跃 + CI 自洽）" || fail "battery 衰减判定"
+
 # 8. 静态图：PNG 且 Content-Type 正确
 R=$(curl -s -o /tmp/smoke_map.png -w "%{http_code}|%{content_type}|%{size_download}" -m 15 \
   -H "Authorization: Bearer $TOKEN" \

@@ -1307,6 +1307,8 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		strictMax    *float64
 		energyCaps   []float64
 		baselineCaps []float64
+		strictPts    []decayPoint
+		excludedPts  int
 	)
 	for rows.Next() {
 		p := &BatteryPoint{}
@@ -1348,9 +1350,42 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		}
 		lastDate = p.Date
 		h.Series = append(h.Series, p)
+		// ⚠️ **v0.35.0（第 21 轮数据口径审计 P1-D + 独立复算）：电池衰减判定。**
+		//
+		// 只收**严格档**（`end_soc == 100`，真正充满）的点 ——
+		// 90~98% 的点从 94% 线性外推到 100%，**系统性偏高 0.56%**
+		// （服务端自己在 `max_capacity_kwh_strict` 的注释里写明）。
+		// 实测：混用 29 个点斜率 −0.1656；只用严格档 17 个点斜率 −0.1375（**差 17%**）。
+		if p.CapacityKwh != nil && p.OdometerKm != nil {
+			if p.EndSoc != nil && *p.EndSoc >= 100 {
+				strictPts = append(strictPts, decayPoint{
+					date: p.Date.Format("2006-01-02"),
+					km:   *p.OdometerKm,
+					kwh:  *p.CapacityKwh,
+				})
+			} else {
+				excludedPts++
+			}
+		}
 	}
 	h.CurrentCapacityKwh = last
 	h.MaxCapacityKwhStrict = strictMax
+
+	// ⚠️ **v0.35.0：电池容量衰减的判定**（服务端唯一事实源）。
+	//
+	// 客户端 v0.29.0 起就有一份客户端侧的线性回归，但那个「效应/噪声」指标
+	// **不是显著性检验**，而且用的是**混用档**（含系统性偏高 0.56% 的 90~98% 点）。
+	// 现在判定放在服务端（口径只有一处），客户端只负责显示。
+	//
+	// 覆盖天数按**严格档自己**算（不是整条序列）——
+	// 结论只在这段里程/时间窗内有效。
+	if len(strictPts) >= 2 {
+		spanDays := 0
+		if first, last, ok := strictDateRange(strictPts); ok {
+			spanDays = int(last.Sub(first).Hours() / 24)
+		}
+		h.Decay = analyzeBatteryDecay(strictPts, excludedPts, spanDays)
+	}
 
 	// ⚠️ v0.22.0（P1-1）：**相对首测** —— 唯一不受 `cars.efficiency` 影响的健康指标。
 	//

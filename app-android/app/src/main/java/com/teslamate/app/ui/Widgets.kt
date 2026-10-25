@@ -1256,14 +1256,33 @@ fun InfoTile(title: String, value: String, modifier: Modifier = Modifier) {
  * 现在加 hero 级：**44sp / lineHeight 48sp / tnum / 单行**。
  * 字距也从 -1.sp 收到 **-0.4.sp**（iOS 大字号数字的跟踪量级）——
  * 34sp Bold 上 -1.sp 偏挤，且带 tnum 时更明显。
+ *
+ * ⚠️ **v0.35.0（第 21 轮视觉评审 P1-5）：加一档 **26sp** 的次级。**
+ *
+ * 车况页原来有两个 **34sp** 的同级锚点（驾驶平顺分、常驻点），
+ * 与 44sp 主角的层级差只有 **1.294×** —— 缩略后这两个数字块**无法区分主次**。
+ * 对照 v0.30.0 已验证的成功先例（环内 28sp vs 主角 44sp = 1.57×，
+ * 注释里明确写了「层级一眼可辨」），**34sp 这一档没有做同样的处理**。
+ *
+ * 现在次级用 **26sp**：层级比变成 44 : 26 = **1.69×**，与已验证的 28sp 环一致。
  */
 @Composable
-fun BigStat(value: String, label: String, hero: Boolean = false) {
+fun BigStat(value: String, label: String, hero: Boolean = false, mid: Boolean = false) {
+    val sizeSp = when {
+        hero -> 44.sp
+        mid -> 26.sp
+        else -> 34.sp
+    }
+    val heightSp = when {
+        hero -> 48.sp
+        mid -> 30.sp
+        else -> 40.sp
+    }
     Column {
         Text(
             value,
-            fontSize = if (hero) 44.sp else 34.sp,
-            lineHeight = if (hero) 48.sp else 40.sp,
+            fontSize = sizeSp,
+            lineHeight = heightSp,
             fontWeight = FontWeight.Bold,
             letterSpacing = (-0.4).sp,
             style = MaterialTheme.typography.displayLarge,

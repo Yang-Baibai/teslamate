@@ -241,9 +241,14 @@ fun RangeSegmentsCard(
     val worst = segments.minByOrNull { it.fullChargeKm }
 
     SectionCard(title = "实测满电续航", modifier = modifier) {
+        // ⚠️ **v0.35.0（第 21 轮视觉评审 P1-6）：从 34sp 降到 26sp。**
+        //
+        // 记录页的主角现在是**线路余量表里「最长那一跳」的公里数**（44sp，在首屏）；
+        // 这张卡在它下面，34sp 会形成**层级倒置**（下面的数字比上面的还大）。
         BigStat(
             "${median.roundToInt()}",
             "实测满电续航（公里，中位）",
+            mid = true,
         )
         Spacer(Modifier.height(2.dp))
         Text(

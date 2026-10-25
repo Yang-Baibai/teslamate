@@ -946,25 +946,26 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            // ⚠️ **v0.29.0：把「效应 vs 噪声」摆出来。**
+                            // ⚠️ **v0.35.0：电池衰减结论由**服务端**判定**（严格档 + t 检验 + 阶跃检测），
+                            // 客户端只负责把它说清楚。
                             //
-                            // 专家的判断：「现在画趋势线 = 画噪声」。
-                            // 所以这里**自己算**：按里程做最小二乘，
-                            // 看端到端变化与单点波动（残差 σ）差多少倍 ——
-                            // 倍数不够就明说「还不能当趋势看」。
-                            BatteryDecay.analyze(b.series)?.let { v ->
-                                Text(
-                                    v.summary(),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                v.detail()?.let {
+                            // 原来这里有一份客户端侧的线性回归（v0.29.0），
+                            // 用的「效应/噪声」比值**不是显著性检验**，
+                            // 而且混用了系统性偏高 0.56% 的 90~98% 满充点 ——
+                            // 实测把衰减速率**高估了 2.3 倍**。
+                            b.decay?.let { d ->
+                                BatteryDecayText.lines(d).forEach { line ->
                                     Text(
-                                        it,
+                                        line,
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
+                                Text(
+                                    BatteryDecayText.caveatLine(d),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
                     }

@@ -573,6 +573,66 @@ data class BatteryPoint(
     val capacity_kwh_energy: Double? = null,
 )
 
+/**
+ * ⚠️ **v0.35.0（第 21 轮数据口径审计 P1-D + 独立复算）：电池容量衰减的判定。**
+ *
+ * ## 为什么不是一条直线
+ *
+ * 本机 17 个严格档满充点的实测结果：
+ *
+ * - 朴素线性：斜率 **−0.1375 度/1000km**，R² = 0.641；
+ * - 线性 + 一次阶跃：R² = **0.829**（F = 15.41，显著），
+ *   阶跃本身 **−0.5624 度**（95% 区间 [−0.870, −0.255]，t = −3.92）；
+ * - 扣掉阶跃后的**连续速率**：**−0.0595 度/1000km**。
+ *
+ * 而**阶跃前后两段单独看都没有显著趋势** ——
+ * 这正是「缓慢连续衰减 + 一次不连续」的指纹。
+ *
+ * 也就是说：把「样本 < 50 个就不给趋势」当闸门，等于用经验规则代替统计判据，
+ * 而旧界面报的「每 1000 公里 −0.138 度」**高估了 2.3 倍**
+ * —— 它把一次性的阶跃**抹成了连续趋势**。
+ */
+@Serializable
+data class BatteryDecay(
+    /** 参与回归的点数（严格档） */
+    val n: Int = 0,
+    val strict_n: Int = 0,
+    /** 未计入的非满充点数 */
+    val excluded_n: Int = 0,
+    val span_km: Double = 0.0,
+    val span_days: Int = 0,
+    /** 朴素线性速率（度/1000km） */
+    val naive_per_1000km: Double = 0.0,
+    val naive_ci_lo: Double = 0.0,
+    val naive_ci_hi: Double = 0.0,
+    val naive_significant: Boolean = false,
+    val r2_linear: Double = 0.0,
+    /** 是否检测到一次性阶跃 */
+    val has_step: Boolean = false,
+    val step_km: Double = 0.0,
+    val step_date: String = "",
+    val step_kwh: Double = 0.0,
+    val step_ci_lo: Double = 0.0,
+    val step_ci_hi: Double = 0.0,
+    val step_significant: Boolean = false,
+    val r2_step: Double = 0.0,
+    /** 朴素速率把连续速率高估了多少倍（1 = 没有高估） */
+    val naive_overstate: Double = 1.0,
+    /** 扣掉阶跃后的连续速率（度/1000km） */
+    val underlying_per_1000km: Double = 0.0,
+    val underlying_ci_lo: Double = 0.0,
+    val underlying_ci_hi: Double = 0.0,
+    val underlying_significant: Boolean = false,
+    val pre_per_1000km: Double = 0.0,
+    val pre_significant: Boolean = false,
+    val pre_n: Int = 0,
+    val post_per_1000km: Double = 0.0,
+    val post_significant: Boolean = false,
+    val post_n: Int = 0,
+    val method: String = "",
+    val caveat: String = "",
+)
+
 @Serializable
 data class BatteryHealth(
     val current_capacity_kwh: Double? = null,
@@ -581,6 +641,13 @@ data class BatteryHealth(
     val nominal_capacity_kwh: Double? = null,
     val health_percent: Double? = null,
     val series: List<BatteryPoint> = emptyList(),
+    /**
+     * ⚠️ **v0.35.0：电池容量衰减的判定**（服务端唯一事实源，客户端只显示）。
+     *
+     * 判定用**严格档**（充到 100%）+ **t 检验** + **阶跃检测**，
+     * 而不是「样本数够不够」的经验闸门。
+     */
+    val decay: BatteryDecay? = null,
     // ⚠️ v0.22.0（电池健康专家 P0-1 / P0-2 / P0-3 / P1-1 / P1-5 / P1-6）
     /**
      * **相对首测**（百分比）—— 唯一**不受 `cars.efficiency` 影响**的健康指标。

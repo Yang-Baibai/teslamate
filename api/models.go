@@ -708,6 +708,13 @@ type BatteryHealth struct {
 	HealthPercent      *float64 `json:"health_percent"`       // 当前实测 / 基准 × 100
 	Series             []*BatteryPoint `json:"series"`
 
+	// ⚠️ **v0.35.0（第 21 轮数据口径审计 P1-D + 独立复算）：电池容量衰减的判定。**
+	//
+	// 服务端唯一事实源（客户端只显示，不自己算）。
+	// 判定用**严格档**（充到 100%）+ **t 检验** + **阶跃检测**，
+	// 而不是「样本数够不够」的经验闸门。
+	Decay *BatteryDecay `json:"decay"`
+
 	// ⚠️ v0.22.0（电池健康专家 P0-1 / P0-2 / P1-1 / P1-5 / P0-3）。
 	//
 	// 原来的 `health_percent` 有两个硬伤：

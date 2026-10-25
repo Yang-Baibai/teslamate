@@ -1,160 +1,101 @@
 package com.teslamate.app.ui
 
-import com.teslamate.app.BatteryPoint
+import com.teslamate.app.BatteryDecay
 import com.teslamate.app.fmt
 import kotlin.math.abs
-import kotlin.math.sqrt
+import kotlin.math.roundToInt
 
 /**
- * ⚠️ **v0.29.0（第 17 轮官方 App 对标评审 A-5）：电池衰减的「效应 vs 噪声」判定。**
+ * ⚠️ **v0.35.0（第 21 轮数据口径审计 P1-D + 独立复算）：电池衰减结论的**显示层**。**
  *
- * ## 为什么不能直接画一条趋势线
+ * ## 为什么判定搬到了服务端
  *
- * 专家实测本机 29 个满充点：
- * - 端点差 **66.20 → 65.17 kWh = −1.03 度（−1.6%）**，跨 9936 公里；
- * - 而**单点测量噪声 σ ≈ 0.5 度（0.77%）**。
+ * 原来（v0.29.0）判定在**客户端**做：按里程做最小二乘，
+ * 再算一个「效应/噪声」比值。那个比值**不是显著性检验** ——
+ * 它拿「整段端到端变化」除以「单点残差 σ」，
+ * 而斜率的显著性取决于 **SE(斜率) = σ / √Sxx**，两者不是一回事。
  *
- * 也就是说：**效应只有噪声的 2 倍**。
- * 在这种情况下画一条拟合趋势线，等于**把噪声画成趋势**——
- * 用户会读成「电池在明显衰减」，而数据根本支撑不了这个结论。
+ * 而且闸门是「样本 < 50 个就不给趋势」——
+ * 用一个**样本数启发式**代替统计判据，
+ * 结果是：数据明明支持结论（t = −5.18，95% 区间不含 0），却被闸门卡掉。
  *
- * 专家的建议是「只画散点 + 稳健回归 + 置信带，样本 <50 个满充点时不给趋势线」。
- * 这里做的是它的可落地版本：**把「效应 / 噪声」这个比值算出来给用户看**，
- * 并在比值不够时明说「还不能当趋势看」。
+ * 更要命的是**序列根本不是一条直线**。本机 17 个严格档满充点实测：
  *
- * ## 口径
+ * | 模型 | 斜率（度/1000km） | R² |
+ * |---|---|---|
+ * | 朴素线性 | −0.1375 | 0.641 |
+ * | **线性 + 一次阶跃** | **−0.0595** | **0.829** |
  *
- * - **自变量用里程**（`odometer_km`）而不是日期 ——
- *   电池衰减是**按公里**发生的，按日期会把「这几个月开得多」误读成「衰减快」。
- * - **趋势用最小二乘**（对里程），残差 σ 就是单点测量波动。
- * - 样本 < [MIN_POINTS_FOR_TREND] 个点 → **不给结论**。
- * - 效应/噪声 < [MIN_EFFECT_TO_NOISE] → **不给趋势结论**（只给区间）。
+ * 而**阶跃前后两段单独看都没有显著趋势** ——
+ * 这正是「缓慢连续衰减 + 一次不连续」的指纹。
+ * 旧界面的「每 1000 公里 −0.138 度」**高估了 2.3 倍**：
+ * 它把一次性的阶跃**抹成了连续趋势**。
+ *
+ * 现在判定在服务端（`api/battery_decay.go`，带 Go 回归测试），
+ * 客户端只负责把结论说清楚。
  */
-object BatteryDecay {
-    /** 少于这么多个满充点，不谈趋势。 */
-    const val MIN_POINTS_FOR_TREND = 50
+object BatteryDecayText {
 
-    /** 效应/噪声 至少要到这个倍数才敢叫「趋势」。 */
-    const val MIN_EFFECT_TO_NOISE = 3.0
+    /**
+     * 结论行。
+     *
+     * ⚠️ **所有者审美：一屏一个主角，装饰宁删勿留** ——
+     * 所以这里只给「样本与覆盖」+「连续衰减速率」+「那次阶跃」三行，
+     * 其它推导（分裂半、R²、置信区间宽度）留在服务端的 `method` / `caveat` 里。
+     */
+    fun lines(d: BatteryDecay): List<String> {
+        val out = mutableListOf<String>()
 
-    /** 一个测量点。 */
-    data class Point(val km: Double, val kwh: Double)
+        // ── 第一行：样本与覆盖 ────────────────────────────────
+        val sample = StringBuilder()
+        sample.append(d.n).append(" 个 100% 满充点")
+        if (d.excluded_n > 0) {
+            sample.append("（另有 ").append(d.excluded_n).append(" 个 90~98% 的点未计入）")
+        }
+        sample.append(" · ").append(d.span_km.roundToInt()).append(" 公里 / ")
+            .append(d.span_days).append(" 天")
+        out += sample.toString()
 
-    /** 判定结果。 */
-    data class Verdict(
-        /** 满充点个数 */
-        val n: Int,
-        /** 每 1000 公里的线性变化（度，负数 = 在衰减） */
-        val per1000Km: Double?,
-        /** 整段跨度的端到端变化（度） */
-        val totalChange: Double?,
-        /** 残差标准差（度）= **单点测量波动** */
-        val noiseSigma: Double?,
-        /** 原始标准差（度）—— **含趋势本身**，所以比残差 σ 大 */
-        val rawSigma: Double?,
-        /** 效应 / 噪声（用残差 σ） */
-        val effectToNoise: Double?,
-        /** 能不能下「趋势」结论 */
-        val trendVerdict: Boolean,
-        /** 覆盖的里程跨度（公里） */
-        val spanKm: Double,
-    ) {
-        /**
-         * 一句话结论（给界面直接用）。
-         *
-         * ⚠️ **v0.29.0：噪声有两个口径，两个都说清楚。**
-         *
-         * 专家给的数是「单点测量噪声 σ ≈ 0.5 度」，那是**原始标准差** ——
-         * 它**把趋势本身也算进噪声里了**（因为序列整体在下降）。
-         * 真正回答「这条线是衰减还是抖动」的分母是**残差标准差**
-         * （扣掉线性趋势后的残余波动），实测 **0.31 度**。
-         *
-         * 两个口径的差别很大：
-         * - 原始 σ 0.55 → 效应/噪声 = 1.03/0.55 ≈ **1.9 倍**（看不出趋势）
-         * - 残差 σ 0.31 → 效应/噪声 = 1.65/0.31 ≈ **5.3 倍**（能分辨）
-         *
-         * 所以界面既不给「这只是噪声」的结论，也不给「这就是趋势」的结论 ——
-         * 它把两个数都摆出来，并指出**真正的短板是样本量**（29 < 50）。
-         */
-        fun summary(): String {
-            val sb = StringBuilder()
-            sb.append("$n 个满充点")
-            if (!trendVerdict) {
-                sb.append("（要 ≥").append(MIN_POINTS_FOR_TREND).append(" 个才够下趋势结论）")
+        // ── 第二行：连续衰减速率（主角） ──────────────────────
+        val rate = if (d.has_step) d.underlying_per_1000km else d.naive_per_1000km
+        val lo = if (d.has_step) d.underlying_ci_lo else d.naive_ci_lo
+        val hi = if (d.has_step) d.underlying_ci_hi else d.naive_ci_hi
+        val significant = if (d.has_step) d.underlying_significant else d.naive_significant
+        val rateLine = StringBuilder()
+        rateLine.append("连续衰减 每 1000 公里 ").append(rate.fmt(3)).append(" 度")
+        rateLine.append("（95% 区间 ").append(lo.fmt(3)).append(" ~ ").append(hi.fmt(3)).append("）")
+        if (!significant) {
+            rateLine.append(" —— 区间跨过 0，还不能当趋势看")
+        }
+        out += rateLine.toString()
+
+        // ── 第三行：那次阶跃（如果检测到且显著） ──────────────
+        if (d.has_step) {
+            val step = StringBuilder()
+            step.append(d.step_date).append(" 有一次 ").append(d.step_kwh.fmt(2)).append(" 度的台阶")
+            step.append("（").append(d.step_km.roundToInt()).append(" 公里处）")
+            if (d.step_significant) {
+                step.append("—— 一次性事件，不是持续衰减")
             } else {
-                sb.append("（样本够了）")
+                step.append("（统计上不显著，仅供参考）")
             }
-            per1000Km?.let { sb.append(" · 每 1000 公里 ").append("%.3f".format(it)).append(" 度") }
-            return sb.toString()
-        }
-
-        /** 结论的第二行（效应 vs 噪声）。 */
-        fun detail(): String? {
-            val e = effectToNoise ?: return null
-            return buildString {
-                append("整段变化 ")
-                totalChange?.let { append(it.fmt(2)).append(" 度") }
-                noiseSigma?.let { append("，单点测量波动 σ=").append(it.fmt(2)).append(" 度") }
-                append(" —— 效应是波动的 ")
-                append("%.1f".format(e))
-                append(" 倍")
-                if (!trendVerdict) {
-                    append("。样本量不够，现在这条线先当区间看")
-                } else {
-                    append("。可以当趋势看")
-                }
+            if (d.naive_overstate > 1.15) {
+                step.append("；不扣它，表面速率会高估 ")
+                    .append(d.naive_overstate.fmt(1)).append(" 倍")
             }
+            out += step.toString()
         }
+        return out
     }
 
     /**
-     * 判定电池衰减是不是「已经能看出趋势」。
+     * 口径提示（放在「怎么算的」那一层）。
      *
-     * @param series 服务端给的满充点序列（已按时间升序）
+     * ⚠️ **诚实性要求**：容量口径是「续航估值 × 效率常数」，
+     * 残差里**大部分是充电时气温**而不是测量噪声 ——
+     * 不说清楚，用户会把这条线当成「电池在稳定衰减」。
      */
-    fun analyze(series: List<BatteryPoint>): Verdict? {
-        val pts = series.mapNotNull { p ->
-            val kwh = p.capacity_kwh ?: return@mapNotNull null
-            val km = p.odometer_km ?: return@mapNotNull null
-            Point(km, kwh)
-        }
-        if (pts.size < 2) return null
-        val n = pts.size
-        val meanX = pts.sumOf { it.km } / n
-        val meanY = pts.sumOf { it.kwh } / n
-        val sxx = pts.sumOf { (it.km - meanX) * (it.km - meanX) }
-        if (sxx <= 0.0) {
-            return Verdict(n, null, null, null, null, null, false, 0.0)
-        }
-        val sxy = pts.sumOf { (it.km - meanX) * (it.kwh - meanY) }
-        val slope = sxy / sxx
-        val intercept = meanY - slope * meanX
-        // 残差 σ（自由度 n-2）
-        val sse = pts.sumOf {
-            val r = it.kwh - (intercept + slope * it.km)
-            r * r
-        }
-        val sigma = if (n > 2) sqrt(sse / (n - 2)) else null
-        // 原始标准差（含趋势本身）—— 用来和专家给的数对上
-        val rawSigma = sqrt(pts.sumOf { (it.kwh - meanY) * (it.kwh - meanY) } / (n - 1))
-        val spanKm = pts.last().km - pts.first().km
-        val totalChange = if (spanKm != 0.0) slope * spanKm else null
-        val effectToNoise = if (sigma != null && sigma > 1e-9) {
-            abs(totalChange ?: 0.0) / sigma
-        } else {
-            null
-        }
-        val trendVerdict = n >= MIN_POINTS_FOR_TREND &&
-            effectToNoise != null && effectToNoise >= MIN_EFFECT_TO_NOISE
-        return Verdict(
-            n = n,
-            per1000Km = slope * 1000.0,
-            totalChange = totalChange,
-            noiseSigma = sigma,
-            rawSigma = rawSigma,
-            effectToNoise = effectToNoise,
-            trendVerdict = trendVerdict,
-            spanKm = spanKm,
-        )
-    }
+    fun caveatLine(d: BatteryDecay): String =
+        "容量口径是「续航估值 × 效率常数」，残差里大部分是充电时气温而不是测量噪声；" +
+            "结论只在这 ${d.span_km.roundToInt()} 公里 / ${d.span_days} 天内有效，不能外推"
 }
