@@ -92,14 +92,26 @@ fun DriveScoreCard(
         // 缩略后这两个数字块**分不出主次**。现在层级比是 44 : 26 = **1.69×**。
         BigStat(
             s.median_score.roundToInt().toString(),
-            "驾驶平顺分（中位）",
+            // ⚠️ **v0.44.0（第 24 轮对抗性审计 ⑩）：名字要诚实。**
+            //
+            // 「平顺分」这个名字**只覆盖了 60 分**：
+            // 实测 drive#410（2026-10-06 夜间）**急刹 0 次、急加 0 次**（完美平顺），
+            // 得分只有 **54.1** —— 全扣在超速 50.4%、夜驾 100%、能耗 166.6 Wh/km。
+            // ⇒ **40 分来自能耗与夜驾，不是「平顺」。**
+            //
+            // 所以副标题改成「合成指标」，并说明「平顺」只占一部分 ——
+            // 读者才知道这个 60 分里到底有什么。
+            "驾驶平顺分（中位 · 合成指标）",
             mid = true,
         )
         Spacer(Modifier.height(2.dp))
         Text(
             "按 ≥${profile.params.min_distance_km} 公里的 ${s.drive_count} 趟算" +
                 " · 共 ${s.total_km.roundToInt()} 公里" +
-                " · 平均 ${s.avg_score.roundToInt()} 分",
+                " · 平均 ${s.avg_score.roundToInt()} 分" +
+                // ⚠️ v0.44.0：这 100 分里**只有 60 分**是急刹/急加/超速，
+                // 另外 40 分是**能耗与夜驾** —— 名字叫「平顺」，实际不是。
+                " · 其中 40 分来自能耗与夜驾，不只是平顺",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

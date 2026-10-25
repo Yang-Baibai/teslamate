@@ -538,11 +538,20 @@ private fun TimelineList(
         if (routePlan != null) {
             item(key = "route-plan") {
                 var expanded by rememberSaveable { mutableStateOf(false) }
+                // ⚠️ **v0.44.0（第 25 轮车主复审 C2/D1）：「从哪一站出发」。**
+                //
+                // -1 = 整条线（默认）；≥0 = 从第 N 站起算。
+                // ⚠️ 状态放在**这里**（折叠/展开两态共用）——
+                // 否则折叠态显示的是「整条线的最长一跳」、
+                // 展开态显示的是「我选中那一站的最长一跳」，**同屏两个主角数字**。
+                var startFromIndex by rememberSaveable { mutableStateOf(-1) }
                 if (expanded) {
                     RoutePlanCard(
                         routePlan,
                         Modifier.animateItem(),
                         onCollapse = { expanded = false },
+                        startFromIndex = startFromIndex,
+                        onSelectStartIndex = { startFromIndex = it },
                     )
                 } else {
                     RoutePlanSummaryRow(
@@ -552,6 +561,7 @@ private fun TimelineList(
                         templates = routeTemplates,
                         selectedKey = selectedRouteKey,
                         onSelectKey = onSelectRouteKey,
+                        startFromIndex = startFromIndex,
                     )
                 }
             }

@@ -1,6 +1,7 @@
 package com.teslamate.app.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -174,6 +175,64 @@ class RoutePlanLogicTest {
         )
         val v = p.verdict()
         assertTrue("应说明差几个点: $v", v.contains("差 10 个点"))
+    }
+
+    // ── ⚠️ v0.44.0（第 25 轮车主复审 C2/D1）：「从第 N 站出发」 ──────
+
+    private fun plan3Stations() = plan(
+        listOf(
+            // A → B：351 公里，要 88 个点（到不了保底）
+            stop("A", 0.0, gapKm = 351.0, need = 88, required = 108, realSoc = 13, estSoc = 8),
+            // B → C：120 公里，正常
+            stop("B", 351.0, gapKm = 120.0, need = 30, required = 50, realSoc = 40, estSoc = 45),
+            // C → D：300 公里，估算低于保底
+            stop("C", 471.0, gapKm = 300.0, need = 70, required = 90, realSoc = 15, estSoc = 18),
+        ),
+    )
+
+    @Test
+    fun `从第 N 站起算 只给后面的跳`() {
+        val p = plan3Stations()
+        // 整条线：3 跳里 A→B（到不了保底）与 C→D（估 18 < 20）都要处理
+        assertEquals("整条线两跳需要注意", 2, p.actionableHops.size)
+        // 从 B 起算：B→C 正常、C→D 仍要注意 ⇒ 只剩 1 跳
+        val fromB = p.actionableHopsFrom(1)
+        assertEquals("从 B 起只剩 1 跳", 1, fromB.size)
+        assertEquals("应是 C → D", "C", fromB[0].fromName)
+    }
+
+    @Test
+    fun `从第 N 站起算 最长一跳也跟着变`() {
+        val p = plan3Stations()
+        // 整条线最长 = A→B 的 351 公里
+        assertEquals(351.0, p.longestHop!!.km, 0.001)
+        // 从 B 起算：B→C 是 120 公里、C→D 是 300 公里 ⇒ 最长变成 C→D
+        val fromB = p.longestHopFrom(1)
+        assertEquals(300.0, fromB!!.km, 0.001)
+        // ⚠️ hop 以**出发站**命名（C 那一跳的出发站是 C）
+        assertEquals("C", fromB.fromName)
+        // ⚠️ 夹具里 C 是最后一站 ⇒ 它的「下一站」是终点
+        assertEquals("终点", fromB.toName)
+    }
+
+    @Test
+    fun `从第 N 站起算 决策句也跟着变`() {
+        val p = plan3Stations()
+        // 整条线的决策句说的是 A→B（最长那一跳，上次剩 13%）
+        assertTrue("整条线: ${p.verdict()}", p.verdict().contains("13%"))
+        // 从 B 起算 ⇒ 最长那一跳变成 C→D（上次剩 15%、估算剩 18%）
+        val fromB = p.verdictFrom(1)
+        assertTrue("从 B 起: $fromB", fromB.contains("15%"))
+        assertTrue("从 B 起: $fromB", fromB.contains("18%"))
+        assertFalse("不该再讲 A→B: $fromB", fromB.contains("13%"))
+    }
+
+    @Test
+    fun `起点下标越界要夹住`() {
+        val p = plan3Stations()
+        // 越界 ⇒ 回退整条线（而不是悄悄藏掉数据），不崩
+        assertEquals(p.actionableHops.size, p.actionableHopsFrom(999).size)
+        assertEquals(p.actionableHops.size, p.actionableHopsFrom(-5).size)
     }
 
     @Test

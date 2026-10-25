@@ -578,7 +578,15 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                             "${kmDrives.roundToInt()} 公里行驶，" +
                                             "而里程表走了 ${kmOdo.roundToInt()} 公里 —— " +
                                             "差的 $gap% 是 TeslaMate 没在记录的遥测断档" +
-                                            "（那些路车真开了，但没记行程），所以每公里成本是区间。",
+                                            "（那些路车真开了，但没记行程），所以每公里成本是区间。" +
+                                            // ⚠️ **v0.44.0（第 24 轮对抗性审计 ⑫）：还要说清**窗口边界**。**
+                                            //
+                                            // 分子 = 窗口内**充入的电**，分母 = 窗口内**跑的公里** ——
+                                            // 这两者**不是同一段能量**：窗口起点的存量电量、
+                                            // 窗口终点尚未消耗的电量，都被算进去了。
+                                            // 长窗口（1 年）这个偏差可以到百分之十几。
+                                            "另外分子是窗口内充入的电、分母是窗口内跑的公里，" +
+                                                "窗口两端还剩多少电的差没有扣，所以这个数是近似值。",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.padding(bottom = 4.dp),
@@ -897,6 +905,13 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             buildString {
                                 append("「占铭牌」= 可用容量 ÷ 铭牌毛容量，两者不是同一口径，")
                                 append("它不是「衰减了多少」。")
+                                // ⚠️ **v0.44.0（第 24 轮对抗性审计 ⑪）：分子依赖一个**用户可改的常数**。**
+                                //
+                                // 分子 = 车机上报的续航估值 × `cars.efficiency`（本机 0.146）。
+                                // 那个常数是车主为修 Wh/km 显示而配的 —— **改一次，界面就变一次**
+                                // （0.146 → 0.153 会让这个数从 84.9% 跳到 88.9%）。
+                                // 不说清楚，读者会以为它是「测出来的」。
+                                append("分子里的效率常数（cars.efficiency）可在服务端改，改了这个数就变。")
                                 if (b.nominal_capacity_kwh != null && strictMax != null) {
                                     append("本车实测上限 ")
                                     append((strictMax * 100 / b.nominal_capacity_kwh).fmt(1))

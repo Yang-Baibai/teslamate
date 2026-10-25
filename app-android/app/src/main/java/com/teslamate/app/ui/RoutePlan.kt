@@ -505,8 +505,13 @@ data class RouteHop(
  *
  * @return 告警文本；这一跳够得着保底时返回 null（不渲染）。
  */
-fun RoutePlan.belowReserveNotice(): String? {
-    val hop = longestHop ?: return null
+fun RoutePlan.belowReserveNotice(): String? = belowReserveNoticeFrom(0)
+
+/**
+ * ⚠️ **v0.44.0**：从第 [startIdx] 站起算的告警行。
+ */
+fun RoutePlan.belowReserveNoticeFrom(startIdx: Int): String? {
+    val hop = longestHopFrom(startIdx) ?: return null
     val req = hop.requiredSoc ?: return null
     if (req <= 100) return null
     return buildString {
@@ -653,31 +658,96 @@ data class RoutePlan(
      * 不是真实线路的数字。** 真线复算是 **13 跳**（36 站里）。
      * 教训：发布说明里的数字必须来自**真实数据复算**，不能来自单测夹具。
      */
-    val actionableHops: List<RouteHop>
-        get() {
-            val out = mutableListOf<RouteHop>()
-            for (i in stops.indices) {
-                val s = stops[i]
-                val gap = s.gapToNextKm ?: continue
-                if (gap < 2.0) continue
-                val est = s.socAtNextStop
-                val real = s.nextStopRealSoc
-                val belowReserve = s.gapBelowReserve
-                val estLow = est != null && est < RESERVE_SOC
-                val realLowHidden = real != null && real < RESERVE_SOC && (est ?: 0) >= RESERVE_SOC
-                if (!belowReserve && !estLow && !realLowHidden) continue
-                out += RouteHop(
-                    fromName = s.name,
-                    toName = stops.getOrNull(i + 1)?.name ?: "终点",
-                    km = gap,
-                    realSoc = s.nextStopRealSoc,
-                    estSoc = est,
-                    needPct = s.gapNeedPct,
-                    requiredSoc = s.requiredSocHere,
-                )
-            }
-            return out
+    /**
+     * ⚠️ **v0.44.0（第 25 轮车主复审 C2/D1）：从第 [startIdx] 站起算的「需要注意的那几跳」。**
+     *
+     * ## 为什么要有这个
+     *
+     * 车主复审的原话：
+     * > 「**我从第 N 站出发，下一站是哪、要充到多少**？」
+     *
+     * 而原来的 `actionableHops` **永远从整条线的起点算** ——
+     * 我人在修文县，看到的却是「乐驿 → 梧州大酒店」这种**已经走过的**跳。
+     *
+     * ## 数据其实全都有
+     *
+     * 每一跳的 need / requiredSocHere / socAtNextStop / nextStopRealSoc
+     * 在 [stops] 里逐站都有 —— 缺的只是**入口**（从哪一站看）。
+     *
+     * @param startIdx 起始站的下标；0 = 整条线（现在的行为）。
+     */
+    fun actionableHopsFrom(startIdx: Int): List<RouteHop> {
+        val from = if (startIdx in stops.indices) startIdx else 0
+        val out = mutableListOf<RouteHop>()
+        for (i in from..stops.lastIndex) {
+            val s = stops[i]
+            val gap = s.gapToNextKm ?: continue
+            if (gap < 2.0) continue
+            val est = s.socAtNextStop
+            val real = s.nextStopRealSoc
+            val belowReserve = s.gapBelowReserve
+            val estLow = est != null && est < RESERVE_SOC
+            val realLowHidden = real != null && real < RESERVE_SOC && (est ?: 0) >= RESERVE_SOC
+            if (!belowReserve && !estLow && !realLowHidden) continue
+            out += RouteHop(
+                fromName = s.name,
+                toName = stops.getOrNull(i + 1)?.name ?: "终点",
+                km = gap,
+                realSoc = s.nextStopRealSoc,
+                estSoc = est,
+                needPct = s.gapNeedPct,
+                requiredSoc = s.requiredSocHere,
+            )
         }
+        return out
+    }
+
+    /**
+     * ⚠️ **v0.44.0：从第 [startIdx] 站起算的最长一跳。**
+     *
+     * 原来只有「整条线的最长一跳」—— 我人在半路时，
+     * 主角数字 351 公里讲的是**我还没走的那一段**，而我关心的是**我眼前这一段**。
+     */
+    fun longestHopFrom(startIdx: Int): RouteHop? {
+        val from = if (startIdx in stops.indices) startIdx else 0
+        var best: RouteHop? = null
+        for (i in from..stops.lastIndex) {
+            val s = stops[i]
+            val gap = s.gapToNextKm ?: continue
+            if (gap < 2.0) continue
+            if (best != null && gap <= best.km) continue
+            val nxt = stops.getOrNull(i + 1)
+            best = RouteHop(
+                fromName = s.name,
+                toName = nxt?.name ?: "终点",
+                km = gap,
+                // ⚠️ **v0.37.0（单测抓到的真 bug）：真值必须取 `nextStopRealSoc`。**
+                //
+                // 原来这里写的是 `nxt?.socBefore` —— 那是**插枪电量**，
+                // 正是 v0.36.0 修掉的那个错口径（C1）。
+                // 而 `nextStopRealSoc` 才是**下一站的到站电量**（已修正过）。
+                realSoc = s.nextStopRealSoc,
+                estSoc = s.socAtNextStop,
+                needPct = s.gapNeedPct,
+                requiredSoc = s.requiredSocHere,
+            )
+        }
+        return best
+    }
+
+    /**
+     * ⚠️ **v0.39.0（第 23 轮车主复审 P2-3）：整条线里**需要处理**的那几跳。**
+     *
+     * 全量列表不能删（数据一点没丢是原则），但**要处理的那几跳必须能一眼找到**：
+     * ① 这一跳**充满也到不了 20% 保底**（不是「到不了」）；
+     * ② 估算到站**低于保底**；
+     * ③ 估算说够、但**上次实测低于保底**（模型偏乐观的跳）。
+     *
+     * ⚠️ **v0.40.0（第 24 轮客户复审 N2）：「4 跳」这个数字是**单测里的 4 个合成站**，
+     * 不是真实线路的数字。** 真线复算是 **13 跳**（36 站里）。
+     * 教训：发布说明里的数字必须来自**真实数据复算**，不能来自单测夹具。
+     */
+    val actionableHops: List<RouteHop> get() = actionableHopsFrom(0)
 
     /**
      * ⚠️ **v0.42.0：端到端到站误差（估 − 实测），**从这条线自己的数据算**。**
@@ -732,35 +802,10 @@ data class RoutePlan(
      *
      * 口径与 [stationRhythm] 一致：只取**站与站之间**、且 **≥2 公里**的间距
      * （<2 公里的是同一个桩被拆成两行，不是真的站间距）。
+     *
+     * ⚠️ **v0.44.0**：要从**第 N 站起算**就用 [longestHopFrom]。
      */
-    val longestHop: RouteHop?
-        get() {
-            var best: RouteHop? = null
-            for (i in stops.indices) {
-                val s = stops[i]
-                val gap = s.gapToNextKm ?: continue
-                if (gap < 2.0) continue
-                if (best != null && gap <= best.km) continue
-                val nxt = stops.getOrNull(i + 1)
-                best = RouteHop(
-                    fromName = s.name,
-                    toName = nxt?.name ?: "终点",
-                    km = gap,
-                    // ⚠️ **v0.37.0（单测抓到的真 bug）：真值必须取 `nextStopRealSoc`。**
-                    //
-                    // 原来这里写的是 `nxt?.socBefore` —— 那是**插枪电量**，
-                    // 正是 v0.36.0 修掉的那个错口径（C1）。
-                    // 而 `nextStopRealSoc` 才是**下一站的到站电量**（已修正过）。
-                    //
-                    // JVM 单测 `RoutePlanLogicTest.决策句给出真值与估算` 当场抓到了它。
-                    realSoc = s.nextStopRealSoc,
-                    estSoc = s.socAtNextStop,
-                    needPct = s.gapNeedPct,
-                    requiredSoc = s.requiredSocHere,
-                )
-            }
-            return best
-        }
+    val longestHop: RouteHop? get() = longestHopFrom(0)
 
     /**
      * ⚠️ **v0.29.0（复审 P0-3）：最低点要带上它的公里数。**
@@ -847,7 +892,15 @@ data class RoutePlan(
      * 现在每句都带「按 X 那趟实测」前缀 ——
      * 把「历史」和「预测」分开说，让用户自己判断可信度。
      */
-    fun verdict(): String {
+    /**
+     * ⚠️ **v0.44.0**：整条线（从起点算）的决策句。
+     */
+    fun verdict(): String = verdictFrom(0)
+
+    /**
+     * ⚠️ **v0.44.0**：从第 [startIdx] 站起算的决策句。
+     */
+    fun verdictFrom(startIdx: Int): String {
         // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-7 / 一线车主 P0-4）：决策句必须**短**。**
         //
         // 原来这一句是 **85 字**（含站间距分布 + 两个低点），
@@ -862,7 +915,7 @@ data class RoutePlan(
         //
         // ⚠️ **v0.35.0**：折叠态的主角（44sp）已经显示了「最长一段 + 站名」，
         // 所以这里**不再重复**那部分，只说电量。
-        val hop = longestHop
+        val hop = longestHopFrom(startIdx)
         if (hop != null) {
             val sb = StringBuilder()
             // ⚠️ **v0.41.0（第 25 轮 HIG 复审 P0-3 + 车主复审 P2）：标签统一缩短。**
@@ -1759,9 +1812,18 @@ fun RoutePlanSummaryRow(
     selectedKey: String? = null,
     /** ⚠️ v0.18.0：切换选中的线路。 */
     onSelectKey: (String) -> Unit = {},
+    /**
+     * ⚠️ **v0.44.0（第 25 轮车主复审 C2/D1）：从哪一站起算。
+     *
+     * -1 = 整条线（默认）。不同于「选中的线路」（[selectedKey]）——
+     * 选线路是「我要走哪条线」，选起点是「我现在在哪个站」。
+     */
+    startFromIndex: Int = -1,
 ) {
     val accents = LocalAccentColors.current
     val t = plan.template
+    // ⚠️ v0.44.0：起点选中时，主角数字与决策句都说「我眼前这一段」。
+    val startIdx = startFromIndex.coerceAtLeast(0)
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = accents.cardSurface,
@@ -1820,7 +1882,7 @@ fun RoutePlanSummaryRow(
                     // 主角在自己的副标题里淹没了。
                     // 现在 fs ≥ 1.35 走竖排（数字独占一行，副标题全宽）。
                     val bigFont = LocalDensity.current.fontScale >= 1.35f
-                    plan.longestHop?.let { hop ->
+                    plan.longestHopFrom(startIdx)?.let { hop ->
                         if (bigFont) {
                             Column {
                                 Text(
@@ -1873,7 +1935,7 @@ fun RoutePlanSummaryRow(
                     // 现在 [RoutePlan.verdict] 只给**最长的一跳**（一行），
                     // 来源限定与全程最低挪到下面的细节行。
                     Text(
-                        plan.verdict(),
+                        plan.verdictFrom(startIdx),
                         style = MaterialTheme.typography.bodyMedium,
                         color = accents.energyBlue,
                         fontWeight = FontWeight.Bold,
@@ -1891,7 +1953,7 @@ fun RoutePlanSummaryRow(
                     // 「充满也只剩 X%，低于 20% 保底」** —— 前者是假事实。
                     // ⚠️ **v0.41.0**：告警行改成调用 [RoutePlan.belowReserveNotice] ——
                     // 纯函数，才能被 JVM 单测直接断言。
-                    plan.belowReserveNotice()?.let { notice ->
+                    plan.belowReserveNoticeFrom(startIdx)?.let { notice ->
                         Text(
                             notice,
                             style = MaterialTheme.typography.labelSmall,
@@ -1943,6 +2005,113 @@ fun RoutePlanSummaryRow(
 }
 
 /**
+ * ⚠️ **v0.44.0（第 25 轮车主复审 C2/D1）：「从哪一站出发」的起点选择器。
+ *
+ * ## 为什么要有它
+ *
+ * 车主复审的原话：
+ * > 「**我从第 N 站出发，下一站是哪、要充到多少**？」
+ *
+ * 而原来的卡片**永远从整条线的起点算** ——
+ * 我人在修文县，看到的却是「乐驿 → 梧州大酒店」这种**已经走过**的跳。
+ *
+ * ## 数据全部都有，缺的只是**入口**
+ *
+ * 每一跳的 need / requiredSocHere / socAtNextStop / nextStopRealSoc
+ * 在 `stops` 里逐站都有 —— 选完之后，
+ * 决策句、最长一跳、「需要注意的跳」全部从选中的那一站起算。
+ *
+ * ⚠️ **第一个 chip 是「整条线」**（退回默认行为）。
+ */
+@Composable
+fun RouteStartChips(
+    plan: RoutePlan,
+    /** 当前选中的起点下标；-1 = 整条线。 */
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val accents = LocalAccentColors.current
+    LazyRow(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        // ⚠️ v0.20.0（车主 P1-4）：**末尾留白** ——
+        // 未项会被卡片右边缘**竖着切掉一半**，
+        // 用户分不清是「还有更多」还是渲染坏了。
+        contentPadding = PaddingValues(end = 12.dp),
+    ) {
+        // 「整条线」：退回默认（从起点算）
+        item {
+            StartChip(
+                label = "整条线",
+                selected = selectedIndex < 0,
+                accents = accents,
+                onClick = { onSelect(-1) },
+            )
+        }
+        items(plan.stops.size) { i ->
+            val s = plan.stops[i]
+            StartChip(
+                label = if (s.kmAlongRoute < 1.0) "起点" else s.name,
+                selected = i == selectedIndex,
+                accents = accents,
+                onClick = { onSelect(i) },
+            )
+        }
+    }
+}
+
+/** 起点选择器的单个 chip。 */
+@Composable
+private fun StartChip(
+    label: String,
+    selected: Boolean,
+    accents: AccentColors,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) accents.energyBlue.copy(alpha = 0.16f) else accents.cardInset,
+        // ⚠️ v0.36.0（视觉评审 P2-6）：描边改**不透明**。
+        // 原来的 energyBlue.copy(alpha = 0.55f) 压在选中底上只有 **2.17:1** ——
+        // 低于非文字图形的 3:1，**这道描边自己就看不清**。
+        border = if (selected) {
+            androidx.compose.foundation.BorderStroke(1.dp, accents.energyBlue)
+        } else {
+            null
+        },
+        modifier = Modifier
+            // ⚠️ v0.20.0（a11y 评审 P0-3）：**用 selectable 而不是 clickable** ——
+            // 「从哪一站出发」是这张卡的核心功能，
+            // 而选中态原来只有底色 + 描边（**只靠颜色**，违反 WCAG 1.3.1），
+            // TalkBack 也不知道哪个被选中。
+            .selectable(
+                selected = selected,
+                role = Role.Tab,
+                onClick = onClick,
+            )
+            // ⚠️ 触控目标：chip 高只有 28dp（16dp 文字 + 12dp 内距），
+            // 远低于 WCAG 2.5.8 的 44dp。
+            .heightIn(min = 44.dp)
+            .semantics(mergeDescendants = true) { },
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (selected) accents.energyBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
  * 路线余量表卡片。
  *
  * ⚠️ v0.11.0（长途自驾党 P0-1）：这是「出发前 5 分钟」真正要看的那张表。
@@ -1955,9 +2124,19 @@ fun RoutePlanCard(
     plan: RoutePlan,
     modifier: Modifier = Modifier,
     onCollapse: (() -> Unit)? = null,
+    /**
+     * ⚠️ **v0.44.0（第 25 轮车主复审 C2/D1）：从哪一站起算。
+     *
+     * -1 = 整条线（默认）。选中时，主角数字、决策句、
+     * 「需要注意的跳」全部从那一站起算。
+     */
+    startFromIndex: Int = -1,
+    /** ⚠️ v0.44.0：切换起点（-1 = 整条线）。 */
+    onSelectStartIndex: (Int) -> Unit = {},
 ) {
     val accents = LocalAccentColors.current
     val t = plan.template
+    val startIdx = startFromIndex.coerceAtLeast(0)
     // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-1）：每站的证据行默认**收起**。**
     //
     // 实测那条川藏滇线有 **36 个站**；原来每站 5~6 行，
@@ -1985,6 +2164,30 @@ fun RoutePlanCard(
                 Spacer(Modifier.weight(1f))
             }
         }
+        // ⚠️ **v0.44.0（第 25 轮车主复审 C2/D1）：「从哪一站出发」的起点选择器。**
+        //
+        // 车主复审的原话：
+        // > 「**我从第 N 站出发，下一站是哪、要充到多少**？」
+        //
+        // 而原来的卡片**永远从整条线的起点算** —— 我人在修文县，
+        // 看到的却是「乐驿 → 梧州大酒店」这种**已经走过**的跳。
+        // 数据全都有（每一跳的 need / 处方 / 真值都在 `stops` 里），缺的只是**入口**。
+        //
+        // 放在**标题下方、结论句上方**：它是「我在哪儿」的开关，
+        // 决定了下面所有数字**从哪一站起算**。
+        if (plan.stops.size >= 2) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "从哪一站出发",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RouteStartChips(
+                plan = plan,
+                selectedIndex = startFromIndex,
+                onSelect = onSelectStartIndex,
+            )
+        }
         Text(
             plan.conclusion(),
             style = MaterialTheme.typography.bodyMedium,
@@ -1998,7 +2201,7 @@ fun RoutePlanCard(
         //
         // 现在展开态也给一个 **26sp** 的次级主角（复用 `BigStat` 的 `mid` 档，
         // 层级比 44 : 26 = 1.69×）。
-        plan.longestHop?.let { hop ->
+        plan.longestHopFrom(startIdx)?.let { hop ->
             BigStat(
                 hop.km.roundToInt().toString(),
                 "公里 · 最长一段 · ${hop.fromName} → ${hop.toName}",
@@ -2008,7 +2211,7 @@ fun RoutePlanCard(
         // ⚠️ v0.14.0（长途自驾党 P0-1）：**决策句放在图的上方** ——
         // 出发前 5 分钟，读者只读这一行；图是证据，不是结论。
         Text(
-            plan.verdict(),
+            plan.verdictFrom(startIdx),
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Bold,
             color = accents.energyBlue,
@@ -2212,7 +2415,7 @@ fun RoutePlanCard(
                 //
                 // 复审原话：「出发前 5 分钟要在 15 屏里找"下一站"。」
                 // 全量列表不删（数据一点没丢是原则），但**要动手的那几跳**必须一眼能找到。
-                plan.actionableHops.takeIf { it.isNotEmpty() }?.let { hops ->
+                plan.actionableHopsFrom(startIdx).takeIf { it.isNotEmpty() }?.let { hops ->
                     Text(
                         "需要注意的 ${hops.size} 跳",
                         style = MaterialTheme.typography.labelMedium,
