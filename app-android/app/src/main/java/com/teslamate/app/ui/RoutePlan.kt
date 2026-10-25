@@ -2233,7 +2233,22 @@ fun RoutePlanSummaryRow(
                     }
                     plan.verdictDetail().takeIf { it.isNotEmpty() }?.let {
                         Text(
-                            it,
+                            // ⚠️ **v0.54.0（第 30 轮长途自驾党评审）**：
+                            // 「全程最低 X%（第 N 公里）」是**从剖面来的**
+                            // （`verdictDetail()` → `lowestPoint` → `profile`）——
+                            // 而插值剖面在山区的误差实测达 **13 公里**。
+                            //
+                            // ⚠️ v0.53.0 把提示放进了**展开卡**里那个
+                            // **还要再展开一次**的「余量口径与误差带」折叠区 ——
+                            // 而**折叠态**（出发前 5 分钟真正会看到的那一屏）
+                            // 里那个数会带着 13 公里的不确定度出现，却一个字都不说。
+                            //
+                            // 所以提示必须放在**数字旁边**。
+                            it + (if (plan.socProfileInterpolated) {
+                                "（剖面是插值的，山区误差可达 13 公里）"
+                            } else {
+                                ""
+                            }),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
