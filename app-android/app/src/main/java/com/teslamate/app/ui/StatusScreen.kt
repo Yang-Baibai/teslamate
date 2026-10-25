@@ -160,6 +160,20 @@ fun StatusScreen(
         }.onSuccess { store.updateDriveProfile(it, settings.carId) }
             .onFailure { store.failDriveProfile() }
     }
+    // ⚠️ **v0.28.0：常驻点**（官方 App 只能告诉你「车现在在哪」）。
+    //
+    // 服务端从**相邻行程的时间间隙**推断停留时长 ——
+    // 车睡着后 TeslaMate 不记位置，所以这是「推断停留」不是实时停车时长。
+    // 每辆车只算一次，结果放 App 级 store。
+    LaunchedEffect(api, settings.carId) {
+        if (api == null) return@LaunchedEffect
+        if (store.stayPointsLoadedFor == settings.carId) return@LaunchedEffect
+        store.startStayPoints()
+        runCatching {
+            withContext(Dispatchers.IO) { api.stayPoints(settings.carId, 3.0) }
+        }.onSuccess { store.updateStayPoints(it, settings.carId) }
+            .onFailure { store.failStayPoints() }
+    }
     val drives = store.drives
     // ⚠️ v0.9.0：能耗模型改从 store 取（App 级 + **已落盘**），
     // 不用页面里的 `remember(drives) { ConsumptionModel.from(drives) }` ——
@@ -647,6 +661,12 @@ fun StatusScreen(
                             profile = store.driveProfile,
                             loading = store.driveProfileLoading,
                         )
+
+                        // ⚠️ **v0.28.0：常驻点卡片**（这台车平时停哪）。
+                        StayPointsCard(
+                            points = store.stayPoints,
+                            loading = store.stayPointsLoading,
+                        )
                     }
                 }
             }
@@ -717,7 +737,15 @@ private fun RangeAndOdometer(
                 val tmax = m.tempMaxC
                 if (tmin != null && tmax != null) {
                     append("（${tmin.roundToInt()}~${tmax.roundToInt()}°C")
-                    if (!m.lowTempTrustworthy) append("，无冬季样本")
+                    // ⚠️ v0.28.0（复审 P1-9）：不要写「无冬季样本」——
+                    // 实测样本区间下界是 **8.3°C**，本身就是一条冬季样本。
+                    // 说「无冬季样本」与自己给的区间**自相矛盾**。
+                    // 改成说清楚**低温样本到底有几条**。
+                    if (m.lowTempSamples >= 1) {
+                        append("，≤10°C 只有 ${m.lowTempSamples} 条")
+                    } else {
+                        append("，无 ≤10°C 样本")
+                    }
                     append("）")
                 }
             }
@@ -751,13 +779,34 @@ private fun RangeAndOdometer(
         //
         // 这**不是另一个估计值**（不跟 204 打架），
         // 而是同一个模型换了个阈值 —— 所以用副行呈现，不抢主角。
-        val trueRangeFloor = consumption?.trueRangeKm(
-            ratedRangeKm = ratedRange,
-            speedKph = refSpeed,
-            outsideTempC = st.outside_temp,
-            ascentM = recentAscent,
-            reserveFactor = 0.80,
-        )
+        //
+        // ⚠️ **v0.28.0（复审 P0-4）：`reserveFactor` 的语义原来搞错了。**
+        //
+        // 公式是 `标定续航 × 146 ÷ 实测Wh/km × reserveFactor`，
+        // 所以 `reserveFactor = 0.80` 的含义是「**用掉** 80% 的当前续航」，
+        // 而不是「**留下** 20% 的电池」。
+        //
+        // 实测：当前 69% 电量时，原文案写「留 20% 保底还能开 197 公里」，
+        // 而实际到达电量 = 69% × 20% = **13.8%**（真正留 20% 只有 174.7 公里）。
+        // 复审原话：「`reserveFactor=0.80` 是『用掉当前电量的 80%』，
+        // 不是『留下 20% 的电池』。」
+        //
+        // 现在按**绝对电量**算：能用掉的比例 = (当前电量 − 20%) ÷ 当前电量。
+        val socPct = st.battery_level
+        val reserveFactor = if (socPct != null && socPct > 20) {
+            (socPct - 20).toDouble() / socPct
+        } else {
+            null
+        }
+        val trueRangeFloor = reserveFactor?.let { rf ->
+            consumption?.trueRangeKm(
+                ratedRangeKm = ratedRange,
+                speedKph = refSpeed,
+                outsideTempC = st.outside_temp,
+                ascentM = recentAscent,
+                reserveFactor = rf,
+            )
+        }
         if (trueRangeFloor != null && trueRange != null) {
             Text(
                 "留 20% 保底还能开 ${trueRangeFloor.fmt(0)} 公里",

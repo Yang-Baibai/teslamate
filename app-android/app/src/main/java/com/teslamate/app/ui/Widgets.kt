@@ -1539,7 +1539,7 @@ fun LowBatteryPill(
             Icon(
                 Icons.Filled.WarningAmber,
                 contentDescription = null,
-                tint = a.warnAmber,
+                tint = a.warnAmberText,
                 modifier = Modifier.size(13.dp),
             )
             Spacer(Modifier.width(3.dp))
@@ -1548,7 +1548,12 @@ fun LowBatteryPill(
                 style = MaterialTheme.typography.labelSmall,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = a.warnAmber,
+                // ⚠️ v0.28.0（复审 P1-5）：用 **warnAmberText**（#8A5200 / #F5A623），
+                // 不用 warnAmber（#9A5B00）——
+                // 底色是 warnAmber@16% 叠在白卡片上 ≈ #EFE5D6，
+                // #9A5B00 对它是 **4.35:1 < 4.5:1**（文字 AA 不达标）。
+                // #8A5200 → **5.11:1** ✓
+                color = a.warnAmberText,
             )
         }
     }
@@ -1608,7 +1613,38 @@ fun EnergyBar(
     // 胶囊比「目标 80%」标签高，所以标签带高度取**两者较大值** ——
     // 否则胶囊会压到条上（200% 字号时尤其明显）。
     val lowBar = soc != null && !charging && soc < 20
-    val pillBandDp = with(density) { 11.sp.toDp() + 6.dp }
+    // ⚠️ **v0.28.0（复审 P1-6）：胶囊高度必须**实测**，不能拿 `11.sp.toDp()` 算。**
+    //
+    // `labelSmall` 的 **lineHeight = 16.sp** 不会被 `fontSize = 11.sp` 覆盖 ——
+    // 所以胶囊的真实高度是 max(11→13dp, 16×fs) + 上下内边距，
+    // 而不是 `11.sp.toDp() + 6.dp`。
+    // 实测：fs=1.0 时真实 22dp vs 预估 17dp（**压住条 5dp**）；
+    // fs=2.0 时真实 38dp vs 预估 28dp（**压住 10dp**）——
+    // 琥珀字直接落到轨道 #77777D 上（对比度 **1.17:1**，不可读）。
+    //
+    // 现在用与「目标 80%」标签同一个 `textMeasurer` 实测，取两者较大值。
+    //
+    // ⚠️ **v0.28.0（复审 P1-6 二次修正）：必须量 `labelSmall` 的**行高**，不是字体高。**
+    // 胶囊里的 Text 用 `MaterialTheme.typography.labelSmall`（lineHeight = 16.sp），
+    // 而 `fontSize = 11.sp` **不覆盖 lineHeight** ——
+    // 所以 `measure(TextStyle(fontSize = 11.sp))` 量到的是**字体高**（13dp），
+    // 真实行高是 16sp（fs=1.0 时 16dp、fs=2.0 时 32dp）。
+    // 复审实测：按字体高算，fs=1.0 时胶囊真高 22dp vs 带高 19.3dp（仍压 2.7dp），
+    // fs=2.0 时真高 38dp vs 带高 32.6dp（**压 5.4dp**，琥珀字落到轨道上只有 1.17:1）。
+    val pillLayout = if (lowBar) {
+        textMeasurer.measure(
+            text = "电量严重偏低",
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 11.sp,
+                color = labelColor,
+            ),
+        )
+    } else {
+        null
+    }
+    val pillBandDp = with(density) {
+        (pillLayout?.size?.height?.toDp() ?: 0.dp) + 6.dp
+    }
     val labelBandDp = maxOf(
         with(density) { (labelLayout?.size?.height?.toDp() ?: 0.dp) + 2.dp },
         if (lowBar) pillBandDp else 0.dp,

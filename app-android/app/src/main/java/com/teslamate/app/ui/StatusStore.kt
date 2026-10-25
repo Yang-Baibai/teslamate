@@ -103,6 +103,22 @@ class StatusStore(private val cache: StatusCache? = null) {
     var driveProfileLoadedFor by mutableStateOf<Int?>(null)
         private set
 
+    /**
+     * ⚠️ **v0.28.0：常驻点**（官方 App 只能告诉你「车现在在哪」）。
+     *
+     * 服务端算（相邻行程间隙 → 推断停留），按车缓存 —— 同理不重复算。
+     */
+    var stayPoints by mutableStateOf<com.teslamate.app.StayPoints?>(null)
+        private set
+
+    /** 已经算过常驻点的车 id。 */
+    var stayPointsLoadedFor by mutableStateOf<Int?>(null)
+        private set
+
+    /** 常驻点正在算。 */
+    var stayPointsLoading by mutableStateOf(false)
+        private set
+
     /** 已有可用数据时为 true —— UI 据此决定是显示骨架屏还是直接显示旧数据。 */
     val hasData: Boolean get() = status != null
 
@@ -149,6 +165,9 @@ class StatusStore(private val cache: StatusCache? = null) {
         driveProfile = null
         driveProfileLoadedFor = null
         driveProfileLoading = false
+        stayPoints = null
+        stayPointsLoadedFor = null
+        stayPointsLoading = false
         hydrate(carId)
     }
 
@@ -169,6 +188,9 @@ class StatusStore(private val cache: StatusCache? = null) {
         driveProfile = null
         driveProfileLoadedFor = null
         driveProfileLoading = false
+        stayPoints = null
+        stayPointsLoadedFor = null
+        stayPointsLoading = false
         cache?.clearAll()
     }
 
@@ -247,5 +269,22 @@ class StatusStore(private val cache: StatusCache? = null) {
     /** 开始算驾驶画像（显示「正在算…」）。 */
     internal fun startDriveProfile() {
         driveProfileLoading = true
+    }
+
+    /** ⚠️ v0.28.0：常驻点算完了。 */
+    internal fun updateStayPoints(points: com.teslamate.app.StayPoints, carId: Int) {
+        stayPoints = points
+        stayPointsLoadedFor = carId
+        stayPointsLoading = false
+    }
+
+    /** 开始算常驻点。 */
+    internal fun startStayPoints() {
+        stayPointsLoading = true
+    }
+
+    /** 常驻点算失败了（保留旧值，只停掉 loading）。 */
+    internal fun failStayPoints() {
+        stayPointsLoading = false
     }
 }

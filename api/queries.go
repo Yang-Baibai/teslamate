@@ -721,3 +721,148 @@ FROM recent r
 LEFT JOIN ev e ON e.drive_id = r.drive_id
 LEFT JOIN pw p ON p.drive_id = r.drive_id
 ORDER BY r.start_date DESC`
+
+// ⚠️ v0.28.0：**常驻点**（车平时停在哪 / 停多久）。
+//
+// ## 语义：为什么只能是「**推断停留**」
+//
+// 车停下来之后 TeslaMate 就**不再记录位置**了（states 里 asleep 44 / offline 123），
+// 所以「现在停了多久」在数据库里**根本不存在** —— 官方 App 能告诉你「车现在在哪」，
+// 但那是**当下**的位置；这里告诉你的是**它平时停在哪、停多久**。
+//
+// 唯一能算出来的口径是：**相邻两趟行程之间的时间间隙** ——
+// 上一趟结束到下一趟开始，中间那段时间车就是停着的。
+// 界面文案必须写「推断停留」，**不能**写「停车时长」（那会让人以为是实时监控）。
+//
+// ## 为什么归属到 **start_address_id** 而不是 end_address_id
+//
+// 同一趟间隙的两端描述的是**同一个物理地点**，但 geocoder 可能给两个不同的
+// addresses 行（实测本机 267 行地址里，「新湖路」与「永丰社区」是同一个停车点，
+// 相距约 170 m，坐标差 0.0004°）。用哪个键，结果**差得离谱**：
+//
+//   按 end_address_id 分组：新湖路 1 次 / 47.3 h，永丰社区 10 次 / 748.8 h
+//   按 start_address_id 分组：新湖路 20 次 / 990.2 h，永丰社区 7 次 / 320.8 h
+//
+// 「这趟行程是**从哪儿开出去**的」= 车停着的位置 = 下一趟的起点，
+// 所以用 **start_address_id** 才是对的（用 end_address_id 会把停车点记到隔壁地址上）。
+//
+// ## 性能
+//
+// drives 440 行 + addresses 267 行 —— 都是**小表**，
+// `Seq Scan on drives` 在这里是**正确**的选择（走 trips_car_id_index 反而更慢，
+// 因为索引扫描后还要回表 440 次）。实测 < 5 ms，无需 work_mem 调优。
+//
+// $1 = car_id，$2 = 最小停留小时数，$3 = 最多返回几个常驻点
+const sqlStayPoints = `
+WITH o AS (
+  SELECT d.id, d.start_date, d.end_date, d.start_address_id
+  FROM drives d
+  WHERE d.car_id = $1 AND d.end_date IS NOT NULL AND d.start_address_id IS NOT NULL
+), g AS (
+  -- LAG 拿到「上一趟的结束时间」；两趟之间的空档就是这台的停留时长。
+  -- ⚠️ 第一趟没有 prev_end（NULL），WHERE 里过滤掉。
+  SELECT o.*, LAG(o.end_date) OVER (ORDER BY o.start_date) AS prev_end
+  FROM o
+)
+SELECT a.id,
+       a.display_name,
+       a.latitude::float8 AS latitude,
+       a.longitude::float8 AS longitude,
+       count(*)::int AS visits,
+       sum(EXTRACT(epoch FROM (g.start_date - g.prev_end)) / 3600.0) AS total_hours,
+       avg(EXTRACT(epoch FROM (g.start_date - g.prev_end)) / 3600.0) AS avg_hours,
+       max(EXTRACT(epoch FROM (g.start_date - g.prev_end)) / 3600.0) AS max_hours,
+       min(g.start_date) AS first_seen,
+       max(g.start_date) AS last_seen
+FROM g
+JOIN addresses a ON a.id = g.start_address_id
+WHERE g.prev_end IS NOT NULL
+  -- ⚠️ 阈值过滤放在聚合**之前**：先滤掉不够长的间隙，再统计 ——
+  -- 否则 avg/max 会被一堆 5 分钟的短停拉偏。
+  AND EXTRACT(epoch FROM (g.start_date - g.prev_end)) / 3600.0 >= $2
+GROUP BY a.id, a.display_name, a.latitude, a.longitude
+ORDER BY total_hours DESC
+LIMIT $3`
+
+// ⚠️ v0.28.0：**能耗-车速曲线**（不同车速下真实耗多少电）。
+//
+// ## 为什么用「车轮功率梯形积分」而不是「续航差 × cars.efficiency」
+//
+// 官方 App 只能给**平均** Wh/km；标定法（标定续航差 × 效率常数）也只有一个平均值，
+// 而且**系统性高估约 7%**（实测标定法/积分法中位比 0.9285，相关系数 0.99686）。
+// 梯形积分给的是**一条曲线**，这才是官方给不了的。
+//
+// ## ⚠️ 坑一：**不能用相邻点的 odometer 差分算距离**
+//
+// 里程表更新比 positions **稀疏**（一个采样点对应一次里程表上报），
+// 逐点差分会漏掉大量里程 —— 评审员第一版算出了「市区 8 Wh/km」的荒谬值。
+// 正确做法：**按 1 km 分箱，用箱与箱之间的里程表跨度**算距离。
+//
+// ## ⚠️ 坑二：**必须按 drive_id 过滤**，否则全表扫描
+//
+// `p.drive_id = ANY(ARRAY(SELECT id FROM drives WHERE car_id = $1))`
+// 命中 positions 上的 BRIN 索引 (drive_id, date)：Index Searches = 行程数，
+// **没有一次 Seq Scan on positions**。
+// handler 里必须配 `SET LOCAL work_mem='128MB'` + `SET LOCAL plan_cache_mode=force_custom_plan`
+// （通用计划会让 Index Searches 从 N 涨到 N×N，理由见 handleRouteProfile）。
+//
+// ## 分档口径
+//
+// `floor(spd/10)*10+5` —— 以 5 km/h 为中心、10 km/h 一档：
+// 5→[0,10)  15→[10,20)  25→[20,30) …… 135→[130,140)。
+// App 侧下发的标签是 0/15/25/…/135/145+（见 energyBandEdges），
+// 最后一档把 ≥140 km/h 的分箱并进来。
+//
+// $1 = car_id
+const sqlEnergyProfile = `
+WITH s AS (
+  -- ⚠️ 窗口必须按 **date** 排序，**不能**按 odometer 排：
+  -- 里程表在单趟行程内**并不单调**（实测 161 万点里有 35245 个逆序点、涉及 437/440 趟），
+  -- 按 odometer 排会让梯形积分的相邻点配错，能耗算出来是错的。
+  SELECT p.drive_id,
+         p.odometer,
+         p.speed,
+         floor(p.odometer)::bigint AS km_bin,
+         -- 梯形积分：(P_i + P_{i-1})/2 × Δt_i，单位 kWh
+         (p.power + LAG(p.power) OVER w) / 2.0
+           * (EXTRACT(EPOCH FROM (p.date - LAG(p.date) OVER w)) / 3600.0) AS kwh,
+         (p.date - LAG(p.date) OVER w) AS dt
+  FROM positions p
+  WHERE p.drive_id = ANY(ARRAY(SELECT id FROM drives WHERE car_id = $1))
+    AND p.power IS NOT NULL
+    AND p.odometer IS NOT NULL
+  WINDOW w AS (PARTITION BY p.drive_id ORDER BY p.date)
+), pair AS (
+  -- 丢弃 Δt > 10 秒的数据断点（采样断了就别跨着算平均功率）
+  SELECT drive_id, odometer, speed, km_bin, kwh
+  FROM s
+  WHERE dt IS NOT NULL AND dt <= interval '10 seconds'
+), b AS (
+  -- ⚠️ 按 1 km 分箱聚合；距离**不**在这里算，要等下一层的箱间跨度
+  SELECT drive_id,
+         km_bin,
+         sum(kwh) AS kwh,
+         max(odometer) AS odo_max,
+         avg(speed) AS spd
+  FROM pair
+  GROUP BY 1, 2
+), b2 AS (
+  -- 箱间跨度 = 本箱最大里程表 − 上一箱最大里程表（这才是「走了多远」）
+  SELECT b.*,
+         LAG(odo_max) OVER (PARTITION BY drive_id ORDER BY km_bin) AS prev
+  FROM b
+), f AS (
+  SELECT drive_id,
+         spd,
+         kwh,
+         odo_max - prev AS dist_km
+  FROM b2
+  WHERE prev IS NOT NULL AND (odo_max - prev) > 0
+)
+SELECT (floor(spd / 10) * 10 + 5)::int AS band_key,
+       count(*)::int AS n_bins,
+       sum(dist_km)::float8 AS km,
+       sum(kwh)::float8 AS kwh_total
+FROM f
+GROUP BY 1
+ORDER BY 1`

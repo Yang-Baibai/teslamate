@@ -530,3 +530,80 @@ type AppLatest struct {
 	ReleaseNotes string `json:"release_notes,omitempty"`
 	Mandatory    bool   `json:"mandatory"`
 }
+
+// ⚠️ v0.28.0：**常驻点**（车平时停在哪 / 停多久）。
+//
+// 端点：`GET /api/v1/cars/{car_id}/stay_points?min_hours=3`。
+//
+// ⚠️ 为什么叫「**推断**停留」而不是「停车时长」：
+// 车停下来之后 TeslaMate **不再记录位置**（states 里 asleep 44 / offline 123），
+// 所以「这一停停了多久」在数据库里并不存在 —— 只能由
+// **相邻两趟行程之间的时间间隙**推断出来。
+// 界面文案写「停车时长」会让人以为是实时监控，那是骗人的。
+type StayPoints struct {
+	// Points 常驻点，按累计停留时长降序，最多 12 个
+	Points []StayPoint `json:"points"`
+	// Note 口径说明 —— 必须随数据一起下发（App 直接展示，不用自己编话术）
+	Note string `json:"note"`
+}
+
+// StayPoint 一个常驻点（一个地址）。
+type StayPoint struct {
+	AddressID int     `json:"address_id"`
+	Name      string  `json:"name"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	// Visits 推断出的停留次数（= 满足阈值的间隙个数）
+	Visits int `json:"visits"`
+	// TotalHours 累计停留小时数 / AvgHours 平均 / MaxHours 单次最长
+	TotalHours float64 `json:"total_hours"`
+	AvgHours   float64 `json:"avg_hours"`
+	MaxHours   float64 `json:"max_hours"`
+	// FirstSeen / LastSeen 第一次、最后一次**开出去**的时间（RFC3339）
+	FirstSeen time.Time `json:"first_seen"`
+	LastSeen  time.Time `json:"last_seen"`
+}
+
+// ⚠️ v0.28.0：**能耗-车速曲线**（不同车速下真实耗多少电）。
+//
+// 端点：`GET /api/v1/cars/{car_id}/energy_profile`。
+//
+// 官方 App 只给**平均** Wh/km；这里给的是一条曲线（分档）。
+type EnergyProfile struct {
+	// Bands 按速度分档的能耗曲线
+	Bands []EnergyBand `json:"bands"`
+	// TotalKm 全车累计里程（公里表口径，与 drives.distance 一致）
+	TotalKm float64 `json:"total_km"`
+	// OverallWhPerKm 全车平均能耗（车轮功率积分 ÷ 总里程）
+	OverallWhPerKm float64 `json:"overall_wh_per_km"`
+	// BestBand 效率最好的一档（wh_per_km 最小）
+	BestBand *EnergyBestBand `json:"best_band"`
+	// Note 口径说明 —— 必须随数据一起下发
+	Note string `json:"note"`
+}
+
+// EnergyBand 一个速度档位。
+type EnergyBand struct {
+	// MinKph / MaxKph 该档的速度区间（km/h）
+	// ⚠️ 最后一档 MaxKph 是**开区间**上界（145+），更高的速度都并进来
+	MinKph int `json:"min_kph"`
+	MaxKph int `json:"max_kph"`
+	// WhPerKm 该档的能耗（Wh/km）
+	WhPerKm float64 `json:"wh_per_km"`
+	// Km 该档累计里程、 Bins 该档的 1 km 分箱个数（样本量）
+	Km   float64 `json:"km"`
+	Bins int     `json:"bins"`
+}
+
+// EnergyBestBand 效率最好的一档。
+type EnergyBestBand struct {
+	MinKph  int     `json:"min_kph"`
+	MaxKph  int     `json:"max_kph"`
+	WhPerKm float64 `json:"wh_per_km"`
+	// ⚠️ v0.28.0（主控修正）：**必须带上 km 与 bins** ——
+	// 原来只有 min/max/wh，App 想显示「这一档跑了多少公里」时拿到的是 0，
+	// 而且 App 用整字段相等来比较「是不是最省电那档」→ **恒为 false**，
+	// 于是「蓝色 = 最省电」的图例是假的。
+	Km   float64 `json:"km"`
+	Bins int     `json:"bins"`
+}

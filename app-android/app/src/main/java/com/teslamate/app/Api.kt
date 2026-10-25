@@ -533,6 +533,73 @@ data class RouteProfilePoint(
 )
 
 /**
+ * ⚠️ **v0.28.0（第 17 轮官方 App 对标评审 A-3）：常驻点。**
+ *
+ * 官方 Tesla App 只能告诉你「车现在在哪」；
+ * 这个告诉你「它**平时**停在哪、停多久」——
+ * 数据来自**相邻两趟行程的时间间隙**。
+ *
+ * ⚠️ 语义是「**推断停留**」不是「实时停车时长」：
+ * 车停下来之后 TeslaMate 会停止记录位置（`states` 里 asleep 44 / offline 123），
+ * 所以我们只能从「上一趟结束 → 下一趟开始」这个间隙推断它停在那儿。
+ */
+@Serializable
+data class StayPoints(
+    val points: List<StayPoint> = emptyList(),
+    val note: String = "",
+)
+
+/** 一个常驻点。 */
+@Serializable
+data class StayPoint(
+    val address_id: Int = 0,
+    val name: String = "",
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    /** 停过多少次 */
+    val visits: Int = 0,
+    /** 累计停留（小时） */
+    val total_hours: Double = 0.0,
+    val avg_hours: Double = 0.0,
+    val max_hours: Double = 0.0,
+    @Serializable(with = InstantSer::class) val first_seen: Instant? = null,
+    @Serializable(with = InstantSer::class) val last_seen: Instant? = null,
+)
+
+/**
+ * ⚠️ **v0.28.0（第 17 轮官方 App 对标评审 A-2）：能耗-车速曲线。**
+ *
+ * **官方 App 给不了的**：它只有**平均** Wh/km；
+ * 而 TeslaMate 有**逐秒的车轮功率** → 能算出「这台车在每个速度下真实耗多少电」。
+ *
+ * 实测本车最佳效率区间 **85–100 km/h（124–147 Wh/km）**，
+ * 120 km/h 以后急剧劣化（170→179 Wh/km）。
+ */
+@Serializable
+data class EnergyProfile(
+    val bands: List<EnergyBand> = emptyList(),
+    val total_km: Double = 0.0,
+    val overall_wh_per_km: Double = 0.0,
+    val best_band: EnergyBand? = null,
+    val note: String = "",
+)
+
+/** 一个速度档的能耗。 */
+@Serializable
+data class EnergyBand(
+    val min_kph: Int = 0,
+    val max_kph: Int = 0,
+    val wh_per_km: Double = 0.0,
+    /** 这一档跑了多少公里 */
+    val km: Double = 0.0,
+    /** 参与统计的 1 km 分箱数 */
+    val bins: Int = 0,
+) {
+    /** 可读名，如「85–95」 */
+    val label: String get() = if (max_kph <= 0) "$min_kph+" else "$min_kph–$max_kph"
+}
+
+/**
  * ⚠️ **v0.27.0（第 17 轮官方 App 对标评审 A-1）：驾驶行为画像。**
  *
  * **官方 Tesla App 没有这个**（只有第三方 TeslaFi / ABetterDrive 有），
@@ -866,9 +933,28 @@ class Api private constructor(private val base: String, private val token: Strin
      *
      * 阈值（2 秒窗口 20 km/h、120 km/h、夜间 22:00–06:00）是**行业惯例**，
      * 随响应一起下发 —— 界面必须说清它们是拍的，不是拟合出来的。
+     *
+     * @param minKm 只统计 ≥ 这个里程的行程。
+     *   ⚠️ **默认 20 公里** —— 实测近 30 趟里有 16 趟不到 20 公里（占里程 15%），
+     *   而低分那几趟全是 6~9 公里的**挪车**（商场/充电站内），
+     *   一次急刹就算「42 次/百公里」直接扣满 30 分 ——
+     *   主角分数会被「你在停车场挪车」主导。
      */
-    fun drivingProfile(carId: Int, limit: Int = 20): DrivingProfile =
-        get("/api/v1/cars/$carId/driving_profile?limit=$limit")
+    fun drivingProfile(carId: Int, limit: Int = 20, minKm: Int = 20): DrivingProfile =
+        get("/api/v1/cars/$carId/driving_profile?limit=$limit&min_km=$minKm")
+
+    /**
+     * ⚠️ **v0.28.0：常驻点**（官方 App 只能告诉你「车现在在哪」）。
+     *
+     * ⚠️ 语义是「**推断停留**」：车停下来之后 TeslaMate 停止记录位置，
+     * 所以停留时长来自**相邻两趟行程的时间间隙**，不是实时停车时长。
+     */
+    fun stayPoints(carId: Int, minHours: Double = 3.0): StayPoints =
+        get("/api/v1/cars/$carId/stay_points?min_hours=$minHours")
+
+    /** ⚠️ **v0.28.0：能耗-车速曲线**（车轮功率积分；官方只有平均 Wh/km）。 */
+    fun energyProfile(carId: Int): EnergyProfile =
+        get("/api/v1/cars/$carId/energy_profile")
 
     /**
      * ⚠️ v0.25.0：一个时间窗口内的**充电成本构成**（度数 / 场次 / 时长）。

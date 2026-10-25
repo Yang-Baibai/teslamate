@@ -15,7 +15,8 @@ import kotlin.math.roundToInt
  * 原先把「一条线路」当成**一趟 drive**（按起止地名分组，取最近那一趟）。
  * 这在数据上是错的 —— **充电必然打断行程**：
  *
- * 实测 78/78 场充电都落在某趟 drive 的**起点或终点**附近（最近距离 ≤ 0.022 km），
+ * 实测 App 能看到的 **69 场**充电全部落在某趟 drive 的**起点或终点**附近
+ * （距离中位 0、最大 0.0599 km；库里另有 9 场是充入 0 度的空会话，App 看不到）。
  * 也就是说：**一趟 drive 内部永远不会发生充电**。
  *
  * 后果（复刻 App 的实际输出）：
@@ -35,7 +36,7 @@ import kotlin.math.roundToInt
  * 1. **里程连续**：相邻两趟之间里程表缺口 ≤ [MAX_GAP_KM]，
  *    且时间间隔 ≤ [MAX_GAP_HOURS]。
  * 2. **「回家了」**：充电点**重复出现**且相隔 > [HOME_RETURN_KM] ——
- *    这是「出门」的真正终点。实测本机家充点「石化大道西」7 次充电
+ *    这是「出门」的真正终点。实测本机常驻充电点「石化大道西」7 次充电
  *    分布在 08-01~10-24，每次间隔 235~976 公里。
  *
  * 判据 1 单独用会把「一次 19 天的自驾 + 中途在当地开了 4 天」连成一条
@@ -61,11 +62,29 @@ object RouteJourneyLimits {
     /**
      * 「回到常驻点」的判据：同一个充电点相隔超过这么多公里就算「回来了」。
      *
-     * 实测本机：家充点两次充电相隔 235~976 公里；
-     * 而同一趟途中的**连续两次**充电（修文县 4 次、金田服务区 4 次）
-     * 相隔都在 **2.5 公里以内** —— 所以 50 公里能干净地把两者分开。
+     * ⚠️ **v0.28.0（复审 P1-7）：50 → 120 公里。**
+     *
+     * 原来 50 公里会**误判**：实测「印象雅緻酒店」两场相隔 **59.97 公里**
+     * 被判成「回到常驻点」，把 3551 公里的长途**从中间切成了两段**。
+     *
+     * 但那两场其实是**同一个地点、同一段数据异常**：
+     * 两场充电的坐标逐位相同（30.01848, 101.53022），里程却差了 59.9 公里 ——
+     * 而这 59.9 公里**中间没有任何行程记录**（里程表走了，行程表是空的）。
+     * 所以它不是「开出去又开回来」，是**里程表跳了一段**。
+     *
+     * 本机真实的「回到常驻点」间隔实测是 **231.5 / 376.9 / 760.5 / 820.1 /
+     * 1326.5 / 7746.6 公里** —— 120 公里能干净地把它们全部分出来，
+     * 又把 59.97 那个异常排除在外。
      */
-    const val HOME_RETURN_KM = 50.0
+    const val HOME_RETURN_KM = 120.0
+
+    /**
+     * 「回到常驻点」还要求**时间上也隔开了**（至少 6 小时）。
+     *
+     * 同一个桩在 5 分钟内插拔两次（实测 ids 7/8、16/17、43/44 …）是**一次插枪**
+     * 被 TeslaMate 切成两段，不是「回来了」。
+     */
+    const val HOME_RETURN_MIN_HOURS = 6.0
 
     /** 充电与行程边界的匹配容差（公里）。实测充电里程与上一段 `end_km` 的误差 ≤ 0.1 公里。 */
     const val BOUNDARY_TOL_KM = 3.0
@@ -82,6 +101,12 @@ data class JourneyLeg(
     val startPlace: String?,
     val endPlace: String?,
     val startDate: Instant,
+    /**
+     * ⚠️ v0.28.0（复审 P0-2）：这一段的**结束时刻** ——
+     * 沿途站的归属必须同时看**里程**和**时间**：
+     * 只看里程会把 62 小时后的另一场充电误判成「这一段的到达充电」。
+     */
+    val endDate: Instant,
 )
 
 /** 旅程中的一个充电停靠。 */
@@ -91,6 +116,15 @@ data class JourneyStop(
     val kmAlong: Double,
     /** 这一段是「到达之后的充电」吗（不属于沿途） */
     val isEndpoint: Boolean,
+    /**
+     * ⚠️ v0.28.0（复审 P0-3）：到站时的电量（%）。
+     *
+     * TeslaMate 有时把**一次插枪**切成两个 process，
+     * 合并后 socBefore 取最早那场、socAfter 取最晚那场。
+     */
+    val socBefore: Int? = null,
+    /** 充完后的电量（%） */
+    val socAfter: Int? = null,
 )
 
 /** 一次连续出门（一段 journey）。 */
@@ -108,6 +142,15 @@ data class Journey(
 ) {
     val distanceKm: Double get() = endKm - startKm
     val legCount: Int get() = legs.size
+
+    /**
+     * ⚠️ **v0.28.0（复审 P1-10）：「N 段」要排除挪车微行程。**
+     *
+     * 实测：一次 118 段的旅程里有 **38 段**不到 2 公里 ——
+     * 那是**充电站内挪车**（0.12~0.4 公里），不是「路被切成 118 段」。
+     * 不排除的话，「118 段 · 40 次沿途充电」读起来像「这趟路特别碎」。
+     */
+    val meaningfulLegCount: Int get() = legs.count { it.distanceKm >= 2.0 }
     /** 沿途站数量（不含到达后的那次） */
     val midStopCount: Int get() = stops.count { !it.isEndpoint }
 }
@@ -136,6 +179,9 @@ fun buildJourneys(
             startPlace = d.start_geofence ?: d.start_place?.firstSegment(),
             endPlace = d.end_geofence ?: d.end_place?.firstSegment(),
             startDate = d.start_date,
+            // ⚠️ v0.28.0（复审 P0-2）：结束时刻用于沿途站的**时间**归属。
+            // 库里 end_date 可能为 NULL（车还在开），退回开始时刻。
+            endDate = d.end_date ?: d.start_date,
         )
     }.sortedBy { it.startKm }
 
@@ -148,16 +194,24 @@ fun buildJourneys(
     val chargesByOdo = charges
         .filter { it.start_odometer_km != null }
         .sortedBy { it.start_odometer_km }
-    val lastSeenAt = HashMap<String, Double>()
+    val lastSeenAt = HashMap<String, Pair<Double, Instant>>()
     val homeReturn = HashSet<Int>()
     for (c in chargesByOdo) {
         val odo = c.start_odometer_km ?: continue
         val key = placeKey(c)
         val prev = lastSeenAt[key]
-        if (prev != null && odo - prev > RouteJourneyLimits.HOME_RETURN_KM) {
-            homeReturn += c.id
+        if (prev != null) {
+            val kmApart = odo - prev.first
+            val hoursApart = ChronoUnit.HOURS.between(prev.second, c.start_date).toDouble()
+            // ⚠️ v0.28.0（复审 P1-8）：同时看**时间** ——
+            // 同一个桩在几分钟内插拔两次（一次插枪被切成两个 process）不是「回来了」。
+            if (kmApart > RouteJourneyLimits.HOME_RETURN_KM &&
+                hoursApart >= RouteJourneyLimits.HOME_RETURN_MIN_HOURS
+            ) {
+                homeReturn += c.id
+            }
         }
-        lastSeenAt[key] = odo
+        lastSeenAt[key] = odo to c.start_date
     }
 
     // ── 按连续性切 journey ────────────────────────────────────
@@ -193,20 +247,79 @@ fun buildJourneys(
         if (endKm - startKm < minDistanceKm) return@mapNotNull null
 
         val stops = mutableListOf<JourneyStop>()
+        // ⚠️ **v0.28.0（复审 P0-②）：必须维护「已处理」集合。**
+        //
+        // 原来只用 `stops.any { it.charge.id == c.id }` 判断「这一场是不是已经算过了」，
+        // 而**被合并掉**的那一场（同一个插枪的第二个 process）的 id **失忆**了 ——
+        // 于是它在下一段窗口里被**再处理一次**，代表记录会回退成
+        // 「0.1 kWh 的尾段」→ 显示成「94% → 94%」（等于没充，实际充了 36.6 kWh）。
+        val seenIds = HashSet<Int>()
         // 每一段**之后**的缺口里的充电 = 这一段的补电点。
+        //
+        // ⚠️ **v0.28.0（复审 P0-2）：归属必须同时看里程和**时间**。**
+        //
+        // 原来只按里程：`odo ∈ [本段终点 − 3, 下一段起点 + 3]`。
+        // 实测 **charge#66**（odo 100506.55，**10-17 00:07**）落在 drive 455
+        // （odo 100502.53，**10-14 09:37** 结束）之后 4.0 km ——
+        // 里程上像「这一段的到达充电」，**时间上晚了 62.5 小时**，
+        // 它其实是**下一段旅程的出发充电**。
+        //
+        // 后果：同一场充电被**两条 journey 各算一次**
+        // （一次是 J5 的终点站，一次是 J6 的第 4 公里沿途站），
+        // 而 J5 的终点站里程（206.9 km）**超过了它自己的总里程**（202.9 km）。
+        //
+        // 现在：缺口里的充电必须**时间上也落在这一段结束到下一段开始之间**；
+        // 末段（到达充电）允许宽到 [段末, 段末 + 36 小时]。
         for (i in chain.indices) {
             val leg = chain[i]
-            val nextStart = chain.getOrNull(i + 1)?.startKm ?: (leg.endKm + RouteJourneyLimits.BOUNDARY_TOL_KM)
+            val next = chain.getOrNull(i + 1)
+            val nextStart = next?.startKm ?: (leg.endKm + RouteJourneyLimits.BOUNDARY_TOL_KM)
+            val notBefore = leg.endDate
+            val notAfter = next?.startDate
+                ?: leg.endDate.plusSeconds(3600L * RouteJourneyLimits.MAX_GAP_HOURS.toLong())
             for (c in chargesByOdo) {
+                if (!seenIds.add(c.id)) continue
                 val odo = c.start_odometer_km ?: continue
                 if (odo < leg.endKm - RouteJourneyLimits.BOUNDARY_TOL_KM) continue
                 if (odo > nextStart + RouteJourneyLimits.BOUNDARY_TOL_KM) continue
-                // 同一段之后的多个充电（如「先充 30 度再往前走 13 公里再充一次」）都算沿途站。
-                if (stops.any { it.charge.id == c.id }) continue
+                // ⚠️ 时间约束（上面解释的那条）
+                if (c.start_date.isBefore(notBefore.minusSeconds(3600L))) continue
+                if (c.start_date.isAfter(notAfter)) continue
+                // ⚠️ **v0.28.0（复审 P0-3）：同一场充电被 TeslaMate 拆成两个 process 时要合并。**
+                //
+                // 实测全库有 **10 对**「同地点 + 同里程（或 ≤1 公里）」的相邻 process
+                // （7/8、16/17、28/29、30/31、39/40、43/44、53/54、57/59、69/71、72/73）——
+                // 它们是**一次插枪被切成两段**（比如插上没立刻开始充电）。
+                //
+                // 不合并的话：沿途站列表会**同一站列两行**，
+                // 而 `verdict()` 的「需充 N 次」会**虚高**。
+                //
+                // 合并判据：**同一地点键 + 里程差 ≤ 1 公里**。
+                // socBefore 取**首场**的 start_soc，socAfter 取**末场**的 end_soc。
+                val merged = stops.indexOfFirst {
+                    placeKey(it.charge) == placeKey(c) &&
+                        kotlin.math.abs(it.charge.start_odometer_km!! - odo) <= 1.0
+                }
+                if (merged >= 0) {
+                    val prevStop = stops[merged]
+                    val later = if ((c.end_soc ?: 0) >= (prevStop.charge.end_soc ?: 0)) c else prevStop.charge
+                    stops[merged] = prevStop.copy(
+                        charge = later,
+                        // ⚠️ 复审 P0-①：到站电量必须用**合并后**的值，
+                        // 否则显示的是代表记录那一小段（如「94% → 94%」等于没充）。
+                        socBefore = prevStop.socBefore,
+                        socAfter = later.end_soc,
+                    )
+                    // 合并掉的那一场也要标记为已处理（否则它会被再处理一次）
+                    seenIds.add(prevStop.charge.id)
+                    continue
+                }
                 stops += JourneyStop(
                     charge = c,
                     kmAlong = (odo - startKm).coerceAtLeast(0.0),
                     isEndpoint = i == chain.lastIndex,
+                    socBefore = c.start_soc,
+                    socAfter = c.end_soc,
                 )
             }
         }
@@ -235,15 +348,15 @@ fun buildJourneys(
  * 而 `poi_name` 也**会撞名** —— 实测「中国石化」在 3 个不同城市都叫这个名字
  * （26.8761/100.2446、28.2549/99.275、23.7339/112.9761）。
  *
- * 也不能只用坐标：**坐标会抖**。实测同一个家充点的 7 次充电，
+ * 也不能只用坐标：**坐标会抖**。实测同一个常驻充电点的 7 次充电，
  * 经度分别是 114.4884 / 114.4883 / 114.4886 —— 四舍五入到 3 位（≈111 米）
  * 时最后一次会变成 114.489，于是「回到家」就漏判了。
  *
  * 所以用**组合键**：地点名 + 坐标四舍五入到 **2 位（≈1.1 公里）**。
  *
  * 实测验证：
- * - 家充点「石化大道西」7 次 → 全部同一个键 ✓（22.74, 114.49）
- * - 家充点「宝田一路」2 次 → 同一个键 ✓（22.60, 113.88）
+ * - 常驻充电点「石化大道西」7 次 → 全部同一个键 ✓（22.74, 114.49）
+ * - 常驻充电点「宝田一路」2 次 → 同一个键 ✓（22.60, 113.88）
  * - 途中的「修文县」4 次 → 两个键（26.85 / 26.83，差 1.8 公里是不同车位），
  *   但它们相隔不到 50 公里，**本来也不会**触发「回来了」
  * - 「中国石化」3 个城市 → 3 个键 ✓

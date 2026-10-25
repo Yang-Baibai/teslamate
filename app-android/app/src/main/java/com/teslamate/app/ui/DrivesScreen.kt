@@ -429,6 +429,14 @@ internal fun DriveDetail(
      * 空列表 → 不显示对比（没有可比的历史）。
      */
     routeHistory: List<Drive> = emptyList(),
+    /**
+     * ⚠️ **v0.28.0：这一趟的驾驶平顺分**（来自 `/cars/{id}/driving_profile`）。
+     *
+     * 车况页的「驾驶画像」给的是**总体**；这里给**这一趟** ——
+     * 「这趟开得怎么样」才是看详情时想问的。
+     * null = 没算过（离线 / 这一趟太短被服务端过滤掉）。
+     */
+    driveScore: Double? = null,
     onClose: () -> Unit,
 ) {
     var track by remember { mutableStateOf<List<TrackPoint>>(emptyList()) }
@@ -858,6 +866,12 @@ internal fun DriveDetail(
                     // 不写清楚读者会以为曲线画错了。
                     KV("瞬时峰值功率", drive.power_max_kw?.let { "$it kW" } ?: "—")
                     drive.power_min_kw?.let { if (it < 0) KV("瞬时回收峰值", "${-it} kW") }
+                    // ⚠️ v0.28.0：这一趟的驾驶平顺分。
+                    // ⚠️ **必须标出它是合成指标**（权重是行业惯例值，不是从这辆车拟合的）——
+                    // 否则用户会以为「84 分」是什么客观认证。
+                    driveScore?.let {
+                        KV("驾驶平顺分", "${it.roundToInt()} 分（App 自算）")
+                    }
                 }
             }
             item {

@@ -59,6 +59,18 @@ data class AccentColors(
     val chargeGreenText: Color,
     /** 琥珀：电量 < 20%（浅色下用深一档，保证 ≥3:1） */
     val warnAmber: Color,
+    /**
+     * ⚠️ **v0.28.0（复审 P1-5）：琥珀**文字**专用色**。
+     *
+     * warnAmber 是给**图形**用的（≥3:1 即可）。
+     * 而低电量胶囊是**文字**（AA 要 ≥4.5:1）：
+     * 底色是 warnAmber @16% 叠在白卡片上 ≈ **#EFE5D6**，
+     * #9A5B00 文字实测只有 **4.35:1**（差一点）。
+     * #8A5200 → **5.11:1** ✓
+     *
+     * 深色模式沿用 #F5A623（对 #1C1C1E 有 6.14:1 ✓）。
+     */
+    val warnAmberText: Color,
     /** 危险红：电量 < 10%、胎压异常 */
     val danger: Color,
     // ⚠️ v0.14.0（苹果 HIG P0-2）：**删除 `fastCharge` / `slowCharge`**。
@@ -142,6 +154,7 @@ private val LightAccents = AccentColors(
     // 线路余量表「到达时剩 16%」、行程电量的琥珀数值、图表的保底标注。
     // 新值对白 **5.43:1**，对卡片内凹块 #EBEBF0 也有 4.57:1。
     warnAmber = Color(0xFF9A5B00),
+    warnAmberText = Color(0xFF8A5200),
     danger = Color(0xFFD13438),
     chartTrack = Color(0xFF77777D),
     // ⚠️ v0.14.0（苹果 HIG P1）：#9AA1A8 → #8C939B
@@ -176,6 +189,7 @@ private val DarkAccents = AccentColors(
     chargeGreen = Color(0xFF2FBF71),
     chargeGreenText = Color(0xFF5FD69A),
     warnAmber = Color(0xFFF5A623),
+    warnAmberText = Color(0xFFF5A623),
     // ⚠️ v0.20.0（a11y 评审 P1-5）：#E5484D → #FF6B6E
     // 原值对**卡片面** #1C1C1E 只有 4.35:1（低于文字 4.5:1）——
     // 注释里的「对底色达标」是拿 #000000 算的，而它实际画在卡片上。

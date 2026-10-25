@@ -323,7 +323,8 @@ fun buildRouteTemplates(
             // 起点 SOC 来自**首段**（出发状态），终点 SOC 来自**末段**（到达状态）。
             startSoc = j.legs.first().startSoc,
             endSoc = j.legs.last().endSoc,
-            legCount = j.legCount,
+            // ⚠️ v0.28.0（复审 P1-10）：用「有效段数」（排除充电站内挪车微行程）。
+            legCount = j.meaningfulLegCount,
             stopCount = j.midStopCount,
             lastDrivenAt = j.endDate,
             startOdoKm = j.startKm,
@@ -428,8 +429,16 @@ fun buildRoutePlan(
             // 车主找的是「哪个服务区」，不是一段地址。
             name = c.geofence_name ?: c.poi_name ?: c.place.firstSegment() ?: "充电站",
             kmAlongRoute = js.kmAlong,
-            socBefore = c.start_soc,
-            socAfter = c.end_soc,
+            // ⚠️ **v0.28.0（复审 P0-①）：必须用**合并后**的电量。**
+            //
+            // 原来用代表记录的 `c.start_soc / c.end_soc` —— 而代表记录可能只是
+            // 一次插枪被切成的**尾段**（0.1 kWh 那种），
+            // 于是显示成「94% → 94%」（等于没充，实际充了 36.6 度）。
+            // 实测 10 个合并行里 **8 行是错的**：修文县那行真实是 36%→96%
+            // 却显示成 76%→96% —— 差 40 个百分点，**剖面的低点被抹平**，
+            // 可能漏报「跌破 20% 保底」。
+            socBefore = js.socBefore ?: c.start_soc,
+            socAfter = js.socAfter ?: c.end_soc,
             typicalPowerKw = stat?.typicalPowerDcKw ?: stat?.typicalPowerKw,
             minutesTo80 = stat?.typicalMinutesTo80,
             sessions = stat?.sessions ?: 1,

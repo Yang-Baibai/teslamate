@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -21,7 +20,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.teslamate.app.DrivingProfile
+import com.teslamate.app.fmtKwh100
 import kotlin.math.roundToInt
 
 /**
@@ -40,14 +41,18 @@ import kotlin.math.roundToInt
  * 下面是 5 个**分项**，每个都给真实数字与口径，不给雷达图
  * —— 雷达图的面积没有可解释的量纲，是装饰不是信息。
  *
- * ## 必须说清的三件事
+ * ## 必须说清的四件事
  *
- * 1. **阈值是拍的**：2 秒窗口 20 km/h、120 km/h、夜间 22:00–06:00
- *    都是行业惯例，不是从这辆车拟合出来的。
- * 2. **地形混杂**：实测「超速占比」与「下坡高度」的相关系数 **+0.635** ——
+ * 1. **统计范围**：只算 **≥20 公里**的行程 ——
+ *    实测近 30 趟里有 16 趟不到 20 公里（占里程 15%），
+ *    而低分那几趟全是 6~9 公里的**挪车**（商场/充电站内）；
+ *    不排除的话主角分数会被「你在停车场挪车」主导。
+ * 2. **分数怎么来的**：权重是**行业惯例值**，不是从这辆车拟合出来的。
+ * 3. **地形混杂**：实测「超速占比」与「下坡高度」的相关系数 **+0.635** ——
  *    山路上限速本来就高，所以超速这一项**掺了地形**，
  *    而「急刹车」与下坡的相关系数只有 **−0.16**（干净）。
- * 3. **数据来自 positions**：162 万个采样点，中位采样间隔 0.251 秒。
+ * 4. **能耗口径**：这里是**车轮功率积分**（真实耗电），
+ *    用量页那个是**标定续航差法**（系统性高估约 9%）—— 两处口径不同，别混。
  */
 @Composable
 fun DriveScoreCard(
@@ -83,7 +88,8 @@ fun DriveScoreCard(
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            "近 ${s.drive_count} 趟 · ${s.total_km.roundToInt()} 公里" +
+            "按 ≥${profile.params.min_distance_km} 公里的 ${s.drive_count} 趟算" +
+                " · 共 ${s.total_km.roundToInt()} 公里" +
                 " · 平均 ${s.avg_score.roundToInt()} 分",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -95,7 +101,7 @@ fun DriveScoreCard(
             "急刹车",
             "${s.hard_brake_total} 次 · ${fmtPer100(s.hard_brake_total, s.total_km)} 次/百公里",
             // 实测 corr(急刹车/百公里, 下坡) = −0.16 → 这项**不掺地形**
-            hint = "刹车片磨损的直接来源",
+            hint = "刹车片磨损的直接来源；与下坡几乎无关（相关系数 −0.16）",
         )
         ScoreRow(
             "急加速",
@@ -104,13 +110,8 @@ fun DriveScoreCard(
         )
         ScoreRow(
             "能耗",
-            "${s.wh_per_km_median.roundToInt()} kWh/100km（中位）",
-            // ⚠️ v0.27.0：**口径必须写清楚** ——
-            // 这个数是**车轮功率积分**（真实耗电），
-            // 而用量页的「平均能耗」是**标定续航差法**（Δ标定续航 × 效率），
-            // 两者实测相差约 9%（标定法系统性高估）。
-            // 不写清楚，用户在两页看到两个能耗数会以为有一个是错的。
-            hint = "车轮功率积分（真实耗电）；用量页那个是标定法",
+            "${s.wh_per_km_median.fmtKwh100()} kWh/100km（中位）",
+            hint = "车轮功率积分（真实耗电）；用量页那个是标定法，两者差约 9%",
         )
         ScoreRow(
             "夜间行驶",
@@ -118,34 +119,54 @@ fun DriveScoreCard(
             hint = "本地 ${profile.params.night_start_hour}:00–${profile.params.night_end_hour}:00",
         )
         ScoreRow(
-            "超速",
-            "${s.over_speed_pct_avg.roundToInt()}% 的时间 ≥${profile.params.over_speed_kph} km/h",
-            hint = "这项掺了地形：山路限速本来就高",
+            "≥${profile.params.over_speed_kph} km/h",
+            "${s.over_speed_pct_avg.roundToInt()}% 的时间",
+            // ⚠️ 复审：原来叫「超速」，而 120 km/h 是**国内高速的合法限速** ——
+            // 叫「超速」等于把合法速度说成违法。改成中性描述。
+            hint = "这项掺了地形：山路限速本来就高（与下坡相关系数 +0.635）",
         )
 
-        Spacer(Modifier.height(8.dp))
-        // ── 最近几趟的分数条 ──
+        Spacer(Modifier.height(10.dp))
+        // ── 最近几趟的分数 ──
         // ⚠️ 只画最近 12 趟 —— 再多就成了「装饰」，而每个格子都该有量纲。
-        val recent = profile.drives.takeLast(12)
+        //
+        // ⚠️ **v0.28.0（复审 P0-1）：必须用 `take(12)` 而不是 `takeLast(12)`。**
+        // 服务端是 `ORDER BY d.start_date DESC` —— `drives[0]` 是**最新**那趟。
+        // 用 `takeLast` 拿到的是 30 趟里**最旧**的 12 趟（10-17~10-11），
+        // 而标题写着「最近 12 趟」—— 说的是**过去**，图上画的是**更早**。
+        val recent = profile.drives.take(12).reversed()
         if (recent.size >= 3) {
+            // ⚠️ **复审：柱子不能只靠颜色区分** ——
+            // 分数是数字，每根柱子下面必须写出来（WCAG 1.4.1）。
             Row(
-                Modifier.fillMaxWidth().height(46.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
                 recent.forEach { d ->
-                    val h = (d.score / 100.0 * 40).dp.coerceAtLeast(3.dp)
-                    Box(
-                        Modifier
-                            .weight(1f)
-                            .height(h)
-                            .clip(RoundedCornerShape(3.dp))
-                            .background(scoreColor(d.score))
-                    )
+                    Column(
+                        Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            d.score.roundToInt().toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height((d.score / 100.0 * 34).dp.coerceAtLeast(3.dp))
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(scoreColor(d.score))
+                        )
+                    }
                 }
             }
             Text(
-                "最近 ${recent.size} 趟（左边最新）",
+                "最近 ${recent.size} 趟的分数（右边最新）",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -154,11 +175,13 @@ fun DriveScoreCard(
         Spacer(Modifier.height(8.dp))
         // ── 口径披露 ──
         Text(
-            "口径：硬加/硬刹 = 2 秒内车速变化 ≥${profile.params.hard_event_threshold_kmh_per_2s} km/h" +
+            "分数 = 100 − 急刹车(≤30) − 急加速(≤20) − ≥${profile.params.over_speed_kph}km/h(≤20)" +
+                " − 能耗(≤15) − 夜驾(≤15)。" +
+                "硬加/硬刹 = 2 秒内车速变化 ≥${profile.params.hard_event_threshold_kmh_per_2s} km/h" +
                 "（噪声底 ±12，有 8 倍余量）；" +
-                "超速阈值 ${profile.params.over_speed_kph} km/h、" +
-                "夜间 ${profile.params.night_start_hour}:00–${profile.params.night_end_hour}:00 —— " +
-                "都是行业惯例值，不是从这辆车拟合的。",
+                "夜间 ${profile.params.night_start_hour}:00–${profile.params.night_end_hour}:00、" +
+                "≥${profile.params.over_speed_kph} km/h —— " +
+                "都是**行业惯例值**，不是从这辆车拟合出来的。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -171,14 +194,20 @@ private fun fmtPer100(count: Int, km: Double): String {
     return (count / km * 100).let { String.format(java.util.Locale.CHINA, "%.1f", it) }
 }
 
-/** 分数 → 颜色。⚠️ 颜色只是**辅助**：分数本身是数字，不是颜色。 */
+/**
+ * 分数 → 颜色。
+ *
+ * ⚠️ 复审：原来 `<60` 用 **danger 红** —— 太重。
+ * 低分不是「告警」（车主没做错什么，只是开得野），
+ * 用中性灰 + 旁边的数字表达就够了。
+ */
 @Composable
 private fun scoreColor(score: Double): Color {
     val a = LocalAccentColors.current
     return when {
         score >= 85 -> a.energyBlue
         score >= 60 -> a.warnAmber
-        else -> a.danger
+        else -> a.chartTrack
     }
 }
 
@@ -195,7 +224,7 @@ private fun ScoreRow(
                 label,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.width(72.dp),
+                modifier = Modifier.width(96.dp),
             )
             Text(
                 value,

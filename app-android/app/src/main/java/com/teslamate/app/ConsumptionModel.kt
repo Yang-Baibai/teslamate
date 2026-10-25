@@ -117,9 +117,9 @@ class ConsumptionModel(
         val t = outsideTempC ?: return null
         return when {
             t <= 10.0 && !lowTempTrustworthy ->
-                "低温未修正：10°C 以下只有 $lowTempSamples 条样本，这个数不可信"
+                "低温未修正：≤10°C 只有 $lowTempSamples 条样本，这个数不可信"
             t <= 22.0 ->
-                "未做低温修正（10°C 以下样本 $lowTempSamples 条）"
+                "未做低温修正（≤10°C 样本 $lowTempSamples 条）"
             else -> null
         }
     }

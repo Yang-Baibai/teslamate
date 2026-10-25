@@ -105,6 +105,14 @@ func main() {
 	// ⚠️ v0.27.0：驾驶风格画像（最近 N 趟行程的评分 + 汇总）。
 	// /drives 只说「开了多远」，从不说「开得急不急、是不是夜里开、能耗高不高」。
 	mux.HandleFunc("GET /api/v1/cars/{car_id}/driving_profile", auth(handleDrivingProfile))
+	// ⚠️ v0.28.0：常驻点（车平时停在哪、停多久）。
+	// 官方 App 只说「车现在在哪」—— 这里说「它**平时**停哪、停多久」。
+	// ⚠️ 这是**推断停留**（由相邻行程的时间间隙推出来的），
+	// 不是实时停车时长 —— 车睡着后 TeslaMate 就不再记位置了。
+	mux.HandleFunc("GET /api/v1/cars/{car_id}/stay_points", auth(handleStayPoints))
+	// ⚠️ v0.28.0：能耗-车速曲线（不同车速下真实耗多少电）。
+	// 官方 App 只有**平均** Wh/km，这里给的是一条曲线。
+	mux.HandleFunc("GET /api/v1/cars/{car_id}/energy_profile", auth(handleEnergyProfile))
 	// ⚠️ v0.25.0：充电成本构成（每公里成本用）。
 	mux.HandleFunc("GET /api/v1/cars/{id}/cost_summary", auth(handleCostSummary))
 	mux.HandleFunc("GET /api/v1/cars/{id}/charges", auth(handleCharges))

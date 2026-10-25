@@ -185,6 +185,29 @@ fun StatsScreen(
 
     LaunchedEffect(settings, apiPeriod) { load() }
 
+    // ⚠️ **v0.28.0（第 17 轮官方 App 对标评审 A-2）：能耗-车速曲线。**
+    //
+    // ⚠️ **不进 load()** —— 它跟时间窗口**无关**（是全车曲线），
+    // 而 load() 每次切「7 天 / 30 天 / 1 年」都会跑一遍。
+    // 服务端这一算要扫 162 万个采样点，**每次切段都重算是不可接受的**。
+    // 所以单独一个 LaunchedEffect，**每辆车只算一次**。
+    var energyProfile by remember { mutableStateOf<com.teslamate.app.EnergyProfile?>(null) }
+    var energyProfileLoading by remember { mutableStateOf(false) }
+    var energyProfileLoaded by remember { mutableStateOf(false) }
+    LaunchedEffect(api, settings.carId) {
+        if (api == null || energyProfileLoaded) return@LaunchedEffect
+        energyProfileLoading = true
+        runCatching {
+            withContext(Dispatchers.IO) { api.energyProfile(settings.carId) }
+        }.onSuccess {
+            energyProfile = it
+        }.onFailure {
+            energyProfile = null
+        }
+        energyProfileLoading = false
+        energyProfileLoaded = true
+    }
+
 
     Column(modifier) {
         TopAppBar(
@@ -616,6 +639,17 @@ fun StatsScreen(
 
             val b = battery
             item {
+                // ⚠️ **v0.28.0：能耗-车速曲线**。
+                //
+                // 放在「行驶耗电」之后、电池健康之前 ——
+                // 它是「行驶耗电」那张图的**展开**（同一件事：从平均变成按车速）。
+                EnergyProfileCard(
+                    profile = energyProfile,
+                    loading = energyProfileLoading,
+                    modifier = Modifier.animateItem(),
+                )
+            }
+            item {
                 SectionCard("电池健康", Modifier.animateItem()) {
                     if (batteryError != null) {
                         // ⚠️ v0.22.0：电池健康取不到时，**只降级这一张卡**，
@@ -668,8 +702,22 @@ fun StatsScreen(
                         // 这是**唯一不受** `cars.efficiency` 影响的健康指标
                         // （分子分母同比例缩放）。
                         // 它回答的才是车主真正想知道的那句：「电池比刚开始测的时候差了多少」。
+                        //
+                        // ⚠️ **v0.28.0（第 17 轮新手车主 P0-3）：必须带**首测日期**。**
+                        //
+                        // 原来只写「相对首测 98.4%」，用户会读成「新车容量到现在只剩 98.4%」——
+                        // 而首测是 **2026-08-02**，那台车**已经开了 4 个月**，
+                        // 分母**本身已经衰减过**。
+                        //
+                        // 评审原话：「首测不是新车容量，只回答『比 8 月 2 号那次低了多少』」。
+                        val baselineDate = b.series.take(3)
+                            .sortedBy { it.capacity_kwh }
+                            .getOrNull(1)?.date?.fmtDate()
                         b.health_percent_of_baseline?.let {
-                            KV("相对首测", "${it.fmt(1)}%")
+                            KV(
+                                "相对首测" + (baselineDate?.let { d -> "（$d）" } ?: ""),
+                                "${it.fmt(1)}%",
+                            )
                         }
                         Text(
                             buildString {
@@ -686,8 +734,14 @@ fun StatsScreen(
                         )
                         if (b.health_percent_of_baseline != null) {
                             Text(
-                                "「相对首测」= 当前容量 ÷ 首测容量（取前 3 次中位数），" +
-                                    "不受行驶能耗常数影响，是看衰减更准的那个数。",
+                                buildString {
+                                    append("「相对首测」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
+                                    append("不受行驶能耗常数影响，是看衰减更准的那个数。")
+                                    if (baselineDate != null) {
+                                        append("⚠️ 首测（$baselineDate）**不是新车容量** —— ")
+                                        append("它只回答「比 $baselineDate 那次测的低了多少」。")
+                                    }
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

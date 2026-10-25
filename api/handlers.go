@@ -1421,12 +1421,26 @@ const (
 	// drivingNightStartHour / drivingNightEndHour 夜间时段（服务器时区的本地小时）。
 	drivingNightStartHour = 22
 	drivingNightEndHour   = 6
-	// drivingMinDistanceKm 参与统计的最小行程里程（km）。
+	// drivingMinDistanceKm 参与统计的**默认**最小行程里程（km）。
 	//
 	// ⚠️ 为什么不统计短途：
 	//   一趟 1 公里的行程，里程表本身就有 ±0.1 公里的噪声，
 	//   算出来的「每公里能耗」和「每百公里急刹车次数」会离谱到没法看。
-	drivingMinDistanceKm = 5.0
+	//
+	// ⚠️ **v0.28.0（主控修正）：默认从 5 提到 20。**
+	//
+	// 复审实测：近 30 趟里有 **16 趟不到 20 公里**（只占总里程的 15%），
+	// 而**低分的那几趟全是 6~9 公里的挪车**（停车场里挪车）——
+	// 一次急刹就算「42 次/百公里」，直接扣满 30 分。
+	// 于是**主角数字被停车场主导**：一个反映「你怎么开长途」的分数，
+	// 实际上大部分由「你在商场挪车」决定。
+	//
+	// 现在默认只统计 **≥20 公里**的行程（App 端也会显式传 min_km=20），
+	// 「挪车」不再进入统计。
+	drivingMinDistanceKm = 20.0
+	// drivingMinDistanceKmMin / Max 是 min_km 参数的合法范围（公里）。
+	drivingMinDistanceKmMin = 1.0
+	drivingMinDistanceKmMax = 200.0
 	// drivingMaxWindowSpanSec 2 秒窗口允许的最大跨度（秒）。
 	//
 	// ⚠️ 为什么不是「严格 2 秒」也不是「不设限」：
@@ -1534,6 +1548,26 @@ func parseDrivingProfileLimit(raw string) (int, error) {
 	return n, nil
 }
 
+// parseDrivingProfileMinKm 解析 min_km 参数：默认 20 公里，范围 [1, 200]。
+//
+// ⚠️ v0.28.0（主控修正）：默认从 5 提到 20 ——
+// 近 30 趟里 16 趟不到 20 公里（占里程 15%），而低分那几趟全是 6~9 公里的挪车，
+// 于是主角分数被「你在商场挪车」主导。
+func parseDrivingProfileMinKm(s string) (float64, error) {
+	if strings.TrimSpace(s) == "" {
+		return drivingMinDistanceKm, nil
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, fmt.Errorf("min_km 不是数字")
+	}
+	if v < drivingMinDistanceKmMin || v > drivingMinDistanceKmMax {
+		return 0, fmt.Errorf("min_km 必须在 %g..%g 之间，实际 %g",
+			drivingMinDistanceKmMin, drivingMinDistanceKmMax, v)
+	}
+	return v, nil
+}
+
 // handleDrivingProfile 返回**最近 N 趟行程**的驾驶风格画像 + 汇总。
 //
 // ⚠️ v0.27.0。
@@ -1559,6 +1593,14 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// ⚠️ **v0.28.0（主控修正）：min_km 可调** ——
+	// 默认 20 公里（排除充电站/商场里的挪车微行程），
+	// 越界 400 而不是默默夹到边界（理由同 limit）。
+	minKm, err := parseDrivingProfileMinKm(r.URL.Query().Get("min_km"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// 时区用**服务端配置**的 TZ_NAME（默认 Asia/Shanghai），
 	// 与 sqlStatsDrives 分日用的是同一个来源 —— 不硬编码。
 	tz := getenv("TZ_NAME", "Asia/Shanghai")
@@ -1579,7 +1621,7 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	rows, err := tx.Query(ctx, sqlDrivingProfile, carID, tz, drivingMinDistanceKm, limit, drivingMaxWindowSpanSec)
+	rows, err := tx.Query(ctx, sqlDrivingProfile, carID, tz, minKm, limit, drivingMaxWindowSpanSec)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1593,7 +1635,7 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 			OverSpeedKph:               drivingOverSpeedKph,
 			NightStartHour:             drivingNightStartHour,
 			NightEndHour:               drivingNightEndHour,
-			MinDistanceKm:              drivingMinDistanceKm,
+			MinDistanceKm:              minKm,
 			Note:                       "阈值是行业惯例值，不是拟合出来的",
 		},
 	}
@@ -1703,6 +1745,434 @@ func carExists(id int) bool {
 	var one int
 	err := db.QueryRow(context.Background(), `SELECT 1 FROM cars WHERE id = $1`, id).Scan(&one)
 	return err == nil
+}
+
+// ---------- v0.28.0：常驻点（stay_points） ----------
+
+const (
+	// stayPointsDefaultMinHours min_hours 默认值（小时）
+	stayPointsDefaultMinHours = 3.0
+	// stayPointsMinHours / stayPointsMaxHours min_hours 允许的范围
+	//
+	// ⚠️ 下限 0.5 小时：低于半小时的间隙几乎都是「路上临时停一下 / 等红灯」，
+	// 算进常驻点会把统计搅成一锅粥。
+	// ⚠️ 上限 24 小时：超过一天的间隙说明数据断了（车被开走 / 换了司机 / 停放很久），
+	// 这不是「常驻点」的语义，交给用户自己放宽阈值去看更合适。
+	stayPointsMinHours = 0.5
+	stayPointsMaxHours = 24.0
+	// stayPointsLimit 最多返回几个常驻点
+	stayPointsLimit = 12
+)
+
+// parseStayPointsMinHours 解析 min_hours 参数：默认 3 小时，范围 [0.5, 24]。
+//
+// ⚠️ 为什么越界要报错而不是默默夹到边界（与 parseDrivingProfileLimit 同一条理由）：
+// 默默夹断会让 App 以为「就这么多数据了」，而真实原因只是被砍掉了。
+func parseStayPointsMinHours(raw string) (float64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return stayPointsDefaultMinHours, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, errors.New("min_hours 必须是数字")
+	}
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0, errors.New("min_hours 必须是有限数字")
+	}
+	if v < stayPointsMinHours || v > stayPointsMaxHours {
+		return 0, fmt.Errorf("min_hours 必须在 %g..%g 之间，实际 %g",
+			stayPointsMinHours, stayPointsMaxHours, v)
+	}
+	return v, nil
+}
+
+// handleStayPoints 返回**常驻点** —— 车平时停在哪、停多久。
+//
+// ⚠️ v0.28.0。
+//
+// 入参：min_hours = 最短停留小时数（默认 3，范围 [0.5, 24]，越界 400）。
+//
+// 口径：相邻两趟行程之间的时间间隙（详见 sqlStayPoints 的注释）。
+// ⚠️ 返回的 Note 会随数据一起下发 —— App 直接展示它，
+// 不要自己编「停车时长」这种话术（数据库里根本没有实时停车时长）。
+func handleStayPoints(w http.ResponseWriter, r *http.Request) {
+	carID, err := strconv.Atoi(r.PathValue("car_id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "car id 无效")
+		return
+	}
+	minHours, err := parseStayPointsMinHours(r.URL.Query().Get("min_hours"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx := context.Background()
+	// ⚠️ 这条查询**不需要**事务：drives（440 行）+ addresses（267 行）都是小表，
+	// Seq Scan 比走索引回表还快，实测 < 5 ms。调 work_mem 对它没有意义。
+	rows, err := db.Query(ctx, sqlStayPoints, carID, minHours, stayPointsLimit)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	out := StayPoints{
+		Points: []StayPoint{},
+		Note:   "停留时长由相邻行程的时间间隙推断 —— 车睡着后 TeslaMate 不再记位置，所以这不是实时停车时长",
+	}
+	for rows.Next() {
+		var (
+			id         int
+			name       string
+			lat        float64
+			lng        float64
+			visits     int
+			totalHours float64
+			avgHours   float64
+			maxHours   float64
+			firstSeen  time.Time
+			lastSeen   time.Time
+		)
+		// ⚠️ Scan 的顺序必须和 SELECT 的列顺序**严格一致**：
+		//   id, display_name, latitude, longitude, visits,
+		//   total_hours, avg_hours, max_hours, first_seen, last_seen
+		if err := rows.Scan(&id, &name, &lat, &lng, &visits,
+			&totalHours, &avgHours, &maxHours, &firstSeen, &lastSeen); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out.Points = append(out.Points, StayPoint{
+			AddressID:  id,
+			Name:       name,
+			Latitude:   lat,
+			Longitude:  lng,
+			Visits:     visits,
+			TotalHours: round1(totalHours),
+			AvgHours:   round1(avgHours),
+			MaxHours:   round1(maxHours),
+			FirstSeen:  firstSeen,
+			LastSeen:   lastSeen,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// ⚠️ **v0.28.0（主控修正 / 复审）：相距 ≤250 米的地址要合并。**
+	//
+	// 实测第 1 行「新湖路, 永丰社区…」（990.2 小时 / 20 次）与
+	// 第 2 行「永丰社区…」（320.8 小时 / 7 次）是**同一个小区**，
+	// 地理编码把同一个停车位置拆成了两行地址 —— 实测**相距 176 米**。
+	// 不合并的话用户会读成「两个常驻点」，而 1311 小时是**重复计**的。
+	//
+	// ⚠️ 250 米这个阈值是**实测挑的**：全库相邻两点里，
+	// 唯一在 250 米内的一对就是上面这一对（176 m），
+	// 下一对已经跳到 **1777 米** —— 所以 250 既能合并该合并的，
+	// 又不会把真的两个地方并成一个。
+	out.Points = mergeStayPointsByDistance(out.Points, 250.0)
+	writeJSON(w, out)
+}
+
+// mergeStayPointsByDistance 把相距不超过 maxMeters 的停留点合并成一个。
+//
+// ⚠️ 合并口径：
+//   · visits / total_hours **相加**（本来就是同一处的停留）；
+//   · max_hours 取**较大**的（最长的一次停多久）；
+//   · avg_hours 用「合并后的总时长 ÷ 合并后的次数」重算（不能把两个均值再平均）；
+//   · name 取**停得更多**的那一行的（更可能是用户认识的那个名字）。
+func mergeStayPointsByDistance(points []StayPoint, maxMeters float64) []StayPoint {
+	if len(points) < 2 {
+		return points
+	}
+	merged := make([]StayPoint, 0, len(points))
+	for _, p := range points {
+		hit := -1
+		for i := range merged {
+			if stayPointsNear(merged[i], p, maxMeters) {
+				hit = i
+				break
+			}
+		}
+		if hit < 0 {
+			merged = append(merged, p)
+			continue
+		}
+		m := &merged[hit]
+		m.Visits += p.Visits
+		m.TotalHours = round1(m.TotalHours + p.TotalHours)
+		if p.MaxHours > m.MaxHours {
+			m.MaxHours = p.MaxHours
+		}
+		if m.Visits > 0 {
+			m.AvgHours = round1(m.TotalHours / float64(m.Visits))
+		}
+		// 名字保留**先出现**的那一个 ——
+		// points 是按累计时长倒序来的，先出现的那个停得更久、更可能是用户认识的名字。
+		if p.FirstSeen.Before(m.FirstSeen) {
+			m.FirstSeen = p.FirstSeen
+		}
+		if p.LastSeen.After(m.LastSeen) {
+			m.LastSeen = p.LastSeen
+		}
+	}
+	return merged
+}
+
+// stayPointsNear 两个停留点是否在 maxMeters 之内（球面距离）。
+func stayPointsNear(a, b StayPoint, maxMeters float64) bool {
+	const earthRadius = 6371000.0
+	lat1 := a.Latitude * math.Pi / 180
+	lat2 := b.Latitude * math.Pi / 180
+	dLat := (b.Latitude - a.Latitude) * math.Pi / 180
+	dLng := (b.Longitude - a.Longitude) * math.Pi / 180
+	h := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1)*math.Cos(lat2)*math.Sin(dLng/2)*math.Sin(dLng/2)
+	d := 2 * earthRadius * math.Asin(math.Sqrt(math.Min(1, h)))
+	return d <= maxMeters
+}
+
+// ---------- v0.28.0：能耗-车速曲线（energy_profile） ----------
+
+const (
+	// energyBandWidthKph 一档的宽度（km/h）。
+	//
+	// ⚠️ 为什么是 10 而不是 15：实测 10 km/h 一档（5/15/25/…）能把
+	// 每一档都凑够样本（最少 130 个分箱 / 65 公里），
+	// 15 km/h 一档会让 0–15 km/h 那一档只剩 1/3 的样本量。
+	energyBandWidthKph = 10
+	// energyBandMinBins / energyBandMinKm 一档要返回所需的最小样本量
+	//
+	// ⚠️ 为什么宁可少一档，也不给一个噪声数：
+	// 5 个 1 km 分箱 = 5 公里，一档 Wh/km 的统计误差能到 ±20%，
+	// 画在图上会变成一条假的「U 型曲线」。样本不够就**不返回**。
+	energyBandMinBins = 5
+	energyBandMinKm   = 30.0
+	// energyBandCenterOffsetKph 分档键的中心偏移。
+	//
+	// ⚠️ SQL 里的分档键是 floor(speed/10)*10+5（以 5 km/h 为中心、10 km/h 一档：
+	// 5→[0,10)  15→[10,20)  25→[20,30) …… 135→[130,140)），
+	// 这里用它反推 App 侧的标签档位（0/15/25/…/135/145+）。
+	energyBandCenterOffsetKph = 5
+)
+
+// energyBandEdges App 侧的速度档位边界。
+//
+// ⚠️ **v0.28.0（主控修正）：边界必须是**真实区间**，不是评审员表里的「档中心」。**
+//
+// 评审员的实测表用的是 10 km/h 宽的分箱、键是**中心**（5/15/25/…），
+// 于是「键 5 那一档」的真实区间是 **[0, 10)**，
+// 而按中心当边界发出去会变成「0–15」—— **标签比真实区间高了 5 km/h**，
+// 用户读到「45–55 km/h 最省电」，而那一档其实是 40–50。
+//
+// 所以这里的边界是**真实的档位边界**：0/10/20/…/130/140。
+// 分箱本身没变（`energyBandIndexForKey` 用的还是键 5/15/25/…），
+// 变的只是**标签**。
+//
+// ⚠️ 为什么最后一档是「130+」而不是某个具体数字：
+// 高速段（≥140 km/h）的分箱本来就少，再切细就没有样本了；
+// 合成一个开区间的高档，把所有更高速度都并进来，结论（高速能耗急剧劣化）才立得住。
+func energyBandEdges() []int {
+	return []int{0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140}
+}
+
+// energyBandIndexForKey 把 SQL 返回的分档键（5/15/25/…）映射到 App 侧的档位下标。
+//
+// ⚠️ 键 ≥ 135 的（含 ≥140 km/h 的更高速分箱）**全部并进最后一档**。
+func energyBandIndexForKey(key int) int {
+	edges := energyBandEdges()
+	last := len(edges) - 2 // 最后一档的下标
+	idx := (key - energyBandCenterOffsetKph) / energyBandWidthKph
+	if idx < 0 {
+		return 0
+	}
+	if idx > last {
+		return last
+	}
+	return idx
+}
+
+// energyBandLabel 返回某一档的 (下界, 上界) 速度（km/h）。
+//
+// ⚠️ v0.28.0（主控修正）：**最后一档是开区间**（上界返回 0，App 渲染成「130+」）。
+// 最后一档把 ≥140 km/h 的分箱也并进来了（分箱少，再切细就没样本了），
+// 标成一个具体上界会**低估**那一档的速度范围。
+func energyBandLabel(idx int) (int, int) {
+	edges := energyBandEdges()
+	if idx < 0 {
+		idx = 0
+	}
+	last := len(edges) - 2
+	if idx > last {
+		idx = last
+	}
+	if idx == last {
+		// 开区间：上界 0 表示「及以上」（App 的 `EnergyBand.label` 按这个渲染）
+		return edges[idx], 0
+	}
+	return edges[idx], edges[idx+1]
+}
+
+// energyBandSufficient 这一档的样本量够不够（不够就不返回）。
+func energyBandSufficient(bins int, km float64) bool {
+	return bins >= energyBandMinBins && km >= energyBandMinKm
+}
+
+// energyBandRaw SQL 出来的一档原始聚合值。
+type energyBandRaw struct {
+	Key  int
+	Bins int
+	Km   float64
+	Kwh  float64
+}
+
+// energyBandMerged 合并后的一档（能量与里程要一起加，Wh/km 再算 —— 不能先算再平均）。
+type energyBandMerged struct {
+	Idx  int
+	Bins int
+	Km   float64
+	Kwh  float64
+}
+
+// mergeEnergyBands 把 SQL 的分档合并成 App 侧的档位。
+//
+// ⚠️ 为什么 Wh/km 要**最后**才算：
+// 各档的 Wh/km 是比值，比值不能直接平均（必须按里程加权）。
+// 所以先加 kWh 和 km，最后再相除。
+func mergeEnergyBands(rows []energyBandRaw) []energyBandMerged {
+	edges := energyBandEdges()
+	n := len(edges) - 1
+	merged := make([]energyBandMerged, n)
+	for i := range merged {
+		merged[i] = energyBandMerged{Idx: i}
+	}
+	for _, r := range rows {
+		idx := energyBandIndexForKey(r.Key)
+		merged[idx].Bins += r.Bins
+		merged[idx].Km += r.Km
+		merged[idx].Kwh += r.Kwh
+	}
+	return merged
+}
+
+// handleEnergyProfile 返回**能耗-车速曲线** —— 这台车在不同车速下真实耗多少电。
+//
+// ⚠️ v0.28.0。
+//
+// 官方 App 只能给**平均** Wh/km；这里给的是一条曲线。
+// 口径：车轮功率梯形积分（1 km 分箱，按箱间里程表跨度算距离），详见 sqlEnergyProfile。
+//
+// 性能：这条查询必须放在**事务**里跑（要临时调大 work_mem + 强制自定义计划），
+// 理由与 handleRouteProfile / handleDrivingProfile 完全一样：
+// 通用计划里优化器不知道 drive_id 数组里有哪些值，
+// 于是每行再 AND 一次数组 → Index Searches 从 N 涨到 N×N → 慢一个数量级。
+func handleEnergyProfile(w http.ResponseWriter, r *http.Request) {
+	carID, err := strconv.Atoi(r.PathValue("car_id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "car id 无效")
+		return
+	}
+
+	ctx := context.Background()
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 只读事务，回滚即可
+	defer tx.Rollback(ctx)
+	// ⚠️ work_mem 这里用 **256MB**（route_profile 用的是 128MB）：
+	// 这条查询要把 162 万个 positions 点按 (drive_id, date) 排一次序，
+	// 实测排序峰值 **119 MB** —— 128MB 只剩 9% 余量，
+	// 数据量稍微涨一点就会**溢写到磁盘**（external sort），耗时翻几倍。
+	// 256MB 把这个悬崖挪走；SET LOCAL 只在本事务内生效，不会污染连接池。
+	if _, err := tx.Exec(ctx, "SET LOCAL work_mem = '256MB'"); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL plan_cache_mode = force_custom_plan"); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	rows, err := tx.Query(ctx, sqlEnergyProfile, carID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	var raws []energyBandRaw
+	var totalKwh float64
+	for rows.Next() {
+		var (
+			key  int
+			bins int
+			km   float64
+			kwh  float64
+		)
+		// ⚠️ Scan 的顺序必须和 SELECT 的列顺序**严格一致**：
+		//   band_key, n_bins, km, kwh_total
+		if err := rows.Scan(&key, &bins, &km, &kwh); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		raws = append(raws, energyBandRaw{Key: key, Bins: bins, Km: km, Kwh: kwh})
+		totalKwh += kwh
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 总里程用 drives.distance（公里表口径）—— 与 App 其它页面的「总里程」保持一致
+	var totalKm float64
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(sum(distance), 0)::float8 FROM drives WHERE car_id = $1`,
+		carID).Scan(&totalKm); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	out := EnergyProfile{
+		Bands: []EnergyBand{},
+		Note:  "车轮功率梯形积分（1 km 分箱，按箱内里程表跨度算距离）；样本不足的档不返回",
+	}
+	var best *EnergyBestBand
+	for _, m := range mergeEnergyBands(raws) {
+		if !energyBandSufficient(m.Bins, m.Km) {
+			continue
+		}
+		whPerKm := m.Kwh / m.Km * 1000.0
+		minKph, maxKph := energyBandLabel(m.Idx)
+		out.Bands = append(out.Bands, EnergyBand{
+			MinKph:  minKph,
+			MaxKph:  maxKph,
+			WhPerKm: round1(whPerKm),
+			Km:      round1(m.Km),
+			Bins:    m.Bins,
+		})
+		// ⚠️ best_band = Wh/km **最小**的一档。
+		// 平局时取**先出现**的（也就是更慢的那档）—— 保持结果稳定，不随数据抖动。
+		if best == nil || whPerKm < best.WhPerKm {
+			// ⚠️ v0.28.0（主控修正）：带上 km 与 bins ——
+			// App 要显示「这一档跑了多少公里」，还要靠 (min,max) 认出哪一档是最省电的。
+			best = &EnergyBestBand{
+				MinKph:  minKph,
+				MaxKph:  maxKph,
+				WhPerKm: round1(whPerKm),
+				Km:      round1(m.Km),
+				Bins:    m.Bins,
+			}
+		}
+	}
+	out.BestBand = best
+	out.TotalKm = round1(totalKm)
+	if totalKm > 0 {
+		out.OverallWhPerKm = round1(totalKwh / totalKm * 1000.0)
+	}
+	writeJSON(w, out)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
