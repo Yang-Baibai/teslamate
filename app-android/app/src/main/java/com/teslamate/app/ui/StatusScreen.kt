@@ -12,7 +12,6 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.core.infiniteRepeatable
@@ -275,7 +274,7 @@ fun StatusScreen(
                         // 平滑回正，而不是瞬移
                         spin.animateTo(
                             targetValue = 360f - (spin.value % 360f),
-                            animationSpec = tween(Motion.RefreshSettle, easing = FastOutSlowInEasing),
+                            animationSpec = tween(Motion.RefreshSettle, easing = Motion.EaseOut),
                         )
                     }
                 }
@@ -1237,8 +1236,12 @@ private fun LocationCard(
             }
             AnimatedVisibility(
                 visible = showMap,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut(),
+                // ⚠️ **v0.49.0（第 28 轮 HIG 评审 P1-2）**：补上规格 ——
+                // 原来**完全没传 animationSpec** ⇒ 高度走框架默认 spring(400)、
+                // 淡入走默认 tween(150) —— 与别处的「展开」不是同一个动作。
+                // 现在三处「展开」**逐字相同**。
+                enter = fadeIn(Motion.FadeIn) + expandVertically(Motion.ExpandSize),
+                exit = fadeOut(tween(Motion.ExpandFadeOut)) + shrinkVertically(Motion.ExpandSize),
             ) {
                 Column {
                     Spacer(Modifier.height(10.dp))

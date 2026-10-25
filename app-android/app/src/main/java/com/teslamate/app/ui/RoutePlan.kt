@@ -9,7 +9,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
@@ -2893,7 +2892,7 @@ fun RoutePlanCard(
                     // 而仓库的 `CollapsibleSection`（`Widgets.kt:879`）6 项全都有 —— **零新依赖**。
                     val stopArrow by animateFloatAsState(
                         targetValue = if (open) 180f else 0f,
-                        animationSpec = tween(Motion.ChevronRotate, easing = FastOutSlowInEasing),
+                        animationSpec = tween(Motion.ChevronRotate, easing = Motion.EaseOut),
                         label = "stopArrow",
                     )
                     Row(
@@ -3159,12 +3158,8 @@ fun RoutePlanCard(
                             // 现在照抄 `CollapsibleSection` 的动画规格（`Motion` token）。
                             AnimatedVisibility(
                                 visible = open,
-                                enter = fadeIn(Motion.FadeIn) + expandVertically(
-                                    tween(Motion.ExpandHeight, easing = FastOutSlowInEasing),
-                                ),
-                                exit = fadeOut(tween(Motion.ExpandFadeOut)) + shrinkVertically(
-                                    tween(Motion.ExpandHeight, easing = FastOutSlowInEasing),
-                                ),
+                                enter = fadeIn(Motion.FadeIn) + expandVertically(Motion.ExpandSize),
+                exit = fadeOut(tween(Motion.ExpandFadeOut)) + shrinkVertically(Motion.ExpandSize),
                             ) {
                                 // ⚠️ v0.14.0（长途自驾党 P0-2）：到站多少 → 充到多少。
                                 val detail = buildString {

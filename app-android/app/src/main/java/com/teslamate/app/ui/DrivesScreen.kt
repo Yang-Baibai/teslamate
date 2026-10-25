@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Place
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import android.content.Intent
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -546,6 +547,19 @@ internal fun DriveDetail(
                     // 而流传很广的「12~16dp」会在 330dp 宽的卡上让近边**放大 82%**。
                     val tilt = remember { Tilt3DState() }
                     var mapPressed by remember { mutableStateOf(false) }
+                    // ⚠️ **v0.49.0（第 28 轮 HIG 评审 P1-6）**：3D 倾斜改 **spring 补间**。
+                    //
+                    // 原来 `rotationX = if (mapPressed) -2f else 0f` 是**裸 Float**
+                    // 直接进 `graphicsLayer` ⇒ 按下瞬间是**瞬时跳变**，
+                    // 而 `Motion.TiltPress`（spring，约 130ms）这个 token **零引用** ——
+                    // 规格早就写好了，代码没接。
+                    //
+                    // 现在按下时用 spring 倾过去、抬手弹回来（dampingRatio=1，不回弹）。
+                    val mapTilt by animateFloatAsState(
+                        targetValue = if (mapPressed) -2f else 0f,
+                        animationSpec = Motion.TiltPress,
+                        label = "mapTilt",
+                    )
                     Surface(
                         // ⚠️ v0.14.0（苹果 HIG P0-4）：圆角改胶囊、高度提到 **44dp**。
                         // 原来整个可点区域只有约 25dp（图标 16dp + 上下 6dp 内边距），
@@ -557,7 +571,7 @@ internal fun DriveDetail(
                             .padding(10.dp)
                             .tilt3DState(
                                 state = tilt,
-                                rotationX = if (mapPressed) -2f else 0f,
+                                rotationX = mapTilt,
                             ),
                     ) {
                         Row(

@@ -1,6 +1,5 @@
 package com.teslamate.app.ui
 
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -78,7 +77,9 @@ data class ChartSeries(
 private fun chartProgress(hasData: Boolean): Float {
     val progress by animateFloatAsState(
         targetValue = if (hasData) 1f else 0f,
-        animationSpec = tween(durationMillis = 520, easing = FastOutSlowInEasing),
+        // ⚠️ **v0.49.0（第 28 轮 HIG 评审 P1-4）**：硬编码的 520 → `Motion.ChartGrow`
+        // （token 就在旁边躺着，却没人用 —— 「改一处漏一处」的老毛病）。
+        animationSpec = tween(Motion.ChartGrow, easing = Motion.EaseOut),
         label = "chartGrow",
     )
     return progress

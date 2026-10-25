@@ -5,6 +5,104 @@
 
 ---
 
+## 2026-10-25（v0.49.0：动效一致性 —— 同一个「展开」原来有三套规格，全 App 的曲线其实还是 Material 的）
+
+> 第 28 轮苹果/特斯拉 HIG 与动效评审的落地。本轮版本：`0.49.0`，versionCode 67。
+
+---
+
+### 一、同一个「展开」动作有**三套**动画规格
+
+第 28 轮 HIG 评审的发现：
+
+| 位置 | 现状 |
+|---|---|
+| `Widgets.kt` `CollapsibleSection`（全 App 复用） | `tween(Motion.ExpandHeight)` = **280ms tween** |
+| `RoutePlan.kt` 线路余量表的站点展开 | 与上面**完全一致**（280ms tween） |
+| `StatusScreen.kt` 车况页「位置」卡展开地图 | **完全没传 `animationSpec`** ⇒ 高度走框架默认 `spring(400)`、淡入走默认 `tween(150)` |
+
+⇒ 用户在车况页展开地图、展开「怎么算的」，手感**不是同一个动作**。
+
+而且项目自己的原则（`Motion.kt` 顶部）写得很清楚：
+「**用户直接操作引起的状态变化 → spring**」，
+`RangeSegments.kt` 的注释里甚至**逐字写着**
+「用户直接操作的展开按项目自己的原则应该用 **spring** 而不是 tween」——
+**代码却没跟上**。
+
+**修法**：新增 token `Motion.ExpandSize`（`spring<IntSize>`，dampingRatio = 1 不回弹，
+stiffness = 400 ⇒ 收敛约 280ms，与原 tween 视觉等长），三处**逐字相同**：
+
+```kotlin
+enter = fadeIn(Motion.FadeIn) + expandVertically(Motion.ExpandSize),
+exit = fadeOut(tween(Motion.ExpandFadeOut)) + shrinkVertically(Motion.ExpandSize),
+```
+
+淡入淡出**仍是 tween** —— 那是系统自动发生的时间过程。
+
+### 二、全 App 的曲线其实还是 **Material 的**
+
+`Motion.kt` 里定义了 iOS 的 `EaseOut = CubicBezierEasing(0.25, 0.1, 0.25, 1)`，
+注释写着「iOS 的标准 ease-out」——
+
+**而这个 token 全仓零引用**。
+所有 token 实际用的是 `FastOutSlowInEasing`
+= `CubicBezierEasing(0.4, 0, 0.2, 1)`，那是 **Material 3 的 standard easing**。
+
+差异肉眼很难逐帧分辨，但它决定的是**整体手感的「家族归属」** ——
+所有者的基线是「iOS 式」，而曲线是 Material 的，等于整 App 的运动语言**换了血统**。
+
+**修法**：全仓 **7 处** `easing = FastOutSlowInEasing` → `easing = Motion.EaseOut`，
+`Motion` 自己的 4 个 token 也一并换掉，`FastOutSlowInEasing` 的 import 删除。
+
+### 三、按下瞬间的 3D 倾斜是**瞬时跳变**
+
+`DrivesScreen` 的「在地图里打开」浮动物，
+`rotationX = if (mapPressed) -2f else 0f` 是**裸 Float** 直接进 `graphicsLayer` ⇒ 按下瞬间跳变。
+而 `Motion.TiltPress`（spring，约 130ms）这个 token **零引用** ——
+规格早就写好了，代码没接。
+
+**修法**：用 `animateFloatAsState` + `Motion.TiltPress` 驱动，
+按下时用 spring 倾过去、抬手弹回来（dampingRatio = 1，不回弹）。
+
+### 四、清掉两处「说了没做」的死代码
+
+| 位置 | 内容 | 处理 |
+|---|---|---|
+| `StatsScreen.kt` `private fun PeriodSegmented` | 零引用的**第二套**分段控件，比在用的 `Widgets.SegmentedTabs` 差 4 项（选中块硬切 / 无字重动画 / 无触感且带 Material 涟漪 / 命中区只有 38dp，低于本仓 44dp 规范） | **删除**（48 行）。留着的唯一效果是给未来的改代码的人一个陷阱 |
+| `Widgets.kt` `fun Modifier.pressScale(...)` | `= this`，什么都不做，零引用 | **删除** |
+| `Motion.kt` `ChartMorph` / `DataValue` | 两个**零引用**的 token（「切周期柱高过渡」/「主角数字滚动」） | **删除**。「定义了但没人用」= 规格漂移，下一轮评审还会把它当成「已实现」来评判 |
+| `Motion.kt` `ExpandHeight` | 高度改 spring 后它就没人用了 | **删除**（280ms 这个数字保留在 `ExpandSize` 的注释里） |
+
+### 五、新增第 4 道客户端闸门
+
+`scripts/client-gates.sh` 加了「**动效一致性**」，把上面四条**全部**钉死：
+
+1. 三处「展开」的动画规格必须**逐字相同**；
+2. 不得再有「完全没传 `animationSpec`」的展开；
+3. 代码里不得再有 `FastOutSlowInEasing`（注释里的历史说明不算）；
+4. 不得有绕过 token 的**硬编码时长**；
+5. `Motion` 里不得有**零引用**的 token。
+
+⚠️ 这四条**编译通过、单测全绿**，只有源码级正则能抓到 ——
+这正是「闸门」存在的理由。
+
+> 这道闸门**当场抓到了两个真问题**：`Motion.ExpandHeight` 与 `Motion.ExpandFadeIn`
+> 在改完之后变成了零引用（前者真该删，后者是 `FadeIn` 内部用的裸名引用 ——
+> 闸门第一版只算外部引用，**误报了**，已改成把 `Motion.kt` 内部的引用也算进去）。
+
+### 六、其它
+
+- `StatusScreen.kt` 的刷新动画原先绕过了 token 直接写
+  全限定的 `androidx.compose.animation.core.LinearEasing` ⇒ 改走 `Motion.EaseOut`
+  （`Motion.Linear` 本来就是 `LinearEasing`，但那个 token 只用在匀速场景）。
+
+### 回滚
+
+- 客户端：6 个文件回退 v0.48.0 版本即可；
+- 闸门：`scripts/client-gates.sh` 回退即可（不影响运行时）。
+
+---
+
 ## 2026-10-25（v0.48.0：用量页的零行驶日空态 —— 别让「0.0 公里」看起来像 App 坏了）
 
 > 第 28 轮通勤车主评审 P1-1 的落地。本轮版本：`0.48.0`，versionCode 66。

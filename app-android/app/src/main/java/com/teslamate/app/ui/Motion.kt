@@ -2,7 +2,6 @@ package com.teslamate.app.ui
 
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.Spring
@@ -11,6 +10,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 
 /**
  * **动效 token** —— 全 App 的动画规格集中在这里。
@@ -32,11 +32,26 @@ object Motion {
     /** iOS 的标准 ease-out：起步快、收尾稳。 */
     val EaseOut: Easing = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f)
 
+    /**
+     * ⚠️ **v0.49.0（第 28 轮 HIG 评审 P1-3）**：全 App 的曲线**统一走 [EaseOut]**。
+     *
+     * 原来 token 里写的是 `FastOutSlowInEasing`
+     * —— 那是 **Material 3 的 standard easing**（`CubicBezierEasing(0.4, 0, 0.2, 1)`），
+     * **不是** iOS 的 `easeOut`（`0.25, 0.1, 0.25, 1`）。
+     *
+     * 差异肉眼很难逐帧分辨，但它决定的是**整体手感的「家族归属」** ——
+     * 所有者的基线是「iOS 式」，而曲线是 Material 的，
+     * 等于整 App 的运动语言**换了血统**。
+     *
+     * ⚠️ 而且 [EaseOut] 这个 token 当时是**零引用**的 ——
+     * 注释宣称「iOS 的标准 ease-out」，实现却没人用它。
+     */
+
     /** 按下：60ms 进去。要快 —— 按下的反馈必须**即时**，否则用户以为没点到。 */
-    val PressIn = tween<Float>(60, easing = FastOutSlowInEasing)
+    val PressIn = tween<Float>(60, easing = EaseOut)
 
     /** 松手：200ms 回去。要比按下慢 —— 回弹本身是能被眼睛追踪的运动。 */
-    val PressOut = tween<Float>(200, easing = FastOutSlowInEasing)
+    val PressOut = tween<Float>(200, easing = EaseOut)
 
     /** 分段控件选中块位移：无回弹（damping=1），约 230ms 收敛。 */
     val SelectMove = spring<Float>(
@@ -45,10 +60,10 @@ object Motion {
     )
 
     /** 分段控件文字色：180ms，与选中块同步启动。 */
-    val SelectTextColor = tween<androidx.compose.ui.graphics.Color>(180, easing = FastOutSlowInEasing)
+    val SelectTextColor = tween<androidx.compose.ui.graphics.Color>(180, easing = EaseOut)
 
     /** 分段控件字重：180ms（数值型，用 Float 规格）。 */
-    val SelectText = tween<Float>(180, easing = FastOutSlowInEasing)
+    val SelectText = tween<Float>(180, easing = EaseOut)
 
     /** Tab 切换交叉淡入淡出（iOS UITabBarController：无位移）。 */
     const val TabFadeIn = 140
@@ -57,10 +72,41 @@ object Motion {
     /** push 推入 + 旧页 30% 视差。 */
     const val Push = 380
 
-    /** 折叠区：高度 280ms，淡入 200ms（线性慢出），淡出 140ms。 */
-    const val ExpandHeight = 280
+    /** 折叠区：淡入 200ms（线性慢出），淡出 140ms；高度见 [ExpandSize]。 */
     const val ExpandFadeIn = 200
     const val ExpandFadeOut = 140
+
+    /**
+     * ⚠️ **v0.49.0（第 28 轮 HIG 评审 P1-2）**：折叠区的**高度**动画。
+     *
+     * ## 为什么从 tween 换成 spring
+     *
+     * 项目自己的原则（[Motion] 顶部）：
+     * 「**用户直接操作引起的状态变化 → spring**」。
+     * 展开/收起是**用户直接操作** ⇒ 高度必须走 spring。
+     *
+     * 而 `RangeSegments.kt` 的注释里**早就逐字写着**这个结论，
+     * **代码却没跟上** —— 全 App 共用的 `CollapsibleSection` 至今还是 tween。
+     *
+     * ## 为什么淡入淡出还是 tween
+     *
+     * 淡入淡出是**系统自动发生的时间过程** ⇒ tween。
+     * 只有**高度**该换。
+     *
+     * ## 参数
+     *
+     * `dampingRatio = 1f`（临界阻尼）：**不回弹** ——
+     * 收起时高度不会过冲到负数，展开时也不会超过目标高度。
+     * `stiffness = 400f` ⇒ 收敛约 280ms，与原 `tween(280)` 视觉等长。
+     *
+     * ⚠️ 没设 `visibilityThreshold` —— Compose 1.7.6 的 `IntSize.VisibilityThreshold`
+     * 在本工程里不可解析；同文件其它 spring token（`SelectMove` / `TiltPress` / `IconPop`）
+     * 也都没设，保持一致。
+     */
+    val ExpandSize = spring<IntSize>(
+        dampingRatio = 1f,
+        stiffness = 400f,
+    )
 
     /** 折叠箭头旋转 0↔180°。 */
     const val ChevronRotate = 240
@@ -68,14 +114,19 @@ object Motion {
     /** 图表首次描边生长。 */
     const val ChartGrow = 520
 
-    /** 切换周期时柱高过渡（原来只有布尔驱动的「首次生长」，切段是硬切）。 */
-    const val ChartMorph = 300
-
-    /** 主角数字滚动：无回弹。 */
-    val DataValue = spring<Float>(
-        dampingRatio = 1f,
-        stiffness = 350f,
-    )
+    /**
+     * ⚠️ **v0.49.0（第 28 轮 HIG 评审 P1-4）**：删掉了两个**闲置 token**。
+     *
+     * - `ChartMorph = 300`（「切换周期时柱高过渡」）：**零引用**。
+     *   实际切周期是整页骨架屏 + 520ms 重新生长 ——
+     *   图表是「消失再长出来」而不是「变形」。
+     *   接上它需要改数据流（切周期时保留旧图做过渡），超出「一致性整改」的范围。
+     * - `DataValue`（「主角数字滚动」）：**零引用**。
+     *   `BigStat` 的 `value` 是 `String`，压根没有任何补间；
+     *   真要做数字滚动得改 API（`Int`/`Float` + 格式化）。
+     *
+     * 「定义了但没人用」= 规格漂移，下一轮评审还会把它当成「已实现」来评判。
+     */
 
     /** 刷新图标：700ms/圈匀速；结束后 200ms 平滑回正。 */
     const val RefreshSpin = 700

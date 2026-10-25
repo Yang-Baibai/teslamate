@@ -1055,55 +1055,6 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
 }
 
 /**
- * 自绘分段控件（iOS UISegmentedControl 风格）。
- *
- * ⚠️ v0.7.1：原来用 M3 的 `SingleChoiceSegmentedButtonRow` —— 它自带描边、圆角和
- * 一个选中态填充块，**纯 Material 味**，与整 App 的 iOS 语言冲突。
- * 现在：外层一个低对比容器 + 内部 2dp 间隙 + 选中块纯色（深 #3A3A3C / 浅 #FFFFFF），
- * 文字颜色区分选中与否，没有描边、没有 M3 指示器。
- */
-@Composable
-private fun PeriodSegmented(
-    periods: List<Pair<String, String>>,
-    current: String,
-    onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val dark = isDarkTheme()
-    val trackColor = if (dark) Color(0xFF1C1C1E) else Color(0xFFE9E9EC)
-    val selectedBg = if (dark) Color(0xFF3A3A3C) else Color.White
-    Row(
-        modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(trackColor)
-            .padding(2.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        periods.forEach { (key, label) ->
-            val selected = current == key
-            Box(
-                Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(if (selected) selectedBg else Color.Transparent)
-                    .clickable { onSelect(key) }
-                    .padding(vertical = 9.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    label,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (selected) MaterialTheme.colorScheme.onSurface
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-/**
  * 图表下方的摘要行。
  *
  * ⚠️ v0.7.1：原来这里打的是**首末日期**，而图表 X 轴已经打了首/中/末三个日期标签 ——

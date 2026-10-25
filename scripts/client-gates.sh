@@ -144,6 +144,88 @@ PYEOF
 if [ $? -eq 0 ]; then ok "源码无 U+FFFD 损坏字符"; else fail "源码出现 U+FFFD 损坏字符"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 4：动效一致性（第 28 轮 HIG 评审 P1-2/P1-3/P1-4）──────────
+#
+# ⚠️ **v0.49.0：踩到了才补上。**
+# 第 28 轮 HIG 评审查出三个「规格漂移」，全都不是编译期能抓的：
+#
+# ① 同一个「展开」动作有**三套**动画规格：
+#    `Widgets.CollapsibleSection` 与 `RoutePlan` 是 tween(280ms)，
+#    `StatusScreen` 的地图展开**完全没传 animationSpec**（框架默认 spring + fadeIn 150ms）。
+#    ⇒ 用户在两个页面展开同一个东西，手感**不是同一个动作**。
+# ② 全 App 的曲线是 **Material 3 的 `FastOutSlowInEasing`**，
+#    而 `Motion.kt` 里注释宣称要用的 iOS `EaseOut` **零引用** ——
+#    等于整 App 的运动语言**换了血统**。
+# ③ `Charts.kt` 硬编码 `tween(durationMillis = 520)`，
+#    而 `Motion.ChartGrow = 520` 就在旁边躺着没人用。
+#
+# 这三条都**编译通过、单测全绿**，只有源码级正则能抓到 ⇒ 固化成闸门。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import re, pathlib, sys
+root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui')
+files = {p.name: p.read_text(encoding='utf-8', errors='replace') for p in root.glob('*.kt')}
+problems = []
+
+# ① 三处「展开」的规格必须**逐字相同**
+spec = {}
+for name, s in files.items():
+    for m in re.finditer(
+            r'enter = fadeIn\(Motion\.FadeIn\) \+ expandVertically\(([^)]*)\),\s*\n'
+            r'\s*exit = fadeOut\(tween\(Motion\.ExpandFadeOut\)\) \+ shrinkVertically\(([^)]*)\),', s):
+        spec.setdefault((m.group(1).strip(), m.group(2).strip()), []).append(name)
+if len(spec) != 1:
+    problems.append('「展开」的动画规格不统一：%s' % spec)
+elif len(list(spec.values())[0]) < 3:
+    problems.append('「展开」的统一规格只出现在 %d 处（应至少 3 处）' % len(list(spec.values())[0]))
+# 不得再有「完全没传 spec」的展开
+for name, s in files.items():
+    for i, line in enumerate(s.splitlines(), 1):
+        st = line.strip()
+        if st.startswith('//') or st.startswith('*'):
+            continue
+        if 'expandVertically() + fadeIn()' in line or 'shrinkVertically() + fadeOut()' in line:
+            problems.append('%s:%d 展开没传 animationSpec（框架默认 ≠ 其它地方）' % (name, i))
+
+# ② 不得再有 Material 曲线（注释里的历史说明不算）
+for name, s in files.items():
+    for i, line in enumerate(s.splitlines(), 1):
+        st = line.strip()
+        if st.startswith('//') or st.startswith('*') or st.startswith('/*'):
+            continue
+        if 'FastOutSlowInEasing' in line:
+            problems.append('%s:%d 还在用 Material 曲线 FastOutSlowInEasing（应走 Motion.EaseOut）' % (name, i))
+
+# ③ 不得有绕过 token 的硬编码时长
+for name, s in files.items():
+    for i, line in enumerate(s.splitlines(), 1):
+        st = line.strip()
+        if st.startswith('//') or st.startswith('*'):
+            continue
+        for m in re.finditer(r'tween\(\s*(?:durationMillis\s*=\s*)?([0-9]+)\s*[,)]', line):
+            problems.append('%s:%d 硬编码时长 %s（应走 Motion 的 token）' % (name, i, m.group(1)))
+
+# ④ 闲置 token：定义了却没有任何引用 = 规格漂移
+#    ⚠️ 引用**包括 Motion.kt 内部**（比如 `FadeIn` 用的是 `ExpandFadeIn`，
+#    它是裸名引用，不带 `Motion.` 前缀）—— 只算外部引用会误报。
+motion = files.get('Motion.kt', '')
+for tok in re.findall(r'\b(?:val|const val) ([A-Z][A-Za-z0-9_]*)\s*[:=]', motion):
+    if tok in ('EaseOut', 'Linear'):
+        continue
+    used = sum(s.count('Motion.' + tok) for n, s in files.items() if n != 'Motion.kt')
+    used += motion.count(tok)          # Motion.kt 内部的裸名引用
+    if used <= 1:                      # 只剩定义本身那一次
+        problems.append('Motion.%s 零引用（定义了但没人用 = 规格漂移）' % tok)
+
+if problems:
+    print('动效一致性不达标：')
+    for p in problems[:12]:
+        print('   ', p)
+    sys.exit(1)
+PYEOF
+if [ $? -eq 0 ]; then ok "动效一致性（三处展开同规格 + iOS 曲线 + 无硬编码时长 + 无闲置 token）"; else fail "动效一致性"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

@@ -7,7 +7,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -540,9 +539,6 @@ fun Modifier.pressable(
         )
 }
 
-/** 保留旧签名以兼容既有调用点（现在真正生效） */
-fun Modifier.pressScale(scaleDown: Float = 0.97f): Modifier = this
-
 /**
  * 分组信息卡：**实色卡面** + 中性阴影 + 渐变描边。
  *
@@ -917,7 +913,7 @@ fun CollapsibleSection(
         // 时长与内容高度动画同步（240ms easeOut）。
         val arrowRotation by animateFloatAsState(
             targetValue = if (expanded) 180f else 0f,
-            animationSpec = tween(Motion.ChevronRotate, easing = FastOutSlowInEasing),
+            animationSpec = tween(Motion.ChevronRotate, easing = Motion.EaseOut),
             label = "collapsibleArrow",
         )
         Row(
@@ -973,12 +969,8 @@ fun CollapsibleSection(
         // 内容在高度还没到位时就已经可见，底部被「切」一下。
         AnimatedVisibility(
             visible = expanded,
-            enter = fadeIn(Motion.FadeIn) + expandVertically(
-                tween(Motion.ExpandHeight, easing = FastOutSlowInEasing),
-            ),
-            exit = fadeOut(tween(Motion.ExpandFadeOut)) + shrinkVertically(
-                tween(Motion.ExpandHeight, easing = FastOutSlowInEasing),
-            ),
+            enter = fadeIn(Motion.FadeIn) + expandVertically(Motion.ExpandSize),
+            exit = fadeOut(tween(Motion.ExpandFadeOut)) + shrinkVertically(Motion.ExpandSize),
         ) {
             content()
         }
@@ -1434,7 +1426,7 @@ fun SocRing(
     }
     val animated by animateFloatAsState(
         targetValue = (soc ?: 0).toFloat(),
-        animationSpec = tween(durationMillis = Motion.RingValue, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = Motion.RingValue, easing = Motion.EaseOut),
         label = "socRing",
     )
     val shown = animated.roundToInt()
@@ -1744,7 +1736,7 @@ fun EnergyBar(
     val track = a.chartTrack
     val animated by animateFloatAsState(
         targetValue = (soc ?: 0) / 100f,
-        animationSpec = tween(Motion.EnergyBar, easing = FastOutSlowInEasing),
+        animationSpec = tween(Motion.EnergyBar, easing = Motion.EaseOut),
         label = "energyBar",
     )
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1915,7 +1907,7 @@ fun VehicleTopView(
         initialValue = 0.45f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            tween(Motion.TpmsPulse, easing = FastOutSlowInEasing),
+            tween(Motion.TpmsPulse, easing = Motion.EaseOut),
             androidx.compose.animation.core.RepeatMode.Reverse,
         ),
         label = "tpmsPulseAlpha",
