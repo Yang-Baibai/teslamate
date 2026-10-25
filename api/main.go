@@ -97,6 +97,8 @@ func main() {
 	mux.HandleFunc("GET /api/v1/cars/{id}/status", auth(handleStatus))
 	mux.HandleFunc("GET /api/v1/cars/{id}/drives", auth(handleDrives))
 	mux.HandleFunc("GET /api/v1/drives/{id}/track", auth(handleTrack))
+	// ⚠️ v0.24.0：真实逐公里 SOC 剖面（长途规划用）。
+	mux.HandleFunc("GET /api/v1/drives/{id}/soc_profile", auth(handleSocProfile))
 	mux.HandleFunc("GET /api/v1/cars/{id}/charges", auth(handleCharges))
 	mux.HandleFunc("GET /api/v1/charges/{id}/curve", auth(handleChargeCurve))
 	mux.HandleFunc("GET /api/v1/cars/{id}/stats", auth(handleStats))

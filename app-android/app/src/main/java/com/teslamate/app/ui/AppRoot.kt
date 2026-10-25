@@ -1,6 +1,7 @@
 package com.teslamate.app.ui
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -296,6 +297,19 @@ private fun MainScaffold(
     // （原来只有一个全局键，切车 + 断网会显示别的车的数据）。
     val statusStore = remember { StatusStore(StatusCache(ctx)) }
 
+    // ⚠️ v0.24.0（性能评审 P0-2 / P1-1）：**记录页的数据仓库提到 App 级**。
+    //
+    // 原来 drives/charges 是 RecordsScreen 的页面级 `remember` ——
+    // `AnimatedContent` 切走的页面会被 dispose（`SaveableStateHolder` 只保
+    // `rememberSaveable`），于是每次切到记录页都重拉 367 KB 并全量重算，
+    // 实测**单帧主线程停顿 430 ms** —— 切 Tab 是 App 最常用的动作，却最卡。
+    val recordsStore = remember { RecordsStore() }
+
+    // ⚠️ 切车时清掉记录页的数据 —— 否则标题换了、数据还是上一台车的。
+    LaunchedEffect(settings?.carId) {
+        recordsStore.clear()
+    }
+
     // ⚠️ v0.22.0：**按 carId 切换车况数据**。
     //
     // LaunchedEffect 的 key 是 carId —— 只有**换车**才会重启；
@@ -447,7 +461,11 @@ private fun MainScaffold(
                 // ⚠️ haze 与 hazeChild 不可互为父子，所以源必须挂在内容区而不是根容器。
                 .haze(LocalHazeState.current),
             transitionSpec = {
-                fadeIn(tween(140)) togetherWith fadeOut(tween(120))
+                // ⚠️ v0.24.0（性能评审 P0-2 第 3 条）：**SizeTransform(clip = false)** ——
+                // 淡入淡出时新旧两页**同时组合**，且尺寸不同会互相触发布局。
+                // 加上 `clip = false` 让内容不被裁剪框限制，减少一轮额外布局。
+                (fadeIn(tween(140)) togetherWith fadeOut(tween(120)))
+                    .using(SizeTransform(clip = false))
             },
             label = "tabSwitch",
         ) { current ->
@@ -478,6 +496,8 @@ private fun MainScaffold(
                         // ⚠️ v0.16.0：顶栏车切换芯片
                         cars = cars,
                         onCarChange = onCarChange,
+                        // ⚠️ v0.24.0：App 级数据仓库（性能评审 P0-2）。
+                        store = recordsStore,
                     )
                     Tab.USAGE -> StatsScreen(
                         settings,

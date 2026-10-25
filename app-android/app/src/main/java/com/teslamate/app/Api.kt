@@ -309,6 +309,22 @@ data class Charge(
     val start_soc: Int? = null,
     val end_soc: Int? = null,
     val place: String? = null,
+    /**
+     * ⚠️ v0.24.0：**真实 POI 名**（「金田服务区」这种）。
+     *
+     * `place` 是**反向地理编码的长串**
+     * （「汕昆高速公路, 北庄, 宜州区, 河池市, 广西, 中国」），
+     * 而库里还有 OSM 的原始 POI 名 —— 用户要找的是「哪个服务区」，不是一段地址。
+     */
+    val poi_name: String? = null,
+    /** POI 类型（primary / secondary / fuel / cafe / services …） */
+    val poi_type: String? = null,
+    /**
+     * ⚠️ v0.24.0：**是不是特斯拉超充** ——
+     * 官方 App 的核心区分（超充 / 国标直流 / 交流），
+     * 原来只有「直流 / 交流」两档，用户没法判断「这个桩是不是超充」。
+     */
+    val is_tesla_sc: Boolean = false,
     val map_lat: Double? = null,
     val map_lng: Double? = null,
     val is_dc: Boolean = false,
@@ -468,6 +484,20 @@ data class TeslamateHealth(
     val age_hours: Double? = null,
 )
 
+/**
+ * ⚠️ v0.24.0：**真实逐公里 SOC 剖面**上的一个点。
+ *
+ * 原来线路余量剖面只有 2~6 个点，中间是**直线插值** ——
+ * 山区长途（爬升 1500~2600 m）误差实测达 **13 公里**：
+ * 真实跌破 20% 保底在第 244 公里，插值算出来是 231 公里。
+ * 用户按 231 公里规划，到 244 公里时电已经见底 —— 会导致危险决策。
+ */
+@Serializable
+data class SocProfilePoint(
+    val km: Double = 0.0,
+    val soc: Double = 0.0,
+)
+
 @Serializable
 data class AppLatest(    val version_code: String = "0",
     val version_name: String = "0.0.0",
@@ -495,14 +525,41 @@ data class ApiError(
 
 class Api private constructor(private val base: String, private val token: String) {
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(6, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .build()
+    /**
+     * 服务器地址（对外可见）。
+     *
+     * ⚠️ v0.24.0：`RecordsStore` 用它做「已经拉过哪台车的数据」的键 ——
+     * 换服务器或换车时必须重拉，不能拿旧数据冒充。
+     */
+    val baseUrl: String get() = base
+
+    // ⚠️ v0.24.0（性能与稳定性评审 P1-3）：**OkHttpClient 单例化**。
+    //
+    // 原来每个 `Api` 实例自带一个 `OkHttpClient`（独立 ConnectionPool + Dispatcher），
+    // 而 `Api.create()` 被调了 8 处（5 处 `remember(settings) { settings.api() }`
+    // + AppRoot + RecentSummaryCard + SettingsScreen）。
+    //
+    // 后果有两个：
+    // ① **连接池不共享** —— keep-alive 失效，每次请求多一次 TCP + TLS 往返
+    //    （真机走 Tailscale / 移动网络时是实打实的 1–2 RTT）；
+    // ② `remember(settings)` 的 key 是**整个 AppSettings** ——
+    //    改任何一个设置项就换掉全部 5 个 client。
+    //
+    // `OkHttpClient` 本身线程安全、可复用，所以改成**全局共享一个**。
+    // 超时设置保持不变。
+    private val client: OkHttpClient = sharedClient
 
     private val json = Json { ignoreUnknownKeys = true }
 
     companion object {
+        /** 全局共享的 HTTP 客户端（连接池 / 线程池都共享）。 */
+        private val sharedClient: OkHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(6, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .build()
+        }
+
         fun create(url: String, token: String): Api? {
             val u = url.trim()
             if (!u.startsWith("http://") && !u.startsWith("https://")) return null
@@ -654,4 +711,14 @@ class Api private constructor(private val base: String, private val token: Strin
      * 这个端点**带鉴权**，可以返回 Fleet 状态、最后采集时间、数据库延迟。
      */
     fun health(): HealthDetail = get("/api/v1/health")
+
+    /**
+     * ⚠️ v0.24.0：一趟行程的**真实逐公里 SOC 剖面**。
+     *
+     * 独立端点而不是随 /drives 返回：全表算 11 趟长途要 350 ms
+     * （positions 只有 BRIN 索引，一次查全部长途会退化成全表扫描），
+     * 会让记录页首屏多等 280 ms；单趟查只要 17 ms —— 按需拉才对。
+     */
+    fun socProfile(driveId: Int, stepKm: Int = 5): List<SocProfilePoint> =
+        get("/api/v1/drives/$driveId/soc_profile?step_km=$stepKm")
 }

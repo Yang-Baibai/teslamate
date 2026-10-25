@@ -247,7 +247,7 @@ internal fun ChargeItem(
                 contentDescription = buildString {
                     append(c.place.firstSegment() ?: "未知地点")
                     append("，")
-                    append(if (c.is_dc) "直流快充" else "交流慢充")
+                    append(if (c.is_dc && c.is_tesla_sc) "特斯拉超充" else if (c.is_dc) "国标直流" else "交流慢充")
                     append("，")
                     append(c.start_date.fmtShort())
                     append("，充入 ")
@@ -263,9 +263,16 @@ internal fun ChargeItem(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.Top) {
                 Text(
-                    // 地址只取第一段（"龙山九路, 西区街道, …" → "龙山九路"），
-                    // 完整邮编地址在车况页位置卡里以灰色小字保留。
-                    c.place.firstSegment() ?: "未知地点",
+                    // ⚠️ v0.24.0：**优先显示真实 POI 名**（「金田服务区」），
+                    // 而不是反向地理编码的长串
+                    //（「汕昆高速公路, 北庄, 宜州区, 河池市, 广西, 中国」）。
+                    // 用户要找的是「哪个服务区」，不是一段地址。
+                    //
+                    // 原来取的是 `place.firstSegment()`（地址第一段）——
+                    // 那是个**地名**，而 OSM 的 POI 名才是**场所名**。
+                    c.poi_name?.takeIf { it.isNotBlank() }
+                        ?: c.place.firstSegment()
+                        ?: "未知地点",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
                     maxLines = 2,
@@ -273,7 +280,7 @@ internal fun ChargeItem(
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(10.dp))
-                ChargeTypeChip(c.is_dc)
+                ChargeTypeChip(c.is_dc, c.is_tesla_sc)
                 // ⚠️ v0.9.2（iOS 交互评审 P1-8）：**可推入的卡片要有 disclosure indicator**。
                 // 这张卡会 push 出充电详情，但外观与纯展示卡完全一致 ——
                 // 唯一的线索是「按下去会缩放」，而按下之前用户根本不知道能点。
@@ -334,7 +341,7 @@ internal fun ChargeItem(
 
 /** 快充/慢充标签：矢量图标 + 文字，状态不只靠颜色 */
 @Composable
-internal fun ChargeTypeChip(isDc: Boolean) {
+internal fun ChargeTypeChip(isDc: Boolean, isTeslaSc: Boolean = false) {
     val accents = LocalAccentColors.current
     // ⚠️ v0.7.1：原来用 `primaryContainer`（深色下是一块 **深红** #93000A）——
     // 一条普通记录的快充标签，红色权重远大于信息量，而且和「告警红」撞语义。
@@ -367,7 +374,19 @@ internal fun ChargeTypeChip(isDc: Boolean) {
             )
             Spacer(Modifier.width(4.dp))
             Text(
-                if (isDc) "直流快充" else "交流慢充",
+                // ⚠️ v0.24.0（长途充电规划专家 P1-5）：**三档**，不只两档。
+                //
+                // 原来只有「直流快充 / 交流慢充」——
+                // 但直流桩里「特斯拉超充」和「国标直流」的功率差了好几倍
+                // （实测本车：超充典型 55 kW，国标直流 45 kW，而交流只有 2.6 kW），
+                // 用户规划长途时最想知道的就是「**这是不是超充**」。
+                //
+                // 官方 App 的核心区分就是这一条。
+                when {
+                    isDc && isTeslaSc -> "特斯拉超充"
+                    isDc -> "国标直流"
+                    else -> "交流慢充"
+                },
                 style = MaterialTheme.typography.labelMedium,
                 color = tint,
             )
@@ -500,7 +519,7 @@ internal fun ChargeDetail(
                             )
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                if (charge.is_dc) "直流快充" else "交流慢充",
+                                if (charge.is_dc && charge.is_tesla_sc) "特斯拉超充" else if (charge.is_dc) "国标直流" else "交流慢充",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )

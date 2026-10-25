@@ -134,9 +134,17 @@ fun StatusScreen(
 
     LaunchedEffect(api, settings.carId) {
         if (api != null) {
+            // ⚠️ v0.24.0（性能评审 P1-2）：**能耗模型在后台线程建** ——
+            // 原来它在主线程（`onSuccess` 已切回 Main），
+            // 而这正好落在「数据落地那一帧」（实测已是全 App 最卡的一帧）。
             runCatching {
-                withContext(Dispatchers.IO) { api.drives(settings.carId, 500) }
-            }.onSuccess { store.updateDrives(it, settings.carId) }
+                withContext(Dispatchers.IO) {
+                    val list = api.drives(settings.carId, 500)
+                    list to ConsumptionModel.from(list)
+                }
+            }.onSuccess { (list, model) ->
+                store.updateDrives(list, settings.carId, model)
+            }
         }
     }
     val drives = store.drives

@@ -185,6 +185,22 @@ type Drive struct {
 	ChargeAfterTrip bool `json:"charge_after_trip"`
 }
 
+// SocProfilePoint 剖面上的一个点（真实逐公里 SOC）。
+//
+// ⚠️ v0.24.0（长途充电规划专家 P0-2）：
+// 原来 App 的线路余量剖面只有 2~6 个点，中间是**直线插值** ——
+// 山区长途（爬升 1500~2600 m）误差实测达 **13 公里**：
+// 真实跌破 20% 保底在第 244 公里，插值算出来是 231 公里。
+// 用户按 231 公里规划，到 244 公里时电已经见底 —— 会导致危险决策。
+//
+// 数据本来就在库里（positions 162 万点，采样中位 0.251 秒），
+// 现在按**里程 5 公里**分箱取 battery_level 中位数。
+// 独立端点 `GET /api/v1/drives/{id}/soc_profile`。
+type SocProfilePoint struct {
+	Km  float64 `json:"km"`
+	Soc float64 `json:"soc"`
+}
+
 type TrackPoint struct {
 	Date      time.Time `json:"date"`
 	Lat       float64   `json:"lat"`
@@ -208,6 +224,18 @@ type Charge struct {
 	StartSoc    *int       `json:"start_soc"`
 	EndSoc      *int       `json:"end_soc"`
 	Place       *string    `json:"place"`
+	// ⚠️ v0.24.0：**真实 POI 名**（「金田服务区」这种）。
+	//
+	// 原来只有 `place` —— 那是**反向地理编码的长串**
+	//（「汕昆高速公路, 北庄, 宜州区, 河池市…」），
+	// 而库里其实有 OSM 的原始 POI 名。用户要找的是「哪个服务区」，不是一段地址。
+	PoiName *string `json:"poi_name"`
+	// POI 类型（services / charging_station / fuel …）
+	PoiType *string `json:"poi_type"`
+	// ⚠️ v0.24.0：**是不是特斯拉超充** ——
+	// 官方 App 的核心区分（超充 / 国标直流 / 交流），
+	// 原来只有「直流 / 交流」两档，用户没法判断「这个桩是不是超充」。
+	IsTeslaSC bool `json:"is_tesla_sc"`
 	MapLat      *float64   `json:"map_lat"`
 	MapLng      *float64   `json:"map_lng"`
 	IsDC        bool       `json:"is_dc"`

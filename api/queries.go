@@ -252,6 +252,34 @@ WHERE d.car_id = $1 AND d.distance >= 0.1
 ORDER BY d.start_date DESC
 LIMIT $2 OFFSET $3`
 
+// ⚠️ v0.24.0（长途充电规划专家 P0-2）：**真实逐公里 SOC 剖面**（单趟）。
+//
+// 原来 App 的线路余量剖面只有 2~6 个点（起点电量、充电跳升、终点电量），
+// 中间是**直线插值** —— 山区长途（爬升 1500~2600 m）误差实测达 **13 公里**：
+// 真实跌破 20% 保底在第 244 公里，插值算出来是 231 公里。
+// 用户按 231 公里规划，到 244 公里时电已经见底 —— **会导致危险决策**。
+//
+// 数据本来就在库里：positions 有 162 万个点，采样间隔中位 **0.251 秒**。
+// 现在按**里程 5 公里**分箱，取箱内 battery_level 的**中位数**
+// （中位数比均值抗离群 —— 停车开空调时的短暂掉电不会带偏整箱）。
+//
+// ⚠️ 为什么是**独立端点**而不是随 /drives 一起返回：
+// 全表算 11 趟长途的剖面要 350 ms（positions 只有 BRIN 索引，
+// 一次查全部长途会退化成全表扫描），会让记录页首屏多等 280 ms。
+// 单趟查只要 **19 ms**（BRIN 的 drive_id 索引用上了）—— 按需拉才对。
+//
+// $1 = drive_id，$2 = 分箱步长（km）
+const sqlSocProfile = `
+SELECT floor((p.odometer - sp.odometer) / $2) * $2 AS km,
+       percentile_cont(0.5) WITHIN GROUP (ORDER BY p.battery_level)::float8 AS soc
+FROM positions p
+JOIN drives d ON d.id = p.drive_id
+JOIN positions sp ON sp.id = d.start_position_id
+WHERE p.drive_id = $1
+  AND p.battery_level IS NOT NULL
+  AND p.odometer IS NOT NULL
+GROUP BY 1 ORDER BY 1`
+
 const sqlTrack = `
 SELECT p.date,
        p.latitude::float8, p.longitude::float8,
@@ -275,7 +303,11 @@ WITH ch_agg AS (
          (array_agg(charger_voltage ORDER BY date DESC))[1] AS last_voltage,
          (array_agg(charger_actual_current ORDER BY date DESC))[1] AS last_current,
          (array_agg(conn_charge_cable ORDER BY date DESC))[1] AS cable_type,
-         (array_agg(fast_charger_brand ORDER BY date DESC))[1] AS brand
+         (array_agg(fast_charger_brand ORDER BY date DESC))[1] AS brand,
+         -- ⚠️ v0.24.0（长途充电规划专家 P1-5）：**是不是特斯拉超充** ——
+         -- 官方 App 的核心区分（超充 / 国标直流 / 交流），
+         -- 我们原来只有「直流 / 交流」两档，用户没法判断「这个桩是不是超充」。
+         bool_or(fast_charger_brand = 'Tesla') AS tesla_sc
   FROM charges GROUP BY charging_process_id
 ), ch_pw AS (
   -- ⚠️ v0.21.0：**时间加权**平均功率（真正的「这个桩平均能跑多少 kW」）。
@@ -312,6 +344,14 @@ SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
        cp.charge_energy_added::float8, cp.charge_energy_used::float8, cp.cost::float8,
        cp.start_battery_level, cp.end_battery_level,
        COALESCE(g.name, a.display_name) AS place,
+       -- ⚠️ v0.24.0（长途充电规划专家 P1-4）：**真实 POI 名**。
+       --
+       -- 原来显示的是**反向地理编码的长串**（「汕昆高速公路, 北庄, 宜州区, 河池市…」），
+       -- 而库里其实有 OSM 的原始 POI 名 —— 「金田服务区」「合江荔乡服务区」这种。
+       -- 用户要找的是「**哪个服务区**」，不是一段地址。
+       NULLIF(a.raw->>'name', '') AS poi_name,
+       -- POI 类型（services / charging_station / fuel …）
+       NULLIF(a.raw->>'type', '') AS poi_type,
        wgs84_to_gcj02_lat(sp.latitude::float8, sp.longitude::float8) AS map_lat,
        wgs84_to_gcj02_lng(sp.latitude::float8, sp.longitude::float8) AS map_lng,
        COALESCE(cd.is_dc, false) AS is_dc,
@@ -326,7 +366,8 @@ SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
        sp.inside_temp::float8, ep.inside_temp::float8,
        cp.outside_temp_avg::float8,
        ch_agg.last_phases, ch_agg.last_voltage, ch_agg.last_current,
-       ch_agg.cable_type, ch_agg.brand
+       ch_agg.cable_type, ch_agg.brand,
+       COALESCE(ch_agg.tesla_sc, false) AS is_tesla_sc
 FROM charging_processes cp
 LEFT JOIN addresses a ON a.id = cp.address_id
 LEFT JOIN geofences g ON g.id = cp.geofence_id

@@ -100,6 +100,11 @@ data class RouteTemplate(
     val lastStartSoc: Int? = null,
     /** 最近一次的到达电量（%） */
     val lastEndSoc: Int? = null,
+    /**
+     * ⚠️ v0.24.0：**最近那一趟的 drive id** ——
+     * 用来拉它的**真实逐公里 SOC 剖面**（`/drives/{id}/soc_profile`）。
+     */
+    val lastDriveId: Int? = null,
 )
 
 /** 线路上的一个充电站（按路线公里数对齐）。 */
@@ -189,17 +194,37 @@ data class RoutePlan(
      * ② 没有补电点时明说「这条线路上没有你的充电记录，中途补电给不出位置」，
      *    而不是假装「不需要充」。
      */
+    /**
+     * ⚠️ **v0.24.0（长途充电规划专家 P0-3）：决策句必须带**来源限定**。**
+     *
+     * 原来输出的是「需充 2 次」「第 252 公里只剩 16%」——
+     * 读起来像是「**这次**要充 2 次」，但它 100% 来自**单趟历史 drive** 的实测值。
+     *
+     * 专家实测复刻：那条 252 公里的线路，App 会显示「需充 2 次」——
+     * 而那 2 次其实是**上一趟的起点充电**（充电必然打断行程，
+     * 实测 78/78 场充电都落在某趟 drive 的起点或终点附近，最近距离 ≤ 0.022 km）。
+     *
+     * **后果**：用户读到「需充 2 次」会真的去安排两次补电，
+     * 而这条线真实的历史节奏是**平均每 128 km 充一次**（42 场）。
+     * 这个数字会直接导致**错误的补电计划**。
+     *
+     * 现在每句都带「按 X 那趟实测」前缀 ——
+     * 把「历史」和「预测」分开说，让用户自己判断可信度。
+     */
     fun verdict(): String {
-        val low = lowestSoc ?: return "这趟没有足够的电量记录，算不出结论"
+        val asOf = template.lastDrivenAt?.fmtDate()
+        val src = asOf?.let { "按 $it 那趟实测" } ?: "按历史记录"
+        val low = lowestSoc ?: return "$src：算不出结论（没有足够的电量记录）"
         val below = belowFloorKm
         return when {
             stops.isNotEmpty() ->
-                "需充 ${stops.size} 次" + (below?.let { " · 第 ${it.roundToInt()} 公里低于 20% 保底" } ?: "")
+                "$src：需充 ${stops.size} 次" +
+                    (below?.let { " · 第 ${it.roundToInt()} 公里低于 20% 保底" } ?: "")
             below != null ->
-                "第 ${below.roundToInt()} 公里只剩 $low%（低于 20% 保底）· " +
+                "$src：第 ${below.roundToInt()} 公里只剩 $low%（低于 20% 保底）· " +
                     "这条线路上没有你的充电记录，中途补电给不出位置"
             else ->
-                "能一次开到 · 预计到达 $low%" +
+                "$src：能一次开到 · 预计到达 $low%" +
                     "（这条线路上没有你的充电记录，中途补电给不出位置）"
         }
     }
@@ -253,6 +278,9 @@ fun buildRouteTemplates(
             lastDistanceKm = latest.distance_km,
             lastStartSoc = latest.start_soc,
             lastEndSoc = latest.end_soc,
+            // ⚠️ v0.24.0：记下最近那一趟的 drive id，
+            // 用来拉它的**真实逐公里 SOC 剖面**。
+            lastDriveId = latest.id,
         )
     }.sortedByDescending { it.lastDrivenAt }
 }
@@ -270,6 +298,17 @@ fun buildRoutePlan(
     template: RouteTemplate,
     charges: List<Charge>,
     stationStats: Map<String, StationStat>,
+    /**
+     * ⚠️ v0.24.0：**真实逐公里 SOC 剖面**（来自 `/drives/{id}/soc_profile`）。
+     *
+     * 原来剖面只有 2~6 个点，中间是**直线插值** ——
+     * 山区长途（爬升 1500~2600 m）误差实测达 **13 公里**：
+     * 真实跌破 20% 保底在第 244 公里，插值算出来是 231 公里。
+     * 用户按 231 公里规划，到 244 公里时电已经见底 —— **会导致危险决策**。
+     *
+     * 有真实剖面就用它；没有（端点没拉到）才回落到插值。
+     */
+    socProfile: List<com.teslamate.app.SocProfilePoint>? = null,
 ): RoutePlan? {
     val startOdo = template.startOdoKm ?: return null
     // ⚠️ v0.14.0（口径审计 P0-4）：里程窗口用**最近那一趟的真实里程**，不用中位数。
@@ -322,13 +361,30 @@ fun buildRoutePlan(
     //
     // ⚠️ v0.14.0：端点用**最近那一趟**的真实电量（lastStartSoc/lastEndSoc），
     // 不用中位数 —— 否则就是「中位数起点 + 单次充电点 + 中位数终点」的三明治。
+    //
+    // ⚠️ v0.24.0：**优先用真实逐公里剖面**（服务端从 positions 的 162 万个采样点算出），
+    // 没有时才回落到「端点 + 充电跳升」的插值 ——
+    // 因为插值在山区的误差达 13 公里，会让人按错误的公里数规划补电。
     val profile = ArrayList<RouteSocPoint>(routeStops.size * 2 + 2)
-    (template.lastStartSoc ?: template.startSoc)?.let { profile += RouteSocPoint(0.0, it) }
-    for (s in routeStops) {
-        s.socBefore?.let { profile += RouteSocPoint(s.kmAlongRoute, it) }
-        s.socAfter?.let { profile += RouteSocPoint(s.kmAlongRoute, it, isCharge = true) }
+    val real = socProfile?.takeIf { it.size >= 3 }
+    if (real != null) {
+        // 真实剖面：逐 5 公里的实测电量
+        real.forEach { p ->
+            profile += RouteSocPoint(p.km, p.soc.roundToInt())
+        }
+        // 充电跳升：把「充完的电量」插在对应公里处（图上看得见那一跳）
+        routeStops.forEach { s ->
+            s.socAfter?.let { profile += RouteSocPoint(s.kmAlongRoute, it, isCharge = true) }
+        }
+        profile.sortBy { it.km }
+    } else {
+        (template.lastStartSoc ?: template.startSoc)?.let { profile += RouteSocPoint(0.0, it) }
+        for (s in routeStops) {
+            s.socBefore?.let { profile += RouteSocPoint(s.kmAlongRoute, it) }
+            s.socAfter?.let { profile += RouteSocPoint(s.kmAlongRoute, it, isCharge = true) }
+        }
+        (template.lastEndSoc ?: template.endSoc)?.let { profile += RouteSocPoint(runDistance, it) }
     }
-    (template.lastEndSoc ?: template.endSoc)?.let { profile += RouteSocPoint(runDistance, it) }
 
     if (profile.size < 2) return null
     return RoutePlan(template, profile, routeStops, endpointStops)

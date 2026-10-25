@@ -267,6 +267,51 @@ func handleDrives(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, list)
 }
 
+// handleSocProfile 返回一趟行程的**真实逐公里 SOC 剖面**。
+//
+// ⚠️ v0.24.0（长途充电规划专家 P0-2）。
+//
+// 原来 App 的线路余量剖面只有 2~6 个点，中间是**直线插值** ——
+// 山区长途（爬升 1500~2600 m）误差实测达 **13 公里**：
+// 真实跌破 20% 保底在第 244 公里，插值算出来是 231 公里。
+// 用户按 231 公里规划，到 244 公里时电已经见底 —— **会导致危险决策**。
+//
+// 数据本来就在库里（positions 162 万点，采样中位 0.251 秒），
+// 现在按里程 5 公里分箱取 battery_level 中位数。
+//
+// ⚠️ 独立端点而不是随 /drives 返回：全表算 11 趟长途要 350 ms
+// （positions 只有 BRIN 索引，一次查全部长途会退化成全表扫描），
+// 会让记录页首屏多等 280 ms；单趟查只要 19 ms —— 按需拉才对。
+func handleSocProfile(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "drive id 无效")
+		return
+	}
+	stepKm := 5.0
+	if v := r.URL.Query().Get("step_km"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0.5 && f <= 50 {
+			stepKm = f
+		}
+	}
+	rows, err := db.Query(context.Background(), sqlSocProfile, id, stepKm)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	pts := []SocProfilePoint{}
+	for rows.Next() {
+		var p SocProfilePoint
+		if err := rows.Scan(&p.Km, &p.Soc); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		pts = append(pts, p)
+	}
+	writeJSON(w, pts)
+}
+
 func handleTrack(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -323,7 +368,7 @@ func handleCharges(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&c.ID, &c.StartDate, &c.EndDate, &c.DurationMin,
 			&c.EnergyAdded, &c.EnergyUsed, &c.Cost, &c.StartSoc, &c.EndSoc,
-			&c.Place, &c.MapLat, &c.MapLng, &c.IsDC,
+			&c.Place, &c.PoiName, &c.PoiType, &c.MapLat, &c.MapLng, &c.IsDC,
 			&c.GeofenceName,
 			&c.StartRangeKm, &c.EndRangeKm,
 			&c.StartOdoKm, &c.EndOdoKm,
@@ -334,7 +379,7 @@ func handleCharges(w http.ResponseWriter, r *http.Request) {
 			&c.StartIndoorT, &c.EndIndoorT,
 			&c.OutsideTempAvg,
 			&c.ChargerPhases, &c.ChargerVolts, &c.ChargerAmps,
-			&c.CableType, &c.ChargerBrand,
+			&c.CableType, &c.ChargerBrand, &c.IsTeslaSC,
 		); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return

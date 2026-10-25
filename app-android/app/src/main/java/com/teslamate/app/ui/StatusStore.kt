@@ -10,6 +10,8 @@ import com.teslamate.app.ConsumptionModel
 import com.teslamate.app.Drive
 import com.teslamate.app.StatusCache
 import com.teslamate.app.UserFacingException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.Instant
 
 /**
@@ -164,13 +166,31 @@ class StatusStore(private val cache: StatusCache? = null) {
         error = UserFacingException(message, ApiErrorKind.OTHER)
     }
 
-    internal fun updateDrives(list: List<Drive>, carId: Int) {
+    /**
+     * 更新行程样本与能耗模型。
+     *
+     * ⚠️ **v0.24.0（性能评审 P1-2）：能耗模型由调用方在**后台线程**建好后传进来。**
+     *
+     * 原来 `ConsumptionModel.from(list)` 在**主线程**执行 ——
+     * `withContext(Dispatchers.IO) { api.drives(...) }` 返回后
+     * `.onSuccess { }` 已经切回 Main。
+     * 它要对 362 条行程做 8 趟遍历 + 5 次分桶中位数。
+     *
+     * 当前数据量下约 1–3 ms（**未构成 ANR**），但架构上是错的 ——
+     * 数据涨到 500 条 + 服务端补齐字段后会线性放大，
+     * 而这正好落在「数据落地那一帧」（实测已是全 App 最卡的一帧）。
+     */
+    internal fun updateDrives(
+        list: List<Drive>,
+        carId: Int,
+        model: ConsumptionModel?,
+    ) {
         drives = list
-        // ⚠️ v0.9.0：模型在这里建（而不是页面里 `remember`），
+        // ⚠️ v0.9.0：模型在这里存（而不是页面里 `remember`），
         // 这样才能一起落盘 —— 服务器挂掉时续航口径不变。
-        consumption = ConsumptionModel.from(list)
+        consumption = model
         recentAscentM = list.firstOrNull()?.ascent_m
-        consumption?.let {
+        model?.let {
             cache?.saveRangeContext(carId, CachedRangeContext(it, recentAscentM))
         }
     }

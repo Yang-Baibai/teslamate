@@ -272,9 +272,28 @@ fun SettingsScreen(
             else -> runCatching { withContext(Dispatchers.IO) { api.cars() } }
                 .onSuccess {
                     testOk = true
-                    testMsg = "连接成功，发现 ${it.size} 台车"
-                    if (it.none { car -> car.id == carId }) {
-                        carId = it.first().id
+                    // ⚠️ v0.24.0（性能与稳定性评审 P0-1）：**空列表不能调 first()**。
+                    //
+                    // 原来写的是：
+                    //     if (it.none { car -> car.id == carId }) { carId = it.first().id }
+                    // 而 `none{}` 对**空列表**返回 true → `it.first()` 抛
+                    // NoSuchElementException。
+                    //
+                    // 异常逃出 `runCatching`（它只包住了 withContext 那段，
+                    // `.onSuccess` 在覆盖范围之外）→ 未捕获 → **App 崩溃**。
+                    //
+                    // 触发条件：服务器上没有车（TeslaMate 侧没配车 / 换了服务器 /
+                    // 多车环境清空）→ 用户在设置页点「测试连接」→ 崩。
+                    //
+                    // 现在：空列表给**可读提示**，不崩。
+                    val first = it.firstOrNull()
+                    if (it.isEmpty()) {
+                        testMsg = "连接成功，但服务器上还没有车 —— 请先在 TeslaMate 里添加车辆"
+                    } else {
+                        testMsg = "连接成功，发现 ${it.size} 台车"
+                        if (first != null && it.none { car -> car.id == carId }) {
+                            carId = first.id
+                        }
                     }
                 }
                 .onFailure {

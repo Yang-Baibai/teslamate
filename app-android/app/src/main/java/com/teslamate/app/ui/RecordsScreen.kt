@@ -168,18 +168,29 @@ fun RecordsScreen(
     cars: List<com.teslamate.app.Car> = emptyList(),
     /** ⚠️ v0.16.0：切换当前车辆。 */
     onCarChange: (Int) -> Unit = {},
+    /**
+     * ⚠️ v0.24.0：**App 级数据仓库**（性能评审 P0-2 / P1-1）。
+     *
+     * 数据原本放在页面级 `remember` 里 —— 而 `AnimatedContent` 切走的页面会被 dispose，
+     * `SaveableStateHolder` 只保 `rememberSaveable` 不保普通 `remember`，
+     * 于是每次切到记录页都重拉 367 KB 并全量重算（实测单帧停顿 430 ms）。
+     */
+    store: RecordsStore = remember { RecordsStore() },
 ) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
-    var drives by remember { mutableStateOf<List<Drive>>(emptyList()) }
-    var charges by remember { mutableStateOf<List<Charge>>(emptyList()) }
-    // ⚠️ v0.14.0：error 改成存**异常**而不是字符串 ——
-    // 只有拿到 kind（AUTH / NO_DATA / …）才能决定横幅样式与按钮。
-    var error by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
+    // ⚠️ v0.24.0（性能评审 P0-2 / P1-1）：**数据在 App 级 store 里**。
+    //
+    // 原来这些是页面级 `remember` —— 而 `AnimatedContent` 切走的页面会被 dispose，
+    // `SaveableStateHolder` 只保 `rememberSaveable` 不保普通 `remember`，
+    // 于是每次切到记录页都**重拉 367 KB** 并全量重算 5 份派生数据，
+    // 实测单帧主线程停顿 **430 ms**（切 Tab 是 App 最常用的动作，却最卡）。
+    val drives = store.drives
+    val charges = store.charges
+    val error = store.error
     // ⚠️ v0.22.0：充电记录的**独立错误** —— 它失败不该让整个记录页不可用。
-    var chargeError by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
-    var loading by remember { mutableStateOf(true) }
-    var refreshing by remember { mutableStateOf(false) }
+    val chargeError = store.chargeError
+    val loading = store.loading
     val selected = selection
 
     val records = remember(drives, charges) { mergeRecords(drives, charges) }
@@ -195,62 +206,46 @@ fun RecordsScreen(
     // 不是「我这次要开的那条」。出发前 5 分钟，App 替你猜线路是没用的。
     val routeTemplates = remember(drives) { buildRouteTemplates(drives) }
     var selectedRouteKey by rememberSaveable { mutableStateOf<String?>(null) }
-    val routePlan = remember(drives, charges, stationStats, selectedRouteKey) {
-        val tpl = pickRouteTemplate(routeTemplates, selectedRouteKey)
-        tpl?.let { buildRoutePlan(it, charges, stationStats) }
+    val pickedTemplate = remember(routeTemplates, selectedRouteKey) {
+        pickRouteTemplate(routeTemplates, selectedRouteKey)
+    }
+    // ⚠️ v0.24.0：**真实逐公里 SOC 剖面**（按需拉，单趟 17 ms）。
+    //
+    // 原来剖面只有 2~6 个点，中间是直线插值 —— 山区长途误差达 13 公里，
+    // 会让人按错误的公里数规划补电（真实跌破 20% 在 244 km，插值算成 231 km）。
+    //
+    // 只拉**当前选中那条线路**对应的那一趟，不预拉全部 11 趟。
+    var socProfile by remember { mutableStateOf<List<com.teslamate.app.SocProfilePoint>?>(null) }
+    val profileDriveId = pickedTemplate?.lastDriveId
+    LaunchedEffect(profileDriveId, api) {
+        val id = profileDriveId
+        socProfile = null
+        if (id == null || api == null) return@LaunchedEffect
+        runCatching {
+            withContext(Dispatchers.IO) { api.socProfile(id) }
+        }.onSuccess { socProfile = it }
+            .onFailure { socProfile = null }
+    }
+    val routePlan = remember(drives, charges, stationStats, selectedRouteKey, socProfile) {
+        val tpl = pickedTemplate
+        tpl?.let { buildRoutePlan(it, charges, stationStats, socProfile) }
     }
     // ⚠️ v0.17.0（车队运营评审 P0-1）：**按线路分组的历史** ——
     // 「这趟比上趟好吗」的分组信息本来就该有（`buildRouteTemplates` 已经在按起止分组），
     // 这里用**同一份分组**做对比，避免两处口径不一致。
     val routeHistoryMap = remember(drives) { buildRouteHistory(drives) }
 
-    // ⚠️ v0.9.0：一次拉两份数据（原来两个 Tab 各拉各的）
+    // ⚠️ v0.24.0（性能评审 P0-2 / P1-1）：**拉取交给 App 级 store**。
     //
-    // ⚠️ **v0.22.0（自托管运维评审 P1-2）：两个请求**拆开**。**
+    // 原来这里是页面级的一次性 `LaunchedEffect(settings) { load() }` ——
+    // 切 Tab 回来必然重拉 367 KB 并重算 5 份派生数据（实测单帧停顿 430 ms）。
+    // 现在 store 自己判断「这个 (车, 服务器) 拉过了没」→ 切回来直接用现成数据。
     //
-    // 原来是一次 `api.drives(...) to api.charges(...)`：
-    // 任一失败 → 两份数据**一起被丢弃** → 整页回到骨架屏。
-    // 也就是说 `/charges` 失败 = 整个记录页不可用。
-    //
-    // 现在各自独立：行程失败 → 只显示行程相关的错误；
-    // 充电失败 → 时间轴照常显示（充电节点只是少了几条），
-    // 线路余量表与充电列表页会显示「充电记录取不到」。
-    suspend fun load() {
-        if (api == null) {
-            // ⚠️ v0.14.0：未配置 / 地址无效 → kind = AUTH，
-            // 横幅直接给「前往设置」（而不是让用户干等重试）。
-            error = com.teslamate.app.UserFacingException(
-                if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页",
-                com.teslamate.app.ApiErrorKind.AUTH,
-            )
-            loading = false
-            return
-        }
-        // ① 行程（时间轴的主干）
-        runCatching {
-            withContext(Dispatchers.IO) { api.drives(settings.carId, 500) }
-        }.onSuccess {
-            drives = it
-            error = null
-            loading = false
-        }.onFailure {
-            error = it as? com.teslamate.app.UserFacingException
-                ?: com.teslamate.app.UserFacingException(it.message ?: "出错了")
-            loading = false
-        }
-        // ② 充电（时间轴的次要成分 + 线路余量表的数据源）
-        runCatching {
-            withContext(Dispatchers.IO) { api.charges(settings.carId, 300) }
-        }.onSuccess {
-            charges = it
-            chargeError = null
-        }.onFailure {
-            chargeError = it as? com.teslamate.app.UserFacingException
-                ?: com.teslamate.app.UserFacingException(it.message ?: "出错了")
-        }
+    // ⚠️ key 用 **carId + api 地址**，不是整个 settings ——
+    // 否则改任何一个设置项（比如令牌）都会重拉 367 KB。
+    LaunchedEffect(settings.carId, api) {
+        store.load(api, settings.carId)
     }
-
-    LaunchedEffect(settings) { load() }
 
     // 列表 ⇄ 详情：iOS 式 push（新页推入，旧页 30% 视差退让 + 左缘投影）
     //
@@ -297,13 +292,9 @@ fun RecordsScreen(
                     )
                     // ⚠️ v0.9.0：加下拉刷新（原来只有一次性加载，网络一断就再也不请求）
                     PullToRefreshBox(
-                        isRefreshing = refreshing,
+                        isRefreshing = store.refreshing,
                         onRefresh = {
-                            scope.launch {
-                                refreshing = true
-                                load()
-                                refreshing = false
-                            }
+                            scope.launch { store.load(api, settings.carId, force = true) }
                         },
                         modifier = Modifier.fillMaxSize(),
                     ) {
@@ -322,11 +313,7 @@ fun RecordsScreen(
                                     modifier = Modifier.padding(16.dp),
                                     onOpenSettings = onOpenSettings,
                                     onRetry = {
-                                        scope.launch {
-                                            refreshing = true
-                                            load()
-                                            refreshing = false
-                                        }
+                                        scope.launch { store.load(api, settings.carId, force = true) }
                                     },
                                 )
                                 RecordTimeline(

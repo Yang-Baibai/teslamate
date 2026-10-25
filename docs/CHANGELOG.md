@@ -5,6 +5,175 @@
 
 ---
 
+## 2026-10-25（v0.24.0：第 15 轮 —— 一个必现崩溃 + 430 毫秒卡顿 + 山区剖面误差 13 公里）
+
+> 第 15 轮两位新专家评审：长途自驾 + 充电网络规划、性能与稳定性。
+> 这一版全是「查出来的真问题」，不是新增功能。
+> 落地版本：`0.24.0`（versionCode 41）。
+
+### 背景
+
+两份报告各自挖出了**一处会导致危险决策的错误**和**一处必现崩溃**。
+
+长途规划专家的结论最狠：
+
+> **「沿途充电站」列的是上一趟的起点站，不是这条线的站。**
+> 实测 11 条长途 drive **内部 0 场充电**，78/78 场充电都落在 drive 的
+> 起点或终点附近（最近距离 ≤ 0.022 km）—— 因为**充电必然打断行程**。
+> 于是所有「沿途站」的公里数都是 0 或 −4。
+
+以及：
+
+> **剖面的中间点是直线插值，山区误差达 13 公里。**
+> 186 号线（爬升 2176 m）真实跌破 20% 保底在第 **244** 公里，
+> 插值算出来是第 **231** 公里。用户按 231 公里规划，到 244 公里时电已经见底。
+
+性能专家挖到的：
+
+> **设置页「测试连接」在服务器没有车时崩溃。**
+> `it.none { ... }` 对空列表返回 true → `it.first()` 抛
+> `NoSuchElementException` → 逃出 `runCatching` → 未捕获 → **App 崩**。
+
+以及：
+
+> **切到「记录」Tab 出现 430 ms 单帧主线程停顿。**
+> 56 帧里 17 帧 >16.7 ms，整窗 UI 累计 1.67 s ——
+> 而切 Tab 是 App **最常用的导航动作**。
+
+### 改动
+
+#### 一、一个必现崩溃（性能评审 P0-1）
+
+```kotlin
+// 原来（SettingsScreen 的测试连接）
+if (it.none { car -> car.id == carId }) {
+    carId = it.first().id      // ← 空列表时 it.first() 抛异常
+}
+```
+
+`none{}` 对**空列表**返回 true → `it.first()` 抛 `NoSuchElementException`。
+而 `runCatching` 只包住了 `withContext` 那段，`.onSuccess` 在覆盖范围之外
+→ 异常逃出 `scope.launch` → **未捕获 → App 崩溃**。
+
+触发条件：服务器上没有车（TeslaMate 侧没配车 / 换了服务器 / 多车环境清空）
+→ 用户在设置页点「测试连接」→ 崩。
+
+现在：空列表给**可读提示**「连接成功，但服务器上还没有车 —— 请先在 TeslaMate 里添加车辆」，
+不崩。
+
+#### 二、切「记录」Tab 的 430 ms 停顿（性能评审 P0-2 / P1-1）
+
+**根因**：`drives` / `charges` 是 `RecordsScreen` 的**页面级** `remember`。
+而 `AppRoot` 的 Tab 切换用 `AnimatedContent` ——
+**切走的页面会被 dispose**，而 `SaveableStateHolder` **只保 `rememberSaveable`，不保普通 `remember`**。
+
+后果：每次切到记录页都**重拉 367 KB**，并在数据落地那一帧
+让 5 个 `remember`（`mergeRecords` / `buildStationStats` / `buildRouteTemplates` /
+`buildRoutePlan` / `buildRouteHistory`）同时失效重算，
+叠加 `AnimatedContent` 淡入淡出时新旧两页**同时组合**。
+
+**现在**：新增 `ui/RecordsStore.kt`（App 级数据仓库），与 `StatusStore` 同法：
+
+- 数据在 App 级 → 切 Tab 再回来**直接用现成数据**（不重拉、不重算）；
+- store 自己判断「这个 (车, 服务器) 拉过了没」→ 不重复请求；
+- `AnimatedContent` 的 `transitionSpec` 加 `SizeTransform(clip = false)`，
+  减少一轮额外布局。
+
+#### 三、能耗模型挪出主线程（性能评审 P1-2）
+
+`ConsumptionModel.from(list)`（362 条行程 × 8 趟遍历 + 5 次分桶中位数）
+原来在**主线程**跑 —— `withContext(Dispatchers.IO) { api.drives(...) }` 返回后
+`.onSuccess { }` 已经切回 Main。
+
+现在在 IO 块里连同行程一起算好再传进 store。
+（当前数据量下约 1–3 ms，**未构成 ANR**，但它正好落在「数据落地那一帧」——
+而那已经是全 App 最卡的一帧。）
+
+#### 四、`OkHttpClient` 单例化（性能评审 P1-3）
+
+原来每个 `Api` 实例自带一个 `OkHttpClient`（独立 ConnectionPool + Dispatcher），
+而 `Api.create()` 被调了 **8 处**（5 处 `remember(settings) { settings.api() }`
++ AppRoot + RecentSummaryCard + SettingsScreen）。
+
+两个后果：
+- **连接池不共享** —— keep-alive 失效，每次请求多一次 TCP + TLS 往返
+  （真机走 Tailscale / 移动网络时是实打实的 1–2 RTT）；
+- `remember(settings)` 的 key 是**整个 AppSettings** ——
+  改任何一个设置项就换掉全部 5 个 client。
+
+现在改成全局共享一个（`OkHttpClient` 本身线程安全、可复用），超时设置不变。
+
+#### 五、真实逐公里 SOC 剖面（长途规划专家 P0-2）
+
+**新端点**：`GET /api/v1/drives/{id}/soc_profile?step_km=5`
+
+服务端从 `positions` 的 **162 万个采样点**（采样间隔中位 **0.251 秒**）
+按里程 5 公里分箱，取箱内 `battery_level` 的**中位数**（抗离群 ——
+停车开空调的短暂掉电不会带偏整箱）。
+
+实测对照（专家给的 422 号线）：
+```
+插值：84 → 57(100km) → 43(150km) → 30(200km) → 16(250km)
+真实：84 → 60(100km) → 47(150km) → 31(200km) → 17(250km)
+```
+186 号线（爬升 2176 m）的「跌破 20% 保底公里数」从 **231 修正到 244（±3 km）**。
+
+⚠️ **为什么是独立端点而不是随 `/drives` 一起返回**：
+全表算 11 趟长途要 350 ms（`positions` 只有 BRIN 索引，一次查全部长途
+会退化成全表扫描），会让记录页首屏多等 280 ms；
+**单趟查只要 17 ms**（BRIN 的 `drive_id` 索引用上了）—— 按需拉才对。
+实测 `/drives?limit=500` 从 543 ms 回到 **149 ms**。
+
+客户端：记录页按需拉**当前选中那条线路**对应的那一趟（只 1 个请求，不预拉 11 趟），
+拿到后用它替代插值剖面；拉不到才回落到插值。
+
+#### 六、决策句加上来源限定（长途规划专家 P0-3）
+
+原来输出「需充 2 次」「第 252 公里只剩 16%」——
+读起来像「**这次**要充 2 次」，但它 100% 来自**单趟历史 drive** 的实测值。
+
+而那 2 次其实是**上一趟的起点充电**（充电必然打断行程）。
+真实的历史节奏是**平均每 128 km 充一次**（42 场，最远一段 348 km）。
+这个数字会直接导致**错误的补电计划**。
+
+现在每句都带前缀：「按 10-07 那趟实测：需充 2 次」——
+把「历史」和「预测」分开说，让用户自己判断可信度。
+
+#### 七、真实 POI 名 + 充电站档位（长途规划专家 P1-4 / P1-5）
+
+- **站名**：原来显示反向地理编码的长串
+  （「汕昆高速公路, 北庄, 宜州区, 河池市, 广西, 中国」），
+  而库里其实有 OSM 的原始 POI 名 ——「金田服务区」「合江荔乡服务区」。
+  现在优先显示 POI 名。
+- **桩档位**：原来只有「直流快充 / 交流慢充」两档，
+  但直流桩里「特斯拉超充」和「国标直流」的功率差了好几倍
+  （实测本车：超充典型 55 kW，国标直流 45 kW，交流只有 2.6 kW）。
+  现在三档：**特斯拉超充 / 国标直流 / 交流慢充** —— 官方 App 的核心区分。
+
+服务端新增 `poi_name` / `poi_type` / `is_tesla_sc` 三个字段。
+
+### 影响
+
+- **服务端有改动**：`api/queries.go`（剖面端点 + POI 字段 + 超充标志）、`api/handlers.go`、`api/models.go`。
+- 客户端新增 `ui/RecordsStore.kt`；改动 `RecordsScreen.kt`、`AppRoot.kt`、`Api.kt`、
+  `StatusStore.kt`、`StatusScreen.kt`、`SettingsScreen.kt`、`ChargesScreen.kt`、`RoutePlan.kt`。
+- `versionCode` 40 → 41，`versionName` 0.23.0 → 0.24.0。
+- 冒烟 **19/19** 通过。
+
+### 踩到的坑
+
+**Go 的 `rows.Scan` 顺序必须与 SELECT 列顺序严格一致** ——
+我在 `sqlCharges` 的 SELECT **末尾**加了 `is_tesla_sc`，
+却在扫描时插到了 `poi_type` 后面 → 报
+`can't scan into dest[12]: cannot scan float8 in binary format into *bool`（位置完全对不上）。
+
+**模拟器会被 `uiautomator dump` 搞崩** ——
+性能评审在测量末段反复 dump，触发了
+`UiAutomationConnection.registerUiTestAutomationService` NPE，
+system_server 进入崩溃循环，adb 长期 `offline`。
+崩的是**模拟器环境**，不是 App；但它让「用模拟器做验收」这条路径变得脆弱 ——
+后续验证要少用 dump，多用截图 + 坐标。
+
 ## 2026-10-25（v0.23.0：第 14 轮续 —— 服务器状态可见 + Fleet 四态 + 降级路径不再放大）
 
 > 自托管运维专家那份报告的核心论点：
