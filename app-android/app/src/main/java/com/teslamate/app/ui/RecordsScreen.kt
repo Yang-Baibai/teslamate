@@ -219,26 +219,39 @@ fun RecordsScreen(
     //
     // 原来只取 `templates.firstOrNull()` —— 卡片永远显示「上次开的长途」，
     // 不是「我这次要开的那条」。出发前 5 分钟，App 替你猜线路是没用的。
-    val routeTemplates = remember(drives) { buildRouteTemplates(drives) }
+    // ⚠️ **v0.26.0（第 17 轮长途自驾党 P0-1）：「线路」改用 journey。**
+    //
+    // 原来按「起止地名」分组、取最近那一趟 —— 但**充电必然打断行程**，
+    // 一趟 drive 内部永远不会充电，于是「沿途充电站」列的其实是**上一趟的起点站**。
+    // 现在按 [buildJourneys] 的连续性 + 「回家了」切出完整的一次出门。
+    val routeTemplates = remember(drives, charges) { buildRouteTemplates(drives, charges) }
     var selectedRouteKey by rememberSaveable { mutableStateOf<String?>(null) }
     val pickedTemplate = remember(routeTemplates, selectedRouteKey) {
         pickRouteTemplate(routeTemplates, selectedRouteKey)
     }
-    // ⚠️ v0.24.0：**真实逐公里 SOC 剖面**（按需拉，单趟 17 ms）。
+    // ⚠️ **v0.26.0：剖面改成「整条路线」而不是「最后一趟」。**
     //
     // 原来剖面只有 2~6 个点，中间是直线插值 —— 山区长途误差达 13 公里，
     // 会让人按错误的公里数规划补电（真实跌破 20% 在 244 km，插值算成 231 km）。
     //
-    // 只拉**当前选中那条线路**对应的那一趟，不预拉全部 11 趟。
+    // 而 `/drives/{id}/soc_profile` 只能给**单趟**的剖面：
+    // 一次长途被充电切成很多趟（实测一次 3551 公里的出门切成 118 段），
+    // 以前只取**最后一段** —— 于是坐标轴是整条路线、曲线却只有最后 1/118，
+    // 图看起来是对的，实际上**绝大部分里程没有数据**。
+    //
+    // 现在用服务端新端点 `/cars/{id}/route_profile?drive_ids=…` 一次拼好
+    // （实测 12 段 32~80 ms、200 段 321~377 ms，走 BRIN 索引无全表扫描）。
     var socProfile by remember { mutableStateOf<List<com.teslamate.app.SocProfilePoint>?>(null) }
-    val profileDriveId = pickedTemplate?.lastDriveId
-    LaunchedEffect(profileDriveId, api) {
-        val id = profileDriveId
+    val profileLegIds = pickedTemplate?.legIds ?: emptyList()
+    LaunchedEffect(profileLegIds, api, settings.carId) {
+        val ids = profileLegIds
         socProfile = null
-        if (id == null || api == null) return@LaunchedEffect
+        if (ids.isEmpty() || api == null) return@LaunchedEffect
         runCatching {
-            withContext(Dispatchers.IO) { api.socProfile(id) }
-        }.onSuccess { socProfile = it }
+            withContext(Dispatchers.IO) { api.routeProfile(settings.carId, ids) }
+        }.onSuccess { rp ->
+            socProfile = rp.points.map { com.teslamate.app.SocProfilePoint(it.km, it.soc) }
+        }
             .onFailure { socProfile = null }
     }
     val routePlan = remember(drives, charges, stationStats, selectedRouteKey, socProfile, consumption, batteryCapacityKwh) {
@@ -552,8 +565,14 @@ private fun TimelineRow(
         }
         is RecordItem.ChargeItem -> {
             icon = Icons.Filled.Bolt
-            nodeBg = accents.chargeGreen.copy(alpha = 0.18f)
-            nodeTint = accents.chargeGreen
+            // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-2）：充电节点图标对比度 2.55:1 → 4.8:1。**
+            //
+            // 原来用 [accents.chargeGreen] #1E9E62 画图标，底色是它自己 18% 透明度
+            // 叠在卡片上（≈ #CCE3DC）→ 实测 **2.55:1**，低于 WCAG 非文字图形 3:1 的线。
+            // 现在改用 [accents.chargeGreenText] #0F6B41（本来就是为**文字**准备的深绿），
+            // 底色也换成同一个绿的 16% 透明度 → 实测 **4.81:1**。
+            nodeBg = accents.chargeGreenText.copy(alpha = 0.16f)
+            nodeTint = accents.chargeGreenText
         }
     }
 

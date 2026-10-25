@@ -3,7 +3,7 @@
 Go 1.23 编写的只读 REST API，是 Android 客户端（`../app-android/`）的唯一后端。
 容器名 `teslamate-api-1`，端口 8090，接入 Tailscale 后手机在家/在外通用。
 
-## 文件职责（6 个 .go 文件，共约 1300 行）
+## 文件职责（8 个 .go 文件，共约 4400 行）
 
 | 文件 | 职责 | 改动频率 |
 |---|---|---|
@@ -12,7 +12,9 @@ Go 1.23 编写的只读 REST API，是 Android 客户端（`../app-android/`）�
 | `queries.go` | **全部 SQL 常量**。想改查询口径只看这一个文件 | 高 |
 | `models.go` | 全部响应结构体（json tag 即对 App 的契约） | 高 |
 | `tesla.go` | **Tesla Fleet API 只读客户端**（锁车状态）：换 token、拉车辆列表、拉 `lock_state`、refresh_token 轮换回写 `.env` | 低 |
+| `alerts.go` | 胎压/告警判定等纯计算逻辑 | 中 |
 | `tesla_test.go` | `tesla.go` 的单元测试（`.env` 回写、响应解析、token 轮换） | 跟 `tesla.go` 一起改 |
+| `route_profile_test.go` | 路线剖面端点的入参解析单元测试 | 跟 `handlers.go` 一起改 |
 | `Dockerfile` | 多阶段构建（goproxy.cn 拉依赖 → alpine 运行，产物 ~15MB） | 极低 |
 
 ## 端点总览
@@ -25,6 +27,10 @@ GET /api/v1/cars                   车辆列表
 GET /api/v1/cars/{id}/status       实时车况（四轮胎压 + 服务端算好的告警判定）
 GET /api/v1/cars/{id}/drives       行程列表
 GET /api/v1/drives/{id}/track      行程轨迹（≤1500 点降采样）
+GET /api/v1/drives/{id}/soc_profile 单趟行程的逐公里 SOC 剖面
+GET /api/v1/cars/{car_id}/route_profile
+                                   整条路线（多趟行程拼成一条）的逐公里 SOC 剖面
+                                   ?drive_ids=1,2,3（有序，最多 400 段）&step_km=5
 GET /api/v1/cars/{id}/charges      充电列表（含损耗率/桩型）
 GET /api/v1/charges/{id}/curve     充电曲线
 GET /api/v1/cars/{id}/stats        周/月/年聚合
@@ -64,6 +70,13 @@ GET /apk/…                         APK 下载（免鉴权，DownloadManager �
    **别把 `null` 当成 `false`**，那会把「不知道」显示成「没锁」。
    `refresh_token` 是一次性的（刷新即轮换、有效期 3 个月），服务端会原子回写 `.env`，
    写失败只降级不崩。
+10. **路线剖面（`route_profile`）的两个性能坑**：这条查询一次要扫几十万个 positions 采样点，
+    所以 handler 里必须开事务 + 两个 `SET LOCAL`：
+    - `work_mem = '128MB'`：默认 4MB 时排序会**溢写到磁盘**（27 MB external sort）→ 2609 ms，
+      调大后 350 ms。
+    - `plan_cache_mode = force_custom_plan`：PG 对同一个 prepared statement 执行 5 次后会切
+      「通用计划」，那时优化器不知道数组里有哪些 drive_id，索引搜索次数从 200 涨到 **40000**
+      → 3850 ms（慢 11 倍，而且**第 6 次调用才开始慢**，压测极易漏掉）。
 
 ## 构建与部署
 

@@ -222,6 +222,49 @@ type SocProfilePoint struct {
 	Soc float64 `json:"soc"`
 }
 
+// ⚠️ v0.26.0：**整条路线**的逐公里 SOC 剖面（多趟行程拼成一条）。
+//
+// 一次长途旅程是被充电切成很多段的（开 300 km → 充 → 再开 200 km → …），
+// App 想画的是**一条连续的余量曲线**，不是七八张互不相干的碎片。
+// 端点：`GET /api/v1/cars/{car_id}/route_profile?drive_ids=1,2,3&step_km=5`。
+type RouteProfile struct {
+	// TotalKm 整条路线的里程跨度 = 最远一段的终点里程 − 最早一段的起点里程。
+	//
+	// ⚠️ 为什么不是「各段里程之和」：
+	//   各段之和**不含中间充电时停的那段路**（可能是几十公里），
+	//   而采样点的相对 km 是按**里程表**换算的，
+	//   用「各段之和」当横轴长度会把曲线尾巴画到轴外面去。
+	//   跨度才是采样点横轴的真实长度。
+	TotalKm float64 `json:"total_km"`
+	// Legs 参与这条路线的各段，按 App 传入的行驶顺序。
+	Legs []RouteProfileLeg `json:"legs"`
+	// Points 整条路线上的采样点，按 km 升序。
+	Points []RouteProfilePoint `json:"points"`
+}
+
+// RouteProfileLeg 一段行程在整条路线里的位置。
+type RouteProfileLeg struct {
+	DriveID int `json:"drive_id"`
+	// StartKm / EndKm / DistanceKm 绝对里程（公里表读数）与本段里程
+	StartKm    float64 `json:"start_km"`
+	EndKm      float64 `json:"end_km"`
+	DistanceKm float64 `json:"distance_km"`
+	// KmOffset 本段起点相对**整条路线起点**的公里数
+	// = 本段起点里程 − 各段起点里程的最小值。
+	//
+	// ⚠️ 它保证**正好落在本段第一个采样点上**，
+	// 这样 App 把段边界和曲线对齐时不会错位。
+	KmOffset float64 `json:"km_offset"`
+}
+
+// RouteProfilePoint 路线上的一个 SOC 采样点。
+//
+// 口径和 SocProfilePoint 一致：段内按 step_km 分桶取 battery_level 的中位数。
+type RouteProfilePoint struct {
+	Km  float64 `json:"km"`
+	Soc float64 `json:"soc"`
+}
+
 type TrackPoint struct {
 	Date      time.Time `json:"date"`
 	Lat       float64   `json:"lat"`

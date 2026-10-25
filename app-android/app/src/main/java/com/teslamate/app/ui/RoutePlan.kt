@@ -79,12 +79,21 @@ data class RouteTemplate(
     val toLabel: String,
     /** 该线路的典型里程（km，中位数）—— 只用于文案 */
     val distanceKm: Double,
-    /** 出发时的电量（%，中位数） */
+    /** 出发时的电量（%） */
     val startSoc: Int?,
-    /** 到达时的电量（%，中位数） */
+    /** 到达时的电量（%） */
     val endSoc: Int?,
-    /** 走过几次 */
-    val occurrences: Int,
+    /**
+     * ⚠️ **v0.26.0：这里不再是「走过几次」，而是「这一趟被充电切成了几段」。**
+     *
+     * 原来这个字段叫 `occurrences`（同一条线路跑过几次），
+     * 改成 journey 之后它装的是**段数** ——
+     * 如果文案还写「走过 N 次」，就会把「一次旅程的 11 段」说成「走过 11 次」。
+     * 所以字段改名，文案也一起改（见 [conclusion]）。
+     */
+    val legCount: Int,
+    /** 沿途充电站数（不含到达后的那次） */
+    val stopCount: Int,
     /** 最近一次走的时刻 */
     val lastDrivenAt: Instant?,
     /** 最近一次的起点里程表读数（km）—— 用来把充电站按里程表对齐到路线公里数 */
@@ -105,6 +114,24 @@ data class RouteTemplate(
      * 用来拉它的**真实逐公里 SOC 剖面**（`/drives/{id}/soc_profile`）。
      */
     val lastDriveId: Int? = null,
+    /**
+     * ⚠️ **v0.26.0：整段 journey 的全部 drive id。**
+     *
+     * 用来向服务端要**整条路线**的真实逐公里剖面
+     * （`GET /cars/{id}/route_profile?drive_ids=…`），
+     * 而不是只拿最后一段 —— 后者会让剖面只覆盖旅程的最后 1/12。
+     */
+    val legIds: List<Int> = emptyList(),
+    /** 这一段 journey 的每一趟（按里程顺序） */
+    val legs: List<JourneyLeg> = emptyList(),
+    /**
+     * ⚠️ **v0.26.0：沿途充电站 —— 已经按行程边界归属好了。**
+     *
+     * 原来是在 [buildRoutePlan] 里用**里程窗口**去捞充电记录，
+     * 结果捞到的是**上一趟的收尾充电**（落在本趟的起点里程上）。
+     * 现在归属在 [buildJourneys] 里做：充电落在**两段之间的缺口**里才算沿途站。
+     */
+    val stops: List<JourneyStop> = emptyList(),
 )
 
 /** 线路上的一个充电站（按路线公里数对齐）。 */
@@ -186,7 +213,11 @@ data class RoutePlan(
         val parts = mutableListOf<String>()
         parts += "${s.fromLabel} → ${s.toLabel}"
         parts += "${s.distanceKm.roundToInt()} 公里"
-        parts += "走过 ${s.occurrences} 次"
+        // ⚠️ v0.26.0：改成「N 段 · M 次沿途充电」——
+        // 原来写「走过 N 次」，而 N 现在是**段数**，
+        // 会把「一次旅程被充电切成 11 段」说成「走过 11 次」。
+        parts += "${s.legCount} 段"
+        if (s.stopCount > 0) parts += "$s.stopCount 次沿途充电"
         return parts.joinToString(" · ")
     }
 
@@ -253,55 +284,59 @@ private fun endpointKey(geofence: String?, place: String?): String =
     geofence?.takeIf { it.isNotBlank() } ?: place.firstSegment() ?: "?"
 
 /**
- * 从历史行程里挑出**历史长途模板**。
+ * 从历史行程里挑出**历史长途 journey**。
+ *
+ * ⚠️ **v0.26.0（第 17 轮长途自驾党 P0-1）：单位从「一趟 drive」改成「一段 journey」。**
+ *
+ * ## 为什么必须改
+ *
+ * 原来按「起止地名」分组、取**最近那一趟** —— 这在数据上是错的：
+ * **充电必然打断行程**（实测 78/78 场充电都落在某趟 drive 的起点或终点附近，
+ * 最近距离 ≤ 0.022 km），所以**一趟 drive 内部永远不会发生充电**。
+ *
+ * 后果（复刻 App 的实际输出）：
+ * 1. 「沿途充电站」列出来的其实是**上一趟的收尾充电** ——
+ *    它落在本趟的起点里程上，被里程窗口捞进来了。
+ * 2. 本趟**真正**的那次充电落在终点里程上，被判成「终点处的充电」而剔除。
+ * 3. 「站间距离」「到下一站剩多少电」全建立在**错位的站**上。
+ *
+ * 「11 条 ≥200 km 的线路」其实是**同一次长途被充电切碎的 11 段**。
+ *
+ * 现在用 [buildJourneys]：按**里程连续** + **「回家了」**两个判据切出连续出门，
+ * 沿途站按**行程边界**归属 —— 详见 [RouteJourney.kt]。
  *
  * @param minDistanceKm 多远算「长途」（默认 **200 km**）
  * @return 按「最近一次走的时刻」倒序排列
  */
 fun buildRouteTemplates(
     drives: List<Drive>,
+    charges: List<Charge>,
     minDistanceKm: Double = 200.0,
-): List<RouteTemplate> {
-    val long = drives.filter {
-        val km = it.distance_km ?: 0.0
-        km >= minDistanceKm && it.start_soc != null
-    }
-    if (long.isEmpty()) return emptyList()
-
-    val groups = long.groupBy { d ->
-        endpointKey(d.start_geofence, d.start_place) + "→" + endpointKey(d.end_geofence, d.end_place)
-    }
-
-    return groups.mapNotNull { (key, list) ->
-        val latest = list.maxByOrNull { it.start_date } ?: return@mapNotNull null
-        val fromLabel = latest.start_geofence ?: latest.start_place.firstSegment() ?: "起点"
-        val toLabel = latest.end_geofence ?: latest.end_place.firstSegment() ?: "终点"
+): List<RouteTemplate> =
+    buildJourneys(drives, charges, minDistanceKm).map { j ->
         RouteTemplate(
-            key = key,
-            fromLabel = fromLabel,
-            toLabel = toLabel,
-            distanceKm = medianOf(list.mapNotNull { it.distance_km }) ?: 0.0,
-            startSoc = medianOf(list.mapNotNull { it.start_soc }.map { it.toDouble() })?.roundToInt(),
-            // ⚠️ v0.14.0（口径审计 P1-1）：原来这里用 `medianOf(...)` 之后拿到的
-            // 可能是**空列表 → 0.0**，于是「没有终点电量记录」的线路
-            // 端点画成 0%，报出「全程最低 0%（低于 20% 保底）」——
-            // 一个**假警报**，会让车主以为必须在终点前充电。
-            // 现在空 → null → 不画该点。
-            endSoc = medianOf(list.mapNotNull { it.end_soc }.map { it.toDouble() })?.roundToInt(),
-            occurrences = list.size,
-            lastDrivenAt = latest.start_date,
-            startOdoKm = latest.odometer_start,
-            // ⚠️ v0.14.0（口径审计 P0-4）：剖面必须与充电点**同源** ——
-            // 端点用最近那一趟的真实值，不用中位数。
-            lastDistanceKm = latest.distance_km,
-            lastStartSoc = latest.start_soc,
-            lastEndSoc = latest.end_soc,
-            // ⚠️ v0.24.0：记下最近那一趟的 drive id，
-            // 用来拉它的**真实逐公里 SOC 剖面**。
-            lastDriveId = latest.id,
+            key = j.key,
+            fromLabel = j.fromLabel,
+            toLabel = j.toLabel,
+            distanceKm = j.distanceKm,
+            // ⚠️ 端点取**整段旅程**的两端：
+            // 起点 SOC 来自**首段**（出发状态），终点 SOC 来自**末段**（到达状态）。
+            startSoc = j.legs.first().startSoc,
+            endSoc = j.legs.last().endSoc,
+            legCount = j.legCount,
+            stopCount = j.midStopCount,
+            lastDrivenAt = j.endDate,
+            startOdoKm = j.startKm,
+            lastDistanceKm = j.distanceKm,
+            lastStartSoc = j.legs.first().startSoc,
+            lastEndSoc = j.legs.last().endSoc,
+            lastDriveId = j.legs.last().driveId,
+            legIds = j.legs.map { it.driveId },
+            legs = j.legs,
+            stops = j.stops,
         )
-    }.sortedByDescending { it.lastDrivenAt }
-}
+    }
+
 
 /**
  * 用模板 + 历史充电 + 站点统计，算出这条线路的余量表。
@@ -345,15 +380,20 @@ fun buildRoutePlan(
     val runDistance = template.lastDistanceKm ?: template.distanceKm
     if (runDistance <= 0) return null
 
-    // 落在这条线路里程区间内的历史充电。
+    // ⚠️ **v0.26.0（第 17 轮长途自驾党 P0-1）：沿途站不再用里程窗口「捞」。**
     //
-    // ⚠️ v0.14.0（口径审计 P0-4）：窗口**只认最近那一趟**的里程区间。
-    // 里程表单调递增，所以「[最近那趟的起点, 最近那趟的终点]」天然把
-    // 上一次同线路、反向返程的充电排除在外（它们的里程表更小）。
-    val onRoute = charges.filter { c ->
-        val odo = c.start_odometer_km ?: return@filter false
-        odo >= startOdo - 5 && odo <= startOdo + runDistance + 5
-    }.sortedBy { it.start_odometer_km ?: 0.0 }
+    // 原来这段是：`charges.filter { odo in [startOdo-5, startOdo+runDistance+5] }`。
+    // 而实测 **78/78 场充电都落在某趟 drive 的起点或终点附近**（≤0.022 km）——
+    // 于是：
+    //   · 落在**起点**里程上的那次充电（**上一趟的收尾**）被捞进来，里程是 0
+    //     —— 于是「沿途第一个站在第 0 公里」；
+    //   · 这一趟**真正**的那次充电落在**终点**里程上，又被「终点处的充电」规则剔除。
+    //
+    // 结论：**沿途站列表列的是上一趟的起点站**，
+    // 而「站间距离」「到下一站剩多少电」全部建立在**错位的站**上。
+    //
+    // 现在：归属在 [buildJourneys] 里做好了 —— 充电落在**两段之间的缺口**里才算沿途站。
+    val journeyStops = template.stops
 
     // ⚠️ **v0.25.0（长途充电规划专家 P1-2）：站间距离 + 「到下一站剩多少电」。**
     //
@@ -361,19 +401,18 @@ fun buildRoutePlan(
     // 而后者才是出发前真正要回答的那句：
     // 「我充到 80%，**够不够开到下一个**？」
     //
-    // 站间距离来自相邻充电点的里程表差（`start_odometer_km`），
-    // 实测本车真实节奏：中位 128 公里，最远一段 348 公里。
-    //
+    // 站间距离来自相邻充电点的里程差（实测本车真实节奏：中位 128 公里，最远 348 公里）。
     // 「到下一站剩多少」用**本车实测** Wh/km（不是官方标称 —— 标称乐观 50%）
     // 与**可用容量**换算，并与 20% 保底对齐。
     val whPerKm = consumption?.let { m ->
         planSpeedKph?.let { m.whSample(it)?.bucket?.whPerKm }
     }
-    val stops = onRoute.mapIndexed { idx, c ->
+    val stops = journeyStops.mapIndexed { idx, js ->
+        val c = js.charge
         val stat = stationStats[stationKey(c)]
-        val thisOdo = c.start_odometer_km ?: startOdo
-        val nextOdo = onRoute.getOrNull(idx + 1)?.start_odometer_km
-        val gapKm = nextOdo?.let { it - thisOdo }?.takeIf { it > 0.5 }
+        // 到达后的那次充电没有「下一站」。
+        val next = journeyStops.getOrNull(idx + 1)?.takeIf { !js.isEndpoint }
+        val gapKm = next?.let { it.kmAlong - js.kmAlong }?.takeIf { it > 0.5 }
         // 充到 socAfter 后，到下一站还剩多少电（%）
         val socAtNext = if (gapKm != null && whPerKm != null && batteryCapacityKwh != null
             && batteryCapacityKwh > 0 && c.end_soc != null
@@ -385,8 +424,10 @@ fun buildRoutePlan(
             null
         }
         RouteStop(
-            name = c.geofence_name ?: c.place.firstSegment() ?: "充电站",
-            kmAlongRoute = (thisOdo - startOdo).coerceAtLeast(0.0),
+            // ⚠️ v0.26.0：优先用**真实 POI 名**（「金田服务区」这种），
+            // 车主找的是「哪个服务区」，不是一段地址。
+            name = c.geofence_name ?: c.poi_name ?: c.place.firstSegment() ?: "充电站",
+            kmAlongRoute = js.kmAlong,
             socBefore = c.start_soc,
             socAfter = c.end_soc,
             typicalPowerKw = stat?.typicalPowerDcKw ?: stat?.typicalPowerKw,
@@ -411,9 +452,11 @@ fun buildRoutePlan(
     // 原来它被当成沿途站，于是剖面末端竖起一道「16% → 66%」的墙，
     // 末段沿原路折返 —— 读者看到的是「到终点时电量涨到 66%」，
     // 而结论行却写「全程最低 16%（在第 252 公里）」，两个数互相打架。
-    // （实测：那条 252 km 的线路，唯一列出的「沿途充电站」就是终点城东路。）
-    val routeStops = stops.filter { it.kmAlongRoute <= runDistance - 5 }
-    val endpointStops = stops.filter { it.kmAlongRoute > runDistance - 5 }
+    //
+    // ⚠️ v0.26.0：判据从「里程是否超过终点 5 公里」改成
+    // **「这个充电是不是落在最后一段之后的缺口里」**（journey 切分时就已经知道了）。
+    val routeStops = stops.filterIndexed { i, _ -> !journeyStops[i].isEndpoint }
+    val endpointStops = stops.filterIndexed { i, _ -> journeyStops[i].isEndpoint }
 
     // 剖面：起点 → (每个**沿途**站：到站电量 → 充完电量) → 终点
     //
@@ -553,14 +596,12 @@ fun RoutePlanChips(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    // ⚠️ v0.20.0（车主 P1-4）：**次数 ≥1 就显示** ——
-                    // 原来只在 >1 时渲染，于是「只跑过 1 次」和「没有数据」
-                    // 在界面上长得一模一样 —— 而出发前判断「这条线我熟不熟」
-                    // 恰恰要区分这两种情况。
-                    if (t.occurrences >= 1) {
+                    // ⚠️ v0.26.0：显示**段数**而不是「走过 N 次」——
+                    // journey 的段数是一次出门被充电切开的次数，不是「跑过几次」。
+                    if (t.legCount >= 1) {
                         Spacer(Modifier.width(5.dp))
                         Text(
-                            "×${t.occurrences}",
+                            "${t.legCount} 段",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

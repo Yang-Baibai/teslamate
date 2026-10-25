@@ -647,6 +647,7 @@ private fun RangeAndOdometer(
     fallbackSpeedKph: Double? = null,
     modifier: Modifier = Modifier,
 ) {
+    val accents = LocalAccentColors.current
     Column(modifier) {
         // ── 续航：显示**真实可达**，不再显示骗人的「预估」 ──
         //
@@ -672,6 +673,33 @@ private fun RangeAndOdometer(
         // ⚠️ v0.8.6 修一个真 bug：模型里有爬升修正（≥200m ×1.05），
         // 但调用处**从来没传 ascentM** —— 参数默认 null，修正从未生效。
         // 爬升从最近一次行程取（车况页已经拉了 drives(200) 到 StatusStore）。
+        // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：主角数字必须**常驻**自曝来源。**
+        //
+        // 原来「怎么算的」要**点开**才看得到 —— 但新手车主恰恰是那个
+        // **分不清「实测」和「标称」**的人，他不会去点那个三角。
+        //
+        // 评审原话：「主数字下常驻『按 2026-07-31~2026-10-24 的 88 条实测
+        // （8~37°C，无冬季样本）』」——
+        // 因为界面上写着「28°C」，用户会以为**已经按气温修正过了**，
+        // 而模型其实**只做热的修正**（>22°C），10°C 以下只有 1 条样本。
+        // 也就是说：**冬天那个数是编的，而界面一个字都没说。**
+        val tempCaveat = consumption?.tempCaveat(st.outside_temp)
+        val scopeLine = consumption?.let { m ->
+            buildString {
+                append("按 ")
+                append(m.firstDrivenAt ?: "—")
+                append("~")
+                append(m.lastDrivenAt ?: "—")
+                append(" 的 ${m.sampleCount} 条实测")
+                val tmin = m.tempMinC
+                val tmax = m.tempMaxC
+                if (tmin != null && tmax != null) {
+                    append("（${tmin.roundToInt()}~${tmax.roundToInt()}°C")
+                    if (!m.lowTempTrustworthy) append("，无冬季样本")
+                    append("）")
+                }
+            }
+        }
         val trueRange = consumption?.trueRangeKm(
             ratedRangeKm = ratedRange,
             speedKph = refSpeed,
@@ -684,7 +712,11 @@ private fun RangeAndOdometer(
             // 车主原话：「'可达'太书面」「我真正要的是一句话：
             // '现在能开 206 公里，高速算的，够你回家'」。
             // 大数字 + 这行小字，读起来就是「现在能开 206 公里」。
-            if (trueRange != null) "现在能开（公里）" else "官方标称（公里）",
+            if (trueRange != null) "现在能开（公里）"
+            // ⚠️ **v0.26.0（第 17 轮通勤车主 P0-2）：低温样本不足时要说清为什么退回标称。**
+            // 原来只写「官方标称（公里）」，用户会以为 App 出故障了。
+            else if (tempCaveat != null) "官方标称（公里）· 低温未修正"
+            else "官方标称（公里）",
             // ⚠️ v0.14.0（苹果 HIG P0-1）：**主角级** —— 44sp。
             // 34sp 和页面标题「车况」同级，主角就不成立（每屏要有唯一视觉锚点）。
             hero = true,
@@ -709,6 +741,21 @@ private fun RangeAndOdometer(
                 "留 20% 保底还能开 ${trueRangeFloor.fmt(0)} 公里",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：来源与温度可信度常驻显示。**
+        if (scopeLine != null) {
+            Text(
+                scopeLine,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (tempCaveat != null) {
+            Text(
+                tempCaveat,
+                style = MaterialTheme.typography.labelSmall,
+                color = accents.warnAmber,
             )
         }
         Spacer(Modifier.height(4.dp))
@@ -748,6 +795,9 @@ private fun RangeAndOdometer(
                 }
                 append(" · 已留 10% 余量")
             }
+            // ⚠️ **v0.26.0：温度可信度必须进「怎么算的」。**
+            // 「28°C」这个数让人以为已经按气温修正过了 —— 实际只做热的。
+            tempCaveat?.let { append(" · $it") }
             // ⚠️ v0.14.0（单位审校 P0-4）：**换算说明**。
             //
             // 能耗单位从 Wh/km 换成 kWh/100km（÷10），

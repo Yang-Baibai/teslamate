@@ -78,10 +78,51 @@ data class WhSample(
  * 模型本身只有 4~5 个分桶，缓存它比缓存 200 条 drives 划算得多。
  */
 @Serializable
-class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
+class ConsumptionModel(
+    val buckets: List<SpeedBucket>,
+    val cruiseKph: Double,
+    /**
+     * ⚠️ **v0.26.0（第 17 轮新手车主 P0-2 / 通勤车主 P0-2）：模型的**覆盖范围**。**
+     *
+     * 原来模型只带「分桶 + 巡航速度」，界面上显示「28°C · 实测 183 Wh/km」——
+     * 让人以为**已经按气温修正过**。其实温度修正**只做热的**（>22°C），
+     * 而本机样本覆盖 8~37°C，**10°C 以下只有 1 条** ——
+     * 也就是说：**冬天那个数是编的**，而界面零提示。
+     *
+     * 现在模型自己带着覆盖范围，界面必须把它说出来。
+     */
+    val tempMinC: Double? = null,
+    val tempMaxC: Double? = null,
+    /** ≤10°C 的样本条数（低温修正是否可信的判据） */
+    val lowTempSamples: Int = 0,
+    /** 样本覆盖的起止时刻（用于「按 X~Y 的 N 条实测」） */
+    val firstDrivenAt: String? = null,
+    val lastDrivenAt: String? = null,
+) {
 
     /** 该模型由多少条行程构成（用于在 UI 上标注置信度） */
     val sampleCount: Int = buckets.sumOf { it.samples }
+
+    /** 低温样本是否足够支撑一个低温修正（实测 5 条是最低门槛） */
+    val lowTempTrustworthy: Boolean get() = lowTempSamples >= LOW_TEMP_MIN_SAMPLES
+
+    /**
+     * ⚠️ **v0.26.0：温度可信度说明。**
+     *
+     * - 温度高于 22°C → 修正生效（高温会掉续航，模型会往上修）
+     * - 温度在 10~22°C → **不做修正**（不冷不热，修正量本来就小）
+     * - 温度 ≤10°C 且低温样本 < 5 → **这个数不可信**，界面必须说清楚
+     */
+    fun tempCaveat(outsideTempC: Double?): String? {
+        val t = outsideTempC ?: return null
+        return when {
+            t <= 10.0 && !lowTempTrustworthy ->
+                "低温未修正：10°C 以下只有 $lowTempSamples 条样本，这个数不可信"
+            t <= 22.0 ->
+                "未做低温修正（10°C 以下样本 $lowTempSamples 条）"
+            else -> null
+        }
+    }
 
     /**
      * 按当前车速取实测 Wh/km；本档没样本时退到最近的档。
@@ -138,6 +179,19 @@ class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
         if (ratedRangeKm == null || ratedRangeKm <= 0) return null
         val bucket = whPerKm(speedKph) ?: return null
         if (bucket.samples < 2) return null
+
+        // ⚠️ **v0.26.0（第 17 轮通勤车主 P0-2）：低温且低温样本不足 → **不给数**。**
+        //
+        // 原来的温度修正只做热的（>22°C），低于 22°C 一律不修正 ——
+        // 而本机 10°C 以下只有 1 条样本。于是冬天算出来的「现在能开 XXX 公里」
+        // 是**系统性地乐观 15%~25%** 的数，界面上却零提示。
+        //
+        // 现在：低温（≤10°C）且低温样本不足 5 条 → **返回 null**，
+        // 界面退回「官方标称」并写明「低温未修正」。
+        // 宁可给一个口径明确的数，也不给一个**看起来精确但其实编的**数。
+        if (outsideTempC != null && outsideTempC <= 10.0 && !lowTempTrustworthy) {
+            return null
+        }
 
         // 温度修正：只做热的，不做冷的（库里 <10°C 样本不足，做了是编数据）。
         // 实测 85–135 km/h：<22°C 180.2 / 22–28°C 189.8 / ≥28°C 191.0 Wh/km。
@@ -196,31 +250,50 @@ class ConsumptionModel(val buckets: List<SpeedBucket>, val cruiseKph: Double) {
             }
             if (buckets.isEmpty()) return null
 
-            // ── 巡航速度代理 ──────────────────────────────────
-            // ⚠️ v0.8.6（长途自驾党复核）：原来参考车速用的是**整段均速**，
-            // 一次长途（城区 + 高速 + 堵车）均速 102 km/h 会落进 90–110 桶（182.7 Wh/km），
-            // 但你实际巡航在 120 km/h（该桶应为 197.7）—— 于是高速时算出来的
-            // 「真实可达」**偏乐观 12 km**。
-            // 改法：取「近期高速行程」（peak speed ≥ 100 km/h）的均速中位数作巡航速度。
-            // 这些行程的均速最接近你实际的巡航速度；没有高速行程就退回全样本均速。
-            // ── 巡航速度代理 ──────────────────────────────────
-            // ⚠️ v0.8.6（长途自驾党复核）：原来参考车速用的是**整段均速**，
-            // 一次长途（城区 + 高速 + 堵车）均速 102 km/h 会落进 90–110 桶（182.7 Wh/km），
-            // 但你实际巡航在 120 km/h（该桶应为 197.7）—— 于是高速时算出来的
-            // 「真实可达」**偏乐观约 12 km**。
+            // ── 参考车速（停车时用） ──────────────────────────
+            // ⚠️ **v0.26.0（第 17 轮通勤车主 P0-2）：改成「最近 5 趟 ≥30 km 行程的均速」。**
             //
-            // 取值顺序（v0.8.7 修正过一次）：
-            //  1. 高速行程（speed_max ≥ 100）的**峰值速度**中位数
-            //     —— 用峰值而不是均速：均速会被起止段的市区拉低
-            //     （实测一度算出「按 64 km/h 巡航」，那是市区速度）
-            //  2. 全部行程的峰值速度中位数
-            val fast = usable.filter { (it.speed_max ?: 0) >= 100 }
-            val pool = if (fast.isNotEmpty()) fast else usable
-            val peaks = pool.mapNotNull { it.speed_max?.toDouble() }.filter { it > 0 }
-            // ⚠️ v0.14.0（口径审计 P1-4）：同样是上中位数 → 统一到教科书口径。
-            val cruise = medianOf(peaks) ?: 60.0
+            // 原来取的是「近期高速行程的**峰值速度**中位数」= **130 km/h**，
+            // 于是停车时借了 **110–130 档 197.36 Wh/km**。
+            // 但车主日常通勤实测只有 **161.8 Wh/km**（`drives.id=499`）—— 差 16.7%。
+            //
+            // 后果正好落在**每天的决策点**上：
+            //   20% 电量时 App 说「58 公里 → 到不了公司」，
+            //   而按市区档应该是「67 公里 → 到得了」——
+            //   **在通勤者最需要它的时候给错了边**。
+            //
+            // 峰值速度本来的用途是「行驶中的巡航速度」（那条路你开多快），
+            // 但停车时你并不在高速上 —— 停车时该问的是「**我平时开多快**」。
+            // 取最近 5 趟 ≥30 km 行程的**均速中位数**：既贴近日常，
+            // 又用中位数躲开单趟堵车/暴雨这种离群值。
+            val recentTrips = usable
+                .filter { (it.distance_km ?: 0.0) >= 30.0 && (it.avg_speed_kph ?: 0) > 0 }
+                .sortedByDescending { it.start_date }
+                .take(5)
+            val cruise = medianOf(recentTrips.map { it.avg_speed_kph!!.toDouble() })
+                ?: medianOf(usable.mapNotNull { it.avg_speed_kph?.toDouble() })
+                ?: 60.0
 
-            return ConsumptionModel(buckets, cruise)
+            // ⚠️ v0.26.0：把**覆盖范围**带进模型 ——
+            // 界面上「28°C · 实测 183 Wh/km」让人以为已按气温修正，
+            // 而修正其实只做热的（>22°C），10°C 以下只有 1 条样本。
+            val temps = usable.mapNotNull { it.outside_temp_avg }
+            val lowTemp = temps.count { it <= 10.0 }
+            val firstAt = usable.minByOrNull { it.start_date }?.start_date?.fmtDate()
+            val lastAt = usable.maxByOrNull { it.start_date }?.start_date?.fmtDate()
+
+            return ConsumptionModel(
+                buckets = buckets,
+                cruiseKph = cruise,
+                tempMinC = temps.minOrNull(),
+                tempMaxC = temps.maxOrNull(),
+                lowTempSamples = lowTemp,
+                firstDrivenAt = firstAt,
+                lastDrivenAt = lastAt,
+            )
         }
+
+        /** 低温样本条数门槛（低于这个数就不做低温结论） */
+        const val LOW_TEMP_MIN_SAMPLES = 5
     }
 }

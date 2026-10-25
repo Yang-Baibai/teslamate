@@ -365,6 +365,246 @@ func handleSocProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, pts)
 }
 
+// maxRouteProfileDrives 一次路线剖面最多接受多少段行程。
+//
+// ⚠️ v0.26.0。
+//
+// 400 段已经覆盖「一次长途旅程被充电切成几百段」的极端情况。
+// 再往上就不是一次旅程，而是「全年的行程」—— 那种需求该走聚合/分页，
+// 不该用一条 SQL 把几百万个采样点拉回来。
+const maxRouteProfileDrives = 400
+
+// handleRouteProfile 返回**多趟行程拼成的一条路线**的逐公里 SOC 剖面。
+//
+// ⚠️ v0.26.0。
+//
+// 一次长途旅程是被充电切成很多段的（开 300 km → 充 → 再开 200 km → …），
+// handleSocProfile 一次只算一趟，App 拿到的会是**互不相干的碎片**，
+// 拼不出「这条路上电是怎么掉的」这条曲线。
+// 这个端点按 App 传进来的行驶顺序把多段拼成**一条连续曲线**。
+//
+// 入参：
+//   - drive_ids：逗号分隔的行程 id，**有序**（App 按行驶顺序传），最多 400 个
+//   - step_km  ：分箱步长（公里），默认 5，范围 [1, 50]
+//
+// 某一段没有任何可用采样点（battery_level / odometer 全空）时**整段跳过**，
+// 不伪造点 —— 宁可少一段，也不要在图上画出一条假的平线。
+//
+// 返回里 legs 为空数组（HTTP 200）表示「这几个行程 id 都没数据或不属于这台车」，
+// 而不是报错 —— 客户端只要判断 legs.isEmpty() 就能走空状态，不会崩。
+func handleRouteProfile(w http.ResponseWriter, r *http.Request) {
+	carID, err := strconv.Atoi(r.PathValue("car_id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "car id 无效")
+		return
+	}
+	driveIDs, err := parseDriveIDs(r.URL.Query().Get("drive_ids"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	stepKm := clampStepKm(r.URL.Query().Get("step_km"))
+
+	ctx := context.Background()
+	// ⚠️ v0.26.0：这条查询必须放在**事务**里跑，因为要临时调大 work_mem、
+	// 并强制走「按实际参数重新规划」的方案。
+	//
+	// 为什么需要调大 work_mem（实测 2026-10-25，positions 162 万点）：
+	//   200 段路线的分桶聚合要排 86 万行，
+	//   默认 work_mem=4MB 时会**溢写到磁盘**（external sort 27 MB）→ 2609 ms；
+	//   提到 64MB 以上就不溢写 → **429 ms**（快 6 倍）。
+	//   12 段只要 60 ms，远在 300 ms 预算内。
+	//
+	// 为什么必须 force_custom_plan（**踩过的坑**）：
+	//   PostgreSQL 对同一个 prepared statement 执行 5 次后会切到「通用计划」。
+	//   通用计划里优化器**不知道数组里到底有哪几个 drive_id**，
+	//   于是选了另一个形状的计划：
+	//     自定义计划：一次 Bitmap Index Scan，Index Searches: 200        → 345 ms
+	//     通用计划  ：每行再 AND 一次数组，Index Searches: **40000**      → 3850 ms
+	//   慢 11 倍，而且**第 6 次调用才开始变慢** —— 压测时很容易漏掉。
+	//   force_custom_plan 让它每次都按实际参数重新规划（多花 8 ms 规划时间，
+	//   换回 3.5 秒，值得）。
+	//
+	// 为什么用 SET LOCAL 而不是改数据库全局配置：
+	//   SET LOCAL 只在本事务内有效，事务结束自动还原，
+	//   不会污染连接池里其它连接（连接是复用的，改全局会连累别的端点）。
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 只读事务，回滚即可（这里忽略返回值：查询失败时上面的 rows.Err() 已经报过错）
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET LOCAL work_mem = '128MB'"); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL plan_cache_mode = force_custom_plan"); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rows, err := tx.Query(ctx, sqlRouteProfile, driveIDs, carID, stepKm)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	out := RouteProfile{
+		Legs:   []RouteProfileLeg{},
+		Points: []RouteProfilePoint{},
+	}
+	// 段按 ord 收集，最后排序 —— 不依赖数据库返回的行序
+	type legRow struct {
+		ord int
+		leg RouteProfileLeg
+	}
+	var legRows []legRow
+	legSeen := map[int]bool{}
+	for rows.Next() {
+		var (
+			ord        int
+			driveID    int
+			startKm    float64
+			endKm      float64
+			distanceKm float64
+			kmOffset   float64
+			km         float64
+			soc        float64
+		)
+		// ⚠️ Scan 的顺序必须和 SELECT 的列顺序**严格一致**：
+		//   ord, drive_id, start_km, end_km, distance_km, km_offset, km, soc
+		if err := rows.Scan(&ord, &driveID, &startKm, &endKm,
+			&distanceKm, &kmOffset, &km, &soc); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !legSeen[driveID] {
+			legSeen[driveID] = true
+			legRows = append(legRows, legRow{
+				ord: ord,
+				leg: RouteProfileLeg{
+					DriveID:    driveID,
+					StartKm:    round2(startKm),
+					EndKm:      round2(endKm),
+					DistanceKm: round2(distanceKm),
+					KmOffset:   round2(kmOffset),
+				},
+			})
+		}
+		out.Points = append(out.Points, RouteProfilePoint{Km: round2(km), Soc: soc})
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 段按行驶顺序（App 传进来的顺序）排
+	sort.SliceStable(legRows, func(i, j int) bool { return legRows[i].ord < legRows[j].ord })
+	minStartKm, maxEndKm := 0.0, 0.0
+	for i, lr := range legRows {
+		out.Legs = append(out.Legs, lr.leg)
+		if i == 0 {
+			minStartKm, maxEndKm = lr.leg.StartKm, lr.leg.EndKm
+			continue
+		}
+		if lr.leg.StartKm < minStartKm {
+			minStartKm = lr.leg.StartKm
+		}
+		if lr.leg.EndKm > maxEndKm {
+			maxEndKm = lr.leg.EndKm
+		}
+	}
+	// 点按 km 升序（稳定排序：里程相同的点保持段的先后顺序）
+	sort.SliceStable(out.Points, func(i, j int) bool { return out.Points[i].Km < out.Points[j].Km })
+	// total_km = 路线跨度 = 最远终点 − 最早起点。
+	// ⚠️ 不用「各段里程之和」：那样不含中间充电停驶的那段路，
+	// 而采样点的横轴是按里程表换算的，轴短了曲线尾巴会画到轴外面。
+	out.TotalKm = round2(maxEndKm - minStartKm)
+	writeJSON(w, out)
+}
+
+// parseDriveIDs 解析 drive_ids 参数：逗号分隔的正整数，**有序**。
+//
+// ⚠️ v0.26.0。
+//
+// 为什么上限是 400 而不是默默截断：
+//   截断会让 App 画出一条**缺尾巴的路线** ——
+//   用户会以为「电就是在第 400 段那里用完的」，而真实原因只是被砍掉了。
+//   那种错比直接报错危险得多，所以超限直接报错。
+//
+// 为什么要去重：
+//   重复的 id 会让同一段在剖面里出现两次，
+//   曲线会突然回折，看着像「电量涨了」—— 那是假的。
+func parseDriveIDs(raw string) ([]int32, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, errors.New("drive_ids 不能为空")
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > maxRouteProfileDrives {
+		return nil, fmt.Errorf("drive_ids 最多接受 %d 段，实际 %d 段", maxRouteProfileDrives, len(parts))
+	}
+	out := make([]int32, 0, len(parts))
+	seen := make(map[int32]bool, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return nil, errors.New("drive_ids 格式无效：存在空项")
+		}
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, errors.New("drive_ids 格式无效：" + p)
+		}
+		if n <= 0 {
+			return nil, errors.New("drive_ids 必须是正整数")
+		}
+		if seen[int32(n)] {
+			continue
+		}
+		seen[int32(n)] = true
+		out = append(out, int32(n))
+	}
+	if len(out) == 0 {
+		return nil, errors.New("drive_ids 不能为空")
+	}
+	return out, nil
+}
+
+// clampStepKm 解析 step_km：默认 5，范围 [1, 50]。
+//
+// ⚠️ v0.26.0。下限是 1 而不是 0.5：
+//   0.5 公里的分箱会让 200 段路线的采样点涨到 40 万个，App 根本画不动。
+//
+// 越界夹到边界、解析不了就用默认值 —— 和 handleSocProfile 一个口径，
+// 免得同一个参数在两个端点上有两套脾气。
+func clampStepKm(raw string) float64 {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 5
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 5
+	}
+	if f < 1 {
+		return 1
+	}
+	if f > 50 {
+		return 50
+	}
+	return f
+}
+
+// round2 保留两位小数。
+//
+// ⚠️ v0.26.0。为什么要在服务端舍入：
+//   里程是 double8，98176.421376 − 98176.4 这种浮点噪声会原样传给 App，
+//   画到图上就是「0.0000001 公里」的毛刺，还得让客户端自己去修。
+//   误差 ≤ 0.005 公里（5 毫米），对「还剩多少电」的判断毫无影响。
+func round2(v float64) float64 {
+	return math.Round(v*100) / 100
+}
+
 func handleTrack(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {

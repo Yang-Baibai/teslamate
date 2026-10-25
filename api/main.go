@@ -99,6 +99,9 @@ func main() {
 	mux.HandleFunc("GET /api/v1/drives/{id}/track", auth(handleTrack))
 	// ⚠️ v0.24.0：真实逐公里 SOC 剖面（长途规划用）。
 	mux.HandleFunc("GET /api/v1/drives/{id}/soc_profile", auth(handleSocProfile))
+	// ⚠️ v0.26.0：整条路线（多趟行程拼成一条）的逐公里 SOC 剖面。
+	// 一次长途旅程被充电切成很多段，App 要的是**一条连续曲线**而不是一堆碎片。
+	mux.HandleFunc("GET /api/v1/cars/{car_id}/route_profile", auth(handleRouteProfile))
 	// ⚠️ v0.25.0：充电成本构成（每公里成本用）。
 	mux.HandleFunc("GET /api/v1/cars/{id}/cost_summary", auth(handleCostSummary))
 	mux.HandleFunc("GET /api/v1/cars/{id}/charges", auth(handleCharges))

@@ -50,24 +50,35 @@ import kotlin.math.roundToInt
  * 插枪时长包含大量闲置，按分钟算会严重高估。
  */
 data class ChargeCost(
-    /** 家充（交流）网侧度数 */
-    val homeKwh: Double,
-    /** 公共桩（直流）网侧度数 */
-    val publicKwh: Double,
-    /** 公共桩总时长（分钟） */
+    /**
+     * ⚠️ **v0.26.0：这是「交流慢充」，不是「家充」。**
+     *
+     * 原来的字段叫 `homeKwh`，界面上写「家充 X 度」——
+     * 听起来像 App **知道**哪场是在家充的。它并不知道：
+     * 本机 `geofences` 表 **0 行**，78/78 场充电的 `geofence_id` 全是 NULL，
+     * 而库里全部 4 场「交流」都发生在**外省的酒店和路边**，没有一场在家。
+     *
+     * 字段名改成 `acKwh` / `dcKwh` 就是为了让**代码里也不许再叫它家充**。
+     * 价格侧仍然是「家充电价 / 公共桩电价」（那是车主自己填的意图），
+     * 但界面必须说清楚：**交流慢充是按家充电价估的**。
+     */
+    val acKwh: Double,
+    /** 直流快充网侧度数 */
+    val dcKwh: Double,
+    /** 直流桩总时长（分钟） */
     val publicMinutes: Double,
-    /** 家充电费（元） */
-    val homeYuan: Double,
-    /** 公共桩费用（元） */
-    val publicYuan: Double,
+    /** 交流慢充电费（元，按车主填的家充电价） */
+    val acYuan: Double,
+    /** 直流桩费用（元） */
+    val dcYuan: Double,
 ) {
     /** 总费用（元） */
-    val totalYuan: Double get() = homeYuan + publicYuan
+    val totalYuan: Double get() = acYuan + dcYuan
 
     /** 每度实际成本（元/度，**只对有费用的部分**） */
     val yuanPerKwh: Double?
         get() {
-            val used = homeKwh + publicKwh
+            val used = acKwh + dcKwh
             return if (used > 0.01) totalYuan / used else null
         }
 }
@@ -82,32 +93,32 @@ fun estimateChargeCost(
     charges: List<Charge>,
     rates: ChargeRates,
 ): ChargeCost {
-    var homeKwh = 0.0
-    var publicKwh = 0.0
+    var acKwh = 0.0
+    var dcKwh = 0.0
     var publicMinutes = 0.0
     charges.forEach { c ->
         // ⚠️ P0-2：用**网侧送出**（桩按这个数收费），不是充入电池。
         val used = c.energy_used_kwh ?: c.energy_added_kwh ?: 0.0
         if (c.is_dc) {
-            publicKwh += used
+            dcKwh += used
             publicMinutes += (c.duration_min ?: 0).toDouble()
         } else {
-            homeKwh += used
+            acKwh += used
         }
     }
-    val homeYuan = homeKwh * rates.homeYuanPerKwh
-    val publicEnergyYuan = publicKwh * rates.publicYuanPerKwh
+    val acYuan = acKwh * rates.homeYuanPerKwh
+    val publicEnergyYuan = dcKwh * rates.publicYuanPerKwh
     val publicServiceYuan = if (rates.publicServiceMode == ChargeRates.MODE_PER_MINUTE) {
         publicMinutes * rates.publicServiceYuan
     } else {
-        publicKwh * rates.publicServiceYuan
+        dcKwh * rates.publicServiceYuan
     }
     return ChargeCost(
-        homeKwh = homeKwh,
-        publicKwh = publicKwh,
+        acKwh = acKwh,
+        dcKwh = dcKwh,
         publicMinutes = publicMinutes,
-        homeYuan = homeYuan,
-        publicYuan = publicEnergyYuan + publicServiceYuan,
+        acYuan = acYuan,
+        dcYuan = publicEnergyYuan + publicServiceYuan,
     )
 }
 
@@ -149,7 +160,7 @@ fun estimateSingleChargeCost(c: Charge, rates: ChargeRates): Double? {
  * 不能拿「最近 N 场充电」去配「30 天的公里数」—— 那会算错。
  */
 fun estimateCost(summary: com.teslamate.app.CostSummary, rates: ChargeRates): ChargeCost {
-    val homeYuan = summary.ac_used_kwh * rates.homeYuanPerKwh
+    val acYuan = summary.ac_used_kwh * rates.homeYuanPerKwh
     val publicEnergyYuan = summary.dc_used_kwh * rates.publicYuanPerKwh
     val publicServiceYuan = if (rates.publicServiceMode == ChargeRates.MODE_PER_MINUTE) {
         summary.dc_minutes * rates.publicServiceYuan
@@ -157,11 +168,11 @@ fun estimateCost(summary: com.teslamate.app.CostSummary, rates: ChargeRates): Ch
         summary.dc_used_kwh * rates.publicServiceYuan
     }
     return ChargeCost(
-        homeKwh = summary.ac_used_kwh,
-        publicKwh = summary.dc_used_kwh,
+        acKwh = summary.ac_used_kwh,
+        dcKwh = summary.dc_used_kwh,
         publicMinutes = summary.dc_minutes,
-        homeYuan = homeYuan,
-        publicYuan = publicEnergyYuan + publicServiceYuan,
+        acYuan = acYuan,
+        dcYuan = publicEnergyYuan + publicServiceYuan,
     )
 }
 
@@ -173,27 +184,28 @@ fun estimateCost(summary: com.teslamate.app.CostSummary, rates: ChargeRates): Ch
  * 让人以为「我享受了家充电价」。
  *
  * - [allPerKm]：总费用 ÷ 行驶里程 —— 「这辆车每公里花多少钱」
- * - [publicPerKm]：**只算公共桩**的费用 ÷ 行驶里程 ——
+ * - [dcPerKm]：**只算直流桩**的费用 ÷ 行驶里程 ——
  *   「如果我今天全是公共桩充的电，每公里多花多少」= **长途的边际成本**
  */
 data class CostPerKm(
     val allPerKm: Double?,
-    val publicPerKm: Double?,
-    val homeSharePercent: Int?,
+    val dcPerKm: Double?,
+    /** 交流慢充占总度数的百分比（⚠️ 不等于「家充占比」—— App 分不出哪场在家） */
+    val acSharePercent: Int?,
 )
 
 fun costPerKm(cost: ChargeCost, drivingKm: Double): CostPerKm {
     if (drivingKm <= 0.1) return CostPerKm(null, null, null)
-    val totalUsed = cost.homeKwh + cost.publicKwh
-    val homeShare = if (totalUsed > 0.01) {
-        (cost.homeKwh / totalUsed * 100).roundToInt()
+    val totalUsed = cost.acKwh + cost.dcKwh
+    val acShare = if (totalUsed > 0.01) {
+        (cost.acKwh / totalUsed * 100).roundToInt()
     } else {
         null
     }
     return CostPerKm(
         allPerKm = cost.totalYuan / drivingKm,
-        publicPerKm = cost.publicYuan / drivingKm,
-        homeSharePercent = homeShare,
+        dcPerKm = cost.dcYuan / drivingKm,
+        acSharePercent = acShare,
     )
 }
 

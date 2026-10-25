@@ -344,22 +344,35 @@ fun StatsScreen(
                                 }
                             },
                         )
-                        // ⚠️ v0.14.0：「充电费用」**只出现一次**。
-                        // 有电费数据时给金额；没有时给「怎么才能有数据」的下一步
-                        // （API 早就接了，是 TeslaMate 库里的 cost 全是 NULL）。
-                        if (sum.cost > 0) {
-                            KV("充电费用", "${sum.cost.fmt(2)} 元")
-                        } else {
-                            // ⚠️ v0.17.0：说明文字**拆到下一行** ——
-                            // 原来把它塞进值里（「未记录 —— 在 TeslaMate 网页端手填单价后才有」），
-                            // 值太长会换行成两行、右对齐还顶到边角，很难读。
-                            KV("充电费用", "未记录")
-                            Text(
-                                "费用需在 TeslaMate 网页端手填单价后才有",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(bottom = 4.dp),
-                            )
+                        // ⚠️ **v0.26.0（第 17 轮通勤车主 P0-1）：「充电费用」只能出现一次。**
+                        //
+                        // 原来这里是 `if (sum.cost > 0) … else …`，
+                        // 而下面还有一段 `if (costSummary != null && rates.configured)` 的**估算**分支
+                        // 也渲染了一个 `KV("充电费用", "≈ ¥…")`。
+                        // 两者用的**不是同一个数**：
+                        //   - `sum.cost` = 服务端 `SUM(cp.cost)`，本机 78/78 场全 NULL → 恒为 0
+                        //   - 估算分支 = 用**车主自己填的电价**在客户端算
+                        // 所以只要填了电价，同一张卡上就会**同时出现**
+                        // 「充电费用 未记录」和「充电费用 ≈ ¥1,837.31」——
+                        // **同一个指标给两个相反的答案**。
+                        //
+                        // 现在改成**互斥三分支**：估算 > 服务端记录 > 都没有。
+                        val hasClientEstimate = costSummary != null && rates.configured && sum.km > 0.1
+                        if (!hasClientEstimate) {
+                            if (sum.cost > 0) {
+                                KV("充电费用", "${sum.cost.fmt(2)} 元")
+                            } else {
+                                // ⚠️ v0.17.0：说明文字**拆到下一行** ——
+                                // 原来把它塞进值里（「未记录 —— 在 TeslaMate 网页端手填单价后才有」），
+                                // 值太长会换行成两行、右对齐还顶到边角，很难读。
+                                KV("充电费用", "未记录")
+                                Text(
+                                    "费用需在 TeslaMate 网页端手填单价后才有",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = 4.dp),
+                                )
+                            }
                         }
                         // ⚠️ v0.9.0（新手车主复核）：补「每公里花多少钱」。
                         // 车主原话：「每公里花多少钱（充 60 度跑 400 公里 = 0.15 元/公里）
@@ -388,34 +401,49 @@ fun StatsScreen(
                         // 「每公里成本」是**官方 Tesla App 给不了**的数 ——
                         // 它用「总增加公里数」（充电量 ÷ 型号效率反推）当分母，
                         // 官方 FAQ 自己承认与里程表对不上。我们有真实里程。
-                        if (costSummary != null && rates.configured && sum.km > 0.1) {
+                        if (hasClientEstimate) {
                             val cost = estimateCost(costSummary!!, rates)
                             val perKm = costPerKm(cost, sum.km)
                             KV("充电费用", "≈ ${cost.totalYuan.fmtYuan()}")
                             perKm.allPerKm?.let {
                                 KV("每公里成本", "≈ ${it.fmtYuan()} /公里")
                             }
-                            // ⚠️ P0-3：**公共桩边际成本**必须单独给 ——
-                            // 实测本车家充电只占 3%，混算会给人「我享受了家充电价」的错觉，
+                            // ⚠️ P0-3：**直流桩边际成本**必须单独给 ——
+                            // 实测本车交流慢充只占 3%，混算会给人「我享受了家充电价」的错觉，
                             // 而真实情况是这车几乎全按公共桩价买的电。
-                            perKm.publicPerKm?.let {
-                                KV("公共桩边际成本", "≈ ${it.fmtYuan()} /公里")
+                            perKm.dcPerKm?.let {
+                                KV("直流桩边际成本", "≈ ${it.fmtYuan()} /公里")
                             }
                             cost.yuanPerKwh?.let {
                                 KV("实际每度电", "≈ ${it.fmtYuan()}")
                             }
                             Text(
                                 buildString {
-                                    append("按你填的电价估算（家充 ")
-                                    append(cost.homeKwh.fmt(0))
-                                    append(" 度 / 公共桩 ")
-                                    append(cost.publicKwh.fmt(0))
+                                    append("按你填的电价估算（交流慢充 ")
+                                    append(cost.acKwh.fmt(0))
+                                    append(" 度 / 直流快充 ")
+                                    append(cost.dcKwh.fmt(0))
                                     append(" 度）")
-                                    perKm.homeSharePercent?.let { append(" · 家充电占 $it%") }
+                                    perKm.acSharePercent?.let { append(" · 交流慢充占 $it%") }
                                     append("。分母是行驶里程 ")
                                     append(sum.km.fmt(0))
                                     append(" 公里。")
                                 },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 4.dp),
+                            )
+                            // ⚠️ **v0.26.0（第 17 轮新手车主 P0-1）：交流 ≠ 家充。**
+                            //
+                            // 原来这里写「家充 X 度」—— 听起来像 App **知道**哪场是在家充的。
+                            // 它并不知道：本机 `geofences` 表 **0 行**、
+                            // 78/78 场充电的 `geofence_id` 全是 NULL，
+                            // 而库里的 4 场「交流」**全部**发生在
+                            // 四川甘孜/阿坝、广西梧州的**酒店和路边**，没有一场在家。
+                            //
+                            // 所以只能诚实说「交流慢充」，并说明它是**按你填的家充电价**估的。
+                            Text(
+                                "App 分不出哪场是家充（车端没配充电地点）：交流慢充按你填的「家充电价」估算",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(bottom = 4.dp),

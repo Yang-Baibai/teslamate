@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.PowerOff
+import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -1231,7 +1232,10 @@ fun InfoTile(title: String, value: String, modifier: Modifier = Modifier) {
                 value,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
+                // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-4）：`maxLines` 1 → 2。**
+                // 200% 字号下标题是「可用容量 62.4 度」这种带单位的串，
+                // 单行会被截成「可用容量 62.4 …」，**读数被裁掉**。
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
         }
@@ -1364,7 +1368,22 @@ fun SocRing(
     //   环太大就放不进屏幕宽度（393dp 屏去掉 32dp 页边距 = 361dp 可用）。
     //   1.75 → 168 × 1.75 = 294dp，仍有余量。
     val fontScale = LocalDensity.current.fontScale
-    val ringSize = (baseSizeDp * fontScale.coerceIn(1f, 1.75f)).dp
+    val ringDp = baseSizeDp * fontScale.coerceIn(1f, 1.75f)
+    val ringSize = ringDp.dp
+    // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-3）：环内字号由**环**推导，不写死。**
+    //
+    // 原来写死 `40.sp`：环的直径随 fontScale 放大但**封顶 1.75×**，
+    // 而文字按**真实** fontScale 放大（2.0× = 80sp）——
+    // 于是 200% 字号下「100%」比环还宽，**破形溢出**。
+    //
+    // 现在：文字的**渲染尺寸**（sp × fontScale）永远等于 `环直径 × 0.235`，
+    // 字号则用 `推导尺寸 / fontScale` 反算回 sp，
+    // 这样任何 fontScale 下文字都**按比例**待在环里（1× 时仍是 39.5sp ≈ 原来的 40sp）。
+    val ringTextSp = (ringDp * 0.235f) / fontScale
+    // ⚠️ v0.26.0（HIG P0-6）：**低电量不能只靠颜色** ——
+    // 环的颜色会变（蓝 → 琥珀 → 红），但色觉障碍用户看不出差别。
+    // 环下方补一个「图标 + 文字」的胶囊。
+    val lowBattery = soc != null && !charging && soc < 20
     Box(
         modifier = modifier.size(ringSize)
             // ⚠️ v0.7.1：Canvas 画的环对屏幕阅读器完全不可达，
@@ -1472,10 +1491,64 @@ fun SocRing(
         ) {
             Text(
                 "$shown%",
-                fontSize = 40.sp,
+                fontSize = ringTextSp.sp,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = (-1.5).sp,
                 style = MaterialTheme.typography.displayLarge,
+            )
+            // ⚠️ v0.26.0（HIG P0-6）：低电量 = **图标 + 文字**，不是只有颜色。
+            if (lowBattery) {
+                Spacer(Modifier.height(2.dp))
+                LowBatteryPill(soc = soc)
+            }
+        }
+    }
+}
+
+/**
+ * ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-6）：低电量提示胶囊。**
+ *
+ * ## 为什么必须有
+ *
+ * 电量环和能量条在低电量时**只换颜色**（蓝 → 琥珀 → 红）。
+ * WCAG 1.4.1「不能只靠颜色传达信息」—— 色觉障碍用户看到的是
+ * 「一个不同颜色的环」，**读不出「电量低了」这个状态**。
+ *
+ * 所以补一个**图标 + 文字**的胶囊：琥珀色底 + 警告图标 + 「低电量」三个字。
+ * 对比度：浅色 `#9A5B00` on `#F6EBDC` ≈ **5.3:1**；深色 `#F5A623` on 近黑 ≈ **9:1**。
+ *
+ * 文字 11sp（HIG 建议的「图形内文字」字号），随 fontScale 一起放大 ——
+ * 200% 字号下是 22sp 实际尺寸，仍在环的下方留白里，不会挤爆布局。
+ */
+@Composable
+fun LowBatteryPill(
+    soc: Int?,
+    modifier: Modifier = Modifier,
+) {
+    val a = LocalAccentColors.current
+    val text = if (soc != null && soc < 10) "电量严重偏低" else "低电量"
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = a.warnAmber.copy(alpha = 0.16f),
+        modifier = modifier,
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+        ) {
+            Icon(
+                Icons.Filled.WarningAmber,
+                contentDescription = null,
+                tint = a.warnAmber,
+                modifier = Modifier.size(13.dp),
+            )
+            Spacer(Modifier.width(3.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = a.warnAmber,
             )
         }
     }
@@ -1531,9 +1604,15 @@ fun EnergyBar(
     val labelLayout = targetSoc?.let {
         textMeasurer.measure("目标 $it%", TextStyle(fontSize = 9.sp, color = labelColor))
     }
-    val labelBandDp = with(density) {
-        (labelLayout?.size?.height?.toDp() ?: 0.dp) + 2.dp
-    }
+    // ⚠️ **v0.26.0（HIG P0-6）：低电量条也要有「图标 + 文字」。**
+    // 胶囊比「目标 80%」标签高，所以标签带高度取**两者较大值** ——
+    // 否则胶囊会压到条上（200% 字号时尤其明显）。
+    val lowBar = soc != null && !charging && soc < 20
+    val pillBandDp = with(density) { 11.sp.toDp() + 6.dp }
+    val labelBandDp = maxOf(
+        with(density) { (labelLayout?.size?.height?.toDp() ?: 0.dp) + 2.dp },
+        if (lowBar) pillBandDp else 0.dp,
+    )
     Box(
         modifier
             .fillMaxWidth()
@@ -1594,6 +1673,14 @@ fun EnergyBar(
                     ),
                 )
             }
+        }
+        // ⚠️ v0.26.0（HIG P0-6）：低电量时在条的上方右侧补一个**图标 + 文字**胶囊。
+        // 原来这条只有颜色变化（蓝 → 琥珀 → 红），色觉障碍用户读不出「电量低了」。
+        if (lowBar) {
+            LowBatteryPill(
+                soc = soc,
+                modifier = Modifier.align(Alignment.TopEnd),
+            )
         }
     }
 }

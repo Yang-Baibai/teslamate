@@ -498,6 +498,40 @@ data class SocProfilePoint(
     val soc: Double = 0.0,
 )
 
+/**
+ * ⚠️ **v0.26.0：整条路线的真实逐公里 SOC 剖面**（多趟行程拼起来）。
+ *
+ * 一次长途被充电切成很多趟（实测一次 3551 公里的出门切成 **118 段**），
+ * 而 `/drives/{id}/soc_profile` 只能给**单趟**的剖面。
+ * 以前只取最后一段 —— 剖面只覆盖整条路线的最后 1/118，图上看着对，
+ * 实际上坐标轴是整条路线、曲线却只有最后一小段。
+ */
+@Serializable
+data class RouteProfile(
+    /** 整条路线的里程跨度（公里） */
+    val total_km: Double = 0.0,
+    val legs: List<RouteProfileLeg> = emptyList(),
+    val points: List<RouteProfilePoint> = emptyList(),
+)
+
+/** 路线里的一段（一趟行程）在整条路线上的位置。 */
+@Serializable
+data class RouteProfileLeg(
+    val drive_id: Int = 0,
+    val start_km: Double = 0.0,
+    val end_km: Double = 0.0,
+    val distance_km: Double = 0.0,
+    /** 相对整条路线起点的公里数 */
+    val km_offset: Double = 0.0,
+)
+
+/** 整条路线上的一个 SOC 采样点（km 相对整条路线起点）。 */
+@Serializable
+data class RouteProfilePoint(
+    val km: Double = 0.0,
+    val soc: Double = 0.0,
+)
+
 @Serializable
 data class CostSummary(
     /** 公共桩（直流）网侧度数 —— 桩是按它送出去的度数收费的 */
@@ -734,6 +768,21 @@ class Api private constructor(private val base: String, private val token: Strin
      */
     fun socProfile(driveId: Int, stepKm: Int = 5): List<SocProfilePoint> =
         get("/api/v1/drives/$driveId/soc_profile?step_km=$stepKm")
+
+    /**
+     * ⚠️ **v0.26.0：整条路线（多趟）的真实逐公里 SOC 剖面。**
+     *
+     * 服务端一次查完（`positions` 上有 `BRIN (drive_id, date)` 索引）：
+     * 实测 12 段 **32~80 ms**、200 段 **321~377 ms**，无全表扫描。
+     *
+     * 里程轴是**整条路线**的（相对第一段的起点），所以拼出来的图
+     * 和「站间距离 / 到下一站剩多少电」用的是**同一把尺子**。
+     */
+    fun routeProfile(carId: Int, driveIds: List<Int>, stepKm: Int = 5): RouteProfile =
+        get(
+            "/api/v1/cars/$carId/route_profile" +
+                "?drive_ids=${driveIds.joinToString(",")}&step_km=$stepKm"
+        )
 
     /**
      * ⚠️ v0.25.0：一个时间窗口内的**充电成本构成**（度数 / 场次 / 时长）。

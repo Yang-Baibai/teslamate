@@ -489,3 +489,105 @@ WHERE cp.car_id = $1
   AND cp.charge_energy_added > 0.01
   AND cp.end_battery_level >= 90
 ORDER BY cp.end_date`
+
+// ⚠️ v0.26.0：**整条路线**的逐公里 SOC 剖面（多趟行程拼成一条）。
+//
+// ## 为什么需要这个端点
+//
+// sqlSocProfile（v0.24.0）一次只算**一趟**行程的剖面。
+// 但现实里一次长途旅程是**被充电切成很多段**的：
+// 出发 → 开 300 km → 充 40 分钟 → 再开 200 km → 再充 → ……
+// App 想画的是**一条连续的余量曲线**，而不是七八张互不相干的碎片。
+// 所以需要把多趟行程按行驶顺序拼成一条剖面。
+//
+// ## 口径（和 sqlSocProfile 完全一致）
+//
+// 每段内部按 step_km 分桶，取箱内 battery_level 的**中位数**
+// （percentile_cont(0.5)）—— 中位数比均值抗离群，
+// 停车开空调时的短暂掉电不会带偏整箱。
+//
+// 分桶用**绝对里程**算，最后再减去整条路线的起点里程换成相对 km：
+//   桶起点 = floor((里程 − 本段起点里程) / step_km) * step_km + 本段起点里程
+//   相对 km = 桶起点 − 路线起点里程
+//
+// ⚠️ 为什么 km_offset 也要用「里程差」而不是「前面几段的里程累加」：
+//   km_offset 必须**正好落在本段第一个采样点上**，
+//   否则 App 把段边界和曲线对不上，会画出一段错位的折线。
+//   用里程差时，本段第一个桶就是 floor(...)=0 的那一箱，
+//   相对 km 恰好等于本段起点里程 − 路线起点里程 = km_offset，对得上。
+//
+// ## 性能（实测，2026-10-25，positions 162 万点 / 20551 页）
+//
+// 用 p.drive_id = ANY($1) 命中 BRIN，**不是全表扫描**：
+//   3 段  → lossy heap 2197 页
+//   12 段 → lossy heap 1556 页，Index Searches: 12
+//   200 段 → lossy heap 11399 页，Index Searches: 200
+// 段数越多覆盖的时间跨度越大，BRIN 摘要越粗，这是 BRIN 的固有粒度；
+// 但**始终是 Bitmap Index Scan**，没有一次 Seq Scan。
+//
+// 200 段的聚合要排 86 万行：默认 work_mem=4MB 时**溢写到磁盘**
+// （external sort 27 MB）→ 2609 ms；
+// 提到 64MB 以上就不溢写 → 350 ms 左右（快 7 倍）。
+//
+// ⚠️ 另一个坑：**通用计划**。PostgreSQL 对同一个 prepared statement
+// 执行 5 次后会切到「通用计划」，那时优化器不知道数组里有哪些 drive_id，
+// 于是每行再 AND 一次数组 → Index Searches 从 200 涨到 **40000** → 3850 ms。
+// 所以 handler 里必须 SET LOCAL plan_cache_mode = force_custom_plan。
+//
+// $1 = drive_id 数组（有序），$2 = car_id，$3 = 分箱步长（km）
+const sqlRouteProfile = `
+WITH ordered AS (
+  -- 用 unnest ... WITH ORDINALITY 保住 App 传进来的**行驶顺序**。
+  -- 为什么不能直接 ORDER BY d.start_date：
+  --   App 传什么顺序就是什么顺序（它可能已经按「充电段」排好序了），
+  --   服务端再按时间排一次等于替 App 做决定。
+  SELECT o.ord AS ord,
+         d.id AS drive_id,
+         d.start_km::float8 AS start_km,
+         d.end_km::float8 AS end_km,
+         d.distance::float8 AS distance_km
+  FROM unnest($1::int4[]) WITH ORDINALITY AS o(drive_id, ord)
+  JOIN drives d ON d.id = o.drive_id AND d.car_id = $2
+  -- 起止里程缺失的行程没法定位，直接剔除（不做插值）
+  WHERE d.start_km IS NOT NULL AND d.end_km IS NOT NULL
+), buckets AS (
+  -- 每段按 step_km 分桶，取箱内电量的中位数。
+  -- ⚠️ WHERE 里必须再写一遍 p.drive_id = ANY($1)：
+  --   光靠 JOIN conditions 的话优化器可能选另一条路（实测会退化成逐段嵌套循环，
+  --   12 段时索引被扫 144 次）。显式写出来才稳定命中 BRIN 的 Bitmap Index Scan。
+  SELECT l.drive_id,
+         floor((p.odometer - l.start_km) / $3) * $3 + l.start_km AS abs_km,
+         percentile_cont(0.5) WITHIN GROUP (ORDER BY p.battery_level)::float8 AS soc
+  FROM ordered l
+  JOIN positions p ON p.drive_id = l.drive_id
+  WHERE p.drive_id = ANY($1::int4[])
+    AND p.battery_level IS NOT NULL
+    AND p.odometer IS NOT NULL
+  GROUP BY 1, 2
+), leg_info AS (
+  -- 只保留**真的有采样点**的段。
+  -- ⚠️ 为什么在 buckets 之后过滤而不是单独查一次 positions：
+  --   buckets 已经把「这一段有没有可用采样」算清楚了（有没有桶），
+  --   再查一次 positions 等于把最贵的那一步做两遍。
+  -- 一段都没有可用采样（battery_level 全空 / odometer 全空）的行程
+  -- 直接跳过 —— **不伪造点**，宁可少一段也不要画出一条假的平线。
+  SELECT o.ord, o.drive_id, o.start_km, o.end_km, o.distance_km
+  FROM ordered o
+  JOIN (SELECT DISTINCT drive_id FROM buckets) k ON k.drive_id = o.drive_id
+), origin AS (
+  -- 路线起点 = 各段起点里程的最小值。
+  -- 相对 km 全部由它换算，所以整条剖面共用同一个原点。
+  SELECT MIN(start_km) AS base_km FROM leg_info
+)
+SELECT li.ord,
+       li.drive_id,
+       li.start_km,
+       li.end_km,
+       li.distance_km,
+       li.start_km - o.base_km AS km_offset,
+       b.abs_km - o.base_km AS km,
+       b.soc
+FROM leg_info li
+JOIN buckets b ON b.drive_id = li.drive_id
+CROSS JOIN origin o
+ORDER BY li.ord, b.abs_km`

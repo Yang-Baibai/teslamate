@@ -233,7 +233,12 @@ fun StackedBarChart(
     val density = LocalDensity.current
     // ⚠️ v0.9.0：刻度文字随 fontScale 放大，预留带也必须跟着放大，
     // 否则大字号下 X 轴标签会压到曲线、Y 轴标签被裁掉。
-    val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
+    // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-5）：上限 1.6 → 2.0。**
+    // 刻度文字是按**真实** fontScale 渲染的（	extMeasurer.measure 已经把 sp 乘上 fontScale），
+    // 而预留带却按 min(fontScale, 1.6) 算 —— 200% 字号下文字比预留空间**大 25%**：
+    // X 轴标签被画布裁掉、Y 轴标签压到绘图区。
+    // 现在预留系数与文字一致（上限 2.0 = WCAG 1.4.4 要求的 200%）。
+    val fs = LocalDensity.current.fontScale.coerceAtMost(2.0f)
     val yLabelWidth = with(density) { (34 * fs).dp.toPx() }
     val xLabelHeight = with(density) { if (xLabels.isEmpty()) 0f else (16 * fs).dp.toPx() }
 
@@ -400,7 +405,12 @@ fun LineChart(
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     // ⚠️ v0.9.0：刻度文字随 fontScale 放大，预留带也必须跟着放大，
     // 否则大字号下 X 轴标签会压到曲线、Y 轴标签被裁掉。
-    val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
+    // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-5）：上限 1.6 → 2.0。**
+    // 刻度文字是按**真实** fontScale 渲染的（	extMeasurer.measure 已经把 sp 乘上 fontScale），
+    // 而预留带却按 min(fontScale, 1.6) 算 —— 200% 字号下文字比预留空间**大 25%**：
+    // X 轴标签被画布裁掉、Y 轴标签压到绘图区。
+    // 现在预留系数与文字一致（上限 2.0 = WCAG 1.4.4 要求的 200%）。
+    val fs = LocalDensity.current.fontScale.coerceAtMost(2.0f)
     val yLabelWidth = with(density) { (34 * fs).dp.toPx() }
     val xLabelHeight = with(density) { if (xLabels.isEmpty()) 0f else (16 * fs).dp.toPx() }
 
@@ -722,7 +732,12 @@ fun PowerProfileChart(
     // ⚠️ v0.9.0：刻度文字随 fontScale 放大，**预留带也必须跟着放大**，
     // 否则大字号下刻度会压到图里（X 轴标签压住曲线、Y 轴标签被裁掉）。
     // 1.6 是上限 —— 再大刻度就该换成「自适应 Y 轴范围」而不是继续挤。
-    val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
+    // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-5）：上限 1.6 → 2.0。**
+    // 刻度文字是按**真实** fontScale 渲染的（	extMeasurer.measure 已经把 sp 乘上 fontScale），
+    // 而预留带却按 min(fontScale, 1.6) 算 —— 200% 字号下文字比预留空间**大 25%**：
+    // X 轴标签被画布裁掉、Y 轴标签压到绘图区。
+    // 现在预留系数与文字一致（上限 2.0 = WCAG 1.4.4 要求的 200%）。
+    val fs = LocalDensity.current.fontScale.coerceAtMost(2.0f)
     val yLabelWidth = with(density) { (PROFILE_Y_LABEL_DP * fs).dp.toPx() }
     // ⚠️ v0.14.0：右边也留出与电量条**同样宽**的刻度带，两图才能逐像素对齐。
     val rightLabelWidth = with(density) { (PROFILE_RIGHT_LABEL_DP * fs).dp.toPx() }
@@ -974,7 +989,12 @@ fun SocStrip(
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val density = LocalDensity.current
     // ⚠️ v0.9.0：刻度文字随 fontScale 放大，预留带也必须跟着放大（见 PowerProfileChart 的说明）
-    val fs = LocalDensity.current.fontScale.coerceAtMost(1.6f)
+    // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-5）：上限 1.6 → 2.0。**
+    // 刻度文字是按**真实** fontScale 渲染的（	extMeasurer.measure 已经把 sp 乘上 fontScale），
+    // 而预留带却按 min(fontScale, 1.6) 算 —— 200% 字号下文字比预留空间**大 25%**：
+    // X 轴标签被画布裁掉、Y 轴标签压到绘图区。
+    // 现在预留系数与文字一致（上限 2.0 = WCAG 1.4.4 要求的 200%）。
+    val fs = LocalDensity.current.fontScale.coerceAtMost(2.0f)
     // ⚠️ v0.14.0：左右预留带与功率图**完全一致**（否则两图横向错开）。
     val yLabelWidth = with(density) { (PROFILE_Y_LABEL_DP * fs).dp.toPx() }
     val rightLabelWidth = with(density) { (PROFILE_RIGHT_LABEL_DP * fs).dp.toPx() }

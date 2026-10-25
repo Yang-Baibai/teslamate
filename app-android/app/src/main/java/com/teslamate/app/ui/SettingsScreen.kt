@@ -501,8 +501,11 @@ private fun SettingsRootPage(
                     SettingRow(
                         title = "电价与成本",
                         subtitle = if (settings.currentRates.configured) {
-                            "家充 ${settings.currentRates.homeYuanPerKwh.fmtRate("元/度")}" +
-                                " · 公共桩 ${settings.currentRates.publicYuanPerKwh.fmtRate("元/度")}"
+                            // ⚠️ v0.26.0：写「交流慢充 / 直流桩」而不是「家充 / 公共桩」——
+                            // App 分不出哪场交流是在自家桩上充的（geofences 0 行），
+                            // 写「家充」等于**假装它知道**。
+                            "交流慢充 ${settings.currentRates.homeYuanPerKwh.fmtRate("元/度")}" +
+                                " · 直流桩 ${settings.currentRates.publicYuanPerKwh.fmtRate("元/度")}"
                         } else {
                             "填上就能算每公里成本"
                         },
@@ -1182,6 +1185,21 @@ private fun SettingsRatesPage(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // ⚠️ **v0.26.0（第 17 轮新手车主 P0-1）：先说清 App 的盲区。**
+                    //
+                    // App 只知道「交流 / 直流」，**分不出哪场交流是在自家桩上充的**
+                    // —— 本机 `geofences` 表 0 行，78/78 场充电都没有围栏归属，
+                    // 而库里全部 4 场「交流」都发生在外省的酒店和路边。
+                    //
+                    // 所以这里的口径是：**所有交流慢充都按「家充电价」算**。
+                    // 车主要是常年在外面充，就该把「家充电价」填成外面那个价。
+                    Text(
+                        "App 只分得出「交流 / 直流」，分不出哪场是在自家桩上充的" +
+                            "（车端没配充电地点）。所以所有交流慢充都按下面的家充电价算 —— " +
+                            "常在外面充的话，把这个价填成你在外面充的价。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     IosField(
                         label = "家充电价（元/度）",
                         value = homeText,
@@ -1195,7 +1213,7 @@ private fun SettingsRatesPage(
                         keyboardType = KeyboardType.Number,
                     )
                     IosField(
-                        label = "公共桩电费（元/度）",
+                        label = "直流桩电费（元/度）",
                         value = publicText,
                         onValueChange = {
                             publicText = it.filter { c -> c.isDigit() || c == '.' }
@@ -1207,7 +1225,7 @@ private fun SettingsRatesPage(
                         keyboardType = KeyboardType.Number,
                     )
                     IosField(
-                        label = "公共桩服务费（元/" + if (perMinute) "分钟" else "度" + "）",
+                        label = "直流桩服务费（元/" + if (perMinute) "分钟" else "度" + "）",
                         value = serviceText,
                         onValueChange = {
                             serviceText = it.filter { c -> c.isDigit() || c == '.' }
@@ -1421,7 +1439,12 @@ fun IosSwitch(
         animationSpec = tween(180),
         label = "switchColor",
     )
-    val onColor = Color(0xFF34C759)
+    // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-1）：开关轨道的开态绿从 #34C759 降到 #2E9E4F。**
+    //
+    // 白色旋钮 `#FFFFFF` 画在 `#34C759` 上只有 **2.22:1**，
+    // 低于 WCAG 1.4.11「非文字图形 ≥ 3:1」的硬线 —— 开关是**图形**（旋钮），不是文字。
+    // `#2E9E4F` → 白旋钮 **3.43:1**，达标；色相仍是 iOS 绿，肉眼几乎看不出差别。
+    val onColor = Color(0xFF2E9E4F)
     val offColor = accents.chartTrack
     Box(
         modifier
