@@ -370,8 +370,18 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
             //
             // 现在**自曝覆盖度**：桶里有数据的比例 < 90% 时明确说清楚，
             // 并把「每公里成本」两行限定到「这 4 个月」。
-            val totalBuckets = s.buckets.size
-            val filledBuckets = s.buckets.count { it.km > 0.0 || it.charge_kwh > 0.0 }
+            // ⚠️ **v0.38.0（第 23 轮数据自洽性审计 P2-3）：覆盖度必须按**切片后**的桶算。**
+            //
+            // 原来 `totalBuckets` / `filledBuckets` 用的是**整个响应**的 `s.buckets`
+            // （week 响应 = 7 个桶），而卡片内容是 `s.buckets.takeLast(bucketCount)`
+            // （今天段 = **1** 个桶）⇒ 页面顶部写「数据只覆盖 3/7 天（43%）」，
+            // 而下面那张卡标题是「今天 汇总」—— **两个数在讲两件事**。
+            //
+            // 而且「（按这 3 天 算）」那个后缀挂在「每公里成本」上，
+            // 但那些数的分母是 `sum.km` = **今天**的里程 ⇒ 后缀也是错的。
+            val buckets = s.buckets.takeLast(bucketCount)
+            val totalBuckets = buckets.size
+            val filledBuckets = buckets.count { it.km > 0.0 || it.charge_kwh > 0.0 }
             val coverageRatio = if (totalBuckets > 0) filledBuckets.toFloat() / totalBuckets else 1f
             val coverageLow = totalBuckets > 0 && coverageRatio < 0.9f
             val bucketUnit = if (s.granularity == "month") "个月" else "天"
@@ -391,7 +401,7 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
             // ⚠️ v0.8.5：服务端的 summary 是**整个窗口**的汇总，切段后不适用。
             // 现在统一用切片后的 buckets 自己汇总 —— 这样「今天」段显示的
             // 确实是今天的数，而不是「把今天塞进 30 天窗口里算的平均」。
-            val buckets = s.buckets.takeLast(bucketCount)
+            // ⚠️ v0.38.0：`buckets` 的切片已上移到覆盖度计算之前（见上面的注释）。
             val sum = summarizeBuckets(buckets)
             val periodLabel = periods[periodIndex].first
             item {

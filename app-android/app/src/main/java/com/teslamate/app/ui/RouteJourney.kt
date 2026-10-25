@@ -450,7 +450,22 @@ fun buildJourneys(
                         charge = later,
                         // ⚠️ 复审 P0-①：到站电量必须用**合并后**的值，
                         // 否则显示的是代表记录那一小段（如「94% → 94%」等于没充）。
-                        socBefore = prevStop.socBefore,
+                        //
+                        // ⚠️ **v0.37.0：必须是**时间最早**的那一场的插枪电量。**
+                        //
+                        // 原来这里保留 `prevStop.socBefore`，而 `prevStop` 是
+                        // **先被遍历到**的那场 —— `sqlCharges` 是 `ORDER BY start_date DESC`
+                        // （新的在前），客户端按里程**稳定排序** ⇒ 同一里程的两场里
+                        // **后一场排在前** ⇒ 留的是**后一场**的插枪电量。
+                        // 实测（v0.36.0 复审）：梧硕高速 cp#16(8→27) + cp#17(27→86)
+                        // 合并后显示「到站 27%」而真值是 **8%**。
+                        //
+                        // 现在按**时间**取最早的那一场 —— 那才是车**开到**时的电量。
+                        socBefore = if (c.start_date.isBefore(prevStop.charge.start_date)) {
+                            c.start_soc ?: prevStop.socBefore
+                        } else {
+                            prevStop.socBefore
+                        },
                         socAfter = later.end_soc,
                     )
                     // 合并掉的那一场也要标记为已处理（否则它会被再处理一次）

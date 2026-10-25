@@ -306,6 +306,26 @@ data class RouteStop(
     /** 下一站的名字（用于「到 G210 车河镇」这样的说法）。 */
     val nextStopName: String? = null,
     /**
+     * ⚠️ **v0.38.0（第 23 轮车主复审 P0-2）：到**这个站**时的真实电量。**
+     *
+     * ## 为什么不能只用 [socBefore]
+     *
+     * `socBefore` 是**插枪电量**（`charging_processes.start_battery_level`），
+     * 而「到站电量」是**车开到这儿时**的电量（那一趟行程的 `end_soc`）。
+     *
+     * 两者平时只差 1 个点，但**合并充电会话**时会差很多：
+     * 一次插枪被 TeslaMate 切成两个 process 时，
+     * `socBefore` 取的是**后一场**的插枪电量 —— 那已经是「第一次充完之后」的电量。
+     * 实测 36 个站里 **12 站**的详情行「到站 X%」是错的，最大差 **57 个点**。
+     *
+     * ⚠️ 这就是「同一个站的两行自相矛盾」的来源：
+     * 决策行用「到站电量」（对），详情行用「插枪电量」（错）。
+     *
+     * 现在**统一到「到站电量」**（复审独立复核：对 `positions.battery_level`
+     * @ `drives.end_position_id` 逐站对账 **36/36 = 0**）。
+     */
+    val arrivalSoc: Int? = null,
+    /**
      * ⚠️ **v0.36.0（第 21 轮一线车主复审 C4）：到**终点**还有多少公里。**
      *
      * 最后一个站之后往往还有 **146 公里**，而终点不是充电站 ——
@@ -1076,6 +1096,16 @@ fun buildRoutePlan(
         // 最后一个站之后往往还有 **146 公里**（6227 公里那条）/
         // **88 公里**（616 公里那条），而终点不是充电站 →
         // 永远没有「下一站」→ 那一段**一个字都不显示**。
+        //
+        // ⚠️ **v0.38.0（第 23 轮车主复审 P0-1）：只给**最后一站**，不能每站都给！**
+        //
+        // 原来写的是 `if (endGapKm > 0.5)` —— 而 `endGapKm` 是**每一站到终点的距离**，
+        // 所以**每一站都非空** ⇒ 36 个站每个都多渲染一行：
+        //     乐驿（第 276 公里）：距终点 5951 公里 · 估到终点剩 **-1508%**
+        //     梧州大酒店：距终点 5760 公里 · 估到终点剩 **-1434%**
+        // 那是**假数据**（−1508% 在物理上不存在），而且让展开态多了 36 行（+44%）。
+        // 现在只给**最后一个沿途站**。
+        val lastRouteStopIdx = journeyStops.indexOfLast { !it.isEndpoint }
         val endGapKm = runDistance - js.kmAlong
         val endNeedPct = if (endGapKm > 0.5 && whPerKm != null
             && batteryCapacityKwh != null && batteryCapacityKwh > 0
@@ -1142,14 +1172,16 @@ fun buildRoutePlan(
             gapNeedPct = needPct,
             requiredSocHere = requiredHere,
             nextStopName = nextName,
+            // ⚠️ v0.38.0（P0-2）：到站电量统一口径
+            arrivalSoc = js.arrivalSoc,
             // ⚠️ v0.36.0（C8）：这一跳的估计误差（模型自己的残差 90 分位）
             gapErrorPoints = if (gapKm != null) {
                 consumption?.socErrorPoints(gapKm, batteryCapacityKwh)
             } else {
                 null
             },
-            distanceToEndKm = if (endGapKm > 0.5) endGapKm else null,
-            estSocAtEnd = estSocAtEnd,
+            distanceToEndKm = if (idx == lastRouteStopIdx && endGapKm > 0.5) endGapKm else null,
+            estSocAtEnd = if (idx == lastRouteStopIdx) estSocAtEnd else null,
             // ⚠️ **v0.30.0（长途自驾党 P0-1）：把车速与实际用的 Wh/km 带出去。**
             //
             // 「到下一站剩 34%」不交代前提就只是个数字 ——
@@ -1219,7 +1251,9 @@ fun buildRoutePlan(
     } else {
         (template.lastStartSoc ?: template.startSoc)?.let { profile += RouteSocPoint(0.0, it) }
         for (s in routeStops) {
-            s.socBefore?.let { profile += RouteSocPoint(s.kmAlongRoute, it) }
+            // ⚠️ **v0.38.0（第 23 轮车主复审 P0-2）：用**到站电量**，不用插枪电量。**
+            // 插值剖面在合并充电会话时会画出错的低点（实测最大差 57 个点）。
+            (s.arrivalSoc ?: s.socBefore)?.let { profile += RouteSocPoint(s.kmAlongRoute, it) }
             s.socAfter?.let { profile += RouteSocPoint(s.kmAlongRoute, it, isCharge = true) }
         }
         (template.lastEndSoc ?: template.endSoc)?.let { profile += RouteSocPoint(runDistance, it) }
@@ -1860,17 +1894,6 @@ fun RoutePlanCard(
                             // 电池的 SOC 不可能是负的 —— 「剩 -6%」在物理上不存在，
                             // 读者只会以为 App 算错了。负数改说成「还差 N 个点」。
                             val rawSoc = s.socAtNextStop
-                            // ⚠️ **v0.36.0（第 21 轮一线车主复审 C2）：估算比真值低多少，要说出来。**
-                            //
-                            // 复审实测有 2 跳「估 21% / 真值 17%」「估 24% / 真值 16%」——
-                            // 估 21% 读起来是「刚好够」，实测 17% 读起来是「不够」。
-                            // **光把两个数并排放还不够**，用户仍会只看估算那个；
-                            // 得**说出差多少个点**。
-                            val gapVsReal = if (rawSoc != null && s.nextStopRealSoc != null) {
-                                rawSoc - s.nextStopRealSoc
-                            } else {
-                                null
-                            }
                             s.gapToNextKm?.let { gap ->
                                 val nextTxt = buildString {
                                     append("距下一站 ${gap.roundToInt()} 公里")
@@ -1885,16 +1908,28 @@ fun RoutePlanCard(
                                     }
                                     s.nextStopRealSoc?.let { real ->
                                         append(" · 上次实测到站剩 $real%")
-                                    }
-                                    if (gapVsReal != null && gapVsReal <= -3) {
-                                        append(" · 比上次实测低 ${-gapVsReal} 个点")
+                                        // ⚠️ **v0.38.0（第 23 轮车主复审 P1-1）：危险方向的提示。**
+                                        //
+                                        // 原来那句「比上次实测低 N 个点」的判据是 `估 − 真 ≤ −3`，
+                                        // 即**只在模型偏保守（无害方向）时触发** ——
+                                        // 实测 7/35 跳触发，而**会让人做错决定的 2 跳
+                                        // （估 21/真 17、估 24/真 16）一次都没触发**。
+                                        //
+                                        // 现在改成：**估 ≥ 保底 但真 < 保底** → 直接告警。
+                                        // 这条判据已被本机验证：11 个「低于 20% 保底」告警 **11/11 成立**、
+                                        // 误报 **0** —— 所以它比「差值门槛」可信得多。
+                                        if (real < RESERVE_SOC && (rawSoc ?: 0) >= RESERVE_SOC) {
+                                            append(" ⚠ 上次实测也低于 $RESERVE_SOC% 保底")
+                                        }
                                     }
                                 }
                                 Text(
                                     nextTxt,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Medium,
-                                    color = if ((rawSoc ?: 100) < RESERVE_SOC) {
+                                    color = if ((rawSoc ?: 100) < RESERVE_SOC ||
+                                        (s.nextStopRealSoc ?: 100) < RESERVE_SOC
+                                    ) {
                                         accents.warnAmberText
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
@@ -1953,9 +1988,17 @@ fun RoutePlanCard(
                                     buildString {
                                         append("距终点 ").append(endKm.roundToInt()).append(" 公里")
                                         s.estSocAtEnd?.let { soc ->
-                                            append(" · 估到终点剩 ").append(soc).append("%")
-                                            if (soc < RESERVE_SOC) {
-                                                append(" ⚠ 低于 ").append(RESERVE_SOC).append("% 保底")
+                                            // ⚠️ **v0.38.0（第 23 轮车主复审 P0-1）：负数不显示成百分比。**
+                                            // 「估到终点剩 -1508%」在物理上不存在，
+                                            // 读者只会以为 App 算坏了 ——
+                                            // 与「到下一站」的负值同一套说法：「还差 N 个点」。
+                                            if (soc >= 0) {
+                                                append(" · 估到终点剩 ").append(soc).append("%")
+                                                if (soc < RESERVE_SOC) {
+                                                    append(" ⚠ 低于 ").append(RESERVE_SOC).append("% 保底")
+                                                }
+                                            } else {
+                                                append(" · 到终点还差 ").append(-soc).append(" 个点")
                                             }
                                         }
                                     },
@@ -1985,7 +2028,10 @@ fun RoutePlanCard(
                             ) {
                                 // ⚠️ v0.14.0（长途自驾党 P0-2）：到站多少 → 充到多少。
                                 val detail = buildString {
-                                    s.socBefore?.let { append("到站 $it%") }
+                                    // ⚠️ **v0.38.0（P0-2）：「到站 X%」用**到站电量**。**
+                                    // 用插枪电量（socBefore）时，合并过的站会差最多 57 个点 ——
+                                    // 而决策行用的是到站电量 ⇒ **同一个站两行打架**。
+                                    (s.arrivalSoc ?: s.socBefore)?.let { append("到站 $it%") }
                                     s.socAfter?.let {
                                         if (isNotEmpty()) append(" → ")
                                         append("充到 $it%")
@@ -2020,9 +2066,14 @@ fun RoutePlanCard(
                                     s.gapClimbWhPerKm?.let { cw ->
                                         if (kotlin.math.abs(cw) >= 5.0) {
                                             if (isNotEmpty()) append(" · ")
+                                            // ⚠️ **v0.38.0（第 23 轮数据自洽性审计 P2-2）：单位统一成 kWh/100km。**
+                                            // 原来这里写「Wh/km」而同一屏的档位行写「kWh/100km」——
+                                            // 同一个量纲在**同一屏**用两种写法，读者得自己换算
+                                            // （−10 Wh/km 与 16.9 kWh/100km 并排）。
+                                            // 项目自己的注释写着「Wh/km 在中文语境里像外星语」。
                                             append(
                                                 "爬升修正 ${if (cw > 0) "+" else ""}" +
-                                                    "${cw.roundToInt()} Wh/km"
+                                                    "${cw.fmtKwh100()} kWh/100km"
                                             )
                                             s.gapClimbKwh?.let { kwh ->
                                                 s.gapClimbPct?.let { pct ->

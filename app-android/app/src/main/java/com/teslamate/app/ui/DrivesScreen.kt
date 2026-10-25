@@ -101,7 +101,12 @@ fun DrivesScreen(
             loading = false
             return
         }
-        runCatching { withContext(Dispatchers.IO) { api.drives(settings.carId, 200) } }
+        // ⚠️ **v0.38.0（第 23 轮数据自洽性审计 P2-4）：200 → 500 趟。**
+        //
+        // 原来只拉最近 **200** 趟，而记录页拉 500 趟 ——
+        // 实测全库 **362** 趟 ⇒ 行程页有 **162 趟（44.8%）看不到，而且界面零提示**。
+        // 同一个数据两个页面给两个范围，用户会以为行程记录丢了。
+        runCatching { withContext(Dispatchers.IO) { api.drives(settings.carId, 500) } }
             .onSuccess { list = it; error = null; loading = false }
             .onFailure { error = it.message; loading = false }
     }
@@ -909,7 +914,16 @@ internal fun DriveDetail(
                                 append("${c.start_soc ?: "—"}%→${c.end_soc ?: "—"}%")
                                 append(" · ")
                                 append(minutesFmt(c.duration_min))
-                                c.avg_power_kw?.let { append(" · ").append(it).append(" kW") }
+                                // ⚠️ **v0.38.0（第 23 轮数据自洽性审计 P1-1）：用**时间加权**的平均功率。**
+                                //
+                                // 原来用 `c.avg_power_kw`（**采样均值**）——
+                                // 而充电页的「平均功率」用的是 `avg_power_kw_true`（**时间加权**）。
+                                // **同一场充电，两个页面给两个数**，实测最大差 **45.9%**
+                                // （id=25：中国石化，60.38 度 / 103 分钟 ⇒ 采样 54 kW vs 加权 37 kW）。
+                                //
+                                // 而服务端自己的注释就写明采样均值**系统性高估 18%~50%**
+                                // （采样间隔不均匀：起步 5 秒一个点、掉功率段几十秒一个点）。
+                                c.effectiveAvgPowerKw()?.let { append(" · ").append(it).append(" kW") }
                             },
                         )
                     }
