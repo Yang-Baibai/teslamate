@@ -51,36 +51,58 @@ import kotlin.math.roundToInt
  */
 data class ChargeCost(
     /**
-     * ⚠️ **v0.26.0：这是「交流慢充」，不是「家充」。**
+     * ⚠️ **v0.30.0（第 19 轮财务评审 P0-3）：围栏命中的「真家充」网侧度数。**
      *
-     * 原来的字段叫 `homeKwh`，界面上写「家充 X 度」——
-     * 听起来像 App **知道**哪场是在家充的。它并不知道：
-     * 本机 `geofences` 表 **0 行**，78/78 场充电的 `geofence_id` 全是 NULL，
-     * 而库里全部 4 场「交流」都发生在**外省的酒店和路边**，没有一场在家。
+     * 这是 [acOtherKwh] 的**对面** —— 两者的和 = 全部交流慢充。
      *
-     * 字段名改成 `acKwh` / `dcKwh` 就是为了让**代码里也不许再叫它家充**。
-     * 价格侧仍然是「家充电价 / 公共桩电价」（那是车主自己填的意图），
-     * 但界面必须说清楚：**交流慢充是按家充电价估的**。
+     * 判定依据是 TeslaMate 的**充电围栏**（`charging_processes.geofence_id`），
+     * 不是「交流 ⇒ 家充」这种猜法 ——
+     * 实测本机 5 场交流慢充**全部**在 286~1506 公里外，猜法 **5/5 全错**。
      */
-    val acKwh: Double,
+    val homeKwh: Double,
+    /** 没有围栏归属的交流慢充网侧度数 */
+    val acOtherKwh: Double,
     /** 直流快充网侧度数 */
     val dcKwh: Double,
     /** 直流桩总时长（分钟） */
     val publicMinutes: Double,
-    /** 交流慢充电费（元，按车主填的家充电价） */
-    val acYuan: Double,
-    /** 直流桩费用（元） */
-    val dcYuan: Double,
+    /** 电费（元）—— **不含**公共桩服务费 */
+    val energyYuan: Double,
+    /** 公共桩服务费（元）—— 单独拆出来，界面要能显示它 */
+    val serviceYuan: Double,
+    /** 直流快充那部分的**电费**（不含服务费） */
+    val dcEnergyYuan: Double = 0.0,
 ) {
-    /** 总费用（元） */
-    val totalYuan: Double get() = acYuan + dcYuan
+    /** 交流慢充合计（家充 + 无围栏归属的交流） */
+    val acKwh: Double get() = homeKwh + acOtherKwh
 
-    /** 每度实际成本（元/度，**只对有费用的部分**） */
+    /** 直流快充那部分的**总**费用（电费 + 服务费） */
+    val dcYuan: Double get() = dcEnergyYuan + serviceYuan
+
+    /** 总费用（元，电费 + 服务费） */
+    val totalYuan: Double get() = energyYuan + serviceYuan
+
+    /** 总度数 */
+    val totalKwh: Double get() = acKwh + dcKwh
+
+    /**
+     * 每度**电费**（元/度，**不含服务费**）。
+     *
+     * ⚠️ v0.30.0：原来只有一个 `yuanPerKwh`（含服务费），
+     * 界面上叫「实际每度电」—— 实测全周期 1.7689 元/度里
+     * **0.5874（33.2%）是服务费**，车主拿它和自己的居民电价一比会以为贵了三倍。
+     * 现在拆成三个数：电费 / 服务费 / 合计。
+     */
+    val energyYuanPerKwh: Double?
+        get() = if (totalKwh > 0.01) energyYuan / totalKwh else null
+
+    /** 每度**服务费**（元/度） */
+    val serviceYuanPerKwh: Double?
+        get() = if (totalKwh > 0.01) serviceYuan / totalKwh else null
+
+    /** 每度合计（元/度） */
     val yuanPerKwh: Double?
-        get() {
-            val used = acKwh + dcKwh
-            return if (used > 0.01) totalYuan / used else null
-        }
+        get() = if (totalKwh > 0.01) totalYuan / totalKwh else null
 }
 
 /**
@@ -93,7 +115,8 @@ fun estimateChargeCost(
     charges: List<Charge>,
     rates: ChargeRates,
 ): ChargeCost {
-    var acKwh = 0.0
+    var homeKwh = 0.0
+    var acOtherKwh = 0.0
     var dcKwh = 0.0
     var publicMinutes = 0.0
     charges.forEach { c ->
@@ -102,23 +125,49 @@ fun estimateChargeCost(
         if (c.is_dc) {
             dcKwh += used
             publicMinutes += (c.duration_min ?: 0).toDouble()
+        } else if (!c.geofence_name.isNullOrBlank()) {
+            // ⚠️ v0.30.0：**有围栏归属**的交流 = 真家充（不再靠「交流 ⇒ 家充」猜）
+            homeKwh += used
         } else {
-            acKwh += used
+            acOtherKwh += used
         }
     }
-    val acYuan = acKwh * rates.homeYuanPerKwh
-    val publicEnergyYuan = dcKwh * rates.publicYuanPerKwh
-    val publicServiceYuan = if (rates.publicServiceMode == ChargeRates.MODE_PER_MINUTE) {
+    return buildCost(homeKwh, acOtherKwh, dcKwh, publicMinutes, rates)
+}
+
+/**
+ * ⚠️ **v0.30.0：把度数换算成金额的唯一入口。**
+ *
+ * 三个桶各自定价，**不混**：
+ * - 家充（有围栏归属的交流）→ 家充电价，**绝不按分钟**（插枪时长含大量闲置）
+ * - 无围栏归属的交流 → 按车主的 [ChargeRates.acUsesHomePrice] 设置
+ * - 直流 → 公共桩电价 + 公共桩服务费（按分钟或按度）
+ */
+private fun buildCost(
+    homeKwh: Double,
+    acOtherKwh: Double,
+    dcKwh: Double,
+    publicMinutes: Double,
+    rates: ChargeRates,
+): ChargeCost {
+    val acOtherPrice = if (rates.acUsesHomePrice) rates.homeYuanPerKwh else rates.publicYuanPerKwh
+    val energyYuan = homeKwh * rates.homeYuanPerKwh +
+        acOtherKwh * acOtherPrice +
+        dcKwh * rates.publicYuanPerKwh
+    val dcEnergyYuan = dcKwh * rates.publicYuanPerKwh
+    val serviceYuan = if (rates.publicServiceMode == ChargeRates.MODE_PER_MINUTE) {
         publicMinutes * rates.publicServiceYuan
     } else {
         dcKwh * rates.publicServiceYuan
     }
     return ChargeCost(
-        acKwh = acKwh,
+        homeKwh = homeKwh,
+        acOtherKwh = acOtherKwh,
         dcKwh = dcKwh,
         publicMinutes = publicMinutes,
-        acYuan = acYuan,
-        dcYuan = publicEnergyYuan + publicServiceYuan,
+        energyYuan = energyYuan,
+        serviceYuan = serviceYuan,
+        dcEnergyYuan = dcEnergyYuan,
     )
 }
 
@@ -147,8 +196,13 @@ fun estimateSingleChargeCost(c: Charge, rates: ChargeRates): Double? {
             used * rates.publicServiceYuan
         }
         energy + service
-    } else {
+    } else if (!c.geofence_name.isNullOrBlank()) {
+        // ⚠️ v0.30.0：有围栏归属 = 真家充 → 家充电价（绝不按分钟）
         used * rates.homeYuanPerKwh
+    } else {
+        // 没有围栏归属 → 按车主的设置（默认公共桩价）
+        val price = if (rates.acUsesHomePrice) rates.homeYuanPerKwh else rates.publicYuanPerKwh
+        used * price
     }
 }
 
@@ -160,20 +214,10 @@ fun estimateSingleChargeCost(c: Charge, rates: ChargeRates): Double? {
  * 不能拿「最近 N 场充电」去配「30 天的公里数」—— 那会算错。
  */
 fun estimateCost(summary: com.teslamate.app.CostSummary, rates: ChargeRates): ChargeCost {
-    val acYuan = summary.ac_used_kwh * rates.homeYuanPerKwh
-    val publicEnergyYuan = summary.dc_used_kwh * rates.publicYuanPerKwh
-    val publicServiceYuan = if (rates.publicServiceMode == ChargeRates.MODE_PER_MINUTE) {
-        summary.dc_minutes * rates.publicServiceYuan
-    } else {
-        summary.dc_used_kwh * rates.publicServiceYuan
-    }
-    return ChargeCost(
-        acKwh = summary.ac_used_kwh,
-        dcKwh = summary.dc_used_kwh,
-        publicMinutes = summary.dc_minutes,
-        acYuan = acYuan,
-        dcYuan = publicEnergyYuan + publicServiceYuan,
-    )
+    // ⚠️ v0.30.0：家充桶是交流的**子集** —— 没有围栏归属的交流 = ac − home
+    val homeKwh = summary.home_used_kwh
+    val acOtherKwh = (summary.ac_used_kwh - homeKwh).coerceAtLeast(0.0)
+    return buildCost(homeKwh, acOtherKwh, summary.dc_used_kwh, summary.dc_minutes, rates)
 }
 
 /**
@@ -190,15 +234,27 @@ fun estimateCost(summary: com.teslamate.app.CostSummary, rates: ChargeRates): Ch
 data class CostPerKm(
     val allPerKm: Double?,
     val dcPerKm: Double?,
-    /** 交流慢充占总度数的百分比（⚠️ 不等于「家充占比」—— App 分不出哪场在家） */
+    /** 交流慢充占总度数的百分比 */
     val acSharePercent: Int?,
+    /**
+     * ⚠️ **v0.30.0：其中「有围栏归属」（真家充）的百分比。**
+     *
+     * 之前 App 只能说「交流慢充占 X%」，而交流慢充**不等于**家充。
+     * 现在围栏能给出真凭据，这个数才是真的「家充占比」。
+     */
+    val homeSharePercent: Int?,
 )
 
 fun costPerKm(cost: ChargeCost, drivingKm: Double): CostPerKm {
-    if (drivingKm <= 0.1) return CostPerKm(null, null, null)
-    val totalUsed = cost.acKwh + cost.dcKwh
+    if (drivingKm <= 0.1) return CostPerKm(null, null, null, null)
+    val totalUsed = cost.totalKwh
     val acShare = if (totalUsed > 0.01) {
         (cost.acKwh / totalUsed * 100).roundToInt()
+    } else {
+        null
+    }
+    val homeShare = if (totalUsed > 0.01) {
+        (cost.homeKwh / totalUsed * 100).roundToInt()
     } else {
         null
     }
@@ -206,6 +262,7 @@ fun costPerKm(cost: ChargeCost, drivingKm: Double): CostPerKm {
         allPerKm = cost.totalYuan / drivingKm,
         dcPerKm = cost.dcYuan / drivingKm,
         acSharePercent = acShare,
+        homeSharePercent = homeShare,
     )
 }
 

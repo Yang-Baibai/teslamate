@@ -270,7 +270,13 @@ fun RecordsScreen(
                 // 与**可用**容量（官方标称比实测乐观 50%）。
                 consumption = consumption,
                 batteryCapacityKwh = batteryCapacityKwh,
-                planSpeedKph = 90.0,
+                // ⚠️ **v0.30.0（长途自驾党 P0-1）：计划车速不再硬编码 90 km/h。**
+                //
+                // 原来写死 `90.0` —— 「到下一站剩 34%」是按一个**跟这趟毫无关系**的速度算的。
+                // 现在用**这段线路历史的真实均速**：
+                // 6227 公里那条（川藏滇）**64 km/h**、616 公里那条 **42 km/h**。
+                // 车速决定用哪一档 Wh/km（90–110 档 183.0 vs 110–130 档 197.4，差 7.9%）。
+                planSpeedKph = it.avgSpeedKph ?: 90.0,
             )
         }
     }

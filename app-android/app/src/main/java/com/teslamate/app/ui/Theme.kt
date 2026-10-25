@@ -159,7 +159,11 @@ private val LightAccents = AccentColors(
     chartTrack = Color(0xFF77777D),
     // ⚠️ v0.14.0（苹果 HIG P1）：#9AA1A8 → #8C939B
     // 参考线是非文字图形，WCAG 1.4.11 要求 ≥3:1；原值在白底只有 2.78:1。
-    chartBaseline = Color(0xFF8C939B),
+    //
+    // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P1-12）：#8C939B → #858C94。**
+    // #8C939B 对白底是 **3.11:1** —— 余量只有 0.11，**任何一个**抗锯齿边缘
+    // 都会把它压到 3:1 以下。提到 #858C94 = **3.40:1**，留出真正的余量。
+    chartBaseline = Color(0xFF858C94),
     energyViolet = Color(0xFF6B4FBF),
     glassTint = Color(0x99FFFFFF),
     glassHighlight = Color(0x66FFFFFF),
@@ -319,7 +323,15 @@ private val DarkColors = darkColorScheme(
     surface = Color(0xFF000000),
     onSurface = Color(0xFFF2F2F7),
     surfaceVariant = Color(0xFF2C2C2E),
-    onSurfaceVariant = Color(0xFF98989F),
+    // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-7）：#98989F → #A0A0A6。**
+    //
+    // 深色模式里这个色被用在「交流慢充」芯片文字上，
+    // 而芯片底色是 `secondaryContainer #2A353D` —— #98989F 在上面只有 **4.37:1**，
+    // **低于 WCAG AA 的 4.5:1**。
+    //
+    // #A0A0A6 对各底色的实测比值：
+    // #2A353D **4.82** ✓ / #1C1C1E 6.54 / #2C2C2E 5.36 / #243039 5.19 / #000000 8.07
+    onSurfaceVariant = Color(0xFFA0A0A6),
     surfaceContainerLowest = Color(0xFF000000),
     surfaceContainerLow = Color(0xFF1C1C1E),   // 卡片面（与 AccentColors.cardSurface 一致）
     surfaceContainer = Color(0xFF1C1C1E),

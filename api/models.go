@@ -214,6 +214,22 @@ type CostSummary struct {
 	DcMinutes float64 `json:"dc_minutes"`
 	// 家充总时长（分钟）
 	AcMinutes float64 `json:"ac_minutes"`
+
+	// ⚠️ **v0.30.0（第 19 轮财务评审 P0-3）：围栏命中的「真家充」。**
+	//
+	// 这是 [AcUsedKwh] 的**子集**：交流 ∧ 有 `geofence_id` 归属。
+	// 没有围栏归属的交流度数 = `AcUsedKwh − HomeUsedKwh`，
+	// 客户端要用它按「公共/其它交流」价算 —— 不能重复计数。
+	//
+	// ⚠️ 本机实测：78 场充电的 `geofence_id` **全为 NULL**，
+	// 而「家」围栏是 2026-10-25 才建的（在全部数据之后），
+	// 所以历史窗口的 `home_used_kwh` 恒为 0 —— 这是**事实**，不是 bug。
+	// 今后 TeslaMate 会给新会话回填围栏，这个数才会起来。
+	HomeUsedKwh float64 `json:"home_used_kwh"`
+	// 围栏命中的家充场次
+	HomeSessions int `json:"home_sessions"`
+	// 围栏命中的家充总时长（分钟）
+	HomeMinutes float64 `json:"home_minutes"`
 }
 
 // SocProfilePoint 剖面上的一个点（真实逐公里 SOC）。
@@ -589,7 +605,16 @@ type EnergyProfile struct {
 	Bands []EnergyBand `json:"bands"`
 	// TotalKm 全车累计里程（公里表口径，与 drives.distance 一致）
 	TotalKm float64 `json:"total_km"`
-	// OverallWhPerKm 全车平均能耗（车轮功率积分 ÷ 总里程）—— **净值**
+	// ⚠️ **v0.30.0（第 19 轮数据口径审计 P0-2）：剖面实际覆盖的里程。**
+	//
+	// 分子（能量）只覆盖剖面**分过箱**的那部分里程（实测 8618.1 km），
+	// 而 [TotalKm] 是全车 `sum(drives.distance)`（实测 8759.9 km）——
+	// 两者**不同源**，用它当分母会把 Wh/km **低估 1.6%**。
+	//
+	// 现在两个比值都用 [CoveredKm] 做分母（分子分母同源），
+	// [TotalKm] 只用于「全车跑了多少」这句话。
+	CoveredKm float64 `json:"covered_km"`
+	// OverallWhPerKm 全车平均能耗（车轮功率积分 ÷ 覆盖里程）—— **净值**
 	OverallWhPerKm float64 `json:"overall_wh_per_km"`
 	// ⚠️ v0.29.0：OverallWhPerKmGross 全车**毛耗电**（不含回充抵扣）
 	OverallWhPerKmGross float64 `json:"overall_wh_per_km_gross"`

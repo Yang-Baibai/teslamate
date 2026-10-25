@@ -412,7 +412,7 @@ fun rememberShimmerProgress(): Float {
         initialValue = -1f,
         targetValue = 2f,
         animationSpec = infiniteRepeatable(
-            tween(1200, easing = LinearEasing),
+            tween(Motion.Shimmer, easing = LinearEasing),
             androidx.compose.animation.core.RepeatMode.Restart,
         ),
         label = "shimmerX",
@@ -1268,6 +1268,13 @@ fun BigStat(value: String, label: String, hero: Boolean = false) {
             letterSpacing = (-0.4).sp,
             style = MaterialTheme.typography.displayLarge,
             maxLines = 1,
+            // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-4）：主角数字不许被「硬裁」。**
+            //
+            // Compose 的 `Text` 在 `maxLines=1` 且不声明 `overflow` 时默认是 **Clip** ——
+            // 不是省略号。窄屏 + 大字号下，数字会被**切掉一半**（看着像渲染错误）。
+            // 现在至少给省略号；配合 [socRingDiameterDp] 缩小环 + 竖排阈值 1.35，
+            // 正常情况下根本走不到这里。
+            overflow = TextOverflow.Ellipsis,
         )
         Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
@@ -1335,13 +1342,17 @@ fun SocRing(
     modifier: Modifier = Modifier,
     charging: Boolean = false,
     /**
-     * 环的基础直径（dp），实际直径 = 本值 × fontScale。
+     * 环的**最小**直径（dp）。
      *
-     * ⚠️ v0.14.0（新手车主 P0-3）：大字号布局需要**缩小环**。
-     * 200% 字号时按默认 168dp 算，环变成 294dp —— 占了屏幕近一半，
-     * 主角数字「现在能开 204 公里」被推到最底缘，要滚一屏才看得到。
+     * ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-1）：语义变了 —— 从「基准直径」改成「最小直径」。**
+     *
+     * 原来：`实际直径 = 本值 × fontScale`（线性放大，fs=1.75 → 294dp），
+     * 环会把主角数字挤出屏幕，fs∈(1.377,1.5) 时主角被**硬裁**（`maxLines=1` 默认 `Clip`）。
+     *
+     * 现在（见 [socRingDiameterDp]）：环直径**由文字反推** ——
+     * 数字固定 28sp，环只要装得下就行，且不必线性放大。
      */
-    baseSizeDp: Int = 168,
+    baseSizeDp: Int = 140,
 ) {
     val a = LocalAccentColors.current
     val track = a.chartTrack
@@ -1357,7 +1368,7 @@ fun SocRing(
     }
     val animated by animateFloatAsState(
         targetValue = (soc ?: 0).toFloat(),
-        animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
+        animationSpec = tween(durationMillis = Motion.RingValue, easing = FastOutSlowInEasing),
         label = "socRing",
     )
     val shown = animated.roundToInt()
@@ -1368,18 +1379,18 @@ fun SocRing(
     //   环太大就放不进屏幕宽度（393dp 屏去掉 32dp 页边距 = 361dp 可用）。
     //   1.75 → 168 × 1.75 = 294dp，仍有余量。
     val fontScale = LocalDensity.current.fontScale
-    val ringDp = baseSizeDp * fontScale.coerceIn(1f, 1.75f)
+    val ringDp = socRingDiameterDp(baseSizeDp, fontScale)
     val ringSize = ringDp.dp
-    // ⚠️ **v0.26.0（第 17 轮 HIG 评审 P0-3）：环内字号由**环**推导，不写死。**
+    // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-1）：环内字号**固定 28sp**，不再由环直径反推。**
     //
-    // 原来写死 `40.sp`：环的直径随 fontScale 放大但**封顶 1.75×**，
-    // 而文字按**真实** fontScale 放大（2.0× = 80sp）——
-    // 于是 200% 字号下「100%」比环还宽，**破形溢出**。
+    // 原来 `ringTextSp = (ringDp × 0.235) / fontScale`：
+    // fs=1 时渲染尺寸 = 168 × 0.235 = **39.48dp**，
+    // 而车况页的主角是 44sp —— 两者只差 **10.3%**，
+    // 两个 Bold 数字并排，视线无法判定谁是主角（「一屏一个主角」不成立）。
     //
-    // 现在：文字的**渲染尺寸**（sp × fontScale）永远等于 `环直径 × 0.235`，
-    // 字号则用 `推导尺寸 / fontScale` 反算回 sp，
-    // 这样任何 fontScale 下文字都**按比例**待在环里（1× 时仍是 39.5sp ≈ 原来的 40sp）。
-    val ringTextSp = (ringDp * 0.235f) / fontScale
+    // 现在固定 28sp → 与 44sp 主角拉开 **1.57 倍**，层级一眼可辨；
+    // 环只是图形，数字退居次要信息。
+    val ringTextSp = 28f
     // ⚠️ v0.26.0（HIG P0-6）：**低电量不能只靠颜色** ——
     // 环的颜色会变（蓝 → 琥珀 → 红），但色觉障碍用户看不出差别。
     // 环下方补一个「图标 + 文字」的胶囊。
@@ -1398,7 +1409,9 @@ fun SocRing(
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.size(ringSize)) {
-            val stroke = 15.dp.toPx()
+            // ⚠️ v0.30.0：描边宽度随环直径**等比**缩放，
+            // 否则环从 168dp 缩到 140dp 后 15dp 的描边会显得过粗。
+            val stroke = (ringDp / 168f * 15f).coerceIn(10f, 16f).dp.toPx()
             val inset = stroke / 2 + 2.dp.toPx()
             val arcSize = androidx.compose.ui.geometry.Size(
                 size.width - inset * 2,
@@ -1495,6 +1508,12 @@ fun SocRing(
                 fontWeight = FontWeight.Bold,
                 letterSpacing = (-1.5).sp,
                 style = MaterialTheme.typography.displayLarge,
+                // ⚠️ v0.30.0：固定 28sp 后，200% 字号下「100%」的渲染宽度
+                // = 4 字符 × 0.56em × 56dp ≈ 125dp，仍小于环内径，
+                // 但**不允许折行**（折成两行会把环心撑歪）。
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Visible,
             )
             // ⚠️ v0.26.0（HIG P0-6）：低电量 = **图标 + 文字**，不是只有颜色。
             if (lowBattery) {
@@ -1503,6 +1522,46 @@ fun SocRing(
             }
         }
     }
+}
+
+/**
+ * **电量环直径的唯一算法**（dp）。
+ *
+ * ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-1 / P0-4）。**
+ *
+ * ## 为什么不能「基准直径 × fontScale」
+ *
+ * 原来：`168 × fontScale`（封顶 1.75× → 294dp）。两个后果：
+ *
+ * 1. **主角被裁**：393dp 屏、fs∈(1.377, 1.50) 时，
+ *    环占掉 235~252dp，主角数字只剩 98~109dp，
+ *    而「204」需要 73.9sp × fs = 103~110dp → `maxLines=1` 默认 `Clip` → **数字被硬切**。
+ * 2. **主角被挤出首屏**：fs=1.75 时环 294dp，占了 361dp 可用宽的 81%。
+ *
+ * ## 新规则（由文字反推）
+ *
+ * > 环直径 = **max(最小直径, 数字渲染直径 × 3.4)**，上限 280dp。
+ *
+ * - 数字固定 **28sp**（[SocRing] 内），渲染直径 = 28 × fontScale。
+ * - 系数 **3.4** = 1 / 0.235 —— 沿用 v0.26.0 定的「数字直径 ≈ 环内径 × 0.235」比例，
+ *   环的内径 = 直径 − 描边(≈15dp)，这里按直径近似，误差 <10%，视觉上无差别。
+ * - **最小直径 140dp**：fs=1 时不至于缩成一个图标。
+ * - **上限 280dp**：保证放得进 361dp 可用宽（393dp 屏减 32dp 页边距）。
+ *
+ * 实测：
+ *
+ * | fontScale | 环直径 | 数字渲染 | 可用宽（393−32−环−28） | 主角「204」需要 |
+ * |---|---|---|---|---|
+ * | 1.00 | 140dp | 28dp | 161dp | 73.9dp ✓ |
+ * | 1.34 | 140dp | 37.5dp | 161dp | 99.0dp ✓ |
+ * | 1.50 | 143dp | 42dp | 竖排 | — |
+ * | 2.00 | 190dp | 56dp | 竖排 | — |
+ */
+fun socRingDiameterDp(minSizeDp: Int, fontScale: Float): Float {
+    val textRenderDp = 28f * fontScale
+    return (textRenderDp * 3.4f)
+        .coerceAtLeast(minSizeDp.toFloat())
+        .coerceAtMost(280f)
 }
 
 /**
@@ -1597,7 +1656,7 @@ fun EnergyBar(
     val track = a.chartTrack
     val animated by animateFloatAsState(
         targetValue = (soc ?: 0) / 100f,
-        animationSpec = tween(500, easing = FastOutSlowInEasing),
+        animationSpec = tween(Motion.EnergyBar, easing = FastOutSlowInEasing),
         label = "energyBar",
     )
     val tickColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1768,7 +1827,7 @@ fun VehicleTopView(
         initialValue = 0.45f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            tween(1600, easing = FastOutSlowInEasing),
+            tween(Motion.TpmsPulse, easing = FastOutSlowInEasing),
             androidx.compose.animation.core.RepeatMode.Reverse,
         ),
         label = "tpmsPulseAlpha",

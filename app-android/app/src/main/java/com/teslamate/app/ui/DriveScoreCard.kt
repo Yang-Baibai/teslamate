@@ -200,6 +200,13 @@ fun DriveScoreCard(
                                     style = MaterialTheme.typography.labelSmall,
                                     fontSize = 10.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-3）：不许折行。**
+                                    // 槽宽 24.67dp，而「100」在 fs=1.5 起就宽 25.20dp →
+                                    // 折行会把整卡向下撑开、行高突变。
+                                    // 允许**溢出**到邻位空白（只标 2 个，其余槽是空的）。
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Visible,
                                 )
                             }
                         }
@@ -215,11 +222,25 @@ fun DriveScoreCard(
 
         Spacer(Modifier.height(8.dp))
         // ── 口径披露 ──
+        //
+        // ⚠️ **v0.30.0（第 19 轮数据口径审计 P0-1）：两条免赔线的文案原来都写错了。**
+        //
+        // ① 「能耗 150 kWh/100km 以下不扣」—— 代码阈值是 `WhPerKmGross − 150`，
+        //    而 `WhPerKmGross` 的单位是 **Wh/km**（= 15 kWh/100km）——
+        //    **差 10 倍**。用户以为门槛是 150 kWh/100km（比实测 198 还高 7.6 倍），
+        //    实际是 15 kWh/100km（本车实测毛耗电最低 166 Wh/km），
+        //    所以这条免赔线在默认 20 趟里**一次都不触发**。
+        //    现在按代码的真实单位写：150 Wh/km（即 15 kWh/100km）。
+        //
+        // ② 「≥120 km/h 的前 3% 不扣」—— 代码是 `over_pct − 3`，
+        //    即「**超过 3 个百分点**的部分每 1 个百分点扣 1 分」，
+        //    不是「最快的 3% 样本豁免」。实测 20 趟的超速占比中位 **19.1%**，
+        //    「前 3% 免赔」在实践中几乎从不生效。
         Text(
             "分数 = 100 − 急刹车(≤30) − 急加速(≤20) − ≥${profile.params.over_speed_kph}km/h(≤20)" +
                 " − 能耗(≤15) − 夜驾(≤15)。" +
-                "两条**免赔线**：≥${profile.params.over_speed_kph} km/h 的前 3% 不扣、" +
-                "能耗 150 kWh/100km 以下不扣。" +
+                "两条**免赔线**：≥${profile.params.over_speed_kph} km/h 的占比**超过 3 个百分点的部分**" +
+                "每 1 个百分点扣 1 分；能耗 150 Wh/km（即 15 kWh/100km）以下不扣。" +
                 "硬加/硬刹 = 2 秒内车速变化 ≥${profile.params.hard_event_threshold_kmh_per_2s} km/h" +
                 "（噪声底 ±12，有 8 倍余量）；" +
                 "夜间 ${profile.params.night_start_hour}:00–${profile.params.night_end_hour}:00、" +

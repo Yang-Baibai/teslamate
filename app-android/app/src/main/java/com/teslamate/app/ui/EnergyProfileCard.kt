@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.teslamate.app.EnergyBand
@@ -34,23 +35,36 @@ import kotlin.math.roundToInt
  * 而 TeslaMate 记的是**逐秒的车轮功率** ——
  * 所以「这台车在 90 km/h 到底多费电、50 km/h 省多少」只有我们算得出来。
  *
- * 实测本车：
- * - 最低点 **40–50 km/h（11.9 kWh/100km）**
- * - 高速 **80–110 km/h 也只要 12.4~14.7**（比市区低得多）
- * - 市区 0–20 km/h 高达 24.7~28.4（低速反而更费）
- * - 120 km/h 以后急剧劣化（17.0 → 18.0）
+ * 实测本车（**毛耗电**口径，即不含下坡回充抵扣）：
+ * - 最低点 **100–110 km/h（18.4 kWh/100km）**
+ * - 高速 120 km/h 以后 19.2~18.7（130+ 档 18.7）
+ * - 市区 0–20 km/h 高达 32.2（低速反而更费）
+ *
+ * ⚠️ **v0.30.0（第 19 轮数据口径审计 P2-A）：这一段原来是**旧净值**数字**
+ * （「最低点 40–50 km/h（11.9）」「高速 80–110 也只要 12.4~14.7」），
+ * 与 v0.29.0 改成的毛耗电**自相矛盾** —— 注释会持续误导后续改动，已订正。
  *
  * ## 口径
  *
- * **车轮功率梯形积分**（`(power+pp)/2 × Δt`），按 **1 km 分箱**、
- * 用**箱内里程表跨度**算距离（不能用相邻点的里程差 —— 里程表比采样稀疏，
+ * **净值** = 车轮功率**梯形积分**（`(power+pp)/2 × Δt`，回充会抵扣）；
+ * **毛耗电** = `max(power,0) × Δt`（右端矩形，不抵扣回充）。
+ * 两者按 **1 km 分箱**、用**箱内里程表跨度**算距离
+ * （不能用相邻点的里程差 —— 里程表比采样稀疏，
  * 逐点差分会漏掉大量里程，算出「市区 0.8 Wh/km」的荒谬值）。
  *
+ * ⚠️ v0.30.0（P2-C）：上面这句「梯形积分」**只对净值成立** ——
+ * 毛耗电用的是**右端矩形**（`max(P,0)×Δt`）。实测两者差 <0.1%
+ * （100–110 档：矩形 184.2 vs 梯形 184.1），但口径描述必须准确。
+ *
  * 与「标定续航差 × cars.efficiency」法实测相关系数 **0.99686**，
- * 但标定法**高约 19%**（标定 181.9 vs 车轮功率 152.7）——
+ * 但标定法**高约 19%**（标定 181.9 vs 车轮功率净值 155.2）——
  * 而且**两者都比实测电池耗电（约 198 kWh/100km）低**：
  * 车轮功率不含传动损耗，标定法受车机重算影响。
  * 所以两处能耗数字的口径必须分别标明。
+ *
+ * ⚠️ **v0.30.0（数据口径审计 P1-A）：这张卡的主角与柱高用**毛耗电**，
+ * 明细行原来用**净值** —— 同一张卡两个数、且没有任何标注区分。**
+ * 现在明细行也用毛耗电（并在行尾标出净值），两个口径各归各位。
  */
 @Composable
 fun EnergyProfileCard(
@@ -123,10 +137,17 @@ fun EnergyProfileCard(
         // ③ 字号 9sp → 11sp（iOS footnote 最小值）。
         val maxWh = bands.maxOf { it.wh_per_km_gross }.takeIf { it > 0 } ?: 1.0
         val worstBand = bands.maxByOrNull { it.wh_per_km_gross }
-        val labelIdxs = buildSet {
-            add(bands.indexOfFirst { isBest(it) })
-            worstBand?.let { add(bands.indexOf(it)) }
-        }.filter { it >= 0 }.toSet()
+        // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-2）：相邻时只标一个，避免两个数字挤在一起。**
+        //
+        // 原来两个标签可能落在**相邻**槽位（每槽只有 21.64dp），
+        // 而「28.4」在 200% 字号下宽 43.12dp → 两个数字会**压在一起**。
+        // 现在：相邻时只标**最省电**那一个，另一个数字写进下面的说明文字。
+        val bestIdx = bands.indexOfFirst { isBest(it) }
+        val worstIdx = worstBand?.let { bands.indexOf(it) } ?: -1
+        val labelIdxs = if (bestIdx < 0) emptySet() else {
+            if (worstIdx >= 0 && kotlin.math.abs(bestIdx - worstIdx) <= 1) setOf(bestIdx)
+            else setOf(bestIdx, worstIdx)
+        }
         Column(Modifier.fillMaxWidth()) {
             Row(
                 Modifier.fillMaxWidth().height(56.dp),
@@ -156,6 +177,13 @@ fun EnergyProfileCard(
                                 style = MaterialTheme.typography.labelSmall,
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                // ⚠️ v0.30.0：**不许折行**，也不许被裁 ——
+                                // 槽宽只有 21.64dp，标签在 fs=1.15 起就会折成
+                                // 「28.」/「4」两行，把整卡向下撑开。
+                                // 允许**溢出**到邻位的空白里（只有 2 个标签，其余槽是空的）。
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Visible,
                             )
                         }
                     }
@@ -185,10 +213,20 @@ fun EnergyProfileCard(
                     modifier = Modifier.width(88.dp),
                 )
                 Text(
-                    "${b.wh_per_km.fmtKwh100()} kWh/100km",
+                    // ⚠️ v0.30.0（P1-A）：明细行改用**毛耗电** ——
+                    // 主角与柱高都是毛耗电，明细却给净值 = 同一张卡两个数。
+                    // 净值（扣回充）在行尾标出，两个口径各归各位。
+                    "${b.wh_per_km_gross.fmtKwh100()} kWh/100km",
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = if (isBest(b)) FontWeight.SemiBold else FontWeight.Normal,
                     modifier = Modifier.width(118.dp),
+                )
+                Text(
+                    // ⚠️ v0.30.0：净耗电（扣回充抵扣）—— 明确标成「净」
+                    "净 ${b.wh_per_km.fmtKwh100()}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(74.dp),
                 )
                 Text(
                     "${b.km.roundToInt()} 公里",
@@ -201,9 +239,13 @@ fun EnergyProfileCard(
         Spacer(Modifier.height(6.dp))
         Text(
             buildString {
-                append("口径：车轮功率梯形积分，**毛耗电**（不含下坡回充抵扣），")
+                append("口径：车轮功率**毛耗电**（`max(P,0)×Δt`，不含下坡回充抵扣；")
+                append("净值是梯形积分，两者在明细行分开标），")
                 append("1 km 分箱、按箱内里程表跨度算距离。")
-                append("全车 ${profile?.total_km?.roundToInt() ?: 0} 公里，")
+                // ⚠️ v0.30.0（P0-2）：分母用**剖面覆盖里程**（与分子同源），
+                // 全车总里程只作为背景给出。
+                append("剖面覆盖 ${profile?.covered_km?.roundToInt() ?: 0} 公里")
+                append("（全车 ${profile?.total_km?.roundToInt() ?: 0} 公里），")
                 append("毛耗电 ${profile?.overall_wh_per_km_gross?.fmtKwh100() ?: "—"} kWh/100km。")
                 append("官方 App 只有**平均** Wh/km，这条曲线它给不了。")
                 append("⚠️ 每一档是「**平均速度**落在该区间的 1 公里箱」，")

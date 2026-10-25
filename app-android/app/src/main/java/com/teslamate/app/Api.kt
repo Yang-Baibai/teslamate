@@ -593,6 +593,14 @@ data class StayPoint(
 data class EnergyProfile(
     val bands: List<EnergyBand> = emptyList(),
     val total_km: Double = 0.0,
+    /**
+     * ⚠️ **v0.30.0（第 19 轮数据口径审计 P0-2）：剖面实际覆盖的里程。**
+     *
+     * 分子（能量）只覆盖剖面分过箱的那部分里程，
+     * 而 [total_km] 是全车 `sum(drives.distance)` —— 两者不同源。
+     * 服务端的两个平均能耗比值现在都用**这个**做分母（分子分母同源）。
+     */
+    val covered_km: Double = 0.0,
     /** 全车平均能耗（**净值**，下坡回充会抵扣） */
     val overall_wh_per_km: Double = 0.0,
     /** ⚠️ v0.29.0：全车**毛耗电**（不含回充抵扣）—— 看「真实吃电」用这个 */
@@ -720,6 +728,16 @@ data class CostSummary(
     /** 公共桩总时长（分钟）—— 按分钟计服务费时用它 */
     val dc_minutes: Double = 0.0,
     val ac_minutes: Double = 0.0,
+    // ⚠️ **v0.30.0（第 19 轮财务评审 P0-3）：围栏命中的「真家充」。**
+    //
+    // 这是 [ac_used_kwh] 的**子集**（交流 ∧ 有 geofence_id 归属），
+    // 「没有围栏归属的交流度数」= ac_used_kwh − home_used_kwh。
+    //
+    // ⚠️ 本机历史 78 场充电的 geofence_id 全是 NULL（「家」围栏 2026-10-25 才建），
+    // 所以这个数现在是 0 —— **这是事实**，不是数据缺失。
+    val home_used_kwh: Double = 0.0,
+    val home_sessions: Int = 0,
+    val home_minutes: Double = 0.0,
 )
 
 @Serializable

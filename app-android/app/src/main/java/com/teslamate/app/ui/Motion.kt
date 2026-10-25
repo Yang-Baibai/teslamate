@@ -87,6 +87,25 @@ object Motion {
     /** 骨架屏微光。 */
     const val Shimmer = 1400
 
+    // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P2-5）：补齐没有 token 的写死时长。**
+    //
+    // 这一批都是「系统自动发生的时间过程」→ tween。
+    // 原来它们各自写死（600 / 500 / 200 / 160 / 180），
+    // 于是同一个 App 里有两套节奏 —— 改一处漏一处的老毛病。
+
+    /** 电量环数值滚动：600ms（数值从旧值补间到新值）。 */
+    const val RingValue = 600
+
+    /** 能量条填充：500ms。 */
+    const val EnergyBar = 500
+
+    /** push 页面淡入 / 淡出。 */
+    const val PushFade = 200
+    const val PushFadeOut = 160
+
+    /** 开关滑块位移与轨道变色：180ms（与分段控件的文字色同步）。 */
+    const val SwitchToggle = 180
+
     /** 按下瞬间的 3D 倾斜：spring，约 130ms。 */
     val TiltPress = spring<Float>(
         dampingRatio = 1f,

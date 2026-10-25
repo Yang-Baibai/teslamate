@@ -47,10 +47,17 @@ private val Context.settingsStore by preferencesDataStore(name = "settings")
  *
  * ## 为什么是**车主自己填**
  *
- * 库里 `geofences` 表**本来就有** TeslaMate 的定价字段
+ * 库里 `geofences` 表本来就有 TeslaMate 的定价字段
  * （`cost_per_unit` / `session_fee` / `billing_type(per_kwh|per_minute)`），
- * 但那张表**是空的**（0 行），而 `charging_processes.geofence_id` 78 场全为 NULL ——
- * 「这次充的是哪个桩、那个桩多少钱」在数据层**根本不存在**。
+ * 但那张表**几乎是空的**（本机 1 行「家」，`inserted_at = 2026-10-25 02:36`
+ * —— 在全部 78 场充电**之后**才建），
+ * 而 `charging_processes.geofence_id` 78 场全为 NULL ——
+ * 「这次充的是哪个桩、那个桩多少钱」在**历史数据**层根本不存在。
+ *
+ * ⚠️ **v0.30.0（第 19 轮财务评审 P0-3）**：正因为「家」围栏已经建了，
+ * **今后的**会话会带上围栏归属 —— App 现在能**读**这个真凭据了，
+ * 不再靠「交流 ⇒ 家充」猜（实测本机 5 场交流慢充**全部**在 286~1506 公里外，
+ * 这个猜法 **5/5 全错**）。
  *
  * 所以必须车主自己填 —— 而这恰恰是**官方 App 做不到**的事：
  * 它只认得 Tesla 超充（账单能从 Tesla 账户抓），
@@ -83,9 +90,34 @@ data class ChargeRates(
     val publicServiceMode: String = MODE_PER_KWH,
     /** 公共桩服务费（元/度 或 元/分钟，取决于 [publicServiceMode]） */
     val publicServiceYuan: Double = 0.0,
+    /**
+     * ⚠️ **v0.30.0（第 19 轮财务评审 P0-3）：**
+     * **没有围栏归属的交流慢充**，按家充电价还是公共桩电价算？
+     *
+     * - `true`  = 按家充电价（老行为）
+     * - `false` = 按公共桩电价（**新默认**）
+     *
+     * ## 为什么默认改成 false
+     *
+     * 原来的模型是「交流 ⇒ 家充」—— 靠**充电枪类型**猜地点。
+     * 实测本机 78 场充电里只有 5 场交流，而**这 5 场全部**在
+     * **286~1506 公里外**（甘孜的酒店、广西梧州的路边），
+     * 没有一场在家 —— 这个猜法 **5/5 全错**。
+     *
+     * 现在「家充」有了**真凭据**（TeslaMate 的充电围栏），
+     * 围栏命中的那部分按家充电价算；
+     * **剩下的**交流（没有围栏归属）就是「不知道在哪」，
+     * 按公共桩价算是**保守且不误导**的选择。
+     *
+     * 用户可以在设置页改回来。
+     */
+    val acUsesHomePrice: Boolean = false,
 ) {
     /** 有没有配过价（没配就不显示任何费用数字）。 */
     val configured: Boolean get() = homeYuanPerKwh > 0 || publicYuanPerKwh > 0
+
+    /** ⚠️ v0.30.0：服务费没填 —— 界面必须提示「估算偏低」，不能静默按 0 算。 */
+    val serviceFeeMissing: Boolean get() = publicServiceYuan <= 0.0
 
     companion object {
         const val MODE_PER_KWH = "per_kwh"

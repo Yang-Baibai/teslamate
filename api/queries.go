@@ -290,6 +290,19 @@ GROUP BY 1 ORDER BY 1`
 //     靠客户端拉全量做不出来。
 //
 // $1=car_id $2=窗口起点(timestamptz)
+//
+// ⚠️ **v0.30.0（第 19 轮财务评审 P0-3）：增加「围栏命中」家充桶。**
+//
+// 原来 App 只能按「交流 / 直流」两分，而本机实测：
+// **5 场交流慢充全部在 286~1506 公里外**（甘孜的酒店、广西梧州的路边），
+// 没有一场在家 —— 「交流 ⇒ 家充」这个判据 **5/5 全错**。
+//
+// 现在 TeslaMate 已经有 `geofences`（本机有一行「家」），
+// 新会话会带上 `geofence_id` —— 这才是**真凭据**，不再靠猜。
+//
+// ⚠️ 家充桶是**交流的子集**（`NOT is_dc AND geofence_id IS NOT NULL`），
+// 不是第三个独立桶 —— 客户端用 `ac_used_kwh − home_used_kwh`
+// 得到「没有围栏归属的交流度数」，两者不会重复计数。
 const sqlCostSummary = `
 WITH` + cteChargeDC + `
 SELECT COALESCE(SUM(CASE WHEN cd.is_dc THEN cp.charge_energy_used ELSE 0 END), 0)::float8 AS dc_used_kwh,
@@ -297,7 +310,13 @@ SELECT COALESCE(SUM(CASE WHEN cd.is_dc THEN cp.charge_energy_used ELSE 0 END), 0
        COUNT(*) FILTER (WHERE cd.is_dc)::int AS dc_sessions,
        COUNT(*) FILTER (WHERE NOT cd.is_dc)::int AS ac_sessions,
        COALESCE(SUM(CASE WHEN cd.is_dc THEN cp.duration_min ELSE 0 END), 0)::float8 AS dc_minutes,
-       COALESCE(SUM(CASE WHEN NOT cd.is_dc THEN cp.duration_min ELSE 0 END), 0)::float8 AS ac_minutes
+       COALESCE(SUM(CASE WHEN NOT cd.is_dc THEN cp.duration_min ELSE 0 END), 0)::float8 AS ac_minutes,
+       -- ⚠️ v0.30.0：围栏命中的**真家充**（交流 ∧ 有围栏归属）
+       COALESCE(SUM(CASE WHEN NOT cd.is_dc AND cp.geofence_id IS NOT NULL
+                          THEN cp.charge_energy_used ELSE 0 END), 0)::float8 AS home_used_kwh,
+       COUNT(*) FILTER (WHERE NOT cd.is_dc AND cp.geofence_id IS NOT NULL)::int AS home_sessions,
+       COALESCE(SUM(CASE WHEN NOT cd.is_dc AND cp.geofence_id IS NOT NULL
+                          THEN cp.duration_min ELSE 0 END), 0)::float8 AS home_minutes
 FROM charging_processes cp
 LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
 WHERE cp.car_id = $1

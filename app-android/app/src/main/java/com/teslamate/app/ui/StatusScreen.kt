@@ -544,18 +544,19 @@ fun StatusScreen(
                         // 现在解封了 fontScale（WCAG 1.4.4 要求 200% 可用），
                         // 这条遗留项必须一起解掉，否则等于「解封了一半」。
                         //
-                        // 阈值 1.5：1.5 倍时左右两栏还挤得下；再大就必须换行。
+                        // 阈值 1.35（v0.30.0 从 1.5 改下来）：
                         //
-                        // ⚠️ v0.14.0（新手车主 P0-3）：**大字号时主角数字排最前**。
+                        // 原来 1.5 是拍脑袋的「1.5 倍时左右两栏还挤得下」。
+                        // 实际算一遍：393dp 屏可用 361dp，减去环（v0.30.0 起按文字反推，
+                        // fs=1.35 时 140dp）和 28dp 间距 → 主角只剩 **193dp**；
+                        // 360dp 屏只剩 **160dp**。主角「204」在 44sp 下宽 73.9sp，
+                        // fs=1.35 时 99.8dp —— 393dp 屏放得下，360dp 屏也放得下，
+                        // 但再往上（fs>1.4）360dp 屏就开始**硬裁**（`maxLines=1` 默认 Clip）。
                         //
-                        // 原来大字号是「环在上、数字在下」，环按 168dp × 1.75 = 294dp
-                        // 计算，占了屏幕近一半 —— 爸妈打开 App 想看「还能跑多少」，
-                        // 得先滚一屏才看得到那个数，而 69% 恰恰不是他们要的数。
-                        //
-                        // 现在：**大数字在上、环缩小**（120dp × 1.75 = 210dp ≤ 屏高 25%），
-                        // 「204」「现在能开」「69%」三个信息块首屏内全部可见。
+                        // 所以阈值定在 **1.35**：两条公式下主角都还有余量，
+                        // 超过就切竖排（主角独占整行，绝不会被裁）。
                         val fontScale = LocalDensity.current.fontScale
-                        if (fontScale >= 1.5f) {
+                        if (fontScale >= 1.35f) {
                             Column(
                                 Modifier
                                     .fillMaxWidth()
@@ -564,10 +565,11 @@ fun StatusScreen(
                             ) {
                                 RangeAndOdometer(st, consumption, recentAscent, fallbackSpeed, Modifier.fillMaxWidth())
                                 Spacer(Modifier.height(14.dp))
+                                // ⚠️ v0.30.0：两种布局用**同一个**环尺寸，
+                                // 否则切布局时环会「跳」一下。
                                 SocRing(
                                     st.battery_level,
                                     charging = st.active_charge != null,
-                                    baseSizeDp = 120,
                                 )
                             }
                         } else {
@@ -842,14 +844,31 @@ private fun RangeAndOdometer(
         //
         // 现在：主数字**只给答案**，怎么算的收在一行「怎么算的 ▸」里，
         // 点开才展开 —— 规划长途时它是关键，平时它是干扰。
-        var showExplain by remember { mutableStateOf(false) }
-        val explainCtx = LocalContext.current
+        //
+        // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-6）：整个折叠区换成 `CollapsibleSection`。**
+        //
+        // 原来这里是**手写复刻**：命中区只有 **15dp**（低于 WCAG 2.5.8 的 24dp）、
+        // 用 `▸/▾` **字符**（v0.17.0 动效评审已明确废弃字符方案）、
+        // 动画时长写死 160/220/120/180（**没有一个**对得上 `Motion.kt` 的 token）。
+        // 项目里**已经有**修过这些问题的 `CollapsibleSection`（44dp 命中区、
+        // `ExpandMore` 图标旋转、`stateDescription`、全部走 token）——
+        // 现在直接用它，不再维护第二套实现。
         val explainText = buildString {
             if (ratedRange != null && ratedRange > 0) {
                 append("官方标称 ${ratedRange.fmt(0)} 公里")
             }
             if (trueRange != null) {
-                append(" · 按平时 ${refSpeed.roundToInt()} km/h 估算")
+                // ⚠️ **v0.30.0（第 19 轮通勤车主评审 P0-2）：「平时」这个词是骗人的。**
+                //
+                // 原来的文案是「按平时 59 km/h 估算」——
+                // 而这个 59 是「**最近 5 趟 ≥30 公里行程**的均速中位数」，
+                // 实测那 5 趟是 10-18 与 10-24 的**长途自驾**
+                // （含一趟峰值 130 km/h 的高速趟）。
+                // 拿它当「平时」= 暗示这是日常通勤速度 —— 通勤车主每天拿它做
+                // 「够不够到公司」的判断，而它反映的是**高速速度带**。
+                //
+                // 现在说实话：说清楚它**是哪几趟**算出来的。
+                append(" · 按最近 5 趟 ≥30 公里行程的均速 ${refSpeed.roundToInt()} km/h 估算")
                 // ⚠️ v0.9.2：60 km/h 是硬编码兜底，且它落在**最乐观的一档**。
                 // 必须标成「假设」，不能和「实测巡航速度」混为一谈。
                 if (speedAssumed) append("（假设值）")
@@ -882,34 +901,7 @@ private fun RangeAndOdometer(
                 append(" · 能耗单位 kWh/100km 即每 100 公里的耗电量（旧版写的 Wh/km 是同一个数）")
             }
         }
-        Text(
-            text = if (showExplain) "怎么算的 ▾" else "怎么算的 ▸",
-            style = MaterialTheme.typography.labelSmall,
-            // ⚠️ v0.9.0：不用 primary（品牌红）。
-            // 本 App 里红色只表示告警/品牌点缀 —— 一个折叠链接是红的，
-            // 看起来像出错了。可点性由 ▸/▾ 本身表达（iOS 就是这么做的）。
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .clickable {
-                    Haptics.tick(explainCtx)
-                    showExplain = !showExplain
-                }
-                .semantics {
-                    contentDescription = if (showExplain) {
-                        "收起续航计算方式"
-                    } else {
-                        "展开续航计算方式"
-                    }
-                },
-        )
-        // ⚠️ v0.9.2（iOS 交互评审 P1-11）：展开要有过渡。
-        // 原来 `if (showExplain) { Text(...) }` 是硬切 —— 父容器高度瞬间跳变，
-        // 把下方所有卡片「顶」下去再弹回来（这是最容易被感知的廉价感来源）。
-        AnimatedVisibility(
-            visible = showExplain,
-            enter = fadeIn(tween(160)) + expandVertically(tween(220, easing = FastOutSlowInEasing)),
-            exit = fadeOut(tween(120)) + shrinkVertically(tween(180, easing = FastOutSlowInEasing)),
-        ) {
+        CollapsibleSection("怎么算的") {
             Text(
                 explainText.ifBlank { "暂无足够数据估算" },
                 style = MaterialTheme.typography.labelSmall,
@@ -1321,7 +1313,10 @@ private fun MaintenanceCard(
                     Haptics.selection(ctx)
                     onOpenSettings()
                 }
-                .padding(vertical = 4.dp),
+                .padding(vertical = 8.dp),
+            // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P1-5）：触控目标补到 24dp 以上。**
+            // 原来 `padding(vertical = 4.dp)` → 命中区 = 行高 15dp + 8dp = **23dp**，
+            // 差 1dp 不达 WCAG 2.5.8 的 24dp。现在 15 + 16 = **31dp**。
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(

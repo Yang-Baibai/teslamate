@@ -96,14 +96,26 @@ fun StatsScreen(
             // 200% 字号下 79.75dp 槽宽放得下）。
             // 「今天」**零新接口**：`buckets.takeLast(1)` 就是今天（v0.8.5 的注释就是这么写的）。
             // 删掉的是滚动的「30 天」—— 它的语义和「本月」打架（实测多算 25.9%）。
-            "今天" to ("week" to 1),
-            "7 天" to ("week" to 7),
+            // ⚠️ **v0.30.0（第 19 轮财务评审 P0-1）：费用端点的窗口必须与里程窗口一致。**
+            //
+            // 原来「今天」段的两条数据来自**不同的窗口**：
+            //   费用 → `cost_summary?period=week`（**7 天**）
+            //   里程 → `stats?period=week` 的**最后一个桶**（**今天**）
+            // 分子 7 天、分母 1 天 → **每公里成本高估 4.7 倍**
+            // （实测 2026-10-24：App 会显示 ¥1.18/公里，正确值 ¥0.25/公里）。
+            //
+            // 现在服务端给 `cost_summary` 加了 `period=today`，
+            // 「今天」段用**今天**的费用窗口 —— 两个分子分母同源。
+            //
+            // 数据结构：label → (接口参数, 取几个桶, 费用端点的 period)
+            "今天" to Triple("week", 1, "today"),
+            "7 天" to Triple("week", 7, "week"),
             // 「本月」= 自然月（当月 1 号 → 今天），服务端按 TZ_NAME 分日桶。
             // 桶数给 31 是为了「取最后 N 个」能取到全部（服务端只返回到今天）。
-            "本月" to ("calendar_month" to 31),
+            "本月" to Triple("calendar_month", 31, "calendar_month"),
             // ⚠️ v0.9.2：「12 个月」在 2 倍字号下会被省略号截断（实测「12 个…」）。
             // 改成「1 年」—— 更短、同样准确，中文语境下也更好读。
-            "1 年" to ("year" to 12),
+            "1 年" to Triple("year", 12, "year"),
         )
     }
     // ⚠️ v0.8.5（效率车主复核）：默认从「近 30 天」改「近 7 天」。
@@ -111,6 +123,8 @@ fun StatsScreen(
     var periodIndex by remember { mutableIntStateOf(0) }
     val apiPeriod = periods[periodIndex].second.first
     val bucketCount = periods[periodIndex].second.second
+    // ⚠️ v0.30.0：费用窗口（与里程窗口**同源**，见 periods 的注释）
+    val costPeriod = periods[periodIndex].second.third
     // ⚠️ v0.9.1：平均值的口径名要跟桶的粒度一致 ——
     // 年视图的桶是**月**粒度（12 个桶），其余是**日**粒度。
     // 原来一律写「日均」，在「近 12 个月」下就成了「日均 80 km」（其实是月均）。
@@ -188,7 +202,7 @@ fun StatsScreen(
         // 只在**配了电价**时才拉（没配就没必要算）。
         if (settings.currentRates.configured) {
             runCatching {
-                withContext(Dispatchers.IO) { api.costSummary(settings.carId, apiPeriod) }
+                withContext(Dispatchers.IO) { api.costSummary(settings.carId, costPeriod) }
             }.onSuccess {
                 costSummary = it
             }.onFailure {
@@ -199,7 +213,10 @@ fun StatsScreen(
         }
     }
 
-    LaunchedEffect(settings, apiPeriod) { load() }
+    // ⚠️ v0.30.0：key 里必须带 **costPeriod** ——
+// 「今天」与「7 天」的 apiPeriod **都是 "week"**（统计桶不用重拉），
+// 但费用窗口不同（today vs week），不加这个 key 切段时费用不会重取。
+LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
 
     // ⚠️ **v0.28.0（第 17 轮官方 App 对标评审 A-2）：能耗-车速曲线。**
     //
@@ -506,14 +523,31 @@ fun StatsScreen(
                             cost.yuanPerKwh?.let {
                                 KV("实际每度电", "≈ ${it.fmtYuan()}")
                             }
+                            // ⚠️ **v0.30.0（第 19 轮财务评审 P1-1）：「实际每度电」必须拆开。**
+                            //
+                            // 实测全周期 1.7689 元/度里，**0.5874（33.2%）是公共桩服务费**。
+                            // 车主拿「实际每度电」和自己的居民电价 0.53~0.83 一比，
+                            // 会以为「我的电费高了三倍」—— 却不知道其中 1/3 是停车/占位费。
+                            // 现在拆成两行：电费每度 / 服务费每度。
+                            cost.energyYuanPerKwh?.let {
+                                KV("电费每度", "≈ ${it.fmtYuan()}")
+                            }
+                            cost.serviceYuanPerKwh?.let {
+                                KV("服务费每度", "≈ ${it.fmtYuan()}")
+                            }
                             Text(
                                 buildString {
-                                    append("按你填的电价估算（交流慢充 ")
-                                    append(cost.acKwh.fmt(0))
+                                    append("按你填的电价估算（家充（有围栏归属）")
+                                    append(cost.homeKwh.fmt(0))
+                                    append(" 度 / 其它交流慢充 ")
+                                    append(cost.acOtherKwh.fmt(0))
                                     append(" 度 / 直流快充 ")
                                     append(cost.dcKwh.fmt(0))
                                     append(" 度）")
                                     perKm.acSharePercent?.let { append(" · 交流慢充占 $it%") }
+                                    perKm.homeSharePercent?.let {
+                                        append(" · 其中真正在家充的占 $it%")
+                                    }
                                     append("。分母是行驶里程 ")
                                     append(sum.km.fmt(0))
                                     append(" 公里。")
@@ -522,17 +556,32 @@ fun StatsScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(bottom = 4.dp),
                             )
-                            // ⚠️ **v0.26.0（第 17 轮新手车主 P0-1）：交流 ≠ 家充。**
+                            // ⚠️ **v0.30.0（P0-2）：服务费没填时必须说「估算偏低」。**
                             //
-                            // 原来这里写「家充 X 度」—— 听起来像 App **知道**哪场是在家充的。
-                            // 它并不知道：本机 `geofences` 表 **0 行**、
-                            // 78/78 场充电的 `geofence_id` 全是 NULL，
-                            // 而库里的 4 场「交流」**全部**发生在
-                            // 四川甘孜/阿坝、广西梧州的**酒店和路边**，没有一场在家。
+                            // 实测：不填服务费 → ¥2,201.17；按分钟 0.50 → ¥3,295.67，
+                            // **低估 ¥1,094.50（33.2%）** —— 而界面一声不吭。
+                            if (rates.serviceFeeMissing) {
+                                Text(
+                                    "⚠ 没填公共桩服务费 —— 这类桩普遍收占位费，估算会偏低约三分之一",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = LocalAccentColors.current.warnAmber,
+                                    modifier = Modifier.padding(bottom = 4.dp),
+                                )
+                            }
+                            // ⚠️ **v0.30.0（P0-3）：家充现在有**真凭据**了。**
                             //
-                            // 所以只能诚实说「交流慢充」，并说明它是**按你填的家充电价**估的。
+                            // 原来的模型是「交流 ⇒ 家充」，靠充电枪类型猜地点 ——
+                            // 实测本机 5 场交流慢充**全部**在 286~1506 公里外，这个猜法 5/5 全错。
+                            // 现在家充由 **TeslaMate 的充电围栏**判定，
+                            // 剩下的交流（没有围栏归属）就是「不知道在哪」，
+                            // 按你填的「其它交流慢充单价」计。
                             Text(
-                                "App 分不出哪场是家充（车端没配充电地点）：交流慢充按你填的「家充电价」估算",
+                                if (cost.homeKwh > 0.01) {
+                                    "家充按 TeslaMate 的充电围栏判定（这段窗口里有 ${cost.homeKwh.fmt(0)} 度命中围栏）"
+                                } else {
+                                    "这段窗口里没有任何一场充电命中充电围栏 —— App 分不出交流慢充是在家还是在酒店/路边" +
+                                        "（「家」围栏是 2026-10-25 才建的，之前的充电都没有归属）"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(bottom = 4.dp),

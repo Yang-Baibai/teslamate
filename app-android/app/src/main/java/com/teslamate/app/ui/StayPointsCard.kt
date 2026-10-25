@@ -148,7 +148,16 @@ fun StayPointsCard(
                             .fillMaxWidth((p.visits.toFloat() / maxVisits).coerceIn(0.04f, 1f))
                             .height(6.dp)
                             .clip(RoundedCornerShape(3.dp))
-                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
+                            // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P1-4）：填充必须用**不透明**色。**
+                            //
+                            // 原来用 `onSurface.copy(alpha = 0.45f)`（合成后 #99999A），
+                            // 对轨道 `chartTrack #77777D` 只有 **1.56:1** ——
+                            // 而这条比例条要表达的是「停了多少次」，**读不出来**。
+                            //
+                            // 现在用不透明的 `onSurface`：
+                            // 浅色 #1C1C1E vs 轨道 #77777D = **3.82:1** ✓
+                            // 深色 #F2F2F7 vs 轨道 #6E6E76 = **4.53:1** ✓
+                            .background(MaterialTheme.colorScheme.onSurface)
                     )
                 }
             }

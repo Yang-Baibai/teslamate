@@ -107,6 +107,14 @@ data class JourneyLeg(
      * 只看里程会把 62 小时后的另一场充电误判成「这一段的到达充电」。
      */
     val endDate: Instant,
+    /**
+     * ⚠️ **v0.30.0（长途自驾党 P0-1）：这一趟的时长（分钟）。**
+     *
+     * 用来算 journey 的**真实均速** ——
+     * 规划链路原来把计划车速**硬编码成 90 km/h**，
+     * 于是「到下一站剩 34%」是按一个跟这趟毫无关系的速度算的。
+     */
+    val durationMin: Int? = null,
 )
 
 /** 旅程中的一个充电停靠。 */
@@ -153,6 +161,31 @@ data class Journey(
     val meaningfulLegCount: Int get() = legs.count { it.distanceKm >= 2.0 }
     /** 沿途站数量（不含到达后的那次） */
     val midStopCount: Int get() = stops.count { !it.isEndpoint }
+
+    /**
+     * ⚠️ **v0.30.0（长途自驾党 P0-1）：这段旅程的**真实均速**（km/h）。**
+     *
+     * 规划链路原来把计划车速**硬编码成 90 km/h** ——
+     * 于是「到下一站剩 34%」是按一个**跟这趟毫无关系**的速度算的。
+     *
+     * 实测两段长途的真实均速差很多：
+     * - 6227 公里那条（川藏滇）**64 km/h**
+     * - 616 公里那条 **42 km/h**
+     *
+     * 用各自的真实均速算，能耗档位才对得上（90 km/h 档 183 Wh/km vs 110–130 档 197.4，
+     * 差 **7.9%**，在 128 公里的站距上就是 **2.8 个百分点**的到达电量差）。
+     *
+     * 只统计**有里程**的段（挪车微行程的时长是噪声）。
+     */
+    val avgSpeedKph: Double?
+        get() {
+            val legsWithTime = legs.filter { (it.durationMin ?: 0) > 0 && it.distanceKm >= 2.0 }
+            if (legsWithTime.isEmpty()) return null
+            val km = legsWithTime.sumOf { it.distanceKm }
+            val min = legsWithTime.sumOf { it.durationMin!! }
+            if (km <= 0.1 || min <= 0) return null
+            return km / (min / 60.0)
+        }
 }
 
 /**
@@ -182,6 +215,8 @@ fun buildJourneys(
             // ⚠️ v0.28.0（复审 P0-2）：结束时刻用于沿途站的**时间**归属。
             // 库里 end_date 可能为 NULL（车还在开），退回开始时刻。
             endDate = d.end_date ?: d.start_date,
+            // ⚠️ v0.30.0：带上时长，用于算 journey 的真实均速
+            durationMin = d.duration_min,
         )
     }.sortedBy { it.startKm }
 

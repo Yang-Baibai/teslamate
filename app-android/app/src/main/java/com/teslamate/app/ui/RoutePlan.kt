@@ -35,6 +35,7 @@ import com.teslamate.app.Charge
 import com.teslamate.app.Drive
 import com.teslamate.app.firstSegment
 import com.teslamate.app.fmtDate
+import com.teslamate.app.fmtKwh100
 import java.time.Instant
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -92,6 +93,18 @@ data class RouteTemplate(
      * 所以字段改名，文案也一起改（见 [conclusion]）。
      */
     val legCount: Int,
+    /**
+     * ⚠️ **v0.30.0（长途自驾党 P1-2）：全部段数**（含充电站内挪车微行程）。
+     *
+     * [legCount] 是 `meaningfulLegCount`（**≥2 公里**的段）——
+     * 62 公里那条 journey 实测 131 段，其中 60 段不到 2 公里。
+     *
+     * 原来 `RouteJourney.summary()` 显示 **全部**段数（191），
+     * 而 `conclusion()` 显示 **≥2 公里**的段数（131）——
+     * 同一个 journey 在两个地方显示不同段数，用户会以为有一个是错的。
+     * 现在两个都给出，并说清差别。
+     */
+    val totalLegCount: Int = legCount,
     /** 沿途充电站数（不含到达后的那次） */
     val stopCount: Int,
     /** 最近一次走的时刻 */
@@ -105,6 +118,14 @@ data class RouteTemplate(
     // 现在剖面**只用最近那一趟**的真实值，端点与充电点同源。
     /** 最近一次的真实里程（km） */
     val lastDistanceKm: Double? = null,
+    /**
+     * ⚠️ **v0.30.0（长途自驾党 P0-1）：这段线路的**真实均速**（km/h）。**
+     *
+     * 原来规划链路的计划车速**硬编码成 90 km/h** ——
+     * 「到下一站剩 34%」是按一个跟这趟毫无关系的速度算的。
+     * 实测：6227 公里那条 **64 km/h**，616 公里那条 **42 km/h**。
+     */
+    val avgSpeedKph: Double? = null,
     /** 最近一次的出发电量（%） */
     val lastStartSoc: Int? = null,
     /** 最近一次的到达电量（%） */
@@ -174,6 +195,20 @@ data class RouteStop(
      * 与 20% 保底对齐 —— 低于 20% 就该提示「这一段不够，得再充一次」。
      */
     val socAtNextStop: Int? = null,
+    /**
+     * ⚠️ **v0.30.0（长途自驾党 P0-1）：算 [socAtNextStop] 用到的车速（km/h）。**
+     *
+     * 原来**硬编码 90 km/h** —— 与这趟毫无关系。
+     * 现在用**这段线路历史的真实均速**
+     * （6227 公里那条 **64 km/h**、616 公里那条 **42 km/h**）。
+     *
+     * ⚠️ 这个数**只决定用哪一档 Wh/km**：
+     * 90–110 档 183.0 Wh/km vs 110–130 档 197.4 Wh/km —— 差 **7.9%**，
+     * 在 128 公里的站距上就是 **2.8 个百分点**的到达电量差。
+     */
+    val assumedSpeedKph: Double? = null,
+    /** 实际用的 Wh/km（界面要把它和车速一起标出来 —— 不交代前提就只是个数字） */
+    val assumedWhPerKm: Double? = null,
 )
 
 /** 余量剖面上的一个点。 */
@@ -236,7 +271,18 @@ data class RoutePlan(
         // ⚠️ v0.26.0：改成「N 段 · M 次沿途充电」——
         // 原来写「走过 N 次」，而 N 现在是**段数**，
         // 会把「一次旅程被充电切成 11 段」说成「走过 11 次」。
-        parts += "${s.legCount} 段"
+        //
+        // ⚠️ **v0.30.0（长途自驾党 P1-2）：两处段数不一致，必须说清。**
+        // 这里的 `legCount` 是 `meaningfulLegCount`（**≥2 公里**的段，实测 131），
+        // 而 `RouteJourney.summary()` 用的是 `legs.size`（**全部**段，实测 191）——
+        // 差 60 段是充电站内挪车微行程（<2 km）。
+        // 同一个 journey 在两个地方显示不同段数，用户会以为有一个是错的。
+        // 现在两个数都写出来，并说清差别在哪。
+        parts += if (s.totalLegCount > s.legCount) {
+            "${s.totalLegCount} 段行程（其中 ${s.legCount} 段超过 2 公里）"
+        } else {
+            "${s.legCount} 段"
+        }
         if (s.stopCount > 0) parts += "$s.stopCount 次沿途充电"
         return parts.joinToString(" · ")
     }
@@ -289,22 +335,47 @@ data class RoutePlan(
         val belowText = below?.let { (km, soc) ->
             " · 第 ${km.roundToInt()} 公里只剩 $soc%（低于 20% 保底）"
         }
-        // ⚠️ **v0.29.0（复审 P0-4）：「需充 N 次」要说清是**历史发生次数**。**
+        // ⚠️ **v0.30.0（长途自驾党 P0-4）：全程最低点必须出现在结论句里。**
         //
-        // 复审原话：「`RoutePlan.kt:270` 写死『需充 ${stops.size} 次』——
-        // 我读成『这次 616 公里只需充 1 次』→ **直接导致不安排补电**。」
+        // [lowestPoint] 从 v0.29.0 起就在算（`RoutePlan.kt:216-217`），
+        // 但**全项目没有任何地方调用它** —— 于是最该看的那个数被算了却没显示。
         //
-        // 现在改成「那趟实际停了 N 次」+ 给**节奏**（每 X 公里一次），
-        // 让人能自己外推到「这次要充几次」。
+        // 实测：6227 公里那条的结论句只说「第 227 公里只剩 18%」，
+        // 而全程最低是 **5%（第 1242 公里）** —— 1,443 个剖面点里有 **104 个**低于 20%。
+        // 只说「第一次跌破」会让人以为「过了 227 公里就没事了」。
+        val lowestText = lowestPoint?.let { (km, soc) ->
+            // 与「第一个跌破」是同一个点时不重复说
+            if (below == null || km > below.first + 0.5) {
+                " · 全程最低 $soc%（第 ${km.roundToInt()} 公里）"
+            } else {
+                ""
+            }
+        }
+        // ⚠️ **v0.30.0（长途自驾党 P0-2）：「平均每 N 公里停一次」必须换成真实站间距。**
+        //
+        // 原来 `gapKm = 总里程 ÷ 次数` —— **平均数掩盖了分布**。
+        // 实测：6227 公里那条的真实站间距是 **2～348 公里**（中位 162、均值 157），
+        // 616 公里那条是 **2～189 公里**（中位 133）。
+        // 按「平均每 164 公里」准备，会在**最长那 348 公里**那段毫无准备。
+        //
+        // 现在给真实区间 + 中位 + **最长一段**（那才是要提前安排的）。
         val rhythm = if (stops.size >= 2) {
-            val gapKm = template.distanceKm / stops.size
-            "（历史节奏：平均每 ${gapKm.roundToInt()} 公里停一次）"
+            val points = (listOf(0.0) + stops.map { it.kmAlongRoute } + listOf(template.distanceKm))
+                .sorted()
+            val gaps = points.zipWithNext { a, b -> b - a }.filter { it > 0.5 }
+            if (gaps.isEmpty()) "" else {
+                val maxGap = gaps.max()
+                val minGap = gaps.min()
+                val medGap = gaps.sorted()[gaps.size / 2]
+                "（真实站间距 ${minGap.roundToInt()}～${maxGap.roundToInt()} 公里，" +
+                    "中位 ${medGap.roundToInt()}；**最长一段 ${maxGap.roundToInt()} 公里**）"
+            }
         } else {
             ""
         }
         return when {
             stops.isNotEmpty() ->
-                "$src：那趟实际停了 ${stops.size} 次" + rhythm + (belowText ?: "")
+                "$src：那趟实际停了 ${stops.size} 次" + rhythm + (belowText ?: "") + (lowestText ?: "")
             below != null ->
                 "$src：$belowText · " +
                     "这条线路上没有你的充电记录，中途补电给不出位置"
@@ -361,10 +432,14 @@ fun buildRouteTemplates(
             endSoc = j.legs.last().endSoc,
             // ⚠️ v0.28.0（复审 P1-10）：用「有效段数」（排除充电站内挪车微行程）。
             legCount = j.meaningfulLegCount,
+            // ⚠️ v0.30.0（P1-2）：**全部**段数也带上（两个数都要能显示）
+            totalLegCount = j.legCount,
             stopCount = j.midStopCount,
             lastDrivenAt = j.endDate,
             startOdoKm = j.startKm,
             lastDistanceKm = j.distanceKm,
+            // ⚠️ v0.30.0（P0-1）：真实均速（不再硬编码 90 km/h）
+            avgSpeedKph = j.avgSpeedKph,
             lastStartSoc = j.legs.first().startSoc,
             lastEndSoc = j.legs.last().endSoc,
             lastDriveId = j.legs.last().driveId,
@@ -497,6 +572,13 @@ fun buildRoutePlan(
             },
             gapToNextKm = gapKm,
             socAtNextStop = socAtNext,
+            // ⚠️ **v0.30.0（长途自驾党 P0-1）：把车速与实际用的 Wh/km 带出去。**
+            //
+            // 「到下一站剩 34%」不交代前提就只是个数字 ——
+            // 它是按「这段线路历史均速 → 对应 Wh/km 档」算的，
+            // **没做**温度修正、**没做**爬升修正、**没留**安全余量。
+            assumedSpeedKph = planSpeedKph,
+            assumedWhPerKm = whPerKm,
         )
     }
 
@@ -720,10 +802,13 @@ fun RoutePlanSummaryRow(
                 Icon(
                     Icons.Filled.ExpandMore,
                     contentDescription = "展开线路余量表",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
-                        .size(22.dp)
+                        // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P1-6）：命中区 22dp → 24dp。**
+                        // WCAG 2.5.8（Target Size Minimum）要求 ≥24dp；
+                        // 22dp 差 2dp 不达标。
+                        .size(24.dp)
                         .clickable(onClick = onClick),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             // ⚠️ v0.18.0（长途自驾党 P0-1）：**线路选择 chips** ——
@@ -889,7 +974,18 @@ fun RoutePlanCard(
                                 }
                                 s.minutesToTarget?.let {
                                     if (isNotEmpty()) append(" · ")
-                                    append("约 $it 分钟")
+                                    // ⚠️ **v0.30.0（长途自驾党 P0-5）：「约 N 分钟」必须标出它是**折算**。**
+                                    //
+                                    // 这是按**整场平均功率**做的**线性折算**，
+                                    // 而直流桩在高 SOC 段会**降功率**（曲线是弯的）——
+                                    // 线性折算必然**高估**时间。
+                                    // 实测某桩：App 显示「充到 80% 约 54 分钟」，
+                                    // 同口径曲线**实测**中位是 **37.5 分钟**（**高估 44%**），
+                                    // 单场最高高估 **94%**。
+                                    //
+                                    // 现在明说它是折算 —— 不标的话，
+                                    // 它会和充电详情页的**实测**分钟数并排出现而互相矛盾。
+                                    append("约 $it 分钟（按典型功率折算）")
                                 }
                                 if (isNotEmpty()) append(" · ")
                                 // ⚠️ v0.14.0：只充过 1 次时明说，别让「典型」显得有统计支撑。
@@ -925,6 +1021,27 @@ fun RoutePlanCard(
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     },
                                 )
+                                // ⚠️ **v0.30.0（长途自驾党 P0-1）：必须交代前提。**
+                                //
+                                // 「到下一站剩 34%」是全 App **唯一像预测**的一句，
+                                // 也是出发前 5 分钟真正会读的那句 ——
+                                // 而它只按「车速档的 Wh/km」算：
+                                // **零**温度修正、**零**爬升修正、**零**安全余量。
+                                //
+                                // 实测：90 km/h 档 183.0 Wh/km vs 110–130 档 197.4（差 7.9%），
+                                // 128 公里站距上就是 **2.8 个百分点**的到达电量差；
+                                // 再叠加 616 公里那条的 896 m 爬升（按 App 自己的 600m+ 档口径 +4.7%）。
+                                //
+                                // 不说清楚，用户会把这个数当**保证值**。
+                                if (s.socAtNextStop != null && s.assumedWhPerKm != null) {
+                                    Text(
+                                        "（按 ${s.assumedSpeedKph?.roundToInt() ?: 90} km/h 档 " +
+                                            "${s.assumedWhPerKm.fmtKwh100()} kWh/100km 算，" +
+                                            "未做气温/爬升修正，未留安全余量）",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
                         // 到站电量低于 20% 保底 → 琥珀提示

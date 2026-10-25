@@ -298,15 +298,37 @@ func handleCostSummary(w http.ResponseWriter, r *http.Request) {
 	// ⚠️ v0.29.0：新增「本月」（自然月）—— 与 /stats 的 calendar_month 同口径。
 	isCalendarMonth := false
 	switch r.URL.Query().Get("period") {
+	case "today":
+		// ⚠️ **v0.30.0（第 19 轮财务评审 P0-1）：「今天」必须有自己的窗口。**
+		//
+		// 原来客户端「今天」段用的是 `period=week`（7 天），
+		// 而里程分母取的是**今天的**桶（`buckets.takeLast(1)`）——
+		// 分子 7 天、分母 1 天，**每公里成本高估 4.7 倍**
+		// （实测 2026-10-24：App 会显示 ¥1.18/公里，正确值 ¥0.25/公里）。
+		//
+		// 窗口由下面的通用分支算出：`今天 00:00`（桶数 1 → `-(1-1)` 天）。
+		buckets = 1
 	case "week":
 		buckets = 7
+	case "month":
+		buckets = 30
 	case "year":
 		buckets = 12
 	case "calendar_month":
 		buckets = 0
 		isCalendarMonth = true
 	default:
-		buckets = 30
+		// ⚠️ **v0.30.0（第 19 轮数据口径审计 P0-3）：未知 period 必须 400，不能静默当全量。**
+		//
+		// 原来 `default: buckets = 30` —— 任何拼错的 period 都会被**默默夹到最宽的合理值**，
+		// 客户端于是拿到一个「看起来正常但其实是全量」的数（实测 `period=today`
+		// 在修复前返回 961.47 度 / 42 场 = 全库 87 天的量）。
+		//
+		// 这与项目自己的纪律冲突（越界要 400，而不是默默夹到边界）——
+		// 现在白名单外的值一律 400。
+		writeErr(w, http.StatusBadRequest,
+			"period 只能是 today / week / month / calendar_month / year")
+		return
 	}
 	now := time.Now().In(loc)
 	var windowStart time.Time
@@ -323,6 +345,8 @@ func handleCostSummary(w http.ResponseWriter, r *http.Request) {
 		&out.DcUsedKwh, &out.AcUsedKwh,
 		&out.DcSessions, &out.AcSessions,
 		&out.DcMinutes, &out.AcMinutes,
+		// ⚠️ v0.30.0：围栏命中的家充桶（交流 ∧ 有 geofence_id）
+		&out.HomeUsedKwh, &out.HomeSessions, &out.HomeMinutes,
 	)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -2161,6 +2185,10 @@ func handleEnergyProfile(w http.ResponseWriter, r *http.Request) {
 	var raws []energyBandRaw
 	var totalKwh float64
 	var totalKwhGross float64
+	// ⚠️ **v0.30.0（第 19 轮数据口径审计 P0-2）：分子的覆盖里程。**
+	// 分子（能量）只覆盖剖面**分过箱**的那部分里程，
+	// 分母必须用**同一个**覆盖范围，否则比值不同源。
+	var coveredKm float64
 	for rows.Next() {
 		var (
 			key      int
@@ -2178,6 +2206,7 @@ func handleEnergyProfile(w http.ResponseWriter, r *http.Request) {
 		raws = append(raws, energyBandRaw{Key: key, Bins: bins, Km: km, Kwh: kwh, KwhGross: kwhGross})
 		totalKwh += kwh
 		totalKwhGross += kwhGross
+		coveredKm += km
 	}
 	if err := rows.Err(); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -2239,9 +2268,12 @@ func handleEnergyProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	out.BestBand = best
 	out.TotalKm = round1(totalKm)
-	if totalKm > 0 {
-		out.OverallWhPerKm = round1(totalKwh / totalKm * 1000.0)
-		out.OverallWhPerKmGross = round1(totalKwhGross / totalKm * 1000.0)
+	out.CoveredKm = round1(coveredKm)
+	// ⚠️ **v0.30.0（P0-2）：分母改用与分子同源的覆盖里程。**
+	// 原来用 `sum(drives.distance)`（8759.9 km）配只覆盖 8618.1 km 的分子 → 低估 1.6%。
+	if coveredKm > 0 {
+		out.OverallWhPerKm = round1(totalKwh / coveredKm * 1000.0)
+		out.OverallWhPerKmGross = round1(totalKwhGross / coveredKm * 1000.0)
 	}
 	writeJSON(w, out)
 }

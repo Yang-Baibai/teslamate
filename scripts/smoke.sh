@@ -226,7 +226,34 @@ assert d.get('summary'), 'no summary'
 " 2>/dev/null \
   && ok "stats calendar_month（自然月）" || fail "stats calendar_month（自然月）"
 
-# 10. 自更新元数据
+# 10. cost_summary period=today（v0.30.0：今天窗口不能是全量）
+CS=$(curl -s -m 15 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/cost_summary?period=today")
+echo "$CS" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+for k in ('dc_used_kwh','ac_used_kwh','home_used_kwh','dc_sessions','ac_sessions','home_sessions'):
+    assert k in d, 'missing '+k
+# 「今天」必须是**今天**：全库 87 天的直流约 961 度，
+# 若今天没有充电就必须接近 0 —— 超过 200 说明又退化成全量窗口了。
+assert d['dc_used_kwh'] < 200, 'period=today returned a full-range total'
+" 2>/dev/null \
+  && ok "cost_summary period=today（今天窗口，不是全量）" || fail "cost_summary period=today"
+
+# 11. 未知 period 必须 400（不能默默夹到最宽窗口 —— 越界要报错）
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/cost_summary?period=bogus")
+[[ "$CODE" == "400" ]] && ok "cost_summary 未知 period → 400" || fail "cost_summary 未知 period → 400 (实际 $CODE)"
+
+# 12. energy_profile：平均能耗的分母必须与分子同源
+echo "$EP" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+ck=d.get('covered_km')
+assert ck is not None, 'missing covered_km'
+assert 0 < ck <= d['total_km'] + 1, 'covered_km out of range'
+assert d['overall_wh_per_km_gross'] > 0, 'gross must be > 0'
+" 2>/dev/null \
+  && ok "energy_profile covered_km（分子分母同源）" || fail "energy_profile covered_km"
+# 13. 自更新元数据
 L=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" $B/api/v1/app/latest)
 echo "$L" | python -c "import json,sys;d=json.load(sys.stdin);assert d['version_code'].isdigit()" 2>/dev/null \
   && ok "app/latest 元数据" || fail "app/latest 元数据"

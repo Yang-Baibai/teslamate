@@ -1180,23 +1180,56 @@ private fun SettingsRatesPage(
             item {
                 SectionCard("电价" + (carName?.let { " · $it" } ?: ""), Modifier.animateItem()) {
                     Text(
-                        "填上你的电价，App 就能算出「每公里成本」—— " +
-                            "这个数官方 Tesla App 给不了（它不知道你的真实行驶里程口径）。",
+                        "填上你的电价，App 就能给出「每公里成本」的**估算**" +
+                            "（分母是 App 记录的行驶里程，可能漏记）—— " +
+                            "这个数官方 Tesla App 给不了。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    // ⚠️ **v0.26.0（第 17 轮新手车主 P0-1）：先说清 App 的盲区。**
+                    // ⚠️ **v0.30.0（第 19 轮财务评审 P0-3 / P2-1）：口径改了。**
                     //
-                    // App 只知道「交流 / 直流」，**分不出哪场交流是在自家桩上充的**
-                    // —— 本机 `geofences` 表 0 行，78/78 场充电都没有围栏归属，
-                    // 而库里全部 4 场「交流」都发生在外省的酒店和路边。
+                    // 原文写「本机 `geofences` 表 0 行，78/78 场充电都没有围栏归属」——
+                    // **这句已经过时**：「家」围栏是 2026-10-25 02:36 才建的（1 行），
+                    // 而全部 78 场充电都发生在**它之前**，所以历史数据仍然没有归属。
                     //
-                    // 所以这里的口径是：**所有交流慢充都按「家充电价」算**。
-                    // 车主要是常年在外面充，就该把「家充电价」填成外面那个价。
+                    // 原文写「所有交流慢充都按家充电价算」—— 这个默认在本机 **5/5 全错**：
+                    // 实测 5 场交流慢充全部在 **286~1506 公里外**（甘孜的酒店、梧州的路边）。
+                    //
+                    // 现在：**家充有真凭据**（TeslaMate 的充电围栏），
+                    // 没有归属的交流由下面的开关决定按哪个价算。
                     Text(
-                        "App 只分得出「交流 / 直流」，分不出哪场是在自家桩上充的" +
-                            "（车端没配充电地点）。所以所有交流慢充都按下面的家充电价算 —— " +
-                            "常在外面充的话，把这个价填成你在外面充的价。",
+                        "家充按 TeslaMate 的**充电围栏**判定（命中围栏的才算家充）。" +
+                            "没有围栏归属的交流慢充，App 不知道它是在家还是在酒店/路边 —— " +
+                            "用下面的开关决定按哪个价算。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    // ⚠️ v0.30.0：**新开关** —— 没有围栏归属的交流慢充按哪个价算。
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "无归属的交流慢充按",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IosSwitch(
+                            checked = rates.acUsesHomePrice,
+                            onCheckedChange = {
+                                onChange(rates.copy(acUsesHomePrice = it))
+                            },
+                            label = "无归属的交流慢充按家充电价计",
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (rates.acUsesHomePrice) "家充电价" else "公共桩价",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    Text(
+                        "默认按**公共桩价**算 —— 因为实测本机 5 场交流慢充全部在 286 公里以外，" +
+                            "「交流 = 家充」这个假设 5/5 是错的。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1270,8 +1303,9 @@ private fun SettingsRatesPage(
                         )
                     }
                     Text(
-                        "服务区快充普遍按**分钟**收服务费（占位时间也要钱）；" +
-                            "按度算会低估 25%~35%。家用交流桩反过来必须按度算。",
+                        "服务区快充普遍按**分钟**收服务费（占位时间也要钱）。" +
+                            "本机实测：按分钟 ≈ ¥1,094.50、按度 ≈ ¥902.76（差 5.8%）；" +
+                            "**不填服务费会低估约 33%**。家用交流桩反过来必须按度算。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -35,6 +35,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.util.Locale
@@ -42,6 +43,29 @@ import kotlin.math.ceil
 import kotlin.math.max
 import com.teslamate.app.fmt
 import kotlin.math.roundToInt
+
+/**
+ * ⚠️ **v0.30.0（第 19 轮 HIG 评审 P1-7）：Canvas 里的数字必须用**等宽数字**。**
+ *
+ * `Theme.kt` 的 15 个字阶全都带 `fontFeatureSettings = "tnum"` ✓，
+ * 但 Canvas 里的 `TextStyle(...)` 是**另起一套** —— 全部没有 tnum。
+ *
+ * 后果：会随数据刷新的数字（峰值、「约第 N 公里降到 20%」、起止电量、刻度）
+ * 在数值变化时**左右抖** —— 因为非等宽数字的「1」比「8」窄，
+ * 整串文字的宽度会变，居中/右对齐的位置就跟着动。
+ *
+ * 统一走这个工厂函数，一处漏不掉。
+ */
+private fun chartText(
+    size: TextUnit,
+    color: Color,
+    fontWeight: FontWeight = FontWeight.Normal,
+): TextStyle = TextStyle(
+    fontSize = size,
+    color = color,
+    fontWeight = fontWeight,
+    fontFeatureSettings = "tnum",
+)
 
 data class ChartSeries(
     val values: List<Float?>,
@@ -97,7 +121,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAxes(
         val txt = if (t >= 100) "${t.roundToInt()}" else "${trimNum(t)}"
         val layout = textMeasurer.measure(
             text = txt,
-            style = TextStyle(fontSize = 9.sp, color = labelColor),
+            style = chartText(9.sp, labelColor),
         )
         drawText(
             textLayoutResult = layout,
@@ -113,7 +137,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawAxes(
         xLabels.forEachIndexed { i, label ->
             val layout = textMeasurer.measure(
                 text = label,
-                style = TextStyle(fontSize = 9.sp, color = labelColor),
+                style = chartText(9.sp, labelColor),
             )
             val rawX = plotLeft + step * i - layout.size.width / 2f
             val x = when (i) {
@@ -222,7 +246,14 @@ fun StackedBarChart(
     // 而参考线实际画的是 `onSurface @45%` 合成色，浅色只有 **2.85:1** < 3:1。
     // 参考线是「20% 保底线」「比上趟省 19%」的读图依据，必须看得见。
     val accents = LocalAccentColors.current
-    val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-5）：空槽必须用**不透明**的 `chartTrack`。**
+    //
+    // 原来用 `surfaceContainerHighest`（#E8E8EB）再压到 22% 透明度 ——
+    // 合成后浅色底上只有 **1.04:1**、深色底上 **1.89:1**，
+    // 而 WCAG 1.4.11 要求**非文字图形** ≥3:1。
+    // 项目里**早就有**达标的 `chartTrack`（浅 #77777D = 4.45:1 / 深 #6E6E76 = 3.37:1），
+    // 只是这里没用上 —— 现在换掉。
+    val trackColor = accents.chartTrack
     // ⚠️ v0.20.0：参考线标注的颜色要在 @Composable 作用域取 ——
     // DrawScope 里调 MaterialTheme.colorScheme 编译不过。
     val refLabelColor = MaterialTheme.colorScheme.onSurfaceVariant
@@ -313,7 +344,7 @@ fun StackedBarChart(
                     if (referenceLabel.isNotBlank()) {
                         val layout = textMeasurer.measure(
                             text = referenceLabel,
-                            style = TextStyle(fontSize = 9.sp, color = refLabelColor),
+                            style = chartText(9.sp, refLabelColor),
                         )
                         drawText(
                             textLayoutResult = layout,
@@ -334,7 +365,9 @@ fun StackedBarChart(
                 // 现在：绘图区先铺一层极淡的底，缝隙露的是底而不是卡片面，
                 // 空槽本身也压到 0.22 —— 竖条消失，量程结构还在。
                 drawRoundRect(
-                    color = trackColor.copy(alpha = 0.22f),
+                    // ⚠️ v0.30.0（P0-5）：空槽用**不透明**的 chartTrack（≥3:1），
+                    // 原来压到 22% 透明度后浅色底上只有 1.04:1。
+                    color = trackColor,
                     topLeft = Offset(x, plotTop),
                     size = Size(bw, plotHeight),
                     cornerRadius = CornerRadius(4.dp.toPx()),
@@ -509,7 +542,7 @@ fun LineChart(
                     if (referenceLabel.isNotBlank()) {
                         val layout = textMeasurer.measure(
                             text = referenceLabel,
-                            style = TextStyle(fontSize = 9.sp, color = refLabelColor),
+                            style = chartText(9.sp, refLabelColor),
                         )
                         drawText(
                             textLayoutResult = layout,
@@ -574,7 +607,7 @@ fun LineChart(
                 if (maxi >= 0) {
                     val layout = textMeasurer.measure(
                         text = String.format(Locale.CHINA, "%.0f", present.max()),
-                        style = TextStyle(fontSize = 11.sp, color = contentColor, fontWeight = FontWeight.Medium),
+                        style = chartText(11.sp, contentColor, fontWeight = FontWeight.Medium),
                     )
                     drawText(
                         textLayoutResult = layout,
@@ -850,7 +883,7 @@ fun PowerProfileChart(
                 // 读者根本看不出那是**零线以下**（而这个图的核心就是正负两段）。
                 val layout = textMeasurer.measure(
                     text = txt,
-                    style = TextStyle(fontSize = 9.sp, color = labelColor),
+                    style = chartText(9.sp, labelColor),
                 )
                 drawText(
                     textLayoutResult = layout,
@@ -912,7 +945,7 @@ fun PowerProfileChart(
                 val txt = "${km.roundToInt()}"
                 val layout = textMeasurer.measure(
                     text = txt,
-                    style = TextStyle(fontSize = 9.sp, color = labelColor),
+                    style = chartText(9.sp, labelColor),
                 )
                 val rawX = xAt(km) - layout.size.width / 2f
                 val x = when (align) {
@@ -1086,7 +1119,7 @@ fun SocStrip(
                 }
                 val layout = textMeasurer.measure(
                     text = "$lvl%",
-                    style = TextStyle(fontSize = 9.sp, color = color),
+                    style = chartText(9.sp, color),
                 )
                 drawText(
                     textLayoutResult = layout,
@@ -1134,7 +1167,7 @@ fun SocStrip(
                 drawCircle(color = color, radius = dot, center = Offset(x, y))
                 val layout = textMeasurer.measure(
                     text = text,
-                    style = TextStyle(fontSize = 10.sp, color = color, fontWeight = FontWeight.SemiBold),
+                    style = chartText(10.sp, color, fontWeight = FontWeight.SemiBold),
                 )
                 // 标签放在点的**上方**（电量在降，上方是「还有电」的方向）；
                 // 上方放不下就改放下方，避免出界。
@@ -1158,7 +1191,7 @@ fun SocStrip(
             ).forEach { (lvl, txt) ->
                 val layout = textMeasurer.measure(
                     text = txt,
-                    style = TextStyle(fontSize = 9.sp, color = labelColor),
+                    style = chartText(9.sp, labelColor),
                 )
                 drawText(
                     textLayoutResult = layout,
@@ -1175,7 +1208,7 @@ fun SocStrip(
             if (firstSoc != null && lastSoc != null) {
                 val layout = textMeasurer.measure(
                     text = "${firstSoc}% → ${lastSoc}%",
-                    style = TextStyle(fontSize = 9.sp, color = labelColor),
+                    style = chartText(9.sp, labelColor),
                 )
                 drawText(
                     textLayoutResult = layout,
