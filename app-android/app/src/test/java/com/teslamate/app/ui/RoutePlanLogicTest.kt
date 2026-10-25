@@ -236,6 +236,17 @@ class RoutePlanLogicTest {
     }
 
     @Test
+    fun `需要注意的站下标与跳一一对应`() {
+        // ⚠️ v0.44.0：「只看需要注意的站」筛选要用它 ——
+        // 站区有 37 行，出发前 5 分钟真正要看的只有那十几行。
+        val p = plan3Stations()
+        // A→B（到不了保底）与 C→终点（估 18 < 20）两跳要注意
+        assertEquals(setOf(0, 2), p.actionableStopIndices())
+        // 从 B 起算 ⇒ 只有 C 那一跳
+        assertEquals(setOf(2), p.actionableStopIndices(1))
+    }
+
+    @Test
     fun `细节行给全程最低点的落点`() {
         val p = plan(
             listOf(stop("A", 0.0, gapKm = 100.0)),

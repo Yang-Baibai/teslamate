@@ -36,7 +36,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -643,7 +645,30 @@ data class RoutePlan(
     val impossibleHopCount: Int get() = belowReserveHopCount
 
     /**
-     * ⚠️ **v0.39.0（第 23 轮车主复审 P2-3）：**需要处理**的那几跳。**
+     * ⚠️ **v0.44.0：需要注意的跳所对应的**出发站下标**集合。**
+     *
+     * 「只看需要注意的站」筛选要用 —— 展开态的站区有 37 行，
+     * 而出发前 5 分钟真正要看的只有那十几行。
+     */
+    fun actionableStopIndices(startIdx: Int = 0): Set<Int> {
+        val from = if (startIdx in stops.indices) startIdx else 0
+        val out = mutableSetOf<Int>()
+        for (i in from..stops.lastIndex) {
+            val s = stops[i]
+            val gap = s.gapToNextKm ?: continue
+            if (gap < 2.0) continue
+            val est = s.socAtNextStop
+            val real = s.nextStopRealSoc
+            val belowReserve = s.gapBelowReserve
+            val estLow = est != null && est < RESERVE_SOC
+            val realLowHidden = real != null && real < RESERVE_SOC && (est ?: 0) >= RESERVE_SOC
+            if (belowReserve || estLow || realLowHidden) out += i
+        }
+        return out
+    }
+
+    /**
+     * ⚠️ **v0.39.0（第 23 轮车主复审 P2-3）：整条线里**需要处理**的那几跳。**
      *
      * 复审的批评很直接：
      * > 「展开态是 36 站按里程排的清单，**没有「下一站」锚点、没有跳转**。
@@ -2143,6 +2168,8 @@ fun RoutePlanCard(
     // fs=2.0 时整张卡 **≈ 23.7 屏** —— 出发前 5 分钟在 23 屏里找「下一站」，
     // 必然放弃。现在默认只给决策行 + 处方行，证据收进「详情」。
     val expandedStops = remember { mutableStateMapOf<Int, Boolean>() }
+    // ⚠️ **v0.44.0**：站区默认只显示「需要注意」的那些站（一键全部）。
+    var showAllStations by remember { mutableStateOf(false) }
 
     SectionCard("线路余量表", modifier) {
         if (onCollapse != null) {
@@ -2466,7 +2493,48 @@ fun RoutePlanCard(
                     }
                     Spacer(Modifier.height(4.dp))
                 }
-                plan.stops.forEachIndexed { stopIdx, s ->
+                // ⚠️ **v0.44.0（第 25 轮 HIG 复审 C5）：站区默认只显示「需要注意」的站。**
+                //
+                // 展开态的站区有 **37 行 × 2 行** = 74 行，
+                // 而出发前 5 分钟真正要看的只有十几行。
+                // HIG 实测：展开态在 360dp + fs=2.0 下高 **6520dp（8.9 屏）**。
+                //
+                // ⚠️ **数据一点都不丢**：默认只显示「需要注意」的那些站
+                // + 起点 + 最后一站，其余一键展开（本仓库既定的「折起来 = 新手不被术语干扰；
+                // 展开 = 数据一点都没丢」模式）。
+                val visibleStopIdx = remember(plan, startIdx, showAllStations) {
+                    if (showAllStations) {
+                        plan.stops.indices.toList()
+                    } else {
+                        val act = plan.actionableStopIndices(startIdx)
+                        (act + 0 + plan.stops.lastIndex).sorted()
+                    }
+                }
+                // ⚠️ **v0.44.0：切换「只看需要注意的站」/「查看全部站」。**
+                //
+                // ⚠️ **数据一点没丢**：默认只是**折叠**，一键全开 ——
+                // 这是本仓库既定的 `CollapsibleSection` 模式
+                // （「折起来 = 新手不被干扰；展开 = 数据一点没丢」）。
+                //
+                // 文案自带动作（「查看全部 37 站」），读屏用户也听得懂。
+                val collapsedCount = remember(plan, startIdx) {
+                    (plan.actionableStopIndices(startIdx) + 0 + plan.stops.lastIndex).sorted().size
+                }
+                Text(
+                    if (showAllStations) {
+                        "只看需要注意的 $collapsedCount 站"
+                    } else {
+                        "查看全部 ${plan.stops.size} 站"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = accents.energyBlue,
+                    modifier = Modifier
+                        .clickable { showAllStations = !showAllStations }
+                        // ⚠️ 命中区 ≥24dp（WCAG 2.5.8）；本仓库自己定的规范是 44dp。
+                        .padding(vertical = 10.dp),
+                )
+                visibleStopIdx.forEach { stopIdx ->
+                    val s = plan.stops[stopIdx]
                     // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-1）：证据行默认**收起**。**
                     //
                     // 实测那条川藏滇线有 **36 个站**。原来每站 5~6 行
