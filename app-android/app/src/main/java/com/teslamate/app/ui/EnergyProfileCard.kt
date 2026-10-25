@@ -253,42 +253,57 @@ fun EnergyProfileCard(
             .distinctBy { it.min_kph to it.max_kph }
             .sortedBy { it.min_kph }
         detail.forEach { b ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                Text(
-                    "${b.label} km/h",
-                    style = MaterialTheme.typography.bodySmall,
-                    // ⚠️ **v0.47.0（第 28 轮 a11y P1-5）**：固定宽在 200% 字号下全部溢出 ——
-                    // 「40-50 km/h」≈ 5.19em，fs=2.0 时 134.9dp > 88dp ⇒ 断行；
-                    // 临界 fontScale = 88 / (5.19 × 13) = **1.30**。
-                    modifier = Modifier.widthIn(min = 88.dp),
-                )
-                Text(
-                    // ⚠️ v0.30.0（P1-A）：明细行改用**毛耗电** ——
-                    // 主角与柱高都是毛耗电，明细却给净值 = 同一张卡两个数。
-                    // 净值（扣回充）在行尾标出，两个口径各归各位。
-                    "${b.wh_per_km_gross.fmtKwh100()} kWh/100km",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = if (isBest(b)) FontWeight.SemiBold else FontWeight.Normal,
-                    // 「198 kWh/100km」≈ 6.87em ⇒ fs=2.0 时 178.6dp > 118dp；
-                    // 临界 fontScale = 118 / (6.87 × 13) = **1.32**。
-                    modifier = Modifier.widthIn(min = 118.dp),
-                )
-                Text(
-                    // ⚠️ v0.30.0：净耗电（扣回充抵扣）—— 明确标成「净」
-                    "净 ${b.wh_per_km.fmtKwh100()}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.widthIn(min = 74.dp),
-                )
-                Text(
-                    "${b.km.roundToInt()} 公里",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    // ⚠️ **v0.47.0（第 28 轮 a11y P1-5）**：末列吃掉剩余空间 ——
-                    // 原来前三列固定占 88+118+74 = 280dp，
-                    // 卡片可用宽只剩 49dp，而「1234 公里」在 fs=2.0 时要 107.6dp ⇒ 折成 2~3 行。
-                    modifier = Modifier.weight(1f),
-                )
+            // ⚠️ **v0.52.0（第 29 轮无障碍复核）**：明细行改成**两行式**。
+            //
+            // v0.47.0 把它改成「三列 widthIn + 末列 weight(1f)」——
+            // ⚠️ **那是「修 A 弄坏 B」**：第 29 轮用 Compose 1.7.6 的
+            // `RowColumnMeasurePolicy` 源码算过：
+            // `weight(1f)` 拿的是 `coerceAtLeast(0)` 的**剩余**空间，
+            // 而前三列在 fs=2.0 时长到 88→135 + 118→179 + 74→…
+            // **合计 ≈ 387dp > 卡片可用宽 ≈ 329dp** ⇒
+            // **第 3 列被挤成一条缝、末列宽度 0** —— 比改前（固定 280dp、末列尚有 49dp）**更糟**。
+            //
+            // 现在按**两行式**排（与 `RangeSegments.kt` v0.29.0 已验证过的模式一致）：
+            // 第 1 行 = 档位 + 毛耗电；第 2 行 = 净耗电 + 公里。
+            // ⇒ 每一行只放两列，两列之和在 fs=2.0 时也不会超过可用宽，
+            // **没有任何一列会被压到 0**。
+            Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                Row(Modifier.fillMaxWidth()) {
+                    Text(
+                        "${b.label} km/h",
+                        style = MaterialTheme.typography.bodySmall,
+                        // 「40-50 km/h」≈ 5.19em，fs=2.0 时 134.9dp；
+                        // 临界 fontScale = 88 / (5.19 × 13) = **1.30**。
+                        modifier = Modifier.widthIn(min = 88.dp),
+                    )
+                    Text(
+                        // ⚠️ v0.30.0（P1-A）：明细行改用**毛耗电** ——
+                        // 主角与柱高都是毛耗电，明细却给净值 = 同一张卡两个数。
+                        // 净值（扣回充）在行尾标出，两个口径各归各位。
+                        "${b.wh_per_km_gross.fmtKwh100()} kWh/100km",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = if (isBest(b)) FontWeight.SemiBold else FontWeight.Normal,
+                        // 「198 kWh/100km」≈ 6.87em，fs=2.0 时 178.6dp；
+                        // 临界 fontScale = 118 / (6.87 × 13) = **1.32**。
+                        modifier = Modifier.widthIn(min = 118.dp),
+                    )
+                }
+                Row(Modifier.fillMaxWidth()) {
+                    Text(
+                        // ⚠️ v0.30.0：净耗电（扣回充抵扣）—— 明确标成「净」
+                        "净 ${b.wh_per_km.fmtKwh100()}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.widthIn(min = 74.dp),
+                    )
+                    Text(
+                        "${b.km.roundToInt()} 公里",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        // 末列吃剩余空间（「1234 公里」在 fs=2.0 时要 107.6dp）
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
         }
 
