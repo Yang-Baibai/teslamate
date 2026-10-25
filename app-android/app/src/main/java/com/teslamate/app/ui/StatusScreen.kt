@@ -819,6 +819,26 @@ private fun RangeAndOdometer(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+        // ⚠️ **v0.42.0（第 24 轮对抗性审计 ⑤）：给这个数一个**区间**。**
+        //
+        // 同一个模型、同一个残差分布，线路余量表那边给「±N 个点」，
+        // 这边却给一个**裸整数** —— 同一个不确定度，一个页面给区间一个不给。
+        //
+        // ⚠️ 区间**非对称**（Wh/km 与续航成反比：省电那侧被放大、费电那侧也被放大），
+        // 所以不能写「±N 公里」。
+        if (trueRange != null) {
+            consumption?.trueRangeBandKm(
+                ratedRangeKm = ratedRange,
+                speedKph = refSpeed,
+                outsideTempC = st.outside_temp,
+            )?.let { (lo, hi) ->
+                Text(
+                    "约 $lo ~ $hi 公里（模型自己的残差 90 分位）",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：来源与温度可信度常驻显示。**
         if (scopeLine != null) {
             Text(

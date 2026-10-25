@@ -246,6 +246,67 @@ class ConsumptionModel(
         return ratedRangeKm * EPA_WH_PER_KM / whEff * safety
     }
 
+    /**
+     * ⚠️ **v0.42.0（第 24 轮对抗性审计 ⑤）：「现在能开」的**区间**（公里）。**
+     *
+     * ## 为什么要有它
+     *
+     * 同一个模型、同一个残差分布：
+     * - 线路余量表给「±N 个点」（[socErrorPoints]）；
+     * - 车况页却给一个**裸整数**（229 公里）。
+     *
+     * 同一个不确定度，一个页面给区间一个不给 ⇒ **口径漂移**。
+     * 第 24 轮对抗性审计的原话：「两个页面，同一个模型，一个给误差带，一个给裸整数」。
+     *
+     * ## 为什么区间是**非对称**的
+     *
+     * 不确定度在 **Wh/km** 上，而续航与 Wh/km 成**反比**：
+     * 实际比模型省电 ⇒ 跑得更远（**上行被放大**）；
+     * 实际比模型费电 ⇒ 跑得更近（**下行被放大**）。
+     *
+     * 所以不能写「±N 公里」—— 那会把**放大的那一侧**说小了。
+     *
+     * ## 区间是**非对称**的，而且**不是**「对称 ± 某个百分比」
+     *
+     * 设 `x = p90 / whEff`（本机约 0.10）：
+     * - 乐观侧 = 基数 ÷ (1 − x) ⇒ 比基数高 **x/(1−x)** ≈ **+11.5%**；
+     * - 悲观侧 = 基数 ÷ (1 + x) ⇒ 比基数低 **x/(1+x)** ≈ **−9.3%**。
+     *
+     * 而「对称 ±x」是 **±10.3%** ⇒ 它**高估**了悲观侧、**低估**了乐观侧。
+     * 所以不能写成「±N 公里」。
+     *
+     * ## 口径与 [trueRangeKm] **完全同源**
+     *
+     * 同样的档位规则、同样的气温系数、同样的低温不可信判定 ——
+     * 否则这个区间和那个点就对不上。
+     *
+     * @return (悲观, 乐观) 两个公里数，**升序**；样本不足时返回 null（不给区间）。
+     */
+    fun trueRangeBandKm(
+        ratedRangeKm: Double?,
+        speedKph: Double,
+        outsideTempC: Double?,
+        reserveFactor: Double = 0.90,
+    ): Pair<Int, Int>? {
+        if (ratedRangeKm == null || ratedRangeKm <= 0) return null
+        val p90 = residualP90WhPerKm ?: return null
+        val bucket = whPerKm(speedKph) ?: return null
+        if (bucket.samples < 2) return null
+        // ⚠️ 低温不可信 ⇒ 连区间也不给（与 [trueRangeKm] 同一个判据）
+        if (outsideTempC != null && outsideTempC <= 10.0 && !lowTempTrustworthy) return null
+        val tempFactor = outsideTempC
+            ?.let { 1.0 + minOf(0.10, 0.006 * maxOf(0.0, it - 22.0)) }
+            ?: 1.0
+        val whEff = bucket.whPerKm * tempFactor
+        // Wh/km 减到零以下 ⇒ 这个模型在那个速度档根本不可信 ⇒ 不给区间
+        if (whEff <= p90) return null
+        val base = ratedRangeKm * EPA_WH_PER_KM / whEff * reserveFactor
+        val optimistic = base * whEff / (whEff - p90)
+        val pessimistic = base * whEff / (whEff + p90)
+        // ⚠️ **升序返回** —— 调用方直接当 (下界, 上界) 用。
+        return pessimistic.roundToInt() to optimistic.roundToInt()
+    }
+
     companion object {
         /** 本车标称能耗（cars.efficiency = 0.146 kWh/km）。换车需同步。 */
         const val EPA_WH_PER_KM = 146.0

@@ -671,6 +671,42 @@ data class RoutePlan(
             return out
         }
 
+    /**
+     * ⚠️ **v0.42.0：端到端到站误差（实测 − 模型估计），**从这条线自己的数据算**。**
+     *
+     * ## 为什么要有它
+     *
+     * 卡级前提行原来只说「余量估计的模型残差约 ±N 个点」——
+     * 而那个 ±N 是**模型残差的 90 分位**，是**对称**的。
+     * 但端到端的实际误差是**单向偏乐观**的：
+     * 模型估的到站电量**系统性偏低**（估 21 / 实测 17 这种）。
+     *
+     * ⚠️ 以前这里写死过「中位 +4.5 点、最大 +26 点」——
+     * 那是**某一条线**（6227 公里那条）的黑盒审计结果，
+     * 拿它当**所有线路**的通用值就是**过度承诺**。
+     *
+     * 现在：**从这条线自己的每一跳算**（每站都有 `socAtNextStop` 估算值
+     * 与 `nextStopRealSoc` 上次实测值）⇒ 数字只对这条线成立。
+     *
+     * @return (中位, 最大) 个电量点；样本不足时返回 null。
+     */
+    val endToEndErrorPoints: Pair<Int, Int>? get() {
+        val errs = stops.mapNotNull { s ->
+            val est = s.socAtNextStop ?: return@mapNotNull null
+            val real = s.nextStopRealSoc ?: return@mapNotNull null
+            // ⚠️ 符号约定：**估 − 实**。
+            // 正数 = 模型**高估**了到站余量（乐观）；
+            // 负数 = 模型**低估**了（保守）。
+            est - real
+        }
+        if (errs.size < 3) return null
+        val sorted = errs.sorted()
+        val med = medianOf(sorted.map { it.toDouble() })?.roundToInt() ?: return null
+        // 最坏的一跳（方向最偏乐观的那个）
+        val worst = if (med >= 0) sorted.last() else sorted.first()
+        return med to worst
+    }
+
     /** 最低点（不含充电跳升后的值） */
     val lowestSoc: Int? get() = profile.minByOrNull { it.soc }?.soc
 
@@ -1929,7 +1965,28 @@ fun RoutePlanCard(
                         //
                         // 所以只说「模型残差」，不说「实测误差」——
                         // 否则就变成了**低报**风险。
-                        (plan.modelErrorPoints?.let { "；余量估计的模型残差约 ±$it 个点" } ?: "") +
+                        (plan.modelErrorPoints?.let {
+                            // ⚠️ **v0.42.0：说清这个 ±N 是**哪一跳**的。**
+                            // 它取的是**最长那一跳**（`modelErrorPoints` 用的就是最长跳的里程），
+                            // 而同一张卡的逐站行用的是**每一跳自己的**里程 ——
+                            // 同屏两个数、同一句式、两个范围。
+                            "；余量估计的模型残差约 ±$it 个点（最长那一跳；短跳更小）"
+                        } ?: "") +
+                        // ⚠️ **v0.42.0：端到端的**单向**偏差**也要说。
+                        //
+                        // 那个 ±N 是**对称**的模型残差，但端到端实际误差是**单向**的：
+                        // 模型估的到站余量通常**偏高**（乐观）。
+                        // ⚠️ 数字从**这条线自己的每一跳**算（估 − 实），
+                        // 不用别的线的黑盒审计值 —— 那样就是过度承诺。
+                        (plan.endToEndErrorPoints?.let { (med, worst) ->
+                            if (med >= 0) {
+                                "；端到端模型估算偏乐观：比实测高 " +
+                                    "中位 $med 个点、最坏 $worst 个点"
+                            } else {
+                                "；端到端模型估算偏保守：比实测低 " +
+                                    "中位 ${-med} 个点、最坏 ${-worst} 个点"
+                            }
+                        } ?: "") +
                         // ⚠️ **v0.40.0（第 24 轮客户复审 C 部分 / 对抗性审计 ⑦）：**
                         // 「上次剩」这一栏的**定性**必须写进前提行。
                         //

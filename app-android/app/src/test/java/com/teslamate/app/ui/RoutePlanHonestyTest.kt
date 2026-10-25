@@ -220,4 +220,49 @@ class RoutePlanHonestyTest {
         val n = p.belowReserveNotice()!!
         assertTrue(n.contains("充满也只剩 12%"))
     }
+
+    // ── ④ 端到端单向偏差：从**这条线自己的数据**算 ────────────────
+
+    private fun planWithErrors(vararg errs: Pair<Int, Int>): RoutePlan {
+        // errs = (估算, 实测)
+        val stops = errs.mapIndexed { i, (est, real) ->
+            stop("S$i", i * 100.0, gapKm = 100.0, need = 20, required = 40, realSoc = real, estSoc = est)
+        }
+        return RoutePlan(
+            RouteTemplate(
+                key = "j1", fromLabel = "A", toLabel = "B",
+                distanceKm = 1000.0, startSoc = 100, endSoc = 50,
+                legCount = errs.size, stopCount = errs.size,
+                lastDrivenAt = java.time.Instant.parse("2026-10-07T00:00:00Z"),
+                startOdoKm = 100000.0,
+            ),
+            emptyList(),
+            stops,
+        )
+    }
+
+    @Test
+    fun `端到端偏差是从这条线自己算的`() {
+        // 估算比实测高 4 / 5 / 3 个点 ⇒ 中位 4、最坏 5
+        val p = planWithErrors(18 to 14, 20 to 15, 16 to 13)
+        val e = p.endToEndErrorPoints
+        assertTrue("应算出偏差: $e", e != null)
+        assertEquals("中位偏差 = 4", 4, e!!.first)
+        assertEquals("最坏偏差 = 5", 5, e.second)
+    }
+
+    @Test
+    fun `端到端偏差样本不足时不给数`() {
+        // 只有 2 个点 ⇒ 样本不足
+        assertNull(planWithErrors(18 to 14, 20 to 15).endToEndErrorPoints)
+    }
+
+    @Test
+    fun `端到端偏差能识别偏保守`() {
+        // 估算比实测**低** ⇒ 中位为负 ⇒ 界面应该说「偏保守」
+        val p = planWithErrors(10 to 14, 10 to 15, 10 to 13)
+        val e = p.endToEndErrorPoints!!
+        assertTrue("中位应为负（模型保守）: ${e.first}", e.first < 0)
+        assertTrue("最坏也应为负: ${e.second}", e.second < 0)
+    }
 }

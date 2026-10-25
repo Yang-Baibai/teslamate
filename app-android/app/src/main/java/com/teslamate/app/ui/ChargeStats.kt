@@ -67,7 +67,31 @@ data class StationStat(
      * （离散 3%）；但起始 SOC ≥38% 时离散会跳到 20%~29%（因为慢会话也进来了）。
      */
     val measuredSamples: List<MeasuredSample> = emptyList(),
+    /**
+     * ⚠️ **v0.42.0（第 24 轮对抗性审计 ⑧）：该站直流场次里**没充到 80%**的次数。**
+     *
+     * ## 为什么要有这个数
+     *
+     * 「该站同起点最慢一次」取的是**成功充到 80%** 的场次里的最大值。
+     * 而**没充到 80%** 的场次（桩慢、桩坏、排队、提前离场）**恰恰是最该知道的那批** ——
+     * 它们被整体排除，于是「最慢一次」只是**成功子集里的最慢**，
+     * **不是这个桩的最坏情况**。
+     *
+     * 实测本机：直流 65 场里 **31 场 `never_reached_80`**（47.7%）、
+     * 6 场起点已 ≥80% ⇒ 有效的只有 **28 场**。
+     *
+     * ⚠️ 所以界面**必须**说清这个「最慢」是**哪个总体**里的最慢。
+     */
+    val dcNeverReached80: Int = 0,
 ) {
+    /**
+     * ⚠️ **v0.42.0**：被排除在「最慢一次」统计之外的直流场次数。
+     *
+     * 只算「没充到 80%」这一类 —— 那是**速度问题**；
+     * 「起点已 ≥80%」「采样点太少」那些是**口径问题**，不是慢。
+     */
+    val excludedFromSlowest: Int get() = dcNeverReached80
+
     /**
      * ⚠️ v0.31.0：一笔**实测**样本（起点 SOC + 分钟数）。
      */
@@ -228,6 +252,11 @@ fun buildStationStats(charges: List<Charge>): Map<String, StationStat> {
                 val m = c.measured_minutes_to_80 ?: return@mapNotNull null
                 val from = c.measured_from_soc ?: return@mapNotNull null
                 StationStat.MeasuredSample(from, m)
+            },
+            // ⚠️ **v0.42.0：统计该站直流场次里「没充到 80%」的次数。**
+            // 「最慢一次」只从成功子集里取最大值 ⇒ 必须披露这个总体。
+            dcNeverReached80 = list.count { c ->
+                c.is_dc == true && c.measured_unavailable_reason == "never_reached_80"
             },
         )
     }.toMap()

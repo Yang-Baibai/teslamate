@@ -626,7 +626,27 @@ internal fun ChargeDetail(
                             )
                         }
                         if (measuredSlow != null) {
-                            KV("该站同起点最慢一次", "$measuredSlow 分钟")
+                            // ⚠️ **v0.42.0（第 24 轮对抗性审计 ⑧）：披露这个「最慢」是**哪个总体**里的最慢。**
+                            //
+                            // 「最慢一次」取的是**成功充到 80%** 的场次里的最大值，
+                            // 而**没充到 80%** 的场次（桩慢、桩坏、排队）恰恰是最该知道的那批 ——
+                            // 它们被整体排除，于是这个数只是**成功子集里的最慢**，
+                            // **不是这个桩的最坏情况**。
+                            //
+                            // 实测本机：直流 65 场里 31 场 never_reached_80（47.7%），
+                            // 有效的只有 28 场。
+                            val excluded = stat.excludedFromSlowest
+                            KV(
+                                "该站同起点最慢一次",
+                                "$measuredSlow 分钟" + (
+                                    if (excluded > 0) {
+                                        "（只统计充到 80% 成功的场次；另有 $excluded 场没充到 80%，" +
+                                            "最坏情况可能比这个数差）"
+                                    } else {
+                                        ""
+                                    }
+                                    ),
+                            )
                         }
                         stat.compareTo(charge.effectiveAvgPowerKw()?.toDouble())?.let {
                             Text(
