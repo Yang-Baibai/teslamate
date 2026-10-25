@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import com.teslamate.app.Charge
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtMonth
+import com.teslamate.app.fmtShort
 import kotlin.math.roundToInt
 
 /**
@@ -132,6 +133,23 @@ fun ChargeListPage(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    // ⚠️ **v0.51.0（第 28 轮通勤车主评审 P1-3）**：「上次充满」。
+                    //
+                    // 家充为主的用户打开充电页，问的是「上次充满是什么时候」，
+                    // 而不是「这个桩最慢一次」（那是长途用户在服务区才问的）。
+                    //
+                    // ⚠️ 判据是 `end_soc >= 100`（**真正充满**）——
+                    // 半途拔枪的场次不算，那只是路过补一点。
+                    // ⚠️ 没有充满过 ⇒ **不给这一行**（不给数），不编。
+                    lastFullCharge(charges)?.let { last ->
+                        Text(
+                            "上次充满：" + last.start_date.fmtShort() + "，" +
+                                (last.start_soc?.let { "从 $it% " } ?: "") +
+                                "到 ${last.end_soc ?: 100}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     if (charges.isNotEmpty()) {
                         Text(
                             // 说清数据范围，避免「共 N 次」被误解成全部历史。
@@ -161,6 +179,24 @@ fun ChargeListPage(
         }
     }
 }
+
+/**
+ * ⚠️ **v0.51.0（第 28 轮通勤车主评审 P1-3）**：**上一次真正充满**的那一场。
+ *
+ * 「充满」的判据是 `end_soc >= 100` —— 不是「充过一次」，
+ * 半途拔枪的场次不算（那只是路过补一点）。
+ *
+ * 真实数据（本机 69 场）：上一次充满是 **10-24 13:53，从 68% 到 100%**。
+ *
+ * 为什么它有用：通勤者/家充用户打开充电页，问的是
+ * 「**上次充满是什么时候**」「**充满一次要多少度**」，
+ * 而不是「这个桩最慢一次」—— 后者是**长途用户**在服务区才关心的问题。
+ *
+ * ⚠️ 没有充满过（`end_soc` 全 < 100）⇒ 返回 null ⇒ 界面**不给数**，
+ * 而不是编一个「上次充满」。
+ */
+fun lastFullCharge(charges: List<Charge>): Charge? =
+    charges.filter { (it.end_soc ?: 0) >= 100 }.maxByOrNull { it.start_date }
 
 /**
  * 分钟数 → 人话（「36 分钟」/「7 小时」/「7 小时 12 分」）。
