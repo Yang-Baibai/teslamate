@@ -199,13 +199,26 @@ class ConsumptionModel(
             ?.let { 1.0 + minOf(0.10, 0.006 * maxOf(0.0, it - 22.0)) }
             ?: 1.0
 
-        // 爬升修正：高速段实测 <200m 179.8 / 200–600m 184.4 / 600m+ 188.2 Wh/km（差 5%）。
-        val climbFactor = if ((ascentM ?: 0) >= 200) 1.05 else 1.0
+        // ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：这里原来的爬升修正被**移除**了。**
+        //
+        // 原来：`if ((ascentM ?: 0) >= 200) 1.05 else 1.0` —— 二值饱和（200 m 与 2,571 m 同价）
+        // 且是**乘性**；实测本车的爬升能耗是**加性**（m·g·h 是绝对量，与车速无关）。
+        //
+        // 但更根本的问题是**口径错**：这里算的是「**现在**能开多远」，
+        // 而传进来的 `ascentM` 是「**最近一趟**行程」的爬升 ——
+        // 用**已经走过的**山路去修**未来**的续航，概念就不对
+        // （实测那 5 趟「最近行程」是川藏滇线，爬升 2,290 米，
+        //  按新模型会算成 +219 Wh/km —— 荒谬）。
+        //
+        // 现在：**车况页的续航是「平路 + 车速档 + 气温」的估算**，
+        // 不含爬升修正；**爬升影响在「记录 → 线路余量表」里逐段算**
+        // （那里有真实的逐段爬升，见 `RoutePlan.kt`）。
+        // 界面上「怎么算的」也照实说。
+        val whEff = bucket.whPerKm * tempFactor
 
         // 安全余量：长途规划惯例到站留 ≥15–20%。
         val safety = reserveFactor
 
-        val whEff = bucket.whPerKm * tempFactor * climbFactor
         return ratedRangeKm * EPA_WH_PER_KM / whEff * safety
     }
 

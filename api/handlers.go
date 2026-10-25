@@ -1832,6 +1832,20 @@ func round1(v float64) float64 {
 	return math.Round(v*10) / 10
 }
 
+// round3 三位小数（隐含效率这类量要看得见差异，又不能拖一串零）。
+func round3(v float64) float64 {
+	return math.Round(v*1000) / 1000
+}
+
+// roundAll 一组值统一取两位小数。
+func roundAll(vs []float64) []float64 {
+	out := make([]float64, 0, len(vs))
+	for _, v := range vs {
+		out = append(out, round2(v))
+	}
+	return out
+}
+
 // carExists 这台车在 cars 表里存不存在。
 //
 // 用于区分「车存在但还没有任何位置数据」（正常状态）与「根本没有这台车」

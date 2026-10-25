@@ -339,6 +339,65 @@ type RouteProfilePoint struct {
 	Soc float64 `json:"soc"`
 }
 
+// ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：本车的爬升能耗系数。**
+//
+// 端点：`GET /api/v1/cars/{car_id}/climb_model?min_km=20`。
+//
+// ## 用途
+//
+// 「爬升修正」原来在客户端是 `if (ascentM >= 200) 1.05 else 1.0` ——
+// **二值饱和**（200 m 与 2,571 m 同价）而且是**乘性**。
+// 实测证明必须是**加性**：重力位能 m·g·h 是**绝对量**，与车速无关。
+//
+// ## 两个系数要分开看
+//
+// - [CUpWhPerM]：上坡每米多耗的电（Wh/m）。实测约 **6.4**，
+//   隐含传动效率约 **78%** —— 落在物理区间内，可宣称「本车实测」。
+// - [CRegenWhPerM]：下坡每米回充抵扣（Wh/m）。实测约 **3.4**，
+//   但纯下坡样本只有 5 趟 → [CRegenTrustworthy] = false，
+//   客户端应改用 [ConservativeCRegen]（分裂半下界，偏保守）。
+//
+// ⚠️ **净爬升（毛爬升 − 毛下降）不能用于修正** ——
+// 实测那条 6227 公里的线毛爬升 51,791 米但净爬升只有 +3,278 米。
+type ClimbModel struct {
+	// 上坡每米的额外耗电（Wh/m，正数）
+	CUpWhPerM float64 `json:"c_up_wh_per_m"`
+	// 下坡每米的回充抵扣（Wh/m，正数）
+	CRegenWhPerM float64 `json:"c_regen_wh_per_m"`
+	// 上坡系数的隐含传动效率（m·g ÷ 系数）
+	ImpliedEtaUp float64 `json:"implied_eta_up"`
+	// 回充系数的隐含效率
+	ImpliedEtaRegen float64 `json:"implied_eta_regen"`
+	// 参与拟合的行程数
+	NDrive int `json:"n_drive"`
+	// 「纯上坡」行程数（坡度 ≥5 m/km 且另一侧 ≤1.5 m/km）
+	NPureUp int `json:"n_pure_up"`
+	// 「纯下坡」行程数
+	NPureDown int `json:"n_pure_down"`
+	// 毛耗电回归的 R²
+	R2Gross float64 `json:"r2_gross"`
+	// 回充回归的 R²
+	R2Regen float64 `json:"r2_regen"`
+	// 分裂半得到的 c_up（两个半样本各拟合一次）
+	SplitHalfCUp []float64 `json:"split_half_c_up"`
+	// 分裂半得到的 c_regen
+	SplitHalfCRegen []float64 `json:"split_half_c_regen"`
+	// 拟合用的最小行程里程（km）
+	MinKm float64 `json:"min_km"`
+	// 上坡系数能否宣称「本车实测」
+	CUpTrustworthy bool `json:"c_up_trustworthy"`
+	// 回充系数能否宣称「本车实测」
+	CRegenTrustworthy bool `json:"c_regen_trustworthy"`
+	// ⚠️ 回充系数的**保守取值**（不可信时取分裂半下界 → 少抵扣回充 → 偏安全）
+	ConservativeCRegen float64 `json:"conservative_c_regen"`
+	// 方法说明
+	Method string `json:"method"`
+	// 警告说明
+	Caveat string `json:"caveat"`
+	// 隐含效率的物理前提
+	ImpliedEtaNote string `json:"implied_eta_note"`
+}
+
 // ⚠️ v0.27.0：**驾驶风格画像**（最近 N 趟行程的评分 + 汇总）。
 //
 // 端点：`GET /api/v1/cars/{car_id}/driving_profile?limit=30`。

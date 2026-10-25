@@ -1,0 +1,403 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+)
+
+// ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：爬升能耗系数。**
+//
+// ## 为什么要有这个端点
+//
+// 「爬升修正」原来在客户端是 `if (ascentM >= 200) 1.05 else 1.0` ——
+// **二值饱和**（200 m 与 2,571 m 同价）而且是**乘性**。
+// 评审用本车 99 趟实测证明：
+//
+// - 必须是**加性**：重力位能 m·g·h 是**绝对量**，与车速、与基础 Wh/km 无关；
+//   实测交互项 −0.007、R² 只涨 0.0002，分速带斜率跨 20~80 km/h 恒为 5.6~6.9。
+// - 上坡系数 **c_up ≈ 6.4 Wh/m**（n=99、R²=0.67），
+//   隐含传动效率 **78%** —— 落在物理区间（电机+逆变+电池往返 75~90%）✓
+// - 下坡回充系数 **c_regen ≈ 3.4 Wh/m**，但**纯下坡样本只有 5 趟**、
+//   R² 仅 0.22、分裂半 2.72~4.37（±23%）→ **不能宣称「本车实测」**。
+//
+// ## 为什么必须在服务端算
+//
+// ① `positions.power` 有 162 万行，客户端不该拉；
+// ② **口径只能有一处** —— 第 20 轮充电评审 P0-5 的教训：
+//    「服务端与客户端两套算法会漂移」曾让同一个数在列表页和详情页差一分钟。
+//
+// ## 口径
+//
+// 毛耗电 = Σ `max(P,0) × Δt`；回充 = Σ `max(−P,0) × Δt`。
+// 两者**物理上互斥**（回充只可能来自下降），所以分开拟合**不需要**靠回归去分离信号。
+// 段级对齐残差 se=42 Wh/段（远大于爬升信号），所以**不**用段级回归。
+//
+// 回归式：`Wh/km ~ 1 + kph + 爬升(m/km) + 时长(h)`
+// （时长项用来控制空调负载 —— 短途开空调更费电。）
+
+// MassKg 本车质量（kg）。只用于**物理自洽性校验**：
+// m·g = 1850 × 9.81 / 3600 = 5.042 Wh/m。
+// 隐含效率 = 5.042 / c_up，正常应在 70%~95%（电机+逆变+电池往返效率）。
+const MassKg = 1850.0
+
+// MgWhPerM = m·g（Wh/m）：把 1 米高度变化换算成电。
+const MgWhPerM = MassKg * 9.81 / 3600.0
+
+// 样本量门槛
+const (
+	climbMinDrives      = 30 // 上坡系数可宣称「本车实测」的最小行程数
+	climbMinPureDown    = 8  // 回充系数可宣称「本车实测」的最小**纯下坡**行程数
+	climbPureGradeMPerK = 5.0 // 「纯上坡 / 纯下坡」的坡度门槛（m/km）
+	climbPureOtherMPerK = 1.5 // 「纯上坡 / 纯下坡」时另一侧的最大坡度（m/km）
+)
+
+// handleClimbModel 返回本车的爬升能耗系数。
+//
+// 端点：`GET /api/v1/cars/{car_id}/climb_model?min_km=20`
+//
+// ⚠️ **耗时**：实测首次 **约 5 秒**（要扫 162 万个 positions 做 LAG 窗口 + 分组）。
+// 所以结果**按车缓存 30 分钟** —— 爬升系数只在新行程入库后才会变，
+// 30 分钟的延迟完全可接受，而客户端不能等 5 秒。
+func handleClimbModel(w http.ResponseWriter, r *http.Request) {
+	carID, err := strconv.Atoi(r.PathValue("car_id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "car id 无效")
+		return
+	}
+	minKm := 20.0
+	if v := r.URL.Query().Get("min_km"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 5 && f <= 500 {
+			minKm = f
+		}
+	}
+
+	// ── 缓存 ────────────────────────────────────────────
+	key := fmt.Sprintf("%d:%.0f", carID, minKm)
+	climbCacheMu.Lock()
+	hit, ok := climbCache[key]
+	climbCacheMu.Unlock()
+	if ok && time.Since(hit.at) < climbCacheTTL {
+		writeJSON(w, hit.model)
+		return
+	}
+
+	model, err := computeClimbModel(carID, minKm)
+	if err != nil {
+		if err == errClimbNotEnough {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	climbCacheMu.Lock()
+	climbCache[key] = climbCacheEntry{at: time.Now(), model: model}
+	climbCacheMu.Unlock()
+	writeJSON(w, model)
+}
+
+var errClimbNotEnough = errors.New("样本不足，算不出爬升系数")
+
+// 缓存：按 (car_id, min_km) 缓存 30 分钟。
+var (
+	climbCacheMu   sync.Mutex
+	climbCache     = map[string]climbCacheEntry{}
+	climbCacheTTL  = 30 * time.Minute
+)
+
+type climbCacheEntry struct {
+	at    time.Time
+	model ClimbModel
+}
+
+// computeClimbModel 真正算系数（见 handleClimbModel 的说明）。
+func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
+	rows, err := db.Query(context.Background(), sqlClimbDrives, carID, minKm)
+	if err != nil {
+		return ClimbModel{}, err
+	}
+	defer rows.Close()
+
+	type driveRow struct {
+		km, minutes       float64
+		ascentM, descentM float64
+		grossKwh          float64
+		regenKwh          float64
+	}
+	var list []driveRow
+	for rows.Next() {
+		var d driveRow
+		var driveID, ascent, descent int
+		if err := rows.Scan(&driveID, &d.km, &d.minutes, &ascent, &descent, &d.grossKwh, &d.regenKwh); err != nil {
+			return ClimbModel{}, err
+		}
+		d.ascentM = float64(ascent)
+		d.descentM = float64(descent)
+		list = append(list, d)
+	}
+	if err := rows.Err(); err != nil {
+		return ClimbModel{}, err
+	}
+	if len(list) < 3 {
+		return ClimbModel{}, fmt.Errorf("%w：只有 %d 趟符合条件的行程", errClimbNotEnough, len(list))
+	}
+
+	// ── 拟合 ──────────────────────────────────────────────
+	// 回归式：Wh/km ~ 1 + kph + 坡度(m/km) + 时长(h)
+	//   系数[2] 就是「每米坡度多耗/多回多少 Wh/km」。
+	fitGross := func(sub []driveRow) ([]float64, float64) {
+		var xs [][]float64
+		var ys []float64
+		for _, d := range sub {
+			if d.grossKwh <= 0.01 || d.km <= 0.1 || d.minutes <= 0 {
+				continue
+			}
+			kph := d.km / (d.minutes / 60.0)
+			xs = append(xs, []float64{1, kph, d.ascentM / d.km, d.minutes / 60.0})
+			ys = append(ys, d.grossKwh/d.km*1000.0)
+		}
+		b, r2, ok := olsFit(xs, ys)
+		if !ok {
+			return nil, 0
+		}
+		return b, r2
+	}
+	fitRegen := func(sub []driveRow) ([]float64, float64) {
+		var xs [][]float64
+		var ys []float64
+		for _, d := range sub {
+			if d.regenKwh <= 0.01 || d.km <= 0.1 || d.minutes <= 0 {
+				continue
+			}
+			kph := d.km / (d.minutes / 60.0)
+			xs = append(xs, []float64{1, kph, d.descentM / d.km, d.minutes / 60.0})
+			ys = append(ys, d.regenKwh/d.km*1000.0)
+		}
+		b, r2, ok := olsFit(xs, ys)
+		if !ok {
+			return nil, 0
+		}
+		return b, r2
+	}
+
+	bUp, r2Up := fitGross(list)
+	bDn, r2Dn := fitRegen(list)
+	if bUp == nil || bDn == nil {
+		return ClimbModel{}, errors.New("爬升系数拟合失败（样本共线或不足）")
+	}
+	cUp := bUp[2]    // Wh/m（正数 = 上坡每米多耗）
+	cRegen := bDn[2] // Wh/m（正数 = 下坡每米回充抵扣）
+	// ⚠️ 符号说明：回充回归的目标变量是**回充能量**，
+	// 而自变量是**下降坡度** —— 下降越多、回充越多，所以系数**本身是正的**。
+	// 使用时是「**减去** c_regen × 下降坡度」。
+	//
+	// 隐含效率：
+	//   上坡：消耗 > 势能（效率 < 1）→ η = m·g ÷ c_up
+	//   下坡：回收 < 势能（效率 < 1）→ η = c_regen ÷ m·g
+	// ⚠️ 两者方向相反，写反了就会得到 >100% 的荒谬效率（本次就踩过一次）。
+
+	// ── 纯上坡 / 纯下坡样本 ──────────────────────────────
+	pureUp, pureDown := 0, 0
+	for _, d := range list {
+		if d.km <= 0.1 {
+			continue
+		}
+		ga, gd := d.ascentM/d.km, d.descentM/d.km
+		if ga >= climbPureGradeMPerK && gd <= climbPureOtherMPerK {
+			pureUp++
+		}
+		if gd >= climbPureGradeMPerK && ga <= climbPureOtherMPerK {
+			pureDown++
+		}
+	}
+
+	// ── 分裂半稳定性 ────────────────────────────────────
+	// 按 id 奇偶分半重拟合：两个半样本给出的系数若差很多，说明模型不稳。
+	var halfA, halfB []driveRow
+	for i, d := range list {
+		if i%2 == 0 {
+			halfA = append(halfA, d)
+		} else {
+			halfB = append(halfB, d)
+		}
+	}
+	var splitUp, splitRegen []float64
+	for _, h := range [][]driveRow{halfA, halfB} {
+		bu, _ := fitGross(h)
+		bd, _ := fitRegen(h)
+		if bu != nil {
+			splitUp = append(splitUp, bu[2])
+		}
+		if bd != nil {
+			splitRegen = append(splitRegen, bd[2])
+		}
+	}
+
+	upTrustworthy := len(list) >= climbMinDrives
+	regenTrustworthy := pureDown >= climbMinPureDown
+
+	out := ClimbModel{
+		CUpWhPerM:            round2(cUp),
+		CRegenWhPerM:         round2(cRegen),
+		ImpliedEtaUp:         round3(MgWhPerM / math.Abs(cUp)),
+		ImpliedEtaRegen:      round3(math.Abs(cRegen) / MgWhPerM),
+		NDrive:               len(list),
+		NPureUp:              pureUp,
+		NPureDown:            pureDown,
+		R2Gross:              round3(r2Up),
+		R2Regen:              round3(r2Dn),
+		SplitHalfCUp:         roundAll(splitUp),
+		SplitHalfCRegen:      roundAll(splitRegen),
+		MinKm:                minKm,
+		CUpTrustworthy:       upTrustworthy,
+		CRegenTrustworthy:    regenTrustworthy,
+		Method:               "positions.power × Δt 整趟积分；毛耗电 max(P,0) 与回充 max(−P,0) 分开拟合；回归式 Wh/km ~ 1 + 车速 + 坡度(m/km) + 时长(h)；分裂半交叉验证",
+		Caveat:               climbCaveat(upTrustworthy, regenTrustworthy, pureDown),
+		ConservativeCRegen:   round2(conservativeRegen(splitRegen, cRegen, regenTrustworthy)),
+		ImpliedEtaNote:       "上坡隐含效率 = m·g ÷ c_up；下坡隐含效率 = c_regen ÷ m·g；m=1850kg，只在「这是本车」时才有意义",
+	}
+	return out, nil
+}
+
+// conservativeRegen 回充系数的**保守取值**。
+//
+// 评审的判断：「宁可高估回充、别高估上坡」——
+// 实际上「少抵扣回充 → 多报耗电 → 偏安全」，所以取**下界**。
+// 回充系数不可信时（纯下坡样本不足），取分裂半的下界。
+func conservativeRegen(split []float64, fitted float64, trustworthy bool) float64 {
+	if trustworthy {
+		return fitted
+	}
+	if len(split) == 0 {
+		return fitted
+	}
+	lo := split[0]
+	for _, v := range split {
+		if v < lo {
+			lo = v
+		}
+	}
+	if lo <= 0 {
+		return fitted
+	}
+	return lo
+}
+
+func climbCaveat(upOK, regenOK bool, pureDown int) string {
+	var parts []string
+	if upOK {
+		parts = append(parts, "上坡系数为本车实测（隐含传动效率在物理区间内）")
+	} else {
+		parts = append(parts, "上坡系数样本不足，按保守值处理")
+	}
+	if regenOK {
+		parts = append(parts, "回充系数为本车实测")
+	} else {
+		parts = append(parts, "回充系数纯下坡样本仅 "+strconv.Itoa(pureDown)+
+			" 趟（<8），按分裂半下界的保守值处理，**不是纯实测**")
+	}
+	return joinCN(parts, "；")
+}
+
+func joinCN(parts []string, sep string) string {
+	out := ""
+	for i, p := range parts {
+		if i > 0 {
+			out += sep
+		}
+		out += p
+	}
+	return out
+}
+
+// olsFit 解普通最小二乘：最小化 ‖Xb − y‖²。
+//
+// 用正规方程 (X'X) b = X'y + 高斯消元（部分主元）。
+// 样本量只有 ~100、预测子 4 个，正规方程的数值稳定性足够
+// （评审的独立复算用同样的方法，结果逐位吻合）。
+func olsFit(xs [][]float64, ys []float64) ([]float64, float64, bool) {
+	n := len(xs)
+	if n < len(xs[0])+1 || n != len(ys) {
+		return nil, 0, false
+	}
+	k := len(xs[0])
+	// X'X
+	xtx := make([][]float64, k)
+	for a := 0; a < k; a++ {
+		xtx[a] = make([]float64, k)
+		for b := 0; b < k; b++ {
+			s := 0.0
+			for i := 0; i < n; i++ {
+				s += xs[i][a] * xs[i][b]
+			}
+			xtx[a][b] = s
+		}
+	}
+	// X'y
+	xty := make([]float64, k)
+	for a := 0; a < k; a++ {
+		s := 0.0
+		for i := 0; i < n; i++ {
+			s += xs[i][a] * ys[i]
+		}
+		xty[a] = s
+	}
+	// 高斯消元
+	m := make([][]float64, k)
+	for i := 0; i < k; i++ {
+		m[i] = make([]float64, k+1)
+		copy(m[i], xtx[i])
+		m[i][k] = xty[i]
+	}
+	for c := 0; c < k; c++ {
+		piv := c
+		for r := c + 1; r < k; r++ {
+			if math.Abs(m[r][c]) > math.Abs(m[piv][c]) {
+				piv = r
+			}
+		}
+		if math.Abs(m[piv][c]) < 1e-9 {
+			return nil, 0, false
+		}
+		m[c], m[piv] = m[piv], m[c]
+		for r := 0; r < k; r++ {
+			if r == c {
+				continue
+			}
+			f := m[r][c] / m[c][c]
+			for cc := c; cc <= k; cc++ {
+				m[r][cc] -= f * m[c][cc]
+			}
+		}
+	}
+	b := make([]float64, k)
+	for i := 0; i < k; i++ {
+		b[i] = m[i][k] / m[i][i]
+	}
+	// R²
+	ybar := 0.0
+	for _, v := range ys {
+		ybar += v
+	}
+	ybar /= float64(n)
+	ssRes, ssTot := 0.0, 0.0
+	for i := 0; i < n; i++ {
+		p := 0.0
+		for j := 0; j < k; j++ {
+			p += xs[i][j] * b[j]
+		}
+		ssRes += (ys[i] - p) * (ys[i] - p)
+		ssTot += (ys[i] - ybar) * (ys[i] - ybar)
+	}
+	r2 := 0.0
+	if ssTot > 0 {
+		r2 = 1 - ssRes/ssTot
+	}
+	return b, r2, true
+}

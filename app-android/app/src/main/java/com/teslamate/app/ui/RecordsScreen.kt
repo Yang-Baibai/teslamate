@@ -261,7 +261,26 @@ fun RecordsScreen(
         }
             .onFailure { socProfile = null }
     }
-    val routePlan = remember(drives, charges, stationStats, selectedRouteKey, socProfile, consumption, batteryCapacityKwh) {
+    // ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：本车的爬升能耗系数。**
+    //
+    // 单独一个 LaunchedEffect，**每辆车只拉一次** ——
+    // 服务端首次算要扫 162 万个 positions（约 5 秒），之后缓存 30 分钟。
+    //
+    // 没有它就**不给**爬升修正（宁可少一个修正，也不能编一个系数）。
+    var climbModel by remember { mutableStateOf<com.teslamate.app.ClimbModel?>(null) }
+    var climbModelLoaded by remember { mutableStateOf(false) }
+    LaunchedEffect(api, settings.carId) {
+        if (api == null || climbModelLoaded) return@LaunchedEffect
+        runCatching {
+            withContext(Dispatchers.IO) { api.climbModel(settings.carId) }
+        }.onSuccess {
+            climbModel = it
+        }.onFailure {
+            climbModel = null
+        }
+        climbModelLoaded = true
+    }
+    val routePlan = remember(drives, charges, stationStats, selectedRouteKey, socProfile, consumption, batteryCapacityKwh, climbModel) {
         val tpl = pickedTemplate
         tpl?.let {
             buildRoutePlan(
@@ -277,6 +296,12 @@ fun RecordsScreen(
                 // 6227 公里那条（川藏滇）**64 km/h**、616 公里那条 **42 km/h**。
                 // 车速决定用哪一档 Wh/km（90–110 档 183.0 vs 110–130 档 197.4，差 7.9%）。
                 planSpeedKph = it.avgSpeedKph ?: 90.0,
+                // ⚠️ **v0.33.0：爬升能耗系数**（服务端按 99 趟实测拟合）。
+                //
+                // 实测那条 206 公里、爬 4,186 米的那段：
+                // 修正 **+83.6 Wh/km（+49%）** → 折合 **−26 个电量百分点** ——
+                // 没有它，界面会说「到站剩 4%，看着够」，实际到不了。
+                climbModel = climbModel,
             )
         }
     }

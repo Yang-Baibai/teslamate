@@ -113,6 +113,10 @@ func main() {
 	// ⚠️ v0.28.0：能耗-车速曲线（不同车速下真实耗多少电）。
 	// 官方 App 只有**平均** Wh/km，这里给的是一条曲线。
 	mux.HandleFunc("GET /api/v1/cars/{car_id}/energy_profile", auth(handleEnergyProfile))
+	// ⚠️ v0.33.0：本车的**爬升能耗系数**（上坡 Wh/m、回充 Wh/m）。
+	// 「爬升修正」原来在客户端是二值饱和的 ×1.05，实测必须是**加性** ——
+	// 重力位能 m·g·h 是绝对量，与车速无关。口径只在服务端算一处。
+	mux.HandleFunc("GET /api/v1/cars/{car_id}/climb_model", auth(handleClimbModel))
 	// ⚠️ v0.25.0：充电成本构成（每公里成本用）。
 	mux.HandleFunc("GET /api/v1/cars/{id}/cost_summary", auth(handleCostSummary))
 	mux.HandleFunc("GET /api/v1/cars/{id}/charges", auth(handleCharges))

@@ -111,6 +111,58 @@ data class ActiveDrive(
     @Serializable(with = InstantSer::class) val started_at: Instant,
 )
 
+/**
+ * ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：本车的爬升能耗系数。**
+ *
+ * 服务端用 `positions.power × Δt` 整趟积分拟合：
+ * 毛耗电 `max(P,0)` 与回充 `max(−P,0)` **分开**拟合（两者物理上互斥），
+ * 回归式 `Wh/km ~ 1 + 车速 + 坡度(m/km) + 时长(h)`。
+ *
+ * - [c_up_wh_per_m]：上坡每米多耗的电（Wh/m）。实测约 6.4，隐含传动效率约 78%
+ *   （物理区间 75~90%）→ 可宣称「本车实测」。
+ * - [c_regen_wh_per_m]：下坡每米回充抵扣（Wh/m）。实测约 3.2，隐含效率约 64%。
+ * - [conservative_c_regen]：**回充系数不可信时**用它（分裂半下界 = 少抵扣回充 → 偏安全）。
+ *
+ * ⚠️ 端点首次调用约 **5 秒**（要扫 162 万个 positions），服务端缓存 30 分钟。
+ */
+@Serializable
+data class ClimbModel(
+    /** 上坡每米的额外耗电（Wh/m） */
+    val c_up_wh_per_m: Double = 0.0,
+    /** 下坡每米的回充抵扣（Wh/m） */
+    val c_regen_wh_per_m: Double = 0.0,
+    /** 上坡系数的隐含传动效率（m·g ÷ 系数） */
+    val implied_eta_up: Double = 0.0,
+    /** 回充系数的隐含效率（系数 ÷ m·g） */
+    val implied_eta_regen: Double = 0.0,
+    /** 参与拟合的行程数 */
+    val n_drive: Int = 0,
+    /** 「纯上坡」行程数 */
+    val n_pure_up: Int = 0,
+    /** 「纯下坡」行程数 */
+    val n_pure_down: Int = 0,
+    /** 毛耗电回归 R² */
+    val r2_gross: Double = 0.0,
+    /** 回充回归 R² */
+    val r2_regen: Double = 0.0,
+    /** 分裂半拟合的 c_up */
+    val split_half_c_up: List<Double> = emptyList(),
+    /** 分裂半拟合的 c_regen */
+    val split_half_c_regen: List<Double> = emptyList(),
+    /** 拟合用的最小行程里程（km） */
+    val min_km: Double = 20.0,
+    /** 上坡系数能否宣称「本车实测」 */
+    val c_up_trustworthy: Boolean = false,
+    /** 回充系数能否宣称「本车实测」 */
+    val c_regen_trustworthy: Boolean = false,
+    /** 回充系数的**保守取值**（不可信时 = 分裂半下界） */
+    val conservative_c_regen: Double = 0.0,
+    /** 方法说明 */
+    val method: String = "",
+    /** 警告说明 */
+    val caveat: String = "",
+)
+
 @Serializable
 data class CarStatus(
     val car_id: Int,
@@ -1057,6 +1109,15 @@ class Api private constructor(private val base: String, private val token: Strin
     /** ⚠️ **v0.28.0：能耗-车速曲线**（车轮功率积分；官方只有平均 Wh/km）。 */
     fun energyProfile(carId: Int): EnergyProfile =
         get("/api/v1/cars/$carId/energy_profile")
+
+    /**
+     * ⚠️ **v0.33.0：本车的爬升能耗系数**（上坡 Wh/m、回充 Wh/m）。
+     *
+     * ⚠️ 首次调用约 **5 秒**（服务端要扫 162 万个 positions），
+     * 所以服务端缓存 30 分钟 —— 客户端**不要**在每次刷新时都调它。
+     */
+    fun climbModel(carId: Int, minKm: Double = 20.0): ClimbModel =
+        get("/api/v1/cars/$carId/climb_model?min_km=$minKm")
 
     /**
      * ⚠️ v0.25.0：一个时间窗口内的**充电成本构成**（度数 / 场次 / 时长）。

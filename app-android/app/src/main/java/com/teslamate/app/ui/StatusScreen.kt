@@ -714,9 +714,10 @@ private fun RangeAndOdometer(
         // （171.8 Wh/km，是最乐观的一档），却和「实测巡航速度」用同一句话表述。
         val speedAssumed = consumption?.cruiseKph == null && fallbackSpeedKph == null
         val whSample = consumption?.whSample(refSpeed)
-        // ⚠️ v0.8.6 修一个真 bug：模型里有爬升修正（≥200m ×1.05），
-        // 但调用处**从来没传 ascentM** —— 参数默认 null，修正从未生效。
-        // 爬升从最近一次行程取（车况页已经拉了 drives(200) 到 StatusStore）。
+        // ⚠️ **v0.33.0**：这里原来传 `ascentM = recentAscent`（最近一趟行程的爬升），
+        // 而模型里是 `if (ascentM >= 200) 1.05 else 1.0` —— 二值饱和且乘性，
+        // 且口径不对（用已走过的山路修未来的续航）。
+        // 现在模型里**没有**爬升项了（见 `ConsumptionModel.trueRangeKm` 的说明）。
         // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：主角数字必须**常驻**自曝来源。**
         //
         // 原来「怎么算的」要**点开**才看得到 —— 但新手车主恰恰是那个
@@ -756,7 +757,9 @@ private fun RangeAndOdometer(
             ratedRangeKm = ratedRange,
             speedKph = refSpeed,
             outsideTempC = st.outside_temp,
-            ascentM = recentAscent,
+            // ⚠️ **v0.33.0**：不再传 `ascentM` ——
+            // 模型里的爬升项已移除（用「最近一趟」的爬升修「未来」的续航，口径不对），
+            // 爬升改在「线路余量表」里逐段算。
         )
         BigStat(
             (trueRange ?: ratedRange)?.fmt(0) ?: "—",
@@ -885,6 +888,12 @@ private fun RangeAndOdometer(
                 }
                 append(" · 已留 10% 余量")
             }
+            // ⚠️ **v0.33.0：爬升的影响在**线路余量表**里算，不在这里。**
+            // 这里算的是「现在能开多远」—— 用「最近一趟」的爬升去修「未来」的续航，
+            // 口径不对（实测那几趟是川藏滇线，爬升 2,290 米）。
+            // 具体路线的爬升影响见「记录 → 线路余量表」：那里有逐段爬升
+            // 与本车实测的爬升能耗系数。
+            append(" · 不含爬升修正（具体路线的爬升影响见「记录 → 线路余量表」）")
             // ⚠️ **v0.26.0：温度可信度必须进「怎么算的」。**
             // 「28°C」这个数让人以为已经按气温修正过了 —— 实际只做热的。
             tempCaveat?.let { append(" · $it") }

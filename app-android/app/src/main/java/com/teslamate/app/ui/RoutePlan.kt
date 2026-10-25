@@ -215,6 +215,16 @@ data class RouteStop(
      * 用「平均爬升」会同时错报平路段和最陡段，所以必须**逐段**给。
      */
     val gapAscentM: Int? = null,
+    /** ⚠️ v0.33.0：这一段的下降（米） */
+    val gapDescentM: Int? = null,
+    /**
+     * ⚠️ **v0.33.0：这一段的爬升能耗修正（Wh/km，可为负）。**
+     *
+     * 加性模型：`c_up × 上坡坡度(m/km) − c_regen × 下坡坡度(m/km)`。
+     * 实测那条川藏滇线里 206 公里那段爬了 4,186 米 → 修正 **+83.6 Wh/km（+49%）**，
+     * 折合 **−26 个电量百分点** —— 没有它，界面会说「看着够」而实际到不了。
+     */
+    val gapClimbWhPerKm: Double? = null,
     /**
      * ⚠️ **v0.32.0（第 20 轮规划复审 P1-3）：这一段用的是哪一档 Wh/km。**
      *
@@ -559,6 +569,15 @@ fun buildRoutePlan(
     batteryCapacityKwh: Double? = null,
     /** 计划车速（km/h）—— 决定用哪一档 Wh/km。 */
     planSpeedKph: Double? = null,
+    /**
+     * ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：本车的爬升能耗系数。**
+     *
+     * 没有它就**不给**爬升修正（宁可少算一个修正，也不能编一个系数）。
+     *
+     * 口径：**加性** —— `whEff = 基础 Wh/km + c_up × 上坡坡度(m/km) − c_regen × 下坡坡度(m/km)`
+     * （重力位能 m·g·h 是绝对量，与车速无关，所以不能是乘性）。
+     */
+    climbModel: com.teslamate.app.ClimbModel? = null,
 ): RoutePlan? {
     val startOdo = template.startOdoKm ?: return null
     // ⚠️ v0.14.0（口径审计 P0-4）：里程窗口用**最近那一趟的真实里程**，不用中位数。
@@ -598,11 +617,29 @@ fun buildRoutePlan(
             it.ascentM ?: 0,
         )
     }
+    val descentRanges = template.legs.map {
+        Triple(
+            it.startKm - journeyStartKm,
+            it.endKm - journeyStartKm,
+            it.descentM ?: 0,
+        )
+    }
     /** 某段里程区间内的爬升（按重叠比例分摊）。 */
     fun ascentBetween(fromKm: Double, toKm: Double): Int {
         if (toKm <= fromKm) return 0
         var sum = 0.0
         for ((s, e, a) in legRanges) {
+            val ov = minOf(e, toKm) - maxOf(s, fromKm)
+            if (ov <= 0.0 || e <= s) continue
+            sum += a * (ov / (e - s))
+        }
+        return sum.toInt()
+    }
+    /** 某段里程区间内的下降（按重叠比例分摊）。 */
+    fun descentBetween(fromKm: Double, toKm: Double): Int {
+        if (toKm <= fromKm) return 0
+        var sum = 0.0
+        for ((s, e, a) in descentRanges) {
             val ov = minOf(e, toKm) - maxOf(s, fromKm)
             if (ov <= 0.0 || e <= s) continue
             sum += a * (ov / (e - s))
@@ -657,7 +694,39 @@ fun buildRoutePlan(
         }
         val gapSample = gapSegSpeed?.let { v -> consumption?.whSample(v) }
         // 优先用**这一段**的档；这一段没数据时回落到整条线路的速度。
-        val gapWh = gapSample?.bucket?.whPerKm ?: whPerKm
+        val gapWhBase = gapSample?.bucket?.whPerKm ?: whPerKm
+        // ⚠️ **v0.33.0：爬升修正（加性）。**
+        //
+        // 实测本车 c_up ≈ 6.4 Wh/m、c_regen ≈ 3.2 Wh/m（服务端用 99 趟拟合，
+        // 隐含传动效率 78% / 回充效率 64%，都在物理区间内）。
+        //
+        // 实测影响：那条川藏滇线里 206 公里那段爬了 4,186 米 →
+        // 修正 **+88.8 Wh/km（+51%）** → 折合 **−26 个电量百分点**。
+        // 原来没有这个修正，界面会说「看着够」，实际到不了。
+        //
+        // ⚠️ **口径提示（诚实起见）**：系数是用**车轮功率**口径拟合的，
+        // 而底档（`whSample`）用的是**标定法**口径 —— 两者不完全同源，
+        // 所以这个修正量**略偏保守**（实测两套口径的车速档值在同一量级：
+        // 90–110 档 标定法 182.7 vs 车轮功率 184.2）。
+        // 要完全同源，需要把系数也拟合成标定法口径（见 docs/backlog-r19-r20.md）。
+        val gapAscentM = if (gapKm != null) {
+            ascentBetween(if (idx == 0) 0.0 else journeyStops[idx - 1].kmAlong, js.kmAlong)
+        } else {
+            0
+        }
+        val gapDescentM = if (gapKm != null) {
+            descentBetween(if (idx == 0) 0.0 else journeyStops[idx - 1].kmAlong, js.kmAlong)
+        } else {
+            0
+        }
+        val gapClimbWh = if (gapKm != null && gapKm > 0.1 && climbModel != null) {
+            val gradeUp = gapAscentM / gapKm
+            val gradeDown = gapDescentM / gapKm
+            climbModel.c_up_wh_per_m * gradeUp - climbModel.c_regen_wh_per_m * gradeDown
+        } else {
+            0.0
+        }
+        val gapWh = if (gapWhBase != null) gapWhBase + gapClimbWh else null
         val gapSpeedForDisplay = gapSegSpeed ?: planSpeedKph
         // 充到 socAfter 后，到下一站还剩多少电（%）
         val socAtNext = if (gapKm != null && gapWh != null && batteryCapacityKwh != null
@@ -727,10 +796,9 @@ fun buildRoutePlan(
             assumedSpeedKph = gapSpeedForDisplay,
             assumedWhPerKm = gapWh,
             // ⚠️ v0.31.0：从上一个站到这一站爬了多高
-            gapAscentM = ascentBetween(
-                if (idx == 0) 0.0 else journeyStops[idx - 1].kmAlong,
-                js.kmAlong,
-            ),
+            gapAscentM = gapAscentM,
+            gapDescentM = gapDescentM,
+            gapClimbWhPerKm = if (climbModel != null) gapClimbWh else null,
             // ⚠️ v0.32.0：这一段用到的 Wh/km 档（界面要交代「按哪一档算的」）
             gapBucketLabel = gapSample?.bucket?.label,
             gapSpeedBorrowed = gapSample?.exact == false,
@@ -1056,11 +1124,11 @@ fun RoutePlanCard(
         // （因为各段速度不同、命中的档也不同）。
         Text(
             "余量按各段真实均速取本车实测 Wh/km；" +
-                "已按爬升量给出参考值，但未做气温修正（本车 ≤10°C 只有 1 条样本）",
+                "已按实测爬升系数做加性修正，并对照 20% 保底；" +
+                "未做气温修正（本车 ≤10°C 只有 1 条样本）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
+        )        Text(
             // ⚠️ Compose 的 Text 不解析 Markdown —— 之前写了 **粗体**，
             // 结果界面上直接出现两个星号。
             "按这条线路上真实发生过的充电推算（最近一次 ${t.lastDrivenAt?.fmtDate() ?: "—"}）",
@@ -1189,6 +1257,21 @@ fun RoutePlanCard(
                                         append("这段爬了 $a 米")
                                     }
                                 }
+                                // ⚠️ **v0.33.0：爬升的能耗影响。**
+                                //
+                                // 加性模型：`c_up × 上坡坡度 − c_regen × 下坡坡度`。
+                                // 实测那条 206 公里那段爬 4,186 米 → **+83.6 Wh/km（+49%）**，
+                                // 折合 **−26 个电量百分点** —— 不说清楚，
+                                // 用户只会以为「到站剩 4%」是结论，而它其实是「不够」。
+                                s.gapClimbWhPerKm?.let { cw ->
+                                    if (kotlin.math.abs(cw) >= 5.0) {
+                                        if (isNotEmpty()) append(" · ")
+                                        append(
+                                            "爬升修正 ${if (cw > 0) "+" else ""}" +
+                                                "${cw.roundToInt()} Wh/km"
+                                        )
+                                    }
+                                }
                                 if (isNotEmpty()) append(" · ")
                                 // ⚠️ v0.14.0：只充过 1 次时明说，别让「典型」显得有统计支撑。
                                 append(if (s.sessions <= 1) "仅 1 次实测" else "${s.sessions} 次")
@@ -1223,6 +1306,20 @@ fun RoutePlanCard(
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     },
                                 )
+                                // ⚠️ **v0.33.0：留 20% 保底够不够，要**明说**。**
+                                //
+                                // 「到下一站剩 14%」这句话本身不危险 ——
+                                // 危险的是**用户以为 14% 够用**。
+                                // 现在直接把结论写出来：「留 20% 保底：到不了，差 6 个百分点」。
+                                s.socAtNextStop?.let { soc ->
+                                    if (soc < 20) {
+                                        Text(
+                                            "留 20% 保底：到不了，差 ${20 - soc} 个百分点 —— 这段必须再充一次",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = accents.warnAmber,
+                                        )
+                                    }
+                                }
                                 // ⚠️ **v0.30.0（长途自驾党 P0-1）：必须交代前提。**
                                 //
                                 // 「到下一站剩 34%」是全 App **唯一像预测**的一句，

@@ -218,6 +218,50 @@ addr_norm AS (
   FROM addr_use u
 )`
 
+// ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：逐趟的毛耗电 / 回充 / 爬升。**
+//
+// ## 口径
+//
+// - 毛耗电 = Σ `max(P,0) × Δt`，**不含**回充抵扣；
+// - 回充 = Σ `max(−P,0) × Δt`；
+// - 两者**物理上互斥**（回充只可能来自下降），
+//   所以分开拟合**不需要**靠回归去「分离」信号 —— 这是选这个口径而不是
+//   「段级能量回归」的原因（段级对齐残差 se=42 Wh/段，远大于爬升信号）。
+// - Δt 用 LAG 求，**丢弃 dt > 10s** 的断点（那是遥测断档，不是充电过程）。
+// - 爬升/下降取 `drives.ascent` / `drives.descent`（原样，不去噪）。
+//
+// ## 性能（实测 2026-10-25，positions 162 万行 / 20,551 页）
+//
+// 全表 LAG 窗口 + 分组：约 2~3 秒（一次端点调用，不在热路径上）。
+// 客户端只在**打开线路卡**时拉一次并缓存。
+//
+// $1 = car_id, $2 = 最小行程里程（km）
+const sqlClimbDrives = `
+WITH pts AS (
+  SELECT p.drive_id, p.date, p.power,
+         EXTRACT(EPOCH FROM (p.date - LAG(p.date) OVER (PARTITION BY p.drive_id ORDER BY p.date))) AS dt
+  FROM positions p
+  JOIN drives d2 ON d2.id = p.drive_id AND d2.car_id = $1
+  WHERE p.power IS NOT NULL
+), de AS (
+  SELECT d.id AS drive_id,
+         d.distance::float8 AS km,
+         d.duration_min::float8 AS minutes,
+         COALESCE(d.ascent, 0) AS ascent_m,
+         COALESCE(d.descent, 0) AS descent_m,
+         COALESCE(SUM(GREATEST(p.power, 0) * p.dt / 3600.0)
+                  FILTER (WHERE p.dt IS NOT NULL AND p.dt <= 10), 0)::float8 AS gross_kwh,
+         COALESCE(SUM(GREATEST(-p.power, 0) * p.dt / 3600.0)
+                  FILTER (WHERE p.dt IS NOT NULL AND p.dt <= 10), 0)::float8 AS regen_kwh
+  FROM drives d
+  LEFT JOIN pts p ON p.drive_id = d.id
+  WHERE d.car_id = $1 AND d.distance >= $2 AND d.duration_min > 0
+  GROUP BY d.id, d.distance, d.duration_min, d.ascent, d.descent
+)
+SELECT drive_id, km, minutes, ascent_m, descent_m, gross_kwh, regen_kwh
+FROM de
+ORDER BY drive_id`
+
 const sqlDrives = `
 WITH` + cteChargeDC + `,
 ` + cteAddrNorm + `,

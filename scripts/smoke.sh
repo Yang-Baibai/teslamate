@@ -323,7 +323,27 @@ else
   fail "客户端闸门"
   cat /tmp/client-gates.log | sed 's/^/    /'
 fi
-# 19. 自更新元数据
+# 19. 爬升能耗系数（v0.33.0）：系数的物理自洽性是硬指标
+CM2=$(curl -s -m 180 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/climb_model?min_km=20")
+echo "$CM2" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+c_up = d['c_up_wh_per_m']; c_regen = d['c_regen_wh_per_m']
+eta_up = d['implied_eta_up']; eta_regen = d['implied_eta_regen']
+# 上坡：消耗 > 势能（效率 < 1）→ eta = m·g / c_up
+# 下坡：回收 < 势能（效率 < 1）→ eta = c_regen / m·g
+assert 3.0 < c_up < 9.0, 'c_up out of physical range: %s' % c_up
+assert 1.0 < c_regen < 6.0, 'c_regen out of physical range: %s' % c_regen
+assert 0.60 < eta_up <= 1.0, 'implied eta_up not physical: %s' % eta_up
+assert 0.40 < eta_regen <= 1.0, 'implied eta_regen not physical: %s' % eta_regen
+assert d['n_drive'] >= 30, 'too few drives: %s' % d['n_drive']
+assert d['c_up_trustworthy'] is True, 'c_up should be trustworthy'
+assert d['conservative_c_regen'] > 0, 'conservative c_regen must be positive'
+assert d['conservative_c_regen'] <= c_regen + 0.01, 'conservative must not exceed fitted'
+assert d.get('caveat'), 'missing caveat'
+" 2>/dev/null \
+  && ok "climb_model（爬升能耗系数 + 物理自洽）" || fail "climb_model（爬升能耗系数）"
+# 20. 自更新元数据
 L=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" $B/api/v1/app/latest)
 echo "$L" | python -c "import json,sys;d=json.load(sys.stdin);assert d['version_code'].isdigit()" 2>/dev/null \
   && ok "app/latest 元数据" || fail "app/latest 元数据"
