@@ -920,7 +920,7 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         // 分母**本身已经衰减过**。
                         //
                         // 评审原话：「首测不是新车容量，只回答『比 8 月 2 号那次低了多少』」。
-                        val baselineDate = b.series.take(3)
+                        val baselineDate = b.series.orEmpty().take(3)
                             .sortedBy { it.capacity_kwh }
                             .getOrNull(1)?.date?.fmtDate()
                         b.health_percent_of_baseline?.let {
@@ -963,7 +963,7 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        val series = b.series.map { it.capacity_kwh?.toFloat() }
+                        val series = b.series.orEmpty().map { it.capacity_kwh?.toFloat() }
                         if (series.count { it != null } >= 2) {
                             // ⚠️ v0.9.2（口径审计 S3-3）：**不再传基准线**。
                             // 原来把「新电池标称 76.8 度」当锚点，Y 轴被撑到 99.8，
@@ -978,7 +978,7 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                 values = series,
                                 color = MaterialTheme.colorScheme.secondary,
                                 yUnit = "度",
-                                xLabels = bucketAxisLabels(b.series.map { it.date.fmtDate() }),
+                                xLabels = bucketAxisLabels(b.series.orEmpty().map { it.date.fmtDate() }),
                                 contentDescription = batteryChartDescription(b),
                             )
                             Text(

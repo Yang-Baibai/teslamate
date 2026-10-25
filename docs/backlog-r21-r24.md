@@ -227,6 +227,12 @@ v0.39.0 已把措辞改成「模型残差约 ±N 个点」（不夸大），
 | 按下反馈**全 App 统一**成 `pressable` | HIG P0-2 | `pressable` 6 处 vs 原生 `.clickable` 14 处（Material 涟漪、无变暗、无缩放）。v0.47.0 只统一了设置页与线路卡那几处**触感**；**视觉**全量统一要逐屏看，缺设备验证 |
 | 3D 倾斜的**补间**（`Motion.TiltPress` 零引用） | HIG P1-1 | `DrivesScreen.kt:560` 的 `rotationX` 是**裸 Float**进 `graphicsLayer`，按下瞬间是**瞬时跳变**。改成 spring 需要 `animateFloatAsState` 驱动，而 spring 的手感必须真机看 |
 
+### B2. 第 29 轮崩溃与健壮性审计的其余两条（**需要真机或大数据**才能验证）
+
+| 项 | 来源 | 状态 |
+|---|---|---|
+| `buildJourneys` 跑在**主线程**的 `remember` 里 | 崩溃审计 P1-2 | `RecordsScreen.kt:239` 的 `remember(drives, charges) { buildRouteTemplates(...) }` 内层是 O(段数×场数)（`RouteJourney.kt:397-491` + `:351` 的全表 `any{}`）。用真实数据 + 合成放大数据实测：**4.31 → 12.59 → 38.98 → 138.99 ms**（数据 ×8 ⇒ 耗时 ×32，**超线性**）。同仓库的 `ConsumptionModel.from` 早在 v0.24.0 就挪到了 IO 线程，**同一文件里两套标准**。⇒ 改成 `LaunchedEffect` + `produceState`，但会引入「首帧空列表」的渲染分支，需要真机看加载态 |
+| `route_profile` 的 **400 段上限**，客户端不截断 | 崩溃审计 P2-5 | 实测那条 6227 公里线**现在就有 191 段**。超限 ⇒ 服务端 400 ⇒ `RecordsScreen.kt:267` **静默吞掉** ⇒ `socProfile = null` ⇒ 退回插值，而 `RoutePlan.kt:1341-1343` 自述插值误差达 **13 公里**（「会导致危险决策」）。⇒ 至少要**把降级说出来**（现在完全是静默的） |
 ### B. 口径/数据类（需要改服务端或补数据）
 
 | 项 | 来源 | 状态 |

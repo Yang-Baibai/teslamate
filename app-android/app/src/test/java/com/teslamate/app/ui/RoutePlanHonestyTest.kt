@@ -315,4 +315,50 @@ class RoutePlanHonestyTest {
         assertTrue("站间距应只含真站之间那 192 公里: $rhythm", rhythm.contains("192 公里"))
         assertFalse("起点 0.0 不能混进站间距: $rhythm", rhythm.contains("191 公里"))
     }
+
+    @Test
+    fun `站间距行不再重复最长一段`() {
+        // ⚠️ **v0.50.0（第 29 轮对抗性审计 P0）**：
+        // 同一张卡上出现了**两个「最长一段」，而且两个值不一样**。
+        //
+        // 根因：主角行的「最长一段」用 `gapToNextKm`（**含**「起点→首站」与
+        // 「末站→终点」两个半段），而站间距行按 `kmAlongRoute` 相邻差（**不含**半段）。
+        //
+        // 实测（255 公里那条线，journey-78-114）：
+        // 主角行 `169 公里 · 最长一段 · 深圳市体育运动学校 → 终点`
+        // 站间距行 `从起点算 86～86 公里，中位 86；最长一段 86 公里`
+        // ⇒ 同一句「最长一段」两个值，读者只会以为 App 算错了。
+        //
+        // 按项目自己的规则「**同一个量只能有一个名字**」——
+        // 「最长一段」由**主角行**独家拥有，站间距行只给分布。
+        val p = RoutePlan(
+            RouteTemplate(
+                key = "j1", fromLabel = "家", toLabel = "B",
+                distanceKm = 1000.0, startSoc = 100, endSoc = 50,
+                legCount = 3, stopCount = 2,
+                lastDrivenAt = java.time.Instant.parse("2026-10-07T00:00:00Z"),
+                startOdoKm = 100000.0,
+            ),
+            emptyList(),
+            listOf(
+                // 起点行：km 0、到第一站 86 公里
+                RouteStop(
+                    name = "家", kmAlongRoute = 0.0, socBefore = 89, socAfter = null,
+                    typicalPowerKw = null, minutesTo80 = null, sessions = 1,
+                    gapToNextKm = 86.0, gapNeedPct = 50, requiredSocHere = 70,
+                    nextStopRealSoc = 12, socAtNextStop = 18, nextStopName = "B",
+                    isStart = true,
+                ),
+                // 真站：86 公里、到终点再 169 公里
+                // ⚠️ 这一段才是**全线最长的一跳**（真实数据 journey-78-114 同型）
+                stop("B", 86.0, gapKm = 169.0),
+            ),
+        )
+        val rhythm = p.stationRhythm()
+        // 主角行会说「最长一段 169 公里」（含「末站→终点」那个半段）
+        val hero = p.longestHop!!
+        assertEquals("主角行的最长一段含末站→终点", 169.0, hero.km, 0.001)
+        // 站间距行**绝不能**再说「最长一段」——否则同一张卡上两个值打架
+        assertFalse("站间距行不得重复「最长一段」: $rhythm", rhythm.contains("最长一段"))
+    }
 }

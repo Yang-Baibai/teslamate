@@ -120,6 +120,27 @@ fun DriveScoreCard(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // ⚠️ **v0.50.0（第 28 轮通勤车主评审 P1-4）：把**门槛**这件事说清楚。**
+        //
+        // 真实数据（全车 364 趟）：
+        // · 单趟中位 **5.6 公里**
+        // · **72.8%** 的趟**不到 20 公里**（被门槛排除在外）
+        // · 够得着门槛的 20 趟，**平均 91.0 公里/趟**
+        //
+        // ⇒ 对一个每天开 5~30 公里的通勤者，这张卡「永远够不着评分」，
+        // 而界面上只写「按 ≥20 公里的 20 趟算」—— 读者不知道
+        // **自己七成的行程被这个门槛筛掉了**，也不知道这 20 趟有多长。
+        //
+        // 现在把门槛的后果与这批行程的**量级**都摆出来（纯事实，不做解读）。
+        val avgKmPerTrip = driveProfileAvgKmPerTrip(s.total_km, s.drive_count)
+        if (avgKmPerTrip != null) {
+            Text(
+                "门槛 ${profile.params.min_distance_km} 公里：这 " +
+                    "${s.drive_count} 趟平均 ${avgKmPerTrip} 公里/趟，更短的行程不在里面",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Spacer(Modifier.height(10.dp))
 
         // ── 分项 ──
@@ -276,6 +297,20 @@ fun DriveScoreCard(
 }
 
 /** 每公里 / 每百公里的次数。 */
+/**
+ * ⚠️ **v0.50.0（第 28 轮通勤车主评审 P1-4）**：驾驶画像门槛行程的**平均长度**（公里/趟）。
+ *
+ * 真实数据：够得着 20 公里门槛的 20 趟，**平均 91.0 公里/趟**；
+ * 而全车 364 趟的**单趟中位只有 5.6 公里**、**72.8% 的趟不到 20 公里**。
+ *
+ * ⇒ 这个门槛把用户**七成**的行程筛在外面 ——
+ * 界面必须把这件事说出来，否则「平顺分 60」看起来像是对他全部日常的评价。
+ *
+ * 抽成**纯函数**是为了能被 JVM 单测直接断言。
+ */
+fun driveProfileAvgKmPerTrip(totalKm: Double, driveCount: Int): Int? =
+    if (driveCount <= 0) null else (totalKm / driveCount).roundToInt()
+
 private fun fmtPer100(count: Int, km: Double): String {
     if (km <= 0.1) return "—"
     return (count / km * 100).let { String.format(java.util.Locale.CHINA, "%.1f", it) }

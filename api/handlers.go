@@ -1295,7 +1295,24 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	h := &BatteryHealth{}
+	// ⚠️ **v0.50.0（第 29 轮崩溃与健壮性审计 P1-1）**：
+	// `Series` **必须初始化成空切片**，不能留 nil ——
+	//
+	// Go 的 nil slice 会被 `encoding/json` 序列化成 **`null`**，
+	// 而客户端 `Api.kt` 把 `series` 声明成**非空** `List<BatteryPoint>`：
+	// kotlinx.serialization 遇到 JSON `null` 会**抛 `JsonDecodingException`**
+	// （默认值只在字段**缺失**时生效，`explicitNulls=false` /
+	//  `coerceInputValues=true` / `isLenient=true` **都救不了**）。
+	//
+	// 后果：客户端把异常翻译成「**服务器返回的数据格式不对，请确认服务端是最新的版本**」——
+	// 而真实原因是「**这台车还没有满充记录**」。
+	// 用户会去做一个永远无效的动作（升级服务端），却永远看不到电池曲线。
+	//
+	// 触发条件：`queries.go` 的满充点查询是 **INNER JOIN LATERAL**，
+	// 没有满充记录 ⇒ 0 行 ⇒ `h.Series` 为 nil。
+	// ⚠️ 本机 87 天数据**永远触发不到**（实测 29 个点）——
+	// 换第二台车 / 老库 / 刚买的车**必然踩到**。
+	h := &BatteryHealth{Series: []*BatteryPoint{}}
 	var last *float64
 	// ⚠️ v0.22.0（电池健康专家 P1-5 / P1-1 / P0-3）：下面这些累加器。
 	var (

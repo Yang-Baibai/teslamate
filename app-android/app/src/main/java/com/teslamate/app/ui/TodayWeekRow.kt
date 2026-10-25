@@ -20,16 +20,15 @@ import com.teslamate.app.fmt
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.temporal.TemporalAdjusters
 
 /**
- * ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-1）**：车况页的「今天 / 本周」摘要。
+ * ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-1）**：车况页的「今天 / 近 7 天」摘要。
  *
  * ## 为什么要有这一行
  *
  * 第 28 轮通勤车主评审的结论：车况页**只有静态车况**
  * （电量 / 续航 / 锁车 / 空调 / 胎压），
- * **没有任何「今天 / 本周」的信息**。
+ * **没有任何「今天 / 近 7 天」的信息**。
  * 而通勤者每天早上的第二个问题永远是
  * 「这车今天开没开、这周怎么用的」——
  * 数据**是有的**（`StatusScreen` 已经把最近 500 趟留在内存里），只是**没给人看**。
@@ -40,13 +39,14 @@ import java.time.temporal.TemporalAdjusters
  * ## 零新增网络请求
  *
  * `StatusScreen.kt:177` 的 `val drives = store.drives` 已经把这 500 趟留在内存里
- * ⇒ 今天 / 本周的公里数、分钟数、行驶天数**纯客户端现算**。
+ * ⇒ 今天 / 近 7 天的公里数、分钟数、行驶天数**纯客户端现算**。
  *
  * ## 口径
  *
  * 时间窗用**服务端时区**（[ServerZone]）——
  * 与统计页的聚合桶同源（v0.29.0 起全 App 统一）。
- * 「本周」= 自然周（周一起）。
+ * ⚠️ **v0.50.0**：窗口 = **滚动 7 天**（今天 + 前 6 天），
+ * 与服务端 `period=week` 的 7 个自然日桶**完全一致**。
  */
 data class UsageSummary(
     val todayKm: Double = 0.0,
@@ -55,7 +55,7 @@ data class UsageSummary(
     val weekKm: Double = 0.0,
     val weekMinutes: Int = 0,
     val weekTrips: Int = 0,
-    /** 本周有行程的天数 */
+    /** 近 7 天里有行程的天数 */
     val weekDays: Int = 0,
 ) {
     /** 今天开过车吗（决定用「今天 X 公里」还是「今天还没开车」）。 */
@@ -63,10 +63,25 @@ data class UsageSummary(
 }
 
 /**
- * ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-1）**：从行程列表现算「今天 / 本周」。
+ * ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-1）**：从行程列表现算「今天 / 近 7 天」。
  *
  * 抽成**纯函数**是为了能被 JVM 单测直接断言（时间窗边界最容易错，
  * 而时间窗错一次就是「今天」显示成「昨天」）。
+ *
+ * ⚠️ **v0.50.0（第 29 轮对抗性审计 P1-3）**：窗口从「**自然周**」改成「**滚动 7 天**」。
+ *
+ * 原来按自然周（周一起）切，而统计页那个分段是 `period=week`
+ * = **服务端最近 7 个自然日**（滚动，含今天）——
+ * 两个是**不同的窗口**。
+ *
+ * 实测（逐日复算）：10-19（周一）那天，
+ * 「本周」是 **9.0 公里**，而统计页的「7 天」是 **781.3 公里** ——
+ * 差 **87 倍**。
+ *
+ * ⚠️ 唯一样机日 10-25 恰好是**周日** ⇒ 两个窗口**重合** ——
+ * 作者和两轮评审都没看出来（这是「只在特定日子才显形」的那类 bug）。
+ *
+ * 现在两处**用同一个窗口**（滚动 7 天，含今天），标签也统一成「近 7 天」。
  */
 fun computeUsageSummary(
     drives: List<Drive>,
@@ -74,35 +89,37 @@ fun computeUsageSummary(
     now: Instant = Instant.now(),
 ): UsageSummary {
     val today = now.atZone(zone).toLocalDate()
-    // 自然周：周一为起点（与统计页的「本周」口径一致）
-    val weekStart = today.with(TemporalAdjusters.previousOrSame(java.time.DayOfWeek.MONDAY))
+    // ⚠️ 滚动 7 天 = 今天 + 前 6 天（与服务端 `period=week` 的 7 个自然日桶一致）
+    val windowStart = today.minusDays(6)
     var out = UsageSummary()
     val weekDays = HashSet<LocalDate>()
     for (d in drives) {
         val date = d.start_date.atZone(zone).toLocalDate()
+        if (date.isBefore(windowStart) || date.isAfter(today)) continue
         val km = d.distance_km ?: continue
         val min = d.duration_min ?: 0
-        when {
-            date == today -> {
-                out = out.copy(
-                    todayKm = out.todayKm + km,
-                    todayMinutes = out.todayMinutes + min,
-                    todayTrips = out.todayTrips + 1,
-                )
-            }
-            !date.isBefore(weekStart) && date.isBefore(today) -> {
-                out = out.copy(
-                    weekKm = out.weekKm + km,
-                    weekMinutes = out.weekMinutes + min,
-                    weekTrips = out.weekTrips + 1,
-                )
-                weekDays += date
-            }
+        if (date == today) {
+            out = out.copy(
+                todayKm = out.todayKm + km,
+                todayMinutes = out.todayMinutes + min,
+                todayTrips = out.todayTrips + 1,
+            )
+        } else {
+            out = out.copy(
+                weekKm = out.weekKm + km,
+                weekMinutes = out.weekMinutes + min,
+                weekTrips = out.weekTrips + 1,
+            )
+            weekDays += date
         }
     }
-    // 本周的公里数要**包含今天**（用户看到的是「这一周到现在」）
-    return out.copy(weekKm = out.weekKm + out.todayKm, weekMinutes = out.weekMinutes + out.todayMinutes,
-        weekTrips = out.weekTrips + out.todayTrips, weekDays = weekDays.size + if (out.hasToday) 1 else 0)
+    // 「近 7 天」的公里数要**包含今天**（用户看到的是「这一周到现在」）
+    return out.copy(
+        weekKm = out.weekKm + out.todayKm,
+        weekMinutes = out.weekMinutes + out.todayMinutes,
+        weekTrips = out.weekTrips + out.todayTrips,
+        weekDays = weekDays.size + if (out.hasToday) 1 else 0,
+    )
 }
 
 /**
@@ -140,14 +157,19 @@ fun driveDaysInWindow(
 }
 
 /**
- * ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-1）**：车况页的「今天 / 本周」一行。
+ * ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-1）**：车况页的「今天 / 近 7 天」一行。
  *
  * 文案（逐字）：
- * - 有行驶：`今天 4.4 公里 · 15 分钟` + `本周 243.3 公里 · 4 天有行程`
- * - 零行驶：`今天还没开车` + `本周 243.3 公里 · 4 天有行程`
+ * - 有行驶：`今天 4.4 公里 · 15 分钟` + `近 7 天 243.3 公里 · 4 天有行程`
+ * - 零行驶：`今天还没开车` + `近 7 天 243.3 公里 · 4 天有行程`
  *
  * ⚠️ 刻意给「N 天有行程」而不是只给公里数 ——
- * 真实数据里本周 243.3 km 有 **84.3% 来自 10-24 一天**，
+ *
+ * ⚠️ **v0.50.0（第 29 轮对抗性审计 P1-3）**：标签从「本周」改成「**近 7 天**」——
+ * 原来的「本周」指的是**自然周**（周一起），而统计页那个分段是**滚动 7 天**，
+ * 两个窗口在周一那天能差 **87 倍**（实测 10-19：9.0 公里 vs 781.3 公里）。
+ * 现在两处用**同一个窗口**，标签也不再含糊。
+ * 真实数据里近 7 天的 243.3 km 有 **84.3% 来自 10-24 一天**，
  * 单给公里数会被那一天主导；「几天」才是能对照「我今天该出门了吗」的量。
  */
 @Composable
@@ -158,9 +180,9 @@ fun TodayWeekRow(summary: UsageSummary, modifier: Modifier = Modifier) {
         "今天还没开车"
     }
     val weekTxt = if (summary.weekTrips > 0) {
-        "本周 " + summary.weekKm.fmt(1) + " 公里 · " + summary.weekDays + " 天有行程"
+        "近 7 天 " + summary.weekKm.fmt(1) + " 公里 · " + summary.weekDays + " 天有行程"
     } else {
-        "本周还没有行程"
+        "近 7 天还没有行程"
     }
     Column(modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {

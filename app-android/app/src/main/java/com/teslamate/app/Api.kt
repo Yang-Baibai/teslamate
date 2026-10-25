@@ -689,7 +689,19 @@ data class BatteryHealth(
     /** 铭牌（出厂标称）容量 —— 「占铭牌」的分母。缺它就无法验算这个数。 */
     val nominal_capacity_kwh: Double? = null,
     val health_percent: Double? = null,
-    val series: List<BatteryPoint> = emptyList(),
+    /**
+     * ⚠️ **v0.50.0（第 29 轮崩溃与健壮性审计 P1-1）**：改成**可空**。
+     *
+     * Go 的 nil slice 会被序列化成 **`null`**（不是 `[]`），
+     * 而 kotlinx.serialization 遇到 JSON `null` 赋给**非空**属性会**抛异常**
+     * （默认值只在字段**缺失**时生效）⇒ 整张电池卡崩掉，
+     * 而且被翻译成「**服务器返回的数据格式不对**」——
+     * 而真实原因只是「**这台车还没有满充记录**」。
+     *
+     * 服务端已改成返回 `[]`（`api/handlers.go` 的 `BatteryHealth{Series: []*BatteryPoint{}}`），
+     * 这里再兜一层：万一服务端是旧版，也只是「没有曲线」，不是崩溃。
+     */
+    val series: List<BatteryPoint>? = null,
     /**
      * ⚠️ **v0.35.0：电池容量衰减的判定**（服务端唯一事实源，客户端只显示）。
      *

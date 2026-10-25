@@ -40,6 +40,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
@@ -48,6 +50,9 @@ import com.teslamate.app.Charge
 import com.teslamate.app.Drive
 import com.teslamate.app.firstSegment
 import com.teslamate.app.fmtMonth
+import com.teslamate.app.minutesFmt
+import com.teslamate.app.fmt
+import com.teslamate.app.fmtShort
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -489,6 +494,46 @@ private fun RecordTimeline(
 }
 
 /**
+ * ⚠️ **v0.50.0（第 28 轮通勤车主评审 P1-2）**：「最近一趟」卡片。
+ *
+ * 逐字文案：
+ * ```
+ * 最近一趟
+ * 10-25 16:47 · 4.4 公里 · 14 分钟
+ * 家 → 宝安区体育中心停车场
+ * ```
+ *
+ * ⚠️ 地点只取**第一段**（`firstSegment()`）——
+ * 全地址是「宝安区体育中心停车场, 裕安一路, 深圳市」这种三段式，
+ * 整段塞进一行会挤成两行三行；第一段就是可读的地名。
+ */
+@Composable
+private fun RecentDriveCard(drive: Drive, modifier: Modifier = Modifier) {
+    SectionCard("最近一趟", modifier) {
+        Text(
+            // ⚠️ 第 28 轮 a11y P1-3：「 · 」会被 TTS 念成「点」，改成「，」。
+            drive.start_date.fmtShort() + "，" +
+                (drive.distance_km?.fmt(1) ?: "—") + " 公里，" +
+                minutesFmt(drive.duration_min),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        val from = drive.start_place?.firstSegment()?.trim()?.takeIf { it.isNotBlank() }
+        val to = drive.end_place?.firstSegment()?.trim()?.takeIf { it.isNotBlank() }
+        if (from != null || to != null) {
+            Text(
+                (from ?: "未知地点") + " → " + (to ?: "未知地点"),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/**
  * 时间轴列表。
  *
  * 竖线**贯穿整列**（包括月份标题），不随分组断开 ——
@@ -516,6 +561,15 @@ private fun TimelineList(
     // 不额外拉一次接口 —— 同一份数据、同一套口径。
     val driveList = remember(records) {
         records.filterIsInstance<RecordItem.DriveItem>().map { it.drive }
+    }
+    // ⚠️ **v0.50.0（第 28 轮通勤车主评审 P1-2）**：最近的一趟。
+    //
+    // ⚠️ 必须算在 **LazyColumn 之外** ——
+    // `LazyListScope` 的 content lambda **不是 @Composable**，
+    // 在里面调 `remember` 会编译失败
+    // （「@Composable invocations can only happen from the context of a @Composable function」）。
+    val latestDrive = remember(driveList) {
+        driveList.maxByOrNull { it.start_date }
     }
 
     LazyColumn(
@@ -583,6 +637,21 @@ private fun TimelineList(
                     drives = driveList,
                     modifier = Modifier.animateItem(),
                 )
+            }
+        }
+        // ⚠️ **v0.50.0（第 28 轮通勤车主评审 P1-2）：「最近一趟」。**
+        //
+        // 通勤者的「昨天走了哪趟」在**第三屏**（首屏是线路余量表那张长途工具卡，
+        // 第二屏是实测满电续航），而他每天最想知道的恰恰是「我最近开了哪趟」。
+        //
+        // 放在**线路余量表之后、时间轴之前** ——
+        // 不删线路余量表（长途用户仍然需要它），只是把「最近的这一趟」提前给出来。
+        //
+        // 数据来自**同一份**行程列表（`driveList`，不额外拉接口）。
+
+        if (latestDrive != null) {
+            item(key = "recent-drive") {
+                RecentDriveCard(latestDrive, Modifier.animateItem())
             }
         }
         groups.forEach { (month, itemsInMonth) ->

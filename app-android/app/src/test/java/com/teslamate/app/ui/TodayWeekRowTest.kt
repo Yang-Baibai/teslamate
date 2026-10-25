@@ -79,20 +79,49 @@ class TodayWeekRowTest {
     }
 
     @Test
-    fun `本周是自然周且包含今天`() {
-        // 本周起点 10-19（周一）。10-19、10-21 各一趟，10-25（今天）两趟。
+    fun `近 7 天是滚动窗口且包含今天`() {
+        // ⚠️ **v0.50.0（第 29 轮对抗性审计 P1-3）**：窗口从「自然周」改成「**滚动 7 天**」。
+        // 「现在」= 2026-10-25 ⇒ 窗口 = 10-19 ~ 10-25（今天 + 前 6 天）。
+        // 10-19、10-21 各一趟，10-25（今天）两趟；10-18 在窗口外。
         val s = computeUsageSummary(
             listOf(
                 drive(1, "2026-10-19T02:00:00Z", 100.0, 60),   // 本地 10-19 10:00
                 drive(2, "2026-10-21T02:00:00Z", 100.0, 60),   // 本地 10-21 10:00
                 drive(3, "2026-10-25T00:47:10Z", 4.3, 14),     // 今天
-                drive(4, "2026-10-18T02:00:00Z", 999.0, 60),   // 上周六 —— 不该算进来
+                drive(4, "2026-10-18T02:00:00Z", 999.0, 60),   // 10-18 —— 窗口外
             ),
             zone = sh, now = now,
         )
-        assertEquals("本周公里数应含今天、且不含上周六", 204.3, s.weekKm, 0.001)
-        assertEquals("本周趟数", 3, s.weekTrips)
-        assertEquals("本周有行程的天数（含今天）", 3, s.weekDays)
+        assertEquals("近 7 天公里数应含今天、且不含 10-18", 204.3, s.weekKm, 0.001)
+        assertEquals("近 7 天趟数", 3, s.weekTrips)
+        assertEquals("近 7 天有行程的天数（含今天）", 3, s.weekDays)
+    }
+
+    @Test
+    fun `窗口边界是今天加前六天而不是自然周`() {
+        // ⚠️ **第 29 轮审计 P1-3 的核心**：
+        // 「本周」（自然周，周一起）与统计页的「7 天」（滚动）**是两个窗口**。
+        // 实测 10-19（周一）那天：本周 9.0 公里 vs 7 天 781.3 公里 —— **差 87 倍**。
+        //
+        // 现在固定「现在」在 10-25（周日）：自然周窗口是 10-19~10-25，
+        // 滚动窗口也是 10-19~10-25 ⇒ **恰好重合**（唯一样机日如此），
+        // 所以必须换一个「现在」才能测出差异。
+        //
+        // 把「现在」放在 10-21（周三）：自然周窗口 = 10-19~10-21，
+        // 滚动 7 天窗口 = 10-15~10-21 ⇒ **10-15~10-18 的行程**
+        // 在滚动窗口里、但**不在**自然周窗口里。
+        val later = Instant.parse("2026-10-21T04:00:00Z")
+        val s = computeUsageSummary(
+            listOf(
+                drive(1, "2026-10-16T02:00:00Z", 50.0, 30),   // 10-16
+                drive(2, "2026-10-19T02:00:00Z", 70.0, 30),   // 10-19
+                drive(3, "2026-10-21T02:00:00Z", 90.0, 30),   // 10-21（当天）
+            ),
+            zone = sh, now = later,
+        )
+        // 滚动窗口：10-15 ~ 10-21 ⇒ 三趟全算
+        assertEquals("滚动 7 天窗口应含 10-16 与 10-19", 210.0, s.weekKm, 0.001)
+        assertEquals("滚动 7 天窗口的天数", 3, s.weekDays)
     }
 
     @Test
@@ -102,7 +131,7 @@ class TodayWeekRowTest {
         assertEquals(0.0, s.todayKm, 0.001)
         assertEquals(0, s.todayTrips)
         assertEquals(0, s.weekDays)
-        assertEquals("本周也没有行程", 0, s.weekTrips)
+        assertEquals("近 7 天也没有行程", 0, s.weekTrips)
     }
 
     @Test
@@ -111,8 +140,8 @@ class TodayWeekRowTest {
             listOf(drive(1, "2026-10-25T00:47:10Z", 4.3, 14)),
             zone = sh, now = now,
         )
-        assertEquals("本周有行程的天数", 1, s.weekDays)
-        assertEquals("本周公里数 = 今天的公里数", 4.3, s.weekKm, 0.001)
+        assertEquals("近 7 天有行程的天数", 1, s.weekDays)
+        assertEquals("近 7 天公里数 = 今天的公里数", 4.3, s.weekKm, 0.001)
     }
 
     @Test

@@ -626,7 +626,7 @@ fun LineChart(
 
 /** 电池健康曲线的无障碍描述 */
 fun batteryChartDescription(b: com.teslamate.app.BatteryHealth): String {
-    val valid = b.series.filter { it.capacity_kwh != null }
+    val valid = b.series.orEmpty().filter { it.capacity_kwh != null }
     if (valid.isEmpty()) return "电池容量曲线：暂无数据"
     val first = valid.first()
     val last = valid.last()
