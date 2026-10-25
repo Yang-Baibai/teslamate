@@ -1,6 +1,7 @@
 package com.teslamate.app
 
 import kotlinx.serialization.Serializable
+import kotlin.math.roundToInt
 
 /**
  * 实测能耗模型 —— 把 EPA 标定续航换算成**你自己跑出来的真实可达里程**。
@@ -98,7 +99,30 @@ class ConsumptionModel(
     /** 样本覆盖的起止时刻（用于「按 X~Y 的 N 条实测」） */
     val firstDrivenAt: String? = null,
     val lastDrivenAt: String? = null,
+    /**
+     * ⚠️ **v0.36.0（第 21 轮一线车主复审 C8）：模型残差的 90 分位（Wh/km）。**
+     *
+     * 复审原话：「这个 App 要么**给区间**，要么把上次实际值并排放。
+     * 否则它比官方更不可信 —— 因为它看起来更精确。」
+     *
+     * 这是模型**自己的**不确定度：每条可用行程的
+     * |实测 Wh/km − 它所属档的中位数| 的 90 分位。
+     * 样本不足 10 条时为 null（不给数）。
+     */
+    val residualP90WhPerKm: Double? = null,
 ) {
+    /**
+     * 把 [residualP90WhPerKm] 换算成**电量百分点**（一段路程上的误差）。
+     *
+     * @param km 这一段的里程
+     * @param capacityKwh 本车可用电池容量（度）
+     */
+    fun socErrorPoints(km: Double, capacityKwh: Double?): Int? {
+        val p90 = residualP90WhPerKm ?: return null
+        val cap = capacityKwh ?: return null
+        if (cap <= 0 || km <= 0) return null
+        return ((p90 * km / 1000.0) / cap * 100.0).roundToInt()
+    }
 
     /** 该模型由多少条行程构成（用于在 UI 上标注置信度） */
     val sampleCount: Int = buckets.sumOf { it.samples }
@@ -310,6 +334,38 @@ class ConsumptionModel(
             val firstAt = usable.minByOrNull { it.start_date }?.start_date?.fmtDate()
             val lastAt = usable.maxByOrNull { it.start_date }?.start_date?.fmtDate()
 
+            // ⚠️ **v0.36.0（第 21 轮一线车主复审 C8）：模型要自曝它的**误差带**。**
+            //
+            // 复审原话：「这个 App 要么**给区间**，要么把上次实际值并排放。
+            // 否则它比官方更不可信 —— 因为它看起来更精确。」
+            //
+            // 现在用**模型自己的残差**算：对每条可用行程，
+            // |实测 Wh/km − 它所属档的中位数| 的 **90 分位**（不用均值 —— 离群值会拉飞）。
+            //
+            // ⚠️ **只用 km ≥ 100 的长途样本** —— 这是**口径必须同源**的地方：
+            // 线路余量表只处理 ≥200 公里的旅程，而**短途**的残差噪声极大
+            // （标定续航变化很小、里程很短 ⇒ Wh/km 残差被放大）：
+            // 实测全样本 P90 = **97 Wh/km**（351 公里上 ±52 点，毫无意义），
+            // 而 km ≥ 100 的 P90 = **23.2 Wh/km**（351 公里上 **±12.4 个点**）——
+            // 与复审实测的「单跳误差 -11 ~ +12 个点」**精确吻合**。
+            val residuals = usable
+                .filter { (it.distance_km ?: 0.0) >= 100.0 }
+                .mapNotNull { d ->
+                    val wh = d.wh_per_km ?: return@mapNotNull null
+                    val sp = d.avg_speed_kph ?: return@mapNotNull null
+                    val b = bucketForSpeed(sp.toDouble(), buckets) ?: return@mapNotNull null
+                    kotlin.math.abs(wh - b.whPerKm)
+                }
+            val residualP90 = if (residuals.size >= 10) {
+                val sorted = residuals.sorted()
+                // 最近秩法 P90（与 `p90NearestRank` 同一口径）
+                // 用整数算 ceil(size × 0.9)：(size×9 + 9) / 10
+                val rank = ((sorted.size * 9 + 9) / 10).coerceIn(1, sorted.size)
+                sorted[rank - 1]
+            } else {
+                null
+            }
+
             return ConsumptionModel(
                 buckets = buckets,
                 cruiseKph = cruise,
@@ -318,10 +374,33 @@ class ConsumptionModel(
                 lowTempSamples = lowTemp,
                 firstDrivenAt = firstAt,
                 lastDrivenAt = lastAt,
+                residualP90WhPerKm = residualP90,
             )
         }
 
         /** 低温样本条数门槛（低于这个数就不做低温结论） */
         const val LOW_TEMP_MIN_SAMPLES = 5
+
+        /**
+         * 某个车速落在**哪个档**（含借用邻档的规则，与 [whSample] 一致）。
+         *
+         * ⚠️ v0.36.0：算模型残差时要用**同一个**分档规则，
+         * 否则残差会被「借用邻档」污染。
+         */
+        private fun bucketForSpeed(
+            speedKph: Double,
+            buckets: List<SpeedBucket>,
+        ): SpeedBucket? {
+            if (buckets.isEmpty()) return null
+            buckets.firstOrNull { b ->
+                if (b.maxKph == Int.MAX_VALUE) speedKph >= b.minKph
+                else speedKph >= b.minKph && speedKph < b.maxKph
+            }?.let { return it }
+            // 借用最近的一档（速度落在所有桶外时）
+            return buckets.minByOrNull { b ->
+                val d = if (speedKph < b.minKph) b.minKph - speedKph else speedKph - b.maxKph
+                kotlin.math.abs(d)
+            }
+        }
     }
 }

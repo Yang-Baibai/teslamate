@@ -293,6 +293,16 @@ data class RouteStop(
      * 现在 >100 时改口成「这一跳充满也到不了，得在前面加一站」。
      */
     val requiredSocHere: Int? = null,
+    /**
+     * ⚠️ **v0.36.0（第 21 轮一线车主复审 C8）：这一跳的耗电估计**误差几个点**。**
+     *
+     * 复审原话：「这个 App 要么**给区间**，要么把上次实际值并排放。
+     * 否则它比官方更不可信 —— 因为它看起来更精确。」
+     *
+     * 口径：能耗模型**自己**的残差 90 分位（`ConsumptionModel.residualP90WhPerKm`）
+     * 换算成这一段的电量百分点 —— 不是拍脑袋写的数。
+     */
+    val gapErrorPoints: Int? = null,
     /** 下一站的名字（用于「到 G210 车河镇」这样的说法）。 */
     val nextStopName: String? = null,
     /**
@@ -467,6 +477,14 @@ data class RoutePlan(
      * 现在取自能耗模型的实测值（`ConsumptionModel.lowTempSamples`）。
      */
     val lowTempSamples: Int? = null,
+    /**
+     * ⚠️ **v0.36.0（第 21 轮一线车主复审 C8）：余量估计的实测误差（电量百分点）。**
+     *
+     * 口径：能耗模型**自己**的残差 90 分位，换算到**最长那一跳**的里程上。
+     * 复审原话：「要么给区间，要么把上次实际值并排放」——
+     * 这里的数不是拍脑袋写的，是模型自己的不确定度。
+     */
+    val modelErrorPoints: Int? = null,
 ) {
     /**
      * 爬升折合**多少座珠穆朗玛峰**（珠峰 8,849 m）。
@@ -501,7 +519,14 @@ data class RoutePlan(
                     fromName = s.name,
                     toName = nxt?.name ?: "终点",
                     km = gap,
-                    realSoc = nxt?.socBefore,
+                    // ⚠️ **v0.37.0（单测抓到的真 bug）：真值必须取 `nextStopRealSoc`。**
+                    //
+                    // 原来这里写的是 `nxt?.socBefore` —— 那是**插枪电量**，
+                    // 正是 v0.36.0 修掉的那个错口径（C1）。
+                    // 而 `nextStopRealSoc` 才是**下一站的到站电量**（已修正过）。
+                    //
+                    // JVM 单测 `RoutePlanLogicTest.决策句给出真值与估算` 当场抓到了它。
+                    realSoc = s.nextStopRealSoc,
                     estSoc = s.socAtNextStop,
                     needPct = s.gapNeedPct,
                     requiredSoc = s.requiredSocHere,
@@ -1117,6 +1142,12 @@ fun buildRoutePlan(
             gapNeedPct = needPct,
             requiredSocHere = requiredHere,
             nextStopName = nextName,
+            // ⚠️ v0.36.0（C8）：这一跳的估计误差（模型自己的残差 90 分位）
+            gapErrorPoints = if (gapKm != null) {
+                consumption?.socErrorPoints(gapKm, batteryCapacityKwh)
+            } else {
+                null
+            },
             distanceToEndKm = if (endGapKm > 0.5) endGapKm else null,
             estSocAtEnd = estSocAtEnd,
             // ⚠️ **v0.30.0（长途自驾党 P0-1）：把车速与实际用的 Wh/km 带出去。**
@@ -1204,6 +1235,11 @@ fun buildRoutePlan(
         climbCorrectionApplied = climbModel != null,
         // ⚠️ v0.36.0：低温样本数（动态，不再写死）
         lowTempSamples = consumption?.lowTempSamples,
+        // ⚠️ v0.36.0（C8）：模型自己的误差带（换算到最长那一跳）
+        modelErrorPoints = consumption?.socErrorPoints(
+            stops.maxOfOrNull { it.gapToNextKm ?: 0.0 } ?: 0.0,
+            batteryCapacityKwh,
+        ),
     )
 }
 
@@ -1650,7 +1686,14 @@ fun RoutePlanCard(
                 } else {
                     "未做爬升修正（爬升系数不可用）"
                 }) +
-                "；" + lowTempTxt,
+                "；" + lowTempTxt +
+                // ⚠️ **v0.36.0（第 21 轮一线车主复审 C8）：把模型的**误差带**说出来。**
+                //
+                // 复审原话：「这个 App 要么给区间，要么把上次实际值并排放。
+                // 否则它比官方更不可信 —— 因为它看起来更精确。」
+                //
+                // 这里的数是**模型自己的残差 90 分位**换算出来的，不是拍脑袋写的。
+                (plan.modelErrorPoints?.let { "；余量估计的实测误差约 ±$it 个点" } ?: ""),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1880,8 +1923,13 @@ fun RoutePlanCard(
                                     } else if ((rawSoc ?: 100) < RESERVE_SOC) {
                                         // ⚠️ v0.36.0（视觉评审 P2-5）：加逗号 ——
                                         // 「留 20% 保底至少充到 108%」读起来是两个动作黏在一起。
+                                        //
+                                        // ⚠️ **v0.36.0（车主复审 C8）：给**误差带**。**
+                                        // 复审原话：「要么给区间，要么把上次实际值并排放」——
+                                        // 这里的误差是**模型自己的残差 90 分位**，不是拍脑袋的数。
                                         "这一跳要 $need 个点 · 留 $RESERVE_SOC% 保底，" +
                                             "至少充到 $req%" +
+                                            (s.gapErrorPoints?.let { "（±$it 个点）" } ?: "") +
                                             (s.socAfter?.let { "（上次充到 $it%）" } ?: "")
                                     } else {
                                         ""
@@ -1995,6 +2043,30 @@ fun RoutePlanCard(
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                // ⚠️ **v0.36.0（第 21 轮一线车主复审 C7）：处方**每站都看得到**。**
+                                //
+                                // 复审原话：「我站在桩前的那个问题永远是"充到多少"，
+                                // 不是"能不能到"。24 跳现在什么都不给。」
+                                //
+                                // 而**内联**显示（每站多一行）会把这张卡撑成十几屏
+                                // （第 21 轮视觉评审实测 fs=2.0 时 13 屏）。
+                                // 折中：**无解/不够的跳内联**（那两行是行动指令），
+                                // 其余的**在详情里**（一次点击就到，不占版面）。
+                                s.gapNeedPct?.let { need ->
+                                    val req = s.requiredSocHere ?: (need + RESERVE_SOC)
+                                    val need2 = req > 100
+                                    val shownInline = req > 100 || (s.socAtNextStop ?: 100) < RESERVE_SOC
+                                    if (!need2 && !shownInline) {
+                                        Text(
+                                            "这一跳要 $need 个点 · 留 $RESERVE_SOC% 保底，" +
+                                                "至少充到 $req%" +
+                                                (s.gapErrorPoints?.let { "（±$it 个点）" } ?: "") +
+                                                (s.socAfter?.let { "（上次充到 $it%）" } ?: ""),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                }
                                 // ⚠️ **v0.34.0（第 21 轮视觉评审 P0-2）：档位标签与它后面的数字必须**同源**。**
                                 //
                                 // 原来这里显示的是「0–60 档 26.7 kWh/100km」——

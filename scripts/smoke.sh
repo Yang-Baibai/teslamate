@@ -355,6 +355,18 @@ else
   fail "客户端闸门"
   cat /tmp/client-gates.log | sed 's/^/    /'
 fi
+# 18b. ⚠️ v0.37.0：客户端 JVM 单元测试
+#
+# 这个项目以前**没有任何客户端单测** —— 前 22 轮评审全靠人眼评审 + 手工复算。
+# v0.37.0 的第一批单测当场抓到折叠态仍用「插枪电量」当「到站电量」的真 bug。
+# 没有本地构建目录时（远程验证场景）自动跳过，不算失败。
+if bash scripts/unit-tests.sh > /tmp/unit-tests.log 2>&1; then
+  ok "客户端 JVM 单元测试"
+  grep -E '✓|跳过' /tmp/unit-tests.log | sed 's/^/    /'
+else
+  fail "客户端 JVM 单元测试"
+  cat /tmp/unit-tests.log | sed 's/^/    /'
+fi
 # 19. 爬升能耗系数（v0.33.0）：系数的物理自洽性是硬指标
 CM2=$(curl -s -m 180 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/climb_model?min_km=20")
 echo "$CM2" | python -c "
