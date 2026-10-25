@@ -158,6 +158,74 @@ R=$(curl -s -o /tmp/smoke_map.png -w "%{http_code}|%{content_type}|%{size_downlo
 CT=$(curl -sI -m 5 $B/apk/teslamate-app.apk | grep -i content-type | tr -d '\r')
 [[ "$CT" == *"vnd.android.package-archive"* ]] && ok "APK Content-Type 正确" || fail "APK Content-Type（$CT）"
 
+# 9b. v0.26.0~v0.29.0：新增端点全部要在线且字段齐全
+# ⚠️ 这些端点是 v0.26.0~v0.29.0 新加的 —— 冒烟是本项目唯一的回归闸门，
+# 新端点不进冒烟 = 改坏了没人知道。
+RT=$(curl -s -m 20 -H "Authorization: Bearer $TOKEN" \
+  "$B/api/v1/cars/1/route_profile?drive_ids=392,398,405&step_km=5")
+echo "$RT" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('total_km',0) > 0, 'total_km must be > 0'
+assert len(d.get('legs',[])) == 3, 'legs must be 3'
+assert len(d.get('points',[])) > 5, 'too few points'
+assert all(('km_offset' in l) and ('start_km' in l) for l in d['legs']), 'leg fields missing'
+" 2>/dev/null \
+  && ok "route_profile（整条路线剖面）" || fail "route_profile（整条路线剖面）"
+
+DP=$(curl -s -m 30 -H "Authorization: Bearer $TOKEN" \
+  "$B/api/v1/cars/1/driving_profile?limit=10&min_km=20")
+echo "$DP" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert len(d.get('drives',[])) > 0, 'no drives'
+p=d.get('params',{})
+for k in ('hard_event_threshold_kmh_per_2s','over_speed_kph','night_start_hour','night_end_hour','min_distance_km'):
+    assert k in p, 'params missing '+k
+s=d.get('summary',{})
+assert 'wh_per_km_median_gross' in s, 'missing gross median'
+for drv in d['drives']:
+    assert 0 <= drv['score'] <= 100, 'score out of range'
+    assert 'wh_per_km_gross' in drv, 'missing wh_per_km_gross'
+" 2>/dev/null \
+  && ok "driving_profile（驾驶画像）" || fail "driving_profile（驾驶画像）"
+
+SP=$(curl -s -m 10 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/stay_points?min_hours=3")
+echo "$SP" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+pts=d.get('points',[])
+assert len(pts) > 0, 'no stay points'
+for p in pts:
+    assert p['visits'] >= 1, 'visits must be >= 1'
+    assert p['total_hours'] >= p['max_hours'] - 0.01, 'total < max'
+" 2>/dev/null \
+  && ok "stay_points（常驻点）" || fail "stay_points（常驻点）"
+
+EP=$(curl -s -m 40 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/energy_profile")
+echo "$EP" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+bands=d.get('bands',[])
+assert len(bands) >= 5, 'too few bands'
+assert d.get('best_band') is not None, 'missing best_band'
+for b in bands:
+    assert 'wh_per_km_gross' in b, 'missing gross'
+    assert b['wh_per_km_gross'] > 0, 'gross must be > 0'
+    assert b['min_kph'] <= b['max_kph'] or b['max_kph'] == 0, 'band range inverted'
+" 2>/dev/null \
+  && ok "energy_profile（能耗-车速曲线）" || fail "energy_profile（能耗-车速曲线）"
+
+CM=$(curl -s -m 10 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/stats?period=calendar_month")
+echo "$CM" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d.get('granularity') == 'day', 'calendar_month must be daily'
+assert len(d.get('buckets',[])) >= 1, 'no buckets'
+assert d.get('summary'), 'no summary'
+" 2>/dev/null \
+  && ok "stats calendar_month（自然月）" || fail "stats calendar_month（自然月）"
+
 # 10. 自更新元数据
 L=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" $B/api/v1/app/latest)
 echo "$L" | python -c "import json,sys;d=json.load(sys.stdin);assert d['version_code'].isdigit()" 2>/dev/null \

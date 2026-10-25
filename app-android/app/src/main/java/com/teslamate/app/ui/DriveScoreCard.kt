@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -19,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.teslamate.app.DrivingProfile
@@ -52,7 +54,7 @@ import kotlin.math.roundToInt
  *    山路上限速本来就高，所以超速这一项**掺了地形**，
  *    而「急刹车」与下坡的相关系数只有 **−0.16**（干净）。
  * 4. **能耗口径**：这里是**车轮功率积分**（真实耗电），
- *    用量页那个是**标定续航差法**（系统性高估约 9%）—— 两处口径不同，别混。
+ *    用量页那个是**标定续航差法**（高约 19%）—— 两处口径不同，别混。
  */
 @Composable
 fun DriveScoreCard(
@@ -81,10 +83,12 @@ fun DriveScoreCard(
         }
 
         // ── 主角 ──
+        // ⚠️ **v0.29.0（HIG 评审 P1-3）：**不跟车况页的续航主角同级。**
+        // 续航「现在能开 XXX 公里」是车况页**唯一**的 44sp 锚点；
+        // 驾驶画像再给一个 44sp 就成了两个平级主角（一屏一个主角数字）。
         BigStat(
             s.median_score.roundToInt().toString(),
             "驾驶平顺分（中位）",
-            hero = true,
         )
         Spacer(Modifier.height(2.dp))
         Text(
@@ -110,8 +114,18 @@ fun DriveScoreCard(
         )
         ScoreRow(
             "能耗",
-            "${s.wh_per_km_median.fmtKwh100()} kWh/100km（中位）",
-            hint = "车轮功率积分（真实耗电）；用量页那个是标定法，两者差约 9%",
+            "${s.wh_per_km_median_gross.fmtKwh100()} kWh/100km（中位）",
+            // ⚠️ **v0.29.0（复审 P0-2）：口径必须写清楚。**
+            //
+            // 评审原话：「『能耗 … 车轮功率积分（真实耗电）』——
+            // 实测真实耗电是 198.2 Wh/km，车轮功率是 152.7，**低 24%**；
+            // 且下坡得白送分。」
+            //
+            // 所以：① 它是**车轮功率**（不含传动损耗、不含回充抵扣），
+            //      不能叫「真实耗电」；
+            //      ② 显示用**毛耗电**（不含回充抵扣），
+            //      否则下坡那两趟的白分会显示成「16.2 kWh/100km」这种不可能的数。
+            hint = "车轮功率积分，不含传动损耗与回充抵扣；不是电池实耗",
         )
         ScoreRow(
             "夜间行驶",
@@ -136,37 +150,64 @@ fun DriveScoreCard(
         // 而标题写着「最近 12 趟」—— 说的是**过去**，图上画的是**更早**。
         val recent = profile.drives.take(12).reversed()
         if (recent.size >= 3) {
-            // ⚠️ **复审：柱子不能只靠颜色区分** ——
-            // 分数是数字，每根柱子下面必须写出来（WCAG 1.4.1）。
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                recent.forEach { d ->
-                    Column(
-                        Modifier.weight(1f),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(
-                            d.score.roundToInt().toString(),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(2.dp))
+            // ⚠️ **v0.29.0（HIG 评审 P0-2 / P1-1）：只标关键值，数值放柱下方的带里。**
+            //
+            // 原来 12 根柱**每根**都标数值（10sp）—— 200% 字号下：
+            // 柱槽 = (329 − 11×3)/12 = **24.67dp**，而「100」在 fs=2.0（em 20dp）下宽 **33dp**，
+            // **超出 8.33dp** → 相邻柱的数值互相压字。
+            // 而且每个数字坐在各自柱顶 → 12 个数字**锯齿状错位**，无法横向扫读。
+            //
+            // 现在：
+            // ① 数值放到**柱下方的带**里 → 共用一条基线，能横向扫读（P1-1）；
+            // ② 只标**最高**与**最低**两个 —— 其余留白，数字可以溢出到邻位的空白里，
+            //    不会压到别的数字（P0-2）；
+            // ③ 最高与最低相邻时只标最高（避免两个数字挤在一起）。
+            val maxScore = recent.maxOf { it.score }
+            val minScore = recent.minOf { it.score }
+            val maxIdx = recent.indexOfFirst { it.score == maxScore }
+            val minIdx = recent.indexOfFirst { it.score == minScore }
+            val labelIdxs = if (maxIdx == minIdx || kotlin.math.abs(maxIdx - minIdx) <= 1) {
+                setOf(maxIdx)
+            } else {
+                setOf(maxIdx, minIdx)
+            }
+            Column(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth().height(38.dp),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    recent.forEach { d ->
                         Box(
                             Modifier
-                                .fillMaxWidth()
+                                .weight(1f)
                                 .height((d.score / 100.0 * 34).dp.coerceAtLeast(3.dp))
                                 .clip(RoundedCornerShape(3.dp))
                                 .background(scoreColor(d.score))
                         )
                     }
                 }
+                // 数值带：在柱**下方**，共用一条基线
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    recent.forEachIndexed { i, d ->
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                            if (i in labelIdxs) {
+                                Text(
+                                    d.score.roundToInt().toString(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
             }
             Text(
-                "最近 ${recent.size} 趟的分数（右边最新）",
+                "最近 ${recent.size} 趟的分数（右边最新）· 柱越高分越高",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -177,11 +218,14 @@ fun DriveScoreCard(
         Text(
             "分数 = 100 − 急刹车(≤30) − 急加速(≤20) − ≥${profile.params.over_speed_kph}km/h(≤20)" +
                 " − 能耗(≤15) − 夜驾(≤15)。" +
+                "两条**免赔线**：≥${profile.params.over_speed_kph} km/h 的前 3% 不扣、" +
+                "能耗 150 kWh/100km 以下不扣。" +
                 "硬加/硬刹 = 2 秒内车速变化 ≥${profile.params.hard_event_threshold_kmh_per_2s} km/h" +
                 "（噪声底 ±12，有 8 倍余量）；" +
                 "夜间 ${profile.params.night_start_hour}:00–${profile.params.night_end_hour}:00、" +
                 "≥${profile.params.over_speed_kph} km/h —— " +
-                "都是**行业惯例值**，不是从这辆车拟合出来的。",
+                "都是**行业惯例值**，不是从这辆车拟合出来的。" +
+                "⚠️ 120 km/h 是国内高速的**合法限速**，这一项扣的是「开得比限速快」，不是「违法」。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -200,15 +244,17 @@ private fun fmtPer100(count: Int, km: Double): String {
  * ⚠️ 复审：原来 `<60` 用 **danger 红** —— 太重。
  * 低分不是「告警」（车主没做错什么，只是开得野），
  * 用中性灰 + 旁边的数字表达就够了。
+ *
+ * ⚠️ **v0.29.0（HIG 评审 P1-7）：灰只保留「轨道」语义。**
+ * 原来这里是三档（蓝 / 琥珀 / **灰**），而同一屏里：
+ * 能耗曲线用灰表示「普通档」、常驻点用灰表示「轨道」——
+ * 同一个灰在三个地方三种含义，直接冲突。
+ * 现在改成**两档**（蓝 = 好，琥珀 = 需要留意），灰只用于轨道。
  */
 @Composable
 private fun scoreColor(score: Double): Color {
     val a = LocalAccentColors.current
-    return when {
-        score >= 85 -> a.energyBlue
-        score >= 60 -> a.warnAmber
-        else -> a.chartTrack
-    }
+    return if (score >= 85) a.energyBlue else a.warnAmber
 }
 
 /** 一个分项行：标题 + 数值 + 一句解释。 */
@@ -224,7 +270,15 @@ private fun ScoreRow(
                 label,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.width(96.dp),
+                // ⚠️ **v0.29.0（HIG 评审 P1-5）：不要固定宽。**
+                // 原来 `width(96.dp)`：「≥120 km/h」在 fs=1.0 宽 72.3dp ✓，
+                // fs=2.0 宽 **144.6dp** → 超出 48.6dp，**必折行**且与数值错位。
+                // 改成 weight + 最小宽：空间够就并排，不够就换行，不会挤到数值。
+                modifier = Modifier
+                    .weight(1f)
+                    .widthIn(min = 96.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Text(
                 value,

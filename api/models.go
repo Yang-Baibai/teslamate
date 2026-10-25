@@ -315,8 +315,11 @@ type DrivingProfileDrive struct {
 	NightPct float64 `json:"night_pct"`
 	// OverSpeedPct 这趟行程里速度超过 120 km/h 的时间比例（%）
 	OverSpeedPct float64 `json:"over_speed_pct"`
-	// WhPerKm 每公里耗电（Wh/km），由车轮功率梯形积分算出来
+	// WhPerKm 每公里耗电（Wh/km），由车轮功率梯形积分算出来（**净值**，下坡回充会抵扣）
 	WhPerKm float64 `json:"wh_per_km"`
+	// ⚠️ v0.29.0：WhPerKmGross 每公里**毛耗电**（Wh/km，不含回充抵扣）
+	// —— 评分里的「能耗」项用它，净值会被下坡拉出假象（下坡白送分）
+	WhPerKmGross float64 `json:"wh_per_km_gross"`
 	DescentM int `json:"descent_m"`
 	AscentM  int `json:"ascent_m"`
 }
@@ -335,6 +338,8 @@ type DrivingProfileSummary struct {
 	NightPctAvg     float64 `json:"night_pct_avg"`
 	OverSpeedPctAvg float64 `json:"over_speed_pct_avg"`
 	WhPerKmMedian   float64 `json:"wh_per_km_median"`
+	// ⚠️ v0.29.0：WhPerKmMedianGross 毛耗电中位（不含回充抵扣）—— App 展示用这个
+	WhPerKmMedianGross float64 `json:"wh_per_km_median_gross"`
 }
 
 // DrivingProfileParams 服务端这次用的**全部**阈值。
@@ -584,8 +589,10 @@ type EnergyProfile struct {
 	Bands []EnergyBand `json:"bands"`
 	// TotalKm 全车累计里程（公里表口径，与 drives.distance 一致）
 	TotalKm float64 `json:"total_km"`
-	// OverallWhPerKm 全车平均能耗（车轮功率积分 ÷ 总里程）
+	// OverallWhPerKm 全车平均能耗（车轮功率积分 ÷ 总里程）—— **净值**
 	OverallWhPerKm float64 `json:"overall_wh_per_km"`
+	// ⚠️ v0.29.0：OverallWhPerKmGross 全车**毛耗电**（不含回充抵扣）
+	OverallWhPerKmGross float64 `json:"overall_wh_per_km_gross"`
 	// BestBand 效率最好的一档（wh_per_km 最小）
 	BestBand *EnergyBestBand `json:"best_band"`
 	// Note 口径说明 —— 必须随数据一起下发
@@ -598,8 +605,14 @@ type EnergyBand struct {
 	// ⚠️ 最后一档 MaxKph 是**开区间**上界（145+），更高的速度都并进来
 	MinKph int `json:"min_kph"`
 	MaxKph int `json:"max_kph"`
-	// WhPerKm 该档的能耗（Wh/km）
+	// WhPerKm 该档的能耗（Wh/km）—— **净值**（下坡回充会抵扣）
 	WhPerKm float64 `json:"wh_per_km"`
+	// ⚠️ v0.29.0：WhPerKmGross 该档的**毛耗电**（Wh/km，不含回充抵扣）。
+	//
+	// 为什么必须分开给：净值口径下「40–50 km/h = 118.8 Wh/km」看着最省电，
+	// 但那是**一次下坡 + 一次长途**的产物 —— 物理上不可能。
+	// 「最省电的速度」必须按毛耗电选（评审复算：扣掉回充后最低档变成 100–110 km/h）。
+	WhPerKmGross float64 `json:"wh_per_km_gross"`
 	// Km 该档累计里程、 Bins 该档的 1 km 分箱个数（样本量）
 	Km   float64 `json:"km"`
 	Bins int     `json:"bins"`
@@ -610,6 +623,8 @@ type EnergyBestBand struct {
 	MinKph  int     `json:"min_kph"`
 	MaxKph  int     `json:"max_kph"`
 	WhPerKm float64 `json:"wh_per_km"`
+	// ⚠️ v0.29.0：毛耗电（不含回充抵扣）—— **「最省电档」按它选**
+	WhPerKmGross float64 `json:"wh_per_km_gross"`
 	// ⚠️ v0.28.0（主控修正）：**必须带上 km 与 bins** ——
 	// 原来只有 min/max/wh，App 想显示「这一档跑了多少公里」时拿到的是 0，
 	// 而且 App 用整字段相等来比较「是不是最省电那档」→ **恒为 false**，

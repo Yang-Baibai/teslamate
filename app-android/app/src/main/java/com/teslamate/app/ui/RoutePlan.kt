@@ -204,8 +204,28 @@ data class RoutePlan(
     /** 最低点（不含充电跳升后的值） */
     val lowestSoc: Int? get() = profile.minByOrNull { it.soc }?.soc
 
+    /**
+     * ⚠️ **v0.29.0（复审 P0-3）：最低点要带上它的公里数。**
+     *
+     * 原来 `lowestSoc`（全局最低）与 `belowFloorKm`（第一个跌破 20% 的点）
+     * 是**两个不同的点**，而结论句把它们**拼在一起**：
+     * 「第 227 公里只剩 5%」—— 但第 227 公里真实是 **18%**，
+     * 5% 是整条路线的最低点（在第 1237 公里）。
+     * **两个数来自不同位置，却被写成了同一句话。**
+     */
+    val lowestPoint: Pair<Double, Int>? get() =
+        profile.minByOrNull { it.soc }?.let { it.km to it.soc }
+
+    /**
+     * 第一个跌破 20% 保底的点（公里 + **该点的**电量）。
+     *
+     * ⚠️ v0.29.0：公里与电量必须来自**同一个点**（见 [lowestPoint] 的说明）。
+     */
+    val firstBelowFloor: Pair<Double, Int>? get() =
+        profile.firstOrNull { it.soc < 20 }?.let { it.km to it.soc }
+
     /** 低于 20% 保底的公里数 */
-    val belowFloorKm: Double? get() = profile.firstOrNull { it.soc < 20 }?.km
+    val belowFloorKm: Double? get() = firstBelowFloor?.first
 
     /** 一句话结论 */
     fun conclusion(): String {
@@ -264,13 +284,29 @@ data class RoutePlan(
         val asOf = template.lastDrivenAt?.fmtDate()
         val src = asOf?.let { "按 $it 那趟实测" } ?: "按历史记录"
         val low = lowestSoc ?: return "$src：算不出结论（没有足够的电量记录）"
-        val below = belowFloorKm
+        // ⚠️ v0.29.0（复审 P0-3）：公里与电量必须来自**同一个点**。
+        val below = firstBelowFloor
+        val belowText = below?.let { (km, soc) ->
+            " · 第 ${km.roundToInt()} 公里只剩 $soc%（低于 20% 保底）"
+        }
+        // ⚠️ **v0.29.0（复审 P0-4）：「需充 N 次」要说清是**历史发生次数**。**
+        //
+        // 复审原话：「`RoutePlan.kt:270` 写死『需充 ${stops.size} 次』——
+        // 我读成『这次 616 公里只需充 1 次』→ **直接导致不安排补电**。」
+        //
+        // 现在改成「那趟实际停了 N 次」+ 给**节奏**（每 X 公里一次），
+        // 让人能自己外推到「这次要充几次」。
+        val rhythm = if (stops.size >= 2) {
+            val gapKm = template.distanceKm / stops.size
+            "（历史节奏：平均每 ${gapKm.roundToInt()} 公里停一次）"
+        } else {
+            ""
+        }
         return when {
             stops.isNotEmpty() ->
-                "$src：需充 ${stops.size} 次" +
-                    (below?.let { " · 第 ${it.roundToInt()} 公里低于 20% 保底" } ?: "")
+                "$src：那趟实际停了 ${stops.size} 次" + rhythm + (belowText ?: "")
             below != null ->
-                "$src：第 ${below.roundToInt()} 公里只剩 $low%（低于 20% 保底）· " +
+                "$src：$belowText · " +
                     "这条线路上没有你的充电记录，中途补电给不出位置"
             else ->
                 "$src：能一次开到 · 预计到达 $low%" +
@@ -425,9 +461,17 @@ fun buildRoutePlan(
             null
         }
         RouteStop(
-            // ⚠️ v0.26.0：优先用**真实 POI 名**（「金田服务区」这种），
-            // 车主找的是「哪个服务区」，不是一段地址。
-            name = c.geofence_name ?: c.poi_name ?: c.place.firstSegment() ?: "充电站",
+            // ⚠️ **v0.29.0（复审 P0-5）：`poi_name` 排到最前。**
+            //
+            // 原来 `geofence_name` 优先 —— 而本机 `geofences` 只有 1 行、叫「家」，
+            // 于是**所有**在家充的电都显示成「家」，
+            // 路上的服务区却显示成一长串地址（「臣田社区, 西乡街道, 宝安区, 深圳市…」）。
+            //
+            // `poi_name` 才是车主认得的名字（「金田服务区」「合江荔乡服务区」），
+            // 所以它排第一；围栏名（如果有意义的地名）排第二；地址首段兜底。
+            name = c.poi_name?.takeIf { it.isNotBlank() }
+                ?: c.geofence_name?.takeIf { it.isNotBlank() }
+                ?: c.place.firstSegment() ?: "充电站",
             kmAlongRoute = js.kmAlong,
             // ⚠️ **v0.28.0（复审 P0-①）：必须用**合并后**的电量。**
             //

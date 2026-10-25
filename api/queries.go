@@ -696,7 +696,18 @@ WITH recent AS (
   GROUP BY drive_id
 ), pw AS (
   -- 能耗：车轮功率梯形积分，丢弃 Δt > 10 秒的数据断点
-  SELECT drive_id, SUM((power + ppower) / 2.0 * dt / 3600.0) AS kwh
+  --
+  -- ⚠️ **v0.29.0（复审 P0-2）：同时算「毛耗电」（不含回充抵扣）。**
+  --
+  -- 原来只算净值（(P_i + P_{i-1})/2 × Δt）—— 净值会**把下坡回充抵扣掉**，
+  -- 于是 2026-10-04 那两趟下坡的 wh_per_km 只有 21.6 / 3.6，
+  -- 「能耗」这一项**不扣分**（阈值 150 以下免赔）→ **白送 +15 分**。
+  -- 评审原话：「下山比平稳开车『加分』。」
+  --
+  -- 毛耗电 = max(P_i, 0) × Δt，不含回充 → 下坡不再白送分。
+  SELECT drive_id,
+         SUM((power + ppower) / 2.0 * dt / 3600.0) AS kwh,
+         SUM(GREATEST(power, 0) * dt / 3600.0) AS kwh_gross
   FROM (
     SELECT p.drive_id, p.power,
            LAG(p.power) OVER (PARTITION BY p.drive_id ORDER BY p.date) AS ppower,
@@ -716,7 +727,9 @@ SELECT r.drive_id, r.start_date, r.distance_km,
        COALESCE(e.hard_brake, 0), COALESCE(e.hard_accel, 0),
        COALESCE(e.over_n, 0), COALESCE(e.n_valid, 0),
        COALESCE(e.n_clean, 0), COALESCE(e.night_n, 0),
-       COALESCE(p.kwh, 0)
+       COALESCE(p.kwh, 0),
+       -- ⚠️ v0.29.0：毛耗电（评分用这个，净值只作参考）
+       COALESCE(p.kwh_gross, 0)
 FROM recent r
 LEFT JOIN ev e ON e.drive_id = r.drive_id
 LEFT JOIN pw p ON p.drive_id = r.drive_id
@@ -826,6 +839,17 @@ WITH s AS (
          -- 梯形积分：(P_i + P_{i-1})/2 × Δt_i，单位 kWh
          (p.power + LAG(p.power) OVER w) / 2.0
            * (EXTRACT(EPOCH FROM (p.date - LAG(p.date) OVER w)) / 3600.0) AS kwh,
+         -- ⚠️ v0.29.0：**毛耗电**（不含回充抵扣）= max(P_i, 0) × Δt_i
+         --
+         -- 为什么必须要它：梯形积分的净值会**把下坡回充抵扣掉**，
+         -- 于是「40–50 km/h 那一档 118.8 Wh/km」看着像最省电，
+         -- 实际是**一次下坡 + 一次长途**的产物 —— 物理上不可能（这台 AWD Performance 做不到）。
+         -- 评审复算：扣掉回充后那一档是 215.3 Wh/km，而**最低档变成 100–110 km/h**。
+         --
+         -- 净值的意义是「这一趟**净**消耗了多少电」（长途规划看这个）；
+         -- 毛值的意义是「**从电池里取走**了多少电」（看效率曲线必须用这个）。
+         GREATEST(p.power, 0)
+           * (EXTRACT(EPOCH FROM (p.date - LAG(p.date) OVER w)) / 3600.0) AS kwh_gross,
          (p.date - LAG(p.date) OVER w) AS dt
   FROM positions p
   WHERE p.drive_id = ANY(ARRAY(SELECT id FROM drives WHERE car_id = $1))
@@ -834,7 +858,7 @@ WITH s AS (
   WINDOW w AS (PARTITION BY p.drive_id ORDER BY p.date)
 ), pair AS (
   -- 丢弃 Δt > 10 秒的数据断点（采样断了就别跨着算平均功率）
-  SELECT drive_id, odometer, speed, km_bin, kwh
+  SELECT drive_id, odometer, speed, km_bin, kwh, kwh_gross
   FROM s
   WHERE dt IS NOT NULL AND dt <= interval '10 seconds'
 ), b AS (
@@ -842,6 +866,7 @@ WITH s AS (
   SELECT drive_id,
          km_bin,
          sum(kwh) AS kwh,
+         sum(kwh_gross) AS kwh_gross,
          max(odometer) AS odo_max,
          avg(speed) AS spd
   FROM pair
@@ -855,6 +880,7 @@ WITH s AS (
   SELECT drive_id,
          spd,
          kwh,
+         kwh_gross,
          odo_max - prev AS dist_km
   FROM b2
   WHERE prev IS NOT NULL AND (odo_max - prev) > 0
@@ -862,7 +888,9 @@ WITH s AS (
 SELECT (floor(spd / 10) * 10 + 5)::int AS band_key,
        count(*)::int AS n_bins,
        sum(dist_km)::float8 AS km,
-       sum(kwh)::float8 AS kwh_total
+       sum(kwh)::float8 AS kwh_total,
+       -- ⚠️ v0.29.0：毛耗电（不含回充抵扣）——「最省电档」要按它选
+       sum(kwh_gross)::float8 AS kwh_gross_total
 FROM f
 GROUP BY 1
 ORDER BY 1`

@@ -47,7 +47,10 @@ import kotlin.math.roundToInt
  * 逐点差分会漏掉大量里程，算出「市区 0.8 Wh/km」的荒谬值）。
  *
  * 与「标定续航差 × cars.efficiency」法实测相关系数 **0.99686**，
- * 但标定法**系统性高估约 7%** —— 所以两处能耗数字的口径必须分别标明。
+ * 但标定法**高约 19%**（标定 181.9 vs 车轮功率 152.7）——
+ * 而且**两者都比实测电池耗电（约 198 kWh/100km）低**：
+ * 车轮功率不含传动损耗，标定法受车机重算影响。
+ * 所以两处能耗数字的口径必须分别标明。
  */
 @Composable
 fun EnergyProfileCard(
@@ -75,55 +78,94 @@ fun EnergyProfileCard(
 
         // ── 主角：最省电的那个速度档 ──
         if (best != null) {
-            BigStat(
-                best.wh_per_km.fmtKwh100(),
-                "最省电速度档的能耗（kWh/100km）",
+            // ⚠️ **v0.29.0（复审 P0-1）：用**毛耗电**，不用净值。**
+            //
+            // 评审复算：净值口径下「40–50 km/h = 118.8 Wh/km」看着最省电，
+            // 但那是**一次下坡 + 一次长途**的产物 —— 这台 AWD Performance 物理上做不到
+            // （扣掉回充后那一档是 215.3）。
+            // 改成毛耗电（不含回充抵扣）后，最低档变成 **100–110 km/h** ——
+            // 正好是日常通勤的速度带，结论**从「误导」变成「有用」**。
+            Text(
+                best.wh_per_km_gross.fmtKwh100(),
+                fontSize = 28.sp,
+                lineHeight = 32.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.4).sp,
+                style = MaterialTheme.typography.headlineMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                "最省电速度档的能耗（kWh/100km，不含回充抵扣）",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(2.dp))
             Text(
                 "${best.label} km/h" +
                     if (best.km > 0) " · 跑了 ${best.km.roundToInt()} 公里" else "",
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
         Spacer(Modifier.height(10.dp))
         // ── 柱状图：每个速度档一根柱子 ──
-        // 柱高 ∝ Wh/km（越省电越矮），**柱顶写数值** ——
-        // 复审指出「无刻度无数值」的柱状图只能靠颜色读，违反「状态不能只靠颜色」。
-        val maxWh = bands.maxOf { it.wh_per_km }.takeIf { it > 0 } ?: 1.0
-        Row(
-            Modifier.fillMaxWidth().height(84.dp),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            bands.forEach { b ->
-                Column(
-                    Modifier.weight(1f),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        b.wh_per_km.fmtKwh100(),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontSize = 9.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(2.dp))
+        // 柱高 ∝ **毛耗电**（越省电越矮），**数值放柱下方的带里**。
+        //
+        // ⚠️ **v0.29.0（HIG 评审 P0-1 / P1-1）：只标两个数。**
+        // 原来 14 根柱**每根**都标数值（9sp）：
+        // 柱槽 = (329 − 13×2)/14 = **21.64dp**，而「28.4」在 fs=2.0（em 18dp）下宽 **33.62dp**，
+        // **超出 11.98dp** → 相邻柱的数值互相压字；
+        // 而且 Row 高度写死 84dp，fs=2.0 时「数值行 30 + 2 + 柱 52 = 84dp」**零余量**。
+        //
+        // 现在：① 只标**最省电**与**最费电**两档，其余留白；
+        // ② 数值在柱**下方**的带里 → 共用一条基线，能横向扫读；
+        // ③ 字号 9sp → 11sp（iOS footnote 最小值）。
+        val maxWh = bands.maxOf { it.wh_per_km_gross }.takeIf { it > 0 } ?: 1.0
+        val worstBand = bands.maxByOrNull { it.wh_per_km_gross }
+        val labelIdxs = buildSet {
+            add(bands.indexOfFirst { isBest(it) })
+            worstBand?.let { add(bands.indexOf(it)) }
+        }.filter { it >= 0 }.toSet()
+        Column(Modifier.fillMaxWidth()) {
+            Row(
+                Modifier.fillMaxWidth().height(56.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                bands.forEach { b ->
                     Box(
                         Modifier
-                            .fillMaxWidth()
-                            .height((b.wh_per_km / maxWh * 52).dp.coerceAtLeast(3.dp))
+                            .weight(1f)
+                            .height((b.wh_per_km_gross / maxWh * 52).dp.coerceAtLeast(3.dp))
                             .clip(RoundedCornerShape(3.dp))
                             .background(if (isBest(b)) accents.energyBlue else accents.chartTrack)
                     )
+                }
+            }
+            // 数值带：在柱**下方**，共用一条基线
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                bands.forEachIndexed { i, b ->
+                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                        if (i in labelIdxs) {
+                            Text(
+                                b.wh_per_km_gross.fmtKwh100(),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
         }
         Spacer(Modifier.height(4.dp))
         Text(
             "左：${bands.first().label} km/h → 右：${bands.last().label} km/h" +
-                "（蓝色是最省电那档；柱越矮越省电，柱顶是数值）",
+                "（蓝色是最省电那档；柱越矮越省电，柱下是数值）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -158,12 +200,16 @@ fun EnergyProfileCard(
 
         Spacer(Modifier.height(6.dp))
         Text(
-            "口径：车轮功率梯形积分（1 km 分箱，按箱内里程表跨度算距离），" +
-                "全车 ${profile?.total_km?.roundToInt() ?: 0} 公里，" +
-                "平均 ${profile?.overall_wh_per_km?.fmtKwh100() ?: "—"} kWh/100km。" +
-                "官方 App 只有**平均** Wh/km，这条曲线它给不了。" +
-                "每一档都够样本（最少的也有几十公里），但**市区与高速的工况差别很大**，" +
-                "别拿市区那几档去规划高速。",
+            buildString {
+                append("口径：车轮功率梯形积分，**毛耗电**（不含下坡回充抵扣），")
+                append("1 km 分箱、按箱内里程表跨度算距离。")
+                append("全车 ${profile?.total_km?.roundToInt() ?: 0} 公里，")
+                append("毛耗电 ${profile?.overall_wh_per_km_gross?.fmtKwh100() ?: "—"} kWh/100km。")
+                append("官方 App 只有**平均** Wh/km，这条曲线它给不了。")
+                append("⚠️ 每一档是「**平均速度**落在该区间的 1 公里箱」，")
+                append("箱内含加速与减速（实测 40–50 那一档有 518/522 个箱越界），")
+                append("不是「以 45 km/h 匀速跑」的能耗。")
+            },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

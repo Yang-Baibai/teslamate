@@ -278,13 +278,27 @@ fun buildJourneys(
             val notAfter = next?.startDate
                 ?: leg.endDate.plusSeconds(3600L * RouteJourneyLimits.MAX_GAP_HOURS.toLong())
             for (c in chargesByOdo) {
-                if (!seenIds.add(c.id)) continue
+                // ⚠️ **v0.29.0（复审 P0-1）：查重必须在判据**之后**。**
+                //
+                // 这里原来写的是 `if (!seenIds.add(c.id)) continue` ——
+                // **无条件消费**：第 0 段扫一遍就把全库充电都标成「已处理」，
+                // 后面 191 段每场都在第一行被跳过。
+                //
+                // 实测后果（两位评审独立复刻出同一个数）：
+                //   6227 公里那条大环线真实沿途充电 **45 场**，App 显示 **0 个**；
+                //   616 公里那条真实 13 场，显示 1 个 —— 而且那 1 个是**出发前**在家充的。
+                //   决策句于是写「需充 1 次」—— **会让人少安排 22 次补电**。
+                //
+                // 正确做法：先判「这一场是不是已经算过了」，判据全过之后**才**落标记。
+                if (c.id in seenIds) continue
                 val odo = c.start_odometer_km ?: continue
                 if (odo < leg.endKm - RouteJourneyLimits.BOUNDARY_TOL_KM) continue
                 if (odo > nextStart + RouteJourneyLimits.BOUNDARY_TOL_KM) continue
                 // ⚠️ 时间约束（上面解释的那条）
                 if (c.start_date.isBefore(notBefore.minusSeconds(3600L))) continue
                 if (c.start_date.isAfter(notAfter)) continue
+                // ✅ 判据全过，现在才落「已处理」标记。
+                seenIds.add(c.id)
                 // ⚠️ **v0.28.0（复审 P0-3）：同一场充电被 TeslaMate 拆成两个 process 时要合并。**
                 //
                 // 实测全库有 **10 对**「同地点 + 同里程（或 ≤1 公里）」的相邻 process

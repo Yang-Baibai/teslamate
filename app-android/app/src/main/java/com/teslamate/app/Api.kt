@@ -579,14 +579,24 @@ data class StayPoint(
  * **官方 App 给不了的**：它只有**平均** Wh/km；
  * 而 TeslaMate 有**逐秒的车轮功率** → 能算出「这台车在每个速度下真实耗多少电」。
  *
- * 实测本车最佳效率区间 **85–100 km/h（124–147 Wh/km）**，
- * 120 km/h 以后急剧劣化（170→179 Wh/km）。
+ * ⚠️ **v0.29.0（复审 P1-1）：删掉硬编码的「85–100 km/h（124–147）」。**
+ * 那个数来自评审员表里的**两档**（80–90 的 124.0 与 90–100 的 147.1），
+ * 既不是「最佳」也不是「85–100」这个区间 —— **它根本不是数据**。
+ *
+ * 「最省电的速度」必须由服务端的 `best_band` 下发，
+ * 而且要按**毛耗电**（不含回充抵扣）选：
+ * 净值口径下「40–50 km/h = 118.8」看着最省电，
+ * 但那是**一次下坡 + 一次长途**的产物 —— 这台 AWD Performance 物理上做不到。
+ * 改成毛耗电后，最低档是 **100–110 km/h（184 Wh/km）**。
  */
 @Serializable
 data class EnergyProfile(
     val bands: List<EnergyBand> = emptyList(),
     val total_km: Double = 0.0,
+    /** 全车平均能耗（**净值**，下坡回充会抵扣） */
     val overall_wh_per_km: Double = 0.0,
+    /** ⚠️ v0.29.0：全车**毛耗电**（不含回充抵扣）—— 看「真实吃电」用这个 */
+    val overall_wh_per_km_gross: Double = 0.0,
     val best_band: EnergyBand? = null,
     val note: String = "",
 )
@@ -596,10 +606,19 @@ data class EnergyProfile(
 data class EnergyBand(
     val min_kph: Int = 0,
     val max_kph: Int = 0,
+    /** **净值**能耗（Wh/km）—— 下坡回充会抵扣 */
     val wh_per_km: Double = 0.0,
+    /**
+     * ⚠️ **v0.29.0：毛耗电**（Wh/km，不含回充抵扣）。
+     *
+     * 为什么必须分开：净值口径下「40–50 km/h = 118.8 Wh/km」看着最省电，
+     * 但那是**一次下坡 + 一次长途**的产物 —— 这台 AWD Performance 物理上做不到。
+     * 评审复算：扣掉回充后那一档是 215.3，而最低档变成 **100–110 km/h**。
+     */
+    val wh_per_km_gross: Double = 0.0,
     /** 这一档跑了多少公里 */
     val km: Double = 0.0,
-    /** 参与统计的 1 km 分箱数 */
+    /** 参与统计的 1 km 分箱数（样本量） */
     val bins: Int = 0,
 ) {
     /** 可读名，如「85–95」 */
@@ -641,8 +660,15 @@ data class DriveScore(
     val night_pct: Double = 0.0,
     /** ≥120 km/h 的时间占比 */
     val over_speed_pct: Double = 0.0,
-    /** 车轮功率积分出的能耗 */
+    /** 车轮功率积分出的能耗（**净值** Wh/km） */
     val wh_per_km: Double = 0.0,
+    /**
+     * ⚠️ **v0.29.0：毛耗电**（Wh/km，不含下坡回充抵扣）。
+     *
+     * 评分里的「能耗」项按它算 —— 净值会把下坡回充抵扣掉，
+     * 于是下坡那两趟的 wh_per_km 只有 21.6 / 3.6，「能耗」项不扣分 → **下坡白送 +15 分**。
+     */
+    val wh_per_km_gross: Double = 0.0,
     val descent_m: Int = 0,
     val ascent_m: Int = 0,
 )
@@ -658,7 +684,10 @@ data class DriveScoreSummary(
     val hard_accel_total: Int = 0,
     val night_pct_avg: Double = 0.0,
     val over_speed_pct_avg: Double = 0.0,
+    /** 车轮功率积分的能耗中位（**净值** Wh/km） */
     val wh_per_km_median: Double = 0.0,
+    /** ⚠️ v0.29.0：毛耗电中位（不含下坡回充抵扣）—— 界面展示用这个 */
+    val wh_per_km_median_gross: Double = 0.0,
 )
 
 /**

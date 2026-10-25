@@ -69,7 +69,7 @@ func TestDrivingScore(t *testing.T) {
 			name: "drive 491",
 			in: drivingProfileDerived{
 				BrakePer100Km: 12.88, AccelPer100Km: 2.34,
-				OverSpeedPct: 13.45, WhPerKm: 165.0, NightPct: 0,
+				OverSpeedPct: 13.45, WhPerKmGross: 165.0, NightPct: 0,
 			},
 			want: 64.89,
 		},
@@ -83,19 +83,19 @@ func TestDrivingScore(t *testing.T) {
 			name: "drive 273",
 			in: drivingProfileDerived{
 				BrakePer100Km: 37.74, AccelPer100Km: 18.87,
-				OverSpeedPct: 0, WhPerKm: 255.4, NightPct: 99.91,
+				OverSpeedPct: 0, WhPerKmGross: 255.4, NightPct: 99.91,
 			},
 			want: 21.13,
 		},
 		{
 			// drive_id=179 / 443：零急刹零急加速零超速，能耗 149.4 / 132.5（都低于 150）→ 满分
 			name: "drive 179",
-			in:   drivingProfileDerived{WhPerKm: 149.4},
+			in:   drivingProfileDerived{WhPerKmGross: 149.4},
 			want: 100,
 		},
 		{
 			name: "drive 443",
-			in:   drivingProfileDerived{WhPerKm: 132.5},
+			in:   drivingProfileDerived{WhPerKmGross: 132.5},
 			want: 100,
 		},
 		{
@@ -103,14 +103,14 @@ func TestDrivingScore(t *testing.T) {
 			name: "全部爆表不出现负分",
 			in: drivingProfileDerived{
 				BrakePer100Km: 1000, AccelPer100Km: 1000,
-				OverSpeedPct: 100, WhPerKm: 1000, NightPct: 100,
+				OverSpeedPct: 100, WhPerKmGross: 1000, NightPct: 100,
 			},
 			want: 0,
 		},
 		{
 			// 能耗刚好 150：GREATEST(0, 150-150)/5 = 0 → 不扣分
 			name: "能耗正好 150 不扣分",
-			in:   drivingProfileDerived{WhPerKm: 150},
+			in:   drivingProfileDerived{WhPerKmGross: 150},
 			want: 100,
 		},
 		{
@@ -140,8 +140,8 @@ func TestDrivingScore(t *testing.T) {
 func TestDrivingScoreNeverOutOfRange(t *testing.T) {
 	inputs := []drivingProfileDerived{
 		{},
-		{BrakePer100Km: 1e9, AccelPer100Km: 1e9, OverSpeedPct: 1e9, WhPerKm: 1e9, NightPct: 1e9},
-		{BrakePer100Km: -100, AccelPer100Km: -100, OverSpeedPct: -100, WhPerKm: -100, NightPct: -100},
+		{BrakePer100Km: 1e9, AccelPer100Km: 1e9, OverSpeedPct: 1e9, WhPerKmGross: 1e9, NightPct: 1e9},
+		{BrakePer100Km: -100, AccelPer100Km: -100, OverSpeedPct: -100, WhPerKmGross: -100, NightPct: -100},
 	}
 	for _, in := range inputs {
 		got := drivingScore(in)

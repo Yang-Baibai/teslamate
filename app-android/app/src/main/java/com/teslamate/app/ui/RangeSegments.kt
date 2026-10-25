@@ -109,6 +109,12 @@ fun buildRangeSegments(
     charges: List<Charge>,
     drives: List<Drive> = emptyList(),
     minSocUsed: Int = 20,
+    /**
+     * ⚠️ **v0.29.0（复审 P0-2）：官方标称满电续航（公里）** ——
+     * 用来做**物理可行性**判据：折算满电里程超过它 1.5 倍的段，物理上不可能，剔除。
+     * 为 null 时退回「行程覆盖率」判据（老逻辑）。
+     */
+    officialRangeKm: Double? = null,
 ): List<RangeSegment> {
     val sorted = charges
         .filter { it.start_odometer_km != null && it.start_soc != null && it.end_soc != null }
@@ -152,11 +158,37 @@ fun buildRangeSegments(
             }
         }
         // 没有行程数据时（drives 为空）**不做校验** —— 不能因为拿不到行程就把全丢掉。
-        if (sortedDrives.isNotEmpty() && recordedKm < km * 0.9) continue
+        //
+        // ⚠️ **v0.29.0（复审 P0-2）：判据从「行程覆盖率」改成「物理可行性」。**
+        //
+        // 原来：`recordedKm < km * 0.9` 就杀。
+        // 两位评审独立复算发现**误杀真段**：
+        //   被剔除的 5 段里，rn9（546.5 公里、掉电 90%）是**真段** ——
+        //   09-12 里程 93350.2，09-14/15/16 三个采样点都在**家**（22.57548/113.86248）、
+        //   电量 16%、里程 93852.8 → **里程 +502.6 公里且电量 −80%**，
+        //   两条独立信号同时证明车真跑了约 500 公里往返
+        //   （只是 TeslaMate 睡着没记录行程）。
+        //   折算 607 公里/满电，**物理可行**。
+        //   另两段（rn5 1744 公里、rn8 1147 公里/满电）才该杀。
+        //
+        // 现在改成**物理可行性**判据：折算满电里程 > 官方标称 × 1.5 → 物理上不可能 → 剔除。
+        // 实测：保留 40 → **43** 段，剔除 5 → **2** 段（正是该剔的那两段）。
+        //
+        // 为什么 1.5：官方标称 448 公里 × 1.5 = 672 公里；
+        // 而本机**实测**的高速满电纪录是 607 公里（1.36×）—— 1.5 留了一点余量。
         val fromSoc = a.end_soc ?: continue
         val toSoc = b.start_soc ?: continue
         val socUsed = fromSoc - toSoc
         if (socUsed < minSocUsed) continue
+        val fullChargeKm = km / socUsed * 100.0
+        val maxFeasible = officialRangeKm?.let { it * 1.5 }
+        if (maxFeasible != null) {
+            // 折算满电里程超过官方标称 1.5 倍 → 物理上不可能（这台车做不到）→ 剔除
+            if (fullChargeKm > maxFeasible) continue
+        } else if (sortedDrives.isNotEmpty() && recordedKm < km * 0.9) {
+            // 没有官方标称可比时，退回「行程覆盖率」判据
+            continue
+        }
         out += RangeSegment(
             startOdoKm = odoA,
             endOdoKm = odoB,
@@ -165,7 +197,7 @@ fun buildRangeSegments(
             toSoc = toSoc,
             socUsed = socUsed,
             startDate = a.end_date ?: a.start_date,
-            fullChargeKm = km / socUsed * 100.0,
+            fullChargeKm = fullChargeKm,
         )
     }
     return out
@@ -196,17 +228,17 @@ fun RangeSegmentsCard(
     drives: List<Drive> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
-    val segments = remember(charges, drives) { buildRangeSegments(charges, drives) }
+    // ⚠️ v0.29.0（复审 P0-2）：先算官方标称（物理可行性判据要用它），再建段。
     val official = remember(charges) { officialFullChargeRangeKm(charges) }
+    val segments = remember(charges, drives, official) {
+        buildRangeSegments(charges, drives, officialRangeKm = official)
+    }
     if (segments.isEmpty()) return
 
     val fullValues = segments.map { it.fullChargeKm }
     val median = com.teslamate.app.medianOf(fullValues) ?: return
     val best = segments.maxByOrNull { it.fullChargeKm }
     val worst = segments.minByOrNull { it.fullChargeKm }
-
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    val ctx = LocalContext.current
 
     SectionCard(title = "实测满电续航", modifier = modifier) {
         BigStat(
@@ -226,89 +258,84 @@ fun RangeSegmentsCard(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        // ⚠️ **v0.28.0（复审）：必须说清这是**折算值**、且含「没充满就走的段」。**
+        // ⚠️ **v0.29.0（HIG 评审 P0-3 / P1-9 / P2-1）：折叠区改用公共组件。**
         //
-        // 复审原话：「『实测满电续航 351 公里』——它含『没充满就走』的段
-        // （如 50%→29%），是折算不是某次满电；
-        // 与『官方标称 448』并列像同一件事的两种测法。」
+        // 原来这里是**手写**的折叠（`▸/▾` 字符 + 自定义动画 + 2dp 垂直内边距）：
+        // ① 触控目标只有 **19dp**（labelSmall 行高 15sp + 2dp×2）—— 低于 WCAG 2.5.8 的 24dp；
+        // ② 没有 `stateDescription` → TalkBack 读不出展开态（WCAG 4.1.2）；
+        // ③ 用了 `▸/▾` 字符 —— 而 v0.17.0 的动效评审**明确废弃**了字符方案
+        //    （字符替换是瞬时跳变，与内容展开不同步，是「廉价感」最直接的来源）；
+        // ④ 动画时长写死 160/220/120/180，**没有一个对得上** `Motion.kt` 的 token
+        //    （ExpandHeight 280 / ExpandFadeIn 200 / ExpandFadeOut 140 / ChevronRotate 240），
+        //    而且用户直接操作的展开按项目自己的原则应该用 **spring** 而不是 tween。
         //
-        // 而「官方标称」是**车机在满电时报的那个数**，
-        // 两者的关系是「折算 vs 实测」，不是「两种测法」。
-        Text(
-            "这是**折算值**：把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电，" +
-                "所以**含没充满就走的段**（比如 50%→29%）。" +
-                "官方标称 448 公里是**车机满电时报的数**，两者是「折算 vs 实测」的关系。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        best?.let {
-            Text(
-                "最好：${it.fullChargeKm.roundToInt()} 公里" +
-                    "（${it.startDate.fmtDate()} 从 ${it.fromSoc}% 开到 ${it.toSoc}%，实跑 ${it.km.roundToInt()} 公里）",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        worst?.let {
-            Text(
-                "最差：${it.fullChargeKm.roundToInt()} 公里" +
-                    "（${it.startDate.fmtDate()}，跑了 ${it.km.roundToInt()} 公里）",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        // ⚠️ **v0.28.0（复审 P2-13）：「最好」那个数必须打折看。**
-        // 实测最好那趟是**山地下坡**的产物（海拔 1389~4327 m），
-        // 回充让等效能耗降到 110 Wh/km —— **平路跑不出这个数**。
-        // 不说清楚，用户会拿它当「这车满电能跑 597 公里」去规划长途。
-        Text(
-            "「最好」多半含下坡回充（长下坡几乎不耗电），别拿它当平路规划依据；" +
-                "「最差」才是市区工况更接近的那个数。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = if (expanded) "收起明细 ▾" else "看 ${segments.size} 段明细 ▸",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .clickable {
-                    Haptics.tick(ctx)
-                    expanded = !expanded
+        // `Widgets.kt` 里的 `CollapsibleSection` **已经把这些问题全修过了**
+        // （44dp 触控高 + stateDescription + ExpandMore 图标旋转 + Motion token）。
+        // 新卡不该手写复刻并全部退化。
+        //
+        // 同时按 P1-9：默认态只留「主角 + 一行副标题 + 折叠入口」，
+        // 其余说明全部进折叠区（原来默认态有 4 段灰字 + 主角 = 5 段文字，违反「简洁」）。
+        CollapsibleSection("看 ${segments.size} 段明细") {
+            Column {
+                // ⚠️ **v0.29.0（HIG P0-4）：官方标称不能写死。**
+                // 原来这里硬编码「官方标称 448 公里」，而上面那行是**动态算**出来的 ——
+                // 车端标称一变，两处自相矛盾。
+                Text(
+                    "这是**折算值**：把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电，" +
+                        "所以**含没充满就走的段**（比如 50%→29%）。" +
+                        (official?.let { "官方标称 ${it.roundToInt()} 公里是**车机满电时报的数**，" } ?: "") +
+                        "两者是「折算 vs 实测」的关系。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                best?.let {
+                    Text(
+                        "最好：${it.fullChargeKm.roundToInt()} 公里" +
+                            "（${it.startDate.fmtDate()} 从 ${it.fromSoc}% 开到 ${it.toSoc}%，实跑 ${it.km.roundToInt()} 公里）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                .padding(vertical = 2.dp),
-        )
-        AnimatedVisibility(
-            visible = expanded,
-            enter = fadeIn(tween(160)) + expandVertically(tween(220)),
-            exit = fadeOut(tween(120)) + shrinkVertically(tween(180)),
-        ) {
-            Column(Modifier.padding(top = 4.dp)) {
+                worst?.let {
+                    Text(
+                        "最差：${it.fullChargeKm.roundToInt()} 公里" +
+                            "（${it.startDate.fmtDate()}，跑了 ${it.km.roundToInt()} 公里）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // ⚠️ v0.28.0（复审 P2-13）：「最好」那个数必须打折看。
+                // 实测最好那趟是**山地下坡**的产物（海拔 1389~4327 m），
+                // 回充让等效能耗降到 110 Wh/km —— **平路跑不出这个数**。
+                Text(
+                    "「最好」多半含下坡回充（长下坡几乎不耗电），别拿它当平路规划依据；" +
+                        "「最差」才是市区工况更接近的那个数。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                // ⚠️ **v0.29.0（HIG P1-6）：明细改成两行式。**
+                // 原来三列固定宽（78/72/72dp），200% 字号下
+                // 「100% → 8%」需要 119.6dp、「351 公里」需要 101.4dp —— 全部折行且错位。
                 segments.forEach { s ->
-                    Row(
-                        Modifier.fillMaxWidth().heightIn(min = 28.dp).padding(vertical = 3.dp),
-                        verticalAlignment = Alignment.CenterVertically,
+                    Column(
+                        Modifier.fillMaxWidth().padding(vertical = 3.dp),
                     ) {
+                        Row(Modifier.fillMaxWidth()) {
+                            Text(
+                                s.startDate.fmtDate(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.width(78.dp),
+                            )
+                            Text(
+                                "${s.fromSoc}% → ${s.toSoc}%",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
                         Text(
-                            s.startDate.fmtDate(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.width(78.dp),
-                        )
-                        Text(
-                            "${s.fromSoc}% → ${s.toSoc}%",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.width(72.dp),
-                        )
-                        Text(
-                            "${s.km.roundToInt()} 公里",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.width(72.dp),
-                        )
-                        Text(
-                            "≈ ${s.fullChargeKm.roundToInt()} 公里/满电",
+                            "${s.km.roundToInt()} 公里 · ≈ ${s.fullChargeKm.roundToInt()} 公里/满电",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

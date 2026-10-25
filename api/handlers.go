@@ -1491,6 +1491,8 @@ type drivingProfileRaw struct {
 	NClean     int // 有完整 2 秒观测的窗口数（夜间占比的分母）
 	NightN     int
 	Kwh        float64
+	// ⚠️ v0.29.0：毛耗电（不含回充抵扣）—— 评分用它
+	KwhGross   float64
 }
 
 // drivingProfileDerived 派生指标 + 评分（纯函数，可单测）。
@@ -1501,6 +1503,8 @@ type drivingProfileDerived struct {
 	NightPct      float64
 	OverSpeedPct  float64
 	WhPerKm       float64
+	// ⚠️ v0.29.0：毛耗电（Wh/km）—— 评分的能耗项用它
+	WhPerKmGross  float64
 }
 
 // deriveDrivingProfile 由原始计数算出派生指标与评分（**纯函数**）。
@@ -1514,6 +1518,10 @@ func deriveDrivingProfile(r drivingProfileRaw) drivingProfileDerived {
 		d.BrakePer100Km = 100.0 * float64(r.HardBrake) / r.DistanceKm
 		d.AccelPer100Km = 100.0 * float64(r.HardAccel) / r.DistanceKm
 		d.WhPerKm = r.Kwh * 1000.0 / r.DistanceKm
+		// ⚠️ v0.29.0：毛耗电（不含回充抵扣）——
+		// 净值会把下坡回充抵扣掉，于是下坡那两趟 wh_per_km 只有 21.6 / 3.6，
+		// 「能耗」项不扣分 → **下坡白送 +15 分**。
+		d.WhPerKmGross = r.KwhGross * 1000.0 / r.DistanceKm
 	}
 	// 夜间占比只统计**有完整 2 秒观测**的窗口（t 和 t−2 秒那一刻都有采样）：
 	// 夜间问的是「这一刻算夜里吗」，跨了数据断洞的窗口说不清该按哪一秒算，
@@ -1548,7 +1556,8 @@ func drivingScore(d drivingProfileDerived) float64 {
 	s -= math.Min(30, d.BrakePer100Km*1.5)
 	s -= math.Min(20, d.AccelPer100Km)
 	s -= math.Min(20, math.Max(0, d.OverSpeedPct-3))
-	s -= math.Min(15, math.Max(0, d.WhPerKm-150)/5)
+	// ⚠️ v0.29.0：能耗项用**毛耗电**（不含回充抵扣），否则下坡白送分。
+	s -= math.Min(15, math.Max(0, d.WhPerKmGross-150)/5)
 	s -= math.Min(15, d.NightPct*0.2)
 	// ⚠️ 上下都夹住：负的中间量（理论上不会出现，但别让它变成 370 分）不能撑破上限。
 	return math.Max(0, math.Min(100, s))
@@ -1668,6 +1677,7 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 	var (
 		scores    []float64
 		whPerKms  []float64
+		whPerKmsGross []float64
 		nightPcts []float64
 		overPcts  []float64
 	)
@@ -1686,12 +1696,13 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 			nClean      int
 			nightN      int
 			kwh         float64
+			kwhGross    float64
 		)
 		// ⚠️ Scan 的顺序必须和 SELECT 的列顺序**严格一致**：
 		//   drive_id, start_date, distance_km, duration_min, ascent, descent,
-		//   hard_brake, hard_accel, over_n, n_valid, n_clean, night_n, kwh
+		//   hard_brake, hard_accel, over_n, n_valid, n_clean, night_n, kwh, kwh_gross
 		if err := rows.Scan(&driveID, &startDate, &distanceKm, &durationMin, &ascent, &descent,
-			&hardBrake, &hardAccel, &overN, &nValid, &nClean, &nightN, &kwh); err != nil {
+			&hardBrake, &hardAccel, &overN, &nValid, &nClean, &nightN, &kwh, &kwhGross); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1704,6 +1715,7 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 			NClean:     nClean,
 			NightN:     nightN,
 			Kwh:        kwh,
+			KwhGross:   kwhGross,
 		}
 		d := deriveDrivingProfile(raw)
 		out.Drives = append(out.Drives, DrivingProfileDrive{
@@ -1721,11 +1733,14 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 			NightPct:     round1(d.NightPct),
 			OverSpeedPct: round1(d.OverSpeedPct),
 			WhPerKm:      round1(d.WhPerKm),
+			// ⚠️ v0.29.0：毛耗电也下发（App 的能耗分项要用它）
+			WhPerKmGross: round1(d.WhPerKmGross),
 			DescentM:     descent,
 			AscentM:      ascent,
 		})
 		scores = append(scores, d.Score)
 		whPerKms = append(whPerKms, d.WhPerKm)
+		whPerKmsGross = append(whPerKmsGross, d.WhPerKmGross)
 		nightPcts = append(nightPcts, d.NightPct)
 		overPcts = append(overPcts, d.OverSpeedPct)
 	}
@@ -1749,6 +1764,7 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 		sum.OverSpeedPctAvg = round1(sum.OverSpeedPctAvg / float64(n))
 		sum.MedianScore = round1(medianOfFloats(scores))
 		sum.WhPerKmMedian = round1(medianOfFloats(whPerKms))
+		sum.WhPerKmMedianGross = round1(medianOfFloats(whPerKmsGross))
 	}
 	sum.TotalKm = round1(sum.TotalKm)
 	out.Summary = sum
@@ -1893,10 +1909,18 @@ func handleStayPoints(w http.ResponseWriter, r *http.Request) {
 	// 地理编码把同一个停车位置拆成了两行地址 —— 实测**相距 176 米**。
 	// 不合并的话用户会读成「两个常驻点」，而 1311 小时是**重复计**的。
 	//
-	// ⚠️ 250 米这个阈值是**实测挑的**：全库相邻两点里，
-	// 唯一在 250 米内的一对就是上面这一对（176 m），
-	// 下一对已经跳到 **1777 米** —— 所以 250 既能合并该合并的，
-	// 又不会把真的两个地方并成一个。
+	// ⚠️ **v0.29.0（复审 P1-1）：250 米这个阈值的依据要说准。**
+	// 原来写的「全库唯一在 250 米内的一对就是它，下一对已跳到 1777 米」**不成立** ——
+	// 全库 267 个地址里 ≤250 米的对远不止一对（9.4 / 12.2 / 25.1 / 32.1 / 37.9 / 44.5 / 46.8 /
+	// 53.5 / 55.5 / 56.2 / 65.2 / 71.6 / 71.8 / 72.0 米…）。
+	// 真正的事实是：**在常驻点集合里**需要合并的正是这一对，
+	// 而它**本来就是同一个小区**（评审实测：行程 499 的终点就是「永丰社区, 西乡街道」，
+	// 「新湖路, 永丰社区」是同一处被地理编码拆成的两行）。
+	// 250 米是**保守**取值：比要合并的那一对（176 米）宽，
+	// 合并的风险由「同小区」这个事实兜住。
+	//
+	// ⚠️ 已知风险：这是**链式聚类**（比对已合并点的首坐标），
+	// A-B≤250、B-C≤250、A-C>250 时会把 A、C 并上。本库未触发。
 	out.Points = mergeStayPointsByDistance(out.Points, 250.0)
 	writeJSON(w, out)
 }
@@ -2051,6 +2075,8 @@ type energyBandRaw struct {
 	Bins int
 	Km   float64
 	Kwh  float64
+	// ⚠️ v0.29.0：毛耗电（不含回充抵扣）—— 见 sqlEnergyProfile 的说明
+	KwhGross float64
 }
 
 // energyBandMerged 合并后的一档（能量与里程要一起加，Wh/km 再算 —— 不能先算再平均）。
@@ -2059,6 +2085,8 @@ type energyBandMerged struct {
 	Bins int
 	Km   float64
 	Kwh  float64
+	// ⚠️ v0.29.0：毛耗电（不含回充抵扣）
+	KwhGross float64
 }
 
 // mergeEnergyBands 把 SQL 的分档合并成 App 侧的档位。
@@ -2078,6 +2106,7 @@ func mergeEnergyBands(rows []energyBandRaw) []energyBandMerged {
 		merged[idx].Bins += r.Bins
 		merged[idx].Km += r.Km
 		merged[idx].Kwh += r.Kwh
+		merged[idx].KwhGross += r.KwhGross
 	}
 	return merged
 }
@@ -2131,21 +2160,24 @@ func handleEnergyProfile(w http.ResponseWriter, r *http.Request) {
 
 	var raws []energyBandRaw
 	var totalKwh float64
+	var totalKwhGross float64
 	for rows.Next() {
 		var (
-			key  int
-			bins int
-			km   float64
-			kwh  float64
+			key      int
+			bins     int
+			km       float64
+			kwh      float64
+			kwhGross float64
 		)
 		// ⚠️ Scan 的顺序必须和 SELECT 的列顺序**严格一致**：
-		//   band_key, n_bins, km, kwh_total
-		if err := rows.Scan(&key, &bins, &km, &kwh); err != nil {
+		//   band_key, n_bins, km, kwh_total, kwh_gross_total
+		if err := rows.Scan(&key, &bins, &km, &kwh, &kwhGross); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		raws = append(raws, energyBandRaw{Key: key, Bins: bins, Km: km, Kwh: kwh})
+		raws = append(raws, energyBandRaw{Key: key, Bins: bins, Km: km, Kwh: kwh, KwhGross: kwhGross})
 		totalKwh += kwh
+		totalKwhGross += kwhGross
 	}
 	if err := rows.Err(); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -2163,7 +2195,9 @@ func handleEnergyProfile(w http.ResponseWriter, r *http.Request) {
 
 	out := EnergyProfile{
 		Bands: []EnergyBand{},
-		Note:  "车轮功率梯形积分（1 km 分箱，按箱内里程表跨度算距离）；样本不足的档不返回",
+		Note: "车轮功率梯形积分（1 km 分箱，按箱内里程表跨度算距离）；" +
+			"wh_per_km 是**净值**（下坡回充会抵扣），wh_per_km_gross 是**毛耗电**（不含回充抵扣）—— " +
+			"「最省电的速度」必须看毛耗电，净值会被下坡拉出假象",
 	}
 	var best *EnergyBestBand
 	for _, m := range mergeEnergyBands(raws) {
@@ -2171,25 +2205,35 @@ func handleEnergyProfile(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		whPerKm := m.Kwh / m.Km * 1000.0
+		whPerKmGross := m.KwhGross / m.Km * 1000.0
 		minKph, maxKph := energyBandLabel(m.Idx)
 		out.Bands = append(out.Bands, EnergyBand{
 			MinKph:  minKph,
 			MaxKph:  maxKph,
 			WhPerKm: round1(whPerKm),
-			Km:      round1(m.Km),
-			Bins:    m.Bins,
+			// ⚠️ v0.29.0：毛耗电一起下发（App 的曲线与「最省电档」都按它）
+			WhPerKmGross: round1(whPerKmGross),
+			Km:           round1(m.Km),
+			Bins:         m.Bins,
 		})
-		// ⚠️ best_band = Wh/km **最小**的一档。
-		// 平局时取**先出现**的（也就是更慢的那档）—— 保持结果稳定，不随数据抖动。
-		if best == nil || whPerKm < best.WhPerKm {
+		// ⚠️ **v0.29.0（复审 P0-1）：best_band 按**毛耗电**选，不是按净值。**
+		//
+		// 评审复算：净值口径下「40–50 km/h = 118.8 Wh/km」看着最省电，
+		// 但那是**一次下坡 + 一次长途**的产物 —— 物理上不可能（这台 AWD Performance 做不到）。
+		// 扣掉回充后那一档是 215.3，而**最低档变成 100–110 km/h**。
+		//
+		// 所以「最省电的速度」必须按**不含回充抵扣**的毛耗电来选。
+		if best == nil || whPerKmGross < best.WhPerKmGross {
 			// ⚠️ v0.28.0（主控修正）：带上 km 与 bins ——
 			// App 要显示「这一档跑了多少公里」，还要靠 (min,max) 认出哪一档是最省电的。
 			best = &EnergyBestBand{
 				MinKph:  minKph,
 				MaxKph:  maxKph,
 				WhPerKm: round1(whPerKm),
-				Km:      round1(m.Km),
-				Bins:    m.Bins,
+				// ⚠️ v0.29.0：App 展示的主角用毛耗电
+				WhPerKmGross: round1(whPerKmGross),
+				Km:           round1(m.Km),
+				Bins:         m.Bins,
 			}
 		}
 	}
@@ -2197,6 +2241,7 @@ func handleEnergyProfile(w http.ResponseWriter, r *http.Request) {
 	out.TotalKm = round1(totalKm)
 	if totalKm > 0 {
 		out.OverallWhPerKm = round1(totalKwh / totalKm * 1000.0)
+		out.OverallWhPerKmGross = round1(totalKwhGross / totalKm * 1000.0)
 	}
 	writeJSON(w, out)
 }

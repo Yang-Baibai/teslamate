@@ -68,8 +68,31 @@ fun StayPointsCard(
         val sorted = list.sortedByDescending { it.visits }
         val top = sorted.first()
 
+        // ⚠️ **v0.29.0（HIG 评审 P1-2）：这张卡原来没有主角数字。**
+        // 首行只是一句 13sp 的灰字，整张卡**没有锚点**。
+        // 现在把「停得最多的一处停了 N 次」提为主角（34sp，不跟车况页的 44sp 抢）。
+        BigStat(
+            "${top.visits}",
+            "停得最多的一处 · 停了这么多次",
+        )
+        Spacer(Modifier.height(2.dp))
+        // ⚠️ **v0.29.0（复审 P1-3）：「常驻 N 处」要分清「常驻」与「临时停靠」。**
+        //
+        // 评审实测：本机 API 返回 11 处，但除了第 1 名（27 次 / 1311 小时），
+        // 其余 10 处**全是川西/云南长途路上的一次性服务区**（各 1~2 次）。
+        // 写成「常驻 11 处」是**名不副实** —— 用户会以为这车有 11 个常去的地方。
+        //
+        // 现在按**停过次数**分：≥3 次算常驻，其余是临时停靠。
+        val regular = sorted.count { it.visits >= 3 }
+        val temporary = sorted.size - regular
         Text(
-            "常驻 ${sorted.size} 处 · 停得最多的一处停了 ${top.visits} 次",
+            buildString {
+                append("常驻 $regular 处")
+                if (temporary > 0) append(" · 另有 $temporary 处临时停靠")
+                append(" · 累计 ")
+                append(sorted.sumOf { it.total_hours }.roundToInt())
+                append(" 小时")
+            },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -108,7 +131,9 @@ fun StayPointsCard(
                     )
                 }
                 // 相对占用条：按**停过几次**占最多的那个点的比例。
-                // ⚠️ **不是**状态色 —— 只是个量的大小。
+                // ⚠️ **v0.29.0（HIG 评审 P2-2）：不用 energyBlue。**
+                // 在本项目里 energyBlue 是**电量/功率/SOC** 的专属语义，
+                // 借来画「停过几次」会稀释语义 —— 这里用中性灰。
                 val maxVisits = top.visits.takeIf { it > 0 } ?: 1
                 Box(
                     Modifier
@@ -123,7 +148,7 @@ fun StayPointsCard(
                             .fillMaxWidth((p.visits.toFloat() / maxVisits).coerceIn(0.04f, 1f))
                             .height(6.dp)
                             .clip(RoundedCornerShape(3.dp))
-                            .background(accents.energyBlue)
+                            .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f))
                     )
                 }
             }

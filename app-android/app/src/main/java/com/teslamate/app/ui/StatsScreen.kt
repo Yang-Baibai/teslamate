@@ -83,18 +83,21 @@ fun StatsScreen(
             // 而且与相邻段的选中胶囊贴死）。页面副标题已经写明「里程 · 能耗 · 费用」，
             // 标签不需要再带「近」字。
             //
-            // ⚠️ **v0.29.0：第 1 段从「今天」换成「本月」（自然月）。**
+            // ⚠️ **v0.29.0（复审 P0-3）：第 1 段是「今天」，第 3 段是「本月」。**
             //
-            // 理由：
-            // ① 「30 天」是**滚动**窗口（实测比自然月多算 25.9%：5262.6 vs 4180.0 km），
-            //    而车主脑子里的「这个月花了多少钱」是**自然月** ——
-            //    两个数都在界面上却不加区分，用户对不上账（通勤车主 P0-3）。
-            // ② **不能加成第 5 段**：200% 字号下每段只有 70dp，
-            //    「30 天」在 labelLarge（28sp）下约 63dp —— 会被截成「30…」。
-            //    截断的标签比缺一个分段更糟（HIG 的先例：v0.9.2 就把「近 12 个月」改成「1 年」）。
-            // ③ 「今天」的数据没丢：「7 天」段的**第一根柱子**就是今天。
+            // 上一版把「今天」换成了「本月」，理由是「5 段在 200% 字号下会截断」——
+            // 但那个论证针对的是 **「30 天」**（4 字标签，fs=2.0 需 70.5dp，
+            // 而 5 段时每槽只有 61.8dp），**跟「今天」（2 个汉字）无关**。
+            //
+            // 而且「今天的数据没丢，在 7 天段的第一根柱子」这句话**是错的** ——
+            // 实测 `period=week` 返回 10-19…10-25，**今天是最后一根（最右）**。
+            //
+            // 现在按复审给的规格：**今天 / 7 天 / 本月 / 1 年**（4 段，最长 4 字标签，
+            // 200% 字号下 79.75dp 槽宽放得下）。
+            // 「今天」**零新接口**：`buckets.takeLast(1)` 就是今天（v0.8.5 的注释就是这么写的）。
+            // 删掉的是滚动的「30 天」—— 它的语义和「本月」打架（实测多算 25.9%）。
+            "今天" to ("week" to 1),
             "7 天" to ("week" to 7),
-            "30 天" to ("month" to 30),
             // 「本月」= 自然月（当月 1 号 → 今天），服务端按 TZ_NAME 分日桶。
             // 桶数给 31 是为了「取最后 N 个」能取到全部（服务端只返回到今天）。
             "本月" to ("calendar_month" to 31),
@@ -375,7 +378,17 @@ fun StatsScreen(
             val sum = summarizeBuckets(buckets)
             val periodLabel = periods[periodIndex].first
             item {
-                SectionCard("$periodLabel 汇总", Modifier.animateItem()) {
+                SectionCard(
+                    // ⚠️ **v0.29.0（HIG 评审 P1-10）：「本月」是**残缺周期**，要标出来。**
+                    // 「本月」= 当月 1 日至今（25 天），而相邻的「30 天」是完整窗口（30 天）——
+                    // 两个数**不可比**（实测 4180 vs 5262.6 公里，差 25.9%）。
+                    // 不标的话用户会以为它们是同一口径。
+                    (
+                        if (apiPeriod == "calendar_month") "$periodLabel 汇总（1 日至今）"
+                        else "$periodLabel 汇总"
+                        ),
+                    Modifier.animateItem(),
+                ) {
                     if (sum != null) {
                         // ⚠️ v0.17.0（苹果 HIG P0-1）：**一屏一个主角数字**。
                         //
@@ -541,9 +554,14 @@ fun StatsScreen(
                         // ⚠️ **v0.27.0：标清口径。**
                         // 这个数是**标定续航差法**（Δ标定续航 × cars.efficiency），
                         // 而车况页「驾驶画像」里的能耗是**车轮功率积分**（真实耗电）——
-                        // 实测两者相差约 9%（标定法系统性高估）。
+                        // 实测两者相差约 **19%**（标定法 181.9 vs 车轮功率 152.7）。
                         // 两个页面各写一个能耗数，不标口径用户会以为有一个是错的。
-                        sum.wh_per_km?.let { KV("平均能耗（标定法）", "${it.fmtKwh100()} kWh/100km") }
+                        sum.wh_per_km?.let {                         // ⚠️ **v0.29.0（复审 P1-2）：量级订正。**
+                        // 原来注释写「标定法高估约 7%」—— 实测是 **+19%**：
+                        // 标定法 181.9 vs 车轮功率 152.7（最近 20 趟 ≥20km 中位：172.7 vs 151.9）。
+                        // 而且要说明**两个都比实测电池耗电低**（实测约 198 kWh/100km）——
+                        // 车轮功率不含传动损耗，标定法受车机重算影响。
+                        KV("平均能耗（标定法）", "${it.fmtKwh100()} kWh/100km") }
                         KV("行程 / 充电次数", "${sum.drive_count} 次 / ${sum.charge_count} 次")
                     } else {
                         // ⚠️ v0.9.2（iOS 交互 P0-5）：原来 sum == null 时渲染一张**只有标题的空白卡**，
@@ -795,6 +813,26 @@ fun StatsScreen(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // ⚠️ **v0.29.0：把「效应 vs 噪声」摆出来。**
+                            //
+                            // 专家的判断：「现在画趋势线 = 画噪声」。
+                            // 所以这里**自己算**：按里程做最小二乘，
+                            // 看端到端变化与单点波动（残差 σ）差多少倍 ——
+                            // 倍数不够就明说「还不能当趋势看」。
+                            BatteryDecay.analyze(b.series)?.let { v ->
+                                Text(
+                                    v.summary(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                v.detail()?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
