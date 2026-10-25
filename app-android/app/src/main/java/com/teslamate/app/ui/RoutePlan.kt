@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -44,7 +45,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -538,10 +542,20 @@ fun RoutePlan.belowReserveNoticeFrom(startIdx: Int): String? {
         // ⚠️ **v0.39.0（第 23 轮车主复审 P2-2）：还有几跳要说清。**
         // 折叠态只显示**最长那一跳**的提示，
         // 而实测那条线有 **2 跳** —— 另一跳被藏起来了。
-        val others = belowReserveHopCount - 1
+        //
+        // ⚠️ **v0.46.0（第 27 轮验收 P1-1）**：这个「还有 N 跳」原来用的是
+        // **全线**计数 —— 选「修文县」时它报的那 1 跳是**建设南路**，
+        // 而那在我**身后 668 公里**（我已经开过去了）。
+        // 用户会回头去找一个根本不存在的第二处险段。
+        //
+        // 现在：只数**从选中站起算**的跳，并明说方向。
+        val others = belowReserveHopCountFrom(startIdx) - 1
         if (others > 0) {
-            append(" · 还有 ").append(others).append(" 跳同样低于 ")
-                .append(RESERVE_SOC).append("% 保底")
+            append(if (startIdx > 0) {
+                " · 你身后还有 " + others + " 跳同样低于 " + RESERVE_SOC + "% 保底"
+            } else {
+                " · 还有 " + others + " 跳同样低于 " + RESERVE_SOC + "% 保底"
+            })
         }
     }
 }
@@ -639,7 +653,41 @@ data class RoutePlan(
      * ⚠️ **v0.40.0（第 24 轮客户复审 C1）：名字从「无解」改成「到不了保底」。**
      * 「无解 / 充满也到不了」是**假事实**（实测那两跳都到得了，只是低于 20% 保底）。
      */
-    val belowReserveHopCount: Int get() = stops.count { (it.requiredSocHere ?: 0) > 100 }
+    val belowReserveHopCount: Int get() = belowReserveHopCountFrom(0)
+
+    /**
+     * ⚠️ **v0.46.0（第 27 轮验收 P0-2）**：站区**默认**显示哪些站。
+     *
+     * 默认只显示：**需要注意的站 + 最后一站**；
+     * **起点行只在从起点起算时**才出现。
+     *
+     * ⚠️ 原来无条件把起点行（0）加进去 ⇒ 选「修文县」时站区第一行
+     * 仍然是「出发时 89% · 下一站 乐驿 · 276 公里 · 出发前至少充到 93%」——
+     * 而那个动作在**永丰社区**（我身后 4929 公里），我根本没法执行。
+     *
+     * @param showAll true = 全部站都显示（一键展开）。
+     */
+    fun visibleStopIndices(startIdx: Int, showAll: Boolean): List<Int> {
+        if (showAll) return stops.indices.toList()
+        val act = actionableStopIndices(startIdx)
+        val withStart = if (startIdx == 0) act + 0 else act
+        return (withStart + stops.lastIndex).sorted()
+    }
+
+    /**
+     * ⚠️ **v0.46.0（第 27 轮验收 P1-1）**：从第 [startIdx] 站起算的「到不了保底」跳数。
+     *
+     * 原来只有全线计数 —— 选中半路的某一站时，它报出的「还有 N 跳」
+     * 全是**我身后**的跳（例：选修文县时报的那 1 跳是建设南路，在我身后 668 公里）。
+     */
+    fun belowReserveHopCountFrom(startIdx: Int): Int {
+        val from = if (startIdx in stops.indices) startIdx else 0
+        var n = 0
+        for (i in from..stops.lastIndex) {
+            if ((stops[i].requiredSocHere ?: 0) > 100) n++
+        }
+        return n
+    }
 
     /** @deprecated 旧名 —— 「无解」是假事实，改用 [belowReserveHopCount]。 */
     val impossibleHopCount: Int get() = belowReserveHopCount
@@ -875,6 +923,18 @@ data class RoutePlan(
         // 那两个数是**内部口径**（段数 ≠ 充电次数），对用户没有决策价值，
         // 只会占掉一行。
         if (s.stopCount > 0) parts += "$s.stopCount 次沿途充电"
+        // ⚠️ **v0.46.0（第 27 轮复审）：必须给**日期**。**
+        //
+        // 复审的批评很准：
+        // > 「它**没有日期**。没有『上次走过』『8 天前』这类标记 ……
+        // > 于是通勤者每周打开『记录』，第一眼读到的是『186 公里 · 最长一段』…
+        // > 三条都在讲一条 8 天前、以后可能再也不会走的线路，
+        // > 而且语气像在警告我『今天有风险』。」
+        //
+        // 本机实测：默认那条线路是 615.9 公里、**8 天前**走的；
+        // 而 6227 公里那条是 **33 天前**。
+        // ⇒ 「上次 10-18」这 5 个字就能把**误导变成事实**。
+        s.lastDrivenAt?.let { parts += "上次 ${it.fmtDate()}" }
         return parts.joinToString(" · ")
     }
 
@@ -981,11 +1041,31 @@ data class RoutePlan(
             if (sb.isEmpty()) sb.append("这条线路上没有站间数据")
             return sb.toString()
         }
+        // ⚠️ **v0.46.0（第 27 轮验收 P0-1）**：这里原来只分两种情况，
+        // 结果**选中最后一站**（那一站后面没有下一站）时掉进第二支，
+        // 打出一句**假话**：「这条线路上没有你的充电记录，中途补电给不出位置」。
+        //
+        // 而这条线上有 **36 个沿途充电记录** —— 真实原因只是「从这一站起没有下一跳」。
+        // 复刻输出：主角数字**整块消失**，决策句变成那句假话。
+        //
+        // ⚠️ 判据的顺序也很重要：先分清「**从这一站起没有下一跳**」，
+        // 再谈「没有电量记录」—— 否则空剖面会盖掉真正的原因。
+        // ⚠️ 而且要看的是**从选中站起**还有没有下一跳，
+        // 不是全线有没有 —— 我在修文县时，**全线**是有下一跳的（在我身后）。
+        val from = if (startIdx in stops.indices) startIdx else 0
+        val hasHopFromStart = stops.indices
+            .filter { it >= from }
+            .any { (stops[it].gapToNextKm ?: 0.0) >= 2.0 }
+        if (!hasHopFromStart && stops.isNotEmpty()) {
+            return "已经到这条线的最后一站，后面没有下一跳了"
+        }
         val low = lowestSoc ?: return "算不出结论（没有足够的电量记录）"
         return if (stops.isEmpty()) {
             "能一次开到 · 预计到达 $low%"
         } else {
-            "这条线路上没有你的充电记录，中途补电给不出位置"
+            // ⚠️ v0.46.0：这里也**不能说「没有充电记录」**——
+            // 有站就有充电记录，只是它们之间没有 ≥2 公里的可参考间距。
+            "这条线路上没有可参考的站间数据"
         }
     }
 
@@ -1734,7 +1814,12 @@ fun RoutePlanChips(
     if (templates.size < 2) return
     val accents = LocalAccentColors.current
     LazyRow(
-        modifier = modifier,
+        // ⚠️ **v0.46.0（第 27 轮无障碍复审 P0-1）**：加 `selectableGroup()`。
+        //
+        // 这里是**互斥筛选**（选哪条线路），不是 tab。
+        // `selectableGroup()` 让 TalkBack 把它识别成「单选按钮组」，
+        // 可以用方向键在组内跳转，而不是一个个停靠点地穿。
+        modifier = modifier.selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
         // ⚠️ v0.20.0（车主 P1-4）：**末尾留白** ——
@@ -2002,7 +2087,10 @@ fun RoutePlanSummaryRow(
                 Spacer(Modifier.width(8.dp))
                 Icon(
                     Icons.Filled.ExpandMore,
-                    contentDescription = "展开线路余量表",
+                    // ⚠️ **v0.46.0（第 27 轮无障碍复审 P1-8）**：`null` ——
+                    // 「可展开」这个状态由**父节点**的 `stateDescription` 承载，
+                    // 否则同一个动作会有**两个焦点停靠点**（整行 + 箭头）。
+                    contentDescription = null,
                     modifier = Modifier
                         // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P1-6）：命中区 22dp → 24dp。**
                         // WCAG 2.5.8（Target Size Minimum）要求 ≥24dp；
@@ -2058,7 +2146,12 @@ fun RouteStartChips(
 ) {
     val accents = LocalAccentColors.current
     LazyRow(
-        modifier = modifier,
+        // ⚠️ **v0.46.0（第 27 轮无障碍复审 P0-1）**：加 `selectableGroup()`。
+        //
+        // 这里是**互斥筛选**（选哪一站出发），不是 tab。
+        // `selectableGroup()` 让 TalkBack 把它识别成「单选按钮组」，
+        // 可以用方向键在组内跳转，而不是一个个停靠点地穿。
+        modifier = modifier.selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
         // ⚠️ v0.20.0（车主 P1-4）：**末尾留白** ——
@@ -2078,7 +2171,14 @@ fun RouteStartChips(
         items(plan.stops.size) { i ->
             val s = plan.stops[i]
             StartChip(
-                label = if (s.kmAlongRoute < 1.0) "起点" else s.name,
+                // ⚠️ **v0.46.0（第 27 轮验收 P2-1）**：带里程 ——
+                // 本机 38 个 chip 里有**两对同名**（两个「中国石化」、两个「印象雅緻酒店」），
+                // 选错了整张卡的主角、处方、「需要注意的 N 跳」全错，而我不会知道。
+                label = if (s.kmAlongRoute < 1.0) {
+                    "起点（${s.name}）"
+                } else {
+                    s.name + " · " + s.kmAlongRoute.roundToInt() + " 公里"
+                },
                 selected = i == selectedIndex,
                 accents = accents,
                 onClick = { onSelect(i) },
@@ -2111,26 +2211,64 @@ private fun StartChip(
             // 「从哪一站出发」是这张卡的核心功能，
             // 而选中态原来只有底色 + 描边（**只靠颜色**，违反 WCAG 1.3.1），
             // TalkBack 也不知道哪个被选中。
+            //
+            // ⚠️ **v0.46.0（第 27 轮无障碍复审 P0-1）：角色从 `Role.Tab` 改成 `Role.RadioButton`。**
+            //
+            // `Role.Tab` 的官方定义是「代表一个**内容页**」，
+            // TalkBack 会念「选项卡 / tab」，
+            // 而这里的 chip 不切换任何内容面板，只改「从哪一站起算」——
+            // 它是**互斥筛选**，正确角色是单选按钮。
             .selectable(
                 selected = selected,
-                role = Role.Tab,
+                role = Role.RadioButton,
                 onClick = onClick,
             )
             // ⚠️ 触控目标：chip 高只有 28dp（16dp 文字 + 12dp 内距），
             // 远低于 WCAG 2.5.8 的 44dp。
             .heightIn(min = 44.dp)
-            .semantics(mergeDescendants = true) { },
+            // ⚠️ **v0.46.0（P0-1）**：选中态的语义不能只靠颜色。
+            .semantics {
+                if (selected) stateDescription = "当前选择的起点"
+            },
     ) {
         Row(
             Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // ⚠️ **v0.46.0（P1-4）**：选中项加勾 ——
+            // 同文件的 `RoutePlanChips`（v0.20.0 已修）就有 ✓，
+            // 而新写的 `StartChip` 复制时**漏了**它 ——
+            // 只剩底色 + 描边 + 半粗字体 ⇒ WCAG 1.3.1 失败。
+            if (selected) {
+                Icon(
+                    Icons.Filled.Check,
+                    // 语义由上面的 stateDescription 承载 → 不重复念。
+                    contentDescription = null,
+                    tint = accents.energyBlue,
+                    modifier = Modifier.size(15.dp),
+                )
+                Spacer(Modifier.width(4.dp))
+            }
             Text(
                 label,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) accents.energyBlue else MaterialTheme.colorScheme.onSurfaceVariant,
+                // ⚠️ **v0.46.0（P1-5）**：选中态文字色改用 `onSurface`。
+                //
+                // 原来用 `energyBlue` 压在 16% 能量蓝底上 ——
+                // 浅色模式 4.54:1（刚过）、**深色模式 4.21:1（不达标）**。
+                // 选中特征完全交给 ✓ 图标 + 描边承担 → 文字用最高对比度的色。
+                color = if (selected) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
                 maxLines = 1,
+                // ⚠️ **v0.46.0（P0-1）**：加省略号 ——
+                // 同文件的 `RoutePlanChips` 用的是 `maxLines=2 + Ellipsis`，
+                // 这里只有 `maxLines=1` 而**没写 overflow**（默认 Clip）。
+                // 37 个站名在 200% 字号下会被硬剪。
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -2204,10 +2342,27 @@ fun RoutePlanCard(
         // 决定了下面所有数字**从哪一站起算**。
         if (plan.stops.size >= 2) {
             Spacer(Modifier.height(6.dp))
+            // ⚠️ **v0.46.0（第 27 轮无障碍复审 P0-1）**：**当前值必须被播报一次。**
+            //
+            // 起点 chips 最多 37 个，选中项通常在屏外；
+            // 没有这句播报，读屏用户必须一路右滑最多 37 个停靠点
+            // 才能碰到那个念「已选中」的 chip —— 这个功能对读屏用户等于不存在。
+            //
+            // `liveRegion = Polite` ⇒ 切换后 TalkBack 自动播报新起点。
             Text(
-                "从哪一站出发",
+                "从哪一站出发，当前：" + (
+                    if (startFromIndex < 0) {
+                        "整条线"
+                    } else {
+                        plan.stops.getOrNull(startFromIndex)?.name ?: "整条线"
+                    }
+                    ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.semantics {
+                    heading()
+                    liveRegion = LiveRegionMode.Polite
+                },
             )
             RouteStartChips(
                 plan = plan,
@@ -2220,6 +2375,18 @@ fun RoutePlanCard(
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
         )
+        // ⚠️ **v0.46.0（第 27 轮验收 P2-2）**：选了起点就要**看得见**。
+        //
+        // 复刻实测：选「修文县」后**收起**卡片，主角 / 决策句 / 告警行 / 细节行
+        // 四行**逐字不变** —— 我完全看不出「从修文县出发」这个设置还活着，
+        // 会以为 App 把它丢了、会重新点一次、会怀疑刚才那下没点上。
+        if (startFromIndex >= 0) {
+            Text(
+                "从 " + (plan.stops.getOrNull(startFromIndex)?.name ?: "这一站") + " 起算",
+                style = MaterialTheme.typography.labelMedium,
+                color = accents.energyBlue,
+            )
+        }
         // ⚠️ **v0.36.0（第 21 轮视觉评审 P1-1）：展开态也要保留**视觉锚点**。**
         //
         // 复审实测：`RoutePlanCard` 全文最大字号 = bodyMedium 15sp ——
@@ -2503,12 +2670,7 @@ fun RoutePlanCard(
                 // + 起点 + 最后一站，其余一键展开（本仓库既定的「折起来 = 新手不被术语干扰；
                 // 展开 = 数据一点都没丢」模式）。
                 val visibleStopIdx = remember(plan, startIdx, showAllStations) {
-                    if (showAllStations) {
-                        plan.stops.indices.toList()
-                    } else {
-                        val act = plan.actionableStopIndices(startIdx)
-                        (act + 0 + plan.stops.lastIndex).sorted()
-                    }
+                    plan.visibleStopIndices(startIdx, showAllStations)
                 }
                 // ⚠️ **v0.44.0：切换「只看需要注意的站」/「查看全部站」。**
                 //
@@ -2530,8 +2692,18 @@ fun RoutePlanCard(
                     color = accents.energyBlue,
                     modifier = Modifier
                         .clickable { showAllStations = !showAllStations }
+                        // ⚠️ **v0.46.0（第 27 轮无障碍复审 P1-12）**：读屏要听得出**状态**。
+                        // 文案自带动作（「查看全部 37 站」），但听不出**现在是什么状态**。
+                        .semantics {
+                            stateDescription = if (showAllStations) {
+                                "当前显示全部站点"
+                            } else {
+                                "当前只显示需要注意的站点"
+                            }
+                        }
                         // ⚠️ 命中区 ≥24dp（WCAG 2.5.8）；本仓库自己定的规范是 44dp。
-                        .padding(vertical = 10.dp),
+                        // 原来 16 + 10×2 = 36dp，**不达本仓库规范** → 提到 14dp。
+                        .padding(vertical = 14.dp),
                 )
                 visibleStopIdx.forEach { stopIdx ->
                     val s = plan.stops[stopIdx]
@@ -2654,7 +2826,19 @@ fun RoutePlanCard(
                                                 append("出发前充满也只剩 ").append(s.fullArrivalSoc)
                                                     .append("%，低于 ").append(RESERVE_SOC).append("% 保底")
                                             } else {
-                                                append("出发前至少充到 ").append(req).append("%")
+                                                // ⚠️ **v0.46.0（第 27 轮验收 P1-4）**：已经够电时**别写动作**。
+                                                //
+                                                // 默认线路的第一跳只有 4 公里、need=1、req=21，
+                                                // 而出发时是 33% —— 写「出发前至少充到 21%」
+                                                // 是一个**我不需要执行、也读不出所以然**的指令，
+                                                // 而且和真正要紧的那句「出发前至少充到 93%」
+                                                // **长得一模一样、同字号同字重**。
+                                                val socNow = s.socBefore
+                                                if (socNow != null && socNow >= req) {
+                                                    append("出发时 ").append(socNow).append("% 已够")
+                                                } else {
+                                                    append("出发前至少充到 ").append(req).append("%")
+                                                }
                                             }
                                         }
                                     } else {
@@ -2905,7 +3089,9 @@ fun RoutePlanCard(
                                         val prefix = if (s.isStart) "从起点到下一站要 $need 个点" else "这一跳要 $need 个点"
                                         "$prefix · 留 $RESERVE_SOC% 保底，" +
                                             (if (s.isStart) "出发前至少充到 $req%" else "至少充到 $req%") +
-                                            (s.gapErrorPoints?.let { "（模型残差 ±$it 个点）" } ?: "") +
+                                            // ⚠️ **v0.46.0（第 27 轮验收 P1-4）**：0 个点的误差带是**纯噪音** ——
+                                            // 默认线路那一跳只有 4 公里，23.2 Wh/km × 4 km ÷ 65.8 度 × 100 = 0.14 → 0。
+                                            (s.gapErrorPoints?.takeIf { it > 0 }?.let { "（模型残差 ±$it 个点）" } ?: "") +
                                             (s.socAfter?.let { "（上次充到 $it%）" } ?: "")
                                     }
                                     Text(
@@ -2928,12 +3114,29 @@ fun RoutePlanCard(
                                     Text(
                                         "这段均速 $speedTxt · $label 档" +
                                             "${base?.fmtKwh100() ?: "—"} kWh/100km" +
+                                            // ⚠️ **v0.46.0（第 27 轮验收 P1-3）**：判据要跟**显示精度**对齐。
+                                            //
+                                            // 原来判据 `abs(t - base) >= 0.5` 用的是 **Wh/km**，
+                                            // 而显示用的是 **kWh/100km**（÷10、保留 1 位小数）——
+                                            // 于是 0.636 Wh/km 的修正（= 0.064 kWh/100km）
+                                            // 在 1 位小数下**被抹平**，却仍然打出了后缀：
+                                            // 「60–90 档 17.4 kWh/100km（含爬升修正后 17.4）」——
+                                            // 括号里的数和括号外一样，读者只能理解成「App 算错了」。
+                                            //
+                                            // 现在：**只有显示出来的两个数真的不同**才给后缀，
+                                            // 并把爬升量单独写出来。
                                             (total?.let { t ->
-                                                if (base != null && kotlin.math.abs(t - base) >= 0.5) {
-                                                    "（含爬升修正后 ${t.fmtKwh100()}）"
+                                                val bt = base?.fmtKwh100()
+                                                val tt = t.fmtKwh100()
+                                                if (base != null && bt != null && bt != tt) {
+                                                    "（含爬升修正后 $tt）"
                                                 } else {
                                                     ""
                                                 }
+                                            } ?: "") +
+                                            // ⚠️ v0.46.0：爬升量单独给出来（它是被抹平的那个 0.06）。
+                                            (s.gapClimbWhPerKm?.let { c ->
+                                                " · 爬升修正 " + (c / 10.0).fmtKwh100() + " kWh/100km"
                                             } ?: "") +
                                             (if (s.gapSpeedBorrowed) "（借用邻档）" else ""),
                                         style = MaterialTheme.typography.labelSmall,

@@ -60,34 +60,60 @@ else
 fi
 
 # ── ② 密钥扫描 ───────────────────────────────────────────────
-# 比对 .env 里的**真实值** —— 只查赋值模式会漏掉「值换了但模式没变」的情况，
-# 而真实值比对是**零漏报**的（只要值还在 .env 里）。
+# 两层：
+# ① **全量 tracked 树**扫描**项目明令禁止入库的 5 个密钥**
+#    （API_TOKEN / AMAP_KEY / ta-secret / TESLA_REFRESH_TOKEN / TESLA_CLIENT_SECRET）
+#    —— ⚠️ 原来只扫 diff，**历史提交里的密钥永远扫不到**；
+# ② **diff** 扫描 `.env` 里的**全部**真实值（任何新值都不能进仓库）。
+#
+# ⚠️ 已知豁免：`.env` 里的 `POSTGRES_PASSWORD` / `TESLAMATE_DB_PASSWORD` /
+# `GF_SECURITY_ADMIN_PASSWORD` 是**弱默认密码**（`ChangeMe_*`），
+# `docs/operations.md` **有意记录**了它们（2026-10-16 决定维持现状，局域网自用）——
+# 那条是**决策记录**，不是泄露，故不拦。
 SEC=$(python - <<'PY' 2>/dev/null
-import os, re, subprocess, sys
+import io, os, re, subprocess, sys
 root = os.getcwd()
-env_path = os.path.join(root, ".env")
-if not os.path.exists(env_path):
+FORBIDDEN_KEYS = ("API_TOKEN", "AMAP_KEY", "ta-secret",
+                  "TESLA_REFRESH_TOKEN", "TESLA_CLIENT_SECRET")
+env = os.path.join(root, ".env")
+if not os.path.exists(env):
     print("SKIP"); sys.exit(0)
+
 secrets = []
-for line in open(env_path, encoding="utf-8-sig", errors="replace"):
+for line in io.open(env, encoding="utf-8-sig", errors="replace"):
     line = line.strip()
     if not line or line.startswith("#") or "=" not in line:
         continue
     k, v = line.split("=", 1)
     v = v.strip().strip('"').strip("'")
-    if len(v) >= 12 and k.strip() not in ("APP_VERSION_CODE", "APP_VERSION_NAME"):
+    if len(v) >= 12:
         secrets.append((k.strip(), v))
-if not secrets:
-    print("SKIP"); sys.exit(0)
 
 def git(*a):
-    return subprocess.run(["git", "-C", root, *a], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace").stdout
-diff = git("diff", "HEAD") + "\n" + git("diff", "--cached")
+    return subprocess.run(["git", "-C", root, *a], capture_output=True).stdout
+
 hits = []
+
+# ① 全量 tracked 树：只看**明令禁止**的密钥
+tracked = [f.decode("utf-8", "replace")
+           for f in git("ls-files", "-z").split(b"\0") if f]
+for rel in tracked:
+    fp = os.path.join(root, rel.replace("/", os.sep))
+    if not os.path.isfile(fp):
+        continue
+    try:
+        s = io.open(fp, encoding="utf-8", errors="replace").read()
+    except Exception:
+        continue
+    for k, v in secrets:
+        if k in FORBIDDEN_KEYS and v in s:
+            hits.append("全量扫描命中 %s（%s）" % (k, rel))
+
+# ② diff：任何 .env 真实值都不能进
+diff = (git("diff", "HEAD") + git("diff", "--cached")).decode("utf-8", "replace")
 for k, v in secrets:
     if v and v in diff:
-        hits.append("真实值命中: %s" % k)
+        hits.append("改动里命中真实值 %s" % k)
 for pat, label in [
     (r"API_TOKEN\s*=\s*[\"']?[A-Za-z0-9_\-\.]{16,}", "API_TOKEN 赋值"),
     (r"AMAP_KEY\s*=\s*[\"']?[A-Za-z0-9_\-]{12,}", "AMAP_KEY 赋值"),
@@ -96,7 +122,8 @@ for pat, label in [
     (r"TESLA_CLIENT_SECRET\s*=\s*[\"']?[A-Za-z0-9_\-\.]{12,}", "TESLA_CLIENT_SECRET 赋值"),
 ]:
     if re.search(pat, diff):
-        hits.append("赋值模式命中: %s" % label)
+        hits.append("改动里命中赋值模式 %s" % label)
+
 print("HITS:" + "; ".join(hits) if hits else "CLEAN")
 PY
 )

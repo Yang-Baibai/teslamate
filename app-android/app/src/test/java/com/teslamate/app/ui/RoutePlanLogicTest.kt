@@ -246,6 +246,56 @@ class RoutePlanLogicTest {
         assertEquals(setOf(2), p.actionableStopIndices(1))
     }
 
+    // ── ⚠️ v0.46.0（第 27 轮验收）：v0.44.0 新功能的三处假话 ────────
+
+    @Test
+    fun `选中最后一站 决策句不能说没有充电记录`() {
+        // ⚠️ **第 27 轮验收 P0-1**：这条线上有 36 个沿途充电记录，
+        // 但选中**最后一站**（它后面没有下一站）时，
+        // `longestHopFrom` 返回 null → 掉进兜底分支 →
+        // 打出一句**假话**「这条线路上没有你的充电记录，中途补电给不出位置」。
+        //
+        // ⚠️ 夹具要**最后一站没有下一跳**（gapKm = null）才会复现。
+        val p = plan(
+            listOf(
+                stop("A", 0.0, gapKm = 200.0, need = 60, required = 80, realSoc = 20, estSoc = 25),
+                stop("B", 200.0, gapKm = 300.0, need = 80, required = 100, realSoc = 15, estSoc = 18),
+                // ⚠️ 最后一站：**没有下一站**
+                stop("C", 500.0, gapKm = null, need = null, required = null, realSoc = 30, estSoc = null),
+            ),
+        )
+        val v = p.verdictFrom(2)
+        assertFalse("绝不能出现「没有充电记录」这句假话: $v", v.contains("没有你的充电记录"))
+        assertTrue("应说清是「到最后一站」: $v", v.contains("最后一站"))
+    }
+
+    @Test
+    fun `还有 N 跳只数从选中站起算的`() {
+        // ⚠️ **第 27 轮验收 P1-1**：原来用**全线**计数 ——
+        // 选「修文县」时报的那 1 跳是**建设南路**，在我身后 668 公里。
+        val p = plan3Stations()
+        // A→B 是全线唯一一跳「到不了保底」
+        assertEquals(1, p.belowReserveHopCount)
+        // 从 B 起算 ⇒ 身后那一跳不在范围内
+        assertEquals(0, p.belowReserveHopCountFrom(1))
+    }
+
+    @Test
+    fun `选了别的起点 站区不再钉着起点行`() {
+        // ⚠️ **第 27 轮验收 P0-2**：原来无条件把起点行（0）加进可见下标 ——
+        // 选「修文县」时站区第一行仍是「出发前至少充到 93%」，
+        // 而那个动作在我身后 4929 公里。
+        val p = plan3Stations()
+        // 从起点起算 ⇒ 起点行在
+        assertTrue("从起点起算应含起点行: ${p.visibleStopIndices(0, false)}",
+            0 in p.visibleStopIndices(0, false))
+        // 从 B 起算 ⇒ **不含**起点行
+        assertFalse("从 B 起算不应含起点行: ${p.visibleStopIndices(1, false)}",
+            0 in p.visibleStopIndices(1, false))
+        // 一键展开 ⇒ 全部站
+        assertEquals(p.stops.size, p.visibleStopIndices(1, true).size)
+    }
+
     @Test
     fun `细节行给全程最低点的落点`() {
         val p = plan(

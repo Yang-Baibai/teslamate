@@ -564,6 +564,15 @@ fun SectionCard(
             if (title != null) {
                 Text(
                     title,
+                    // ⚠️ **v0.46.0（第 27 轮无障碍复审 P1-7）**：卡片标题是 **heading**。
+                    //
+                    // 复审实测：TalkBack 的「按标题跳转」只能停在**页面标题**
+                    // （`ScreenTitle` 已有 `heading()`）——
+                    // 「线路余量表」「实测满电续航」「常驻点」「驾驶画像」
+                    // 在 TalkBack 里**都不是标题**，标题导航形同虚设。
+                    //
+                    // 一处改动，全 App 所有卡片标题都变成可跳转的锚点。
+                    modifier = Modifier.semantics { heading() },
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

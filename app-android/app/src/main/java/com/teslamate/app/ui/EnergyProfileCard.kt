@@ -97,8 +97,19 @@ fun EnergyProfileCard(
             // 评审复算：净值口径下「40–50 km/h = 118.8 Wh/km」看着最省电，
             // 但那是**一次下坡 + 一次长途**的产物 —— 这台 AWD Performance 物理上做不到
             // （扣掉回充后那一档是 215.3）。
-            // 改成毛耗电（不含回充抵扣）后，最低档变成 **100–110 km/h** ——
-            // 正好是日常通勤的速度带，结论**从「误导」变成「有用」**。
+            // 改成毛耗电（不含回充抵扣）后，最低档变成 **100–110 km/h**。
+            //
+            // ⚠️ **v0.46.0（第 27 轮复审）订正一处**错误的注解**：
+            // 原文写「正好是日常通勤的速度带，结论从『误导』变成『有用』」——
+            // **那句是错的**，而且它已经**误导过一次复审**（把人引向「App 把通勤说错了」）。
+            //
+            // 实测本机短途（<20 km，264 趟）的**车速中位数只有 18 km/h**、
+            // **76.5% 的趟低于 30 km/h** —— 真实通勤速度带离 100–110 km/h 差得远。
+            // 而按**里程**看，本机 100–140 km/h 那几档又占了最多公里
+            // （因为长途趟数少但很长）⇒ 100–110 对这台车其实是**合理**的。
+            //
+            // ⇒ 结论：**这一档是「理论最省电」，不是「你的日常」**。
+            // 所以下面补一行「你跑得最多的一档」，让读者能拿自己的实际驾驶去比。
             Text(
                 best.wh_per_km_gross.fmtKwh100(),
                 fontSize = 28.sp,
@@ -120,6 +131,26 @@ fun EnergyProfileCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            // ⚠️ **v0.46.0（第 27 轮复审）：补「你实际跑得最多的一档」。**
+            //
+            // 最省电的那一档是**理论最优**，不是**你的日常** ——
+            // 读者真正想知道的是「我平时开的那一档，耗电是多少」。
+            //
+            // 数据现成：每个档都带 `km`（该档跑过的公里），取最大的那个。
+            // 本机实测：按**里程**看是 130–140 km/h（1156 公里），
+            // 与理论最省电的 100–110 相差不远；但按**趟数**看
+            // 48.9% 的趟只有 0–5 公里 —— 所以两个口径都给，用户自己对。
+            val mostDriven = bands.maxByOrNull { it.km }?.takeIf { it.km > 0 }
+            mostDriven?.let { mb ->
+                if (!isBest(mb)) {
+                    Text(
+                        "你跑得最多的一档是 ${mb.label} km/h（${mb.km.roundToInt()} 公里），" +
+                            "这一档 ${mb.wh_per_km_gross.fmtKwh100()} kWh/100km",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(10.dp))

@@ -266,7 +266,18 @@ internal fun DriveItem(
                     )
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = "到",
+                        // ⚠️ **v0.46.0（第 27 轮无障碍复审 P0-2）**：`null`，不是「到」。
+                        //
+                        // 整张行程卡是 `pressable` ⇒ **已经合并了后代语义**，
+                        // 所以这个「到」会并进整张卡的描述里。
+                        // 而它**只代表箭头**（纯装饰）——
+                        // 若 TalkBack 优先读 contentDescription，
+                        // **整张卡只剩「到」两个字**，里程/电量/能耗全部读不到；
+                        // 若优先读文字，则句子里会多出一个孤立的「到」且语序错乱。
+                        //
+                        // 全 App 其它 5 处同款箭头一律写 `null`（见 `Widgets.kt`），
+                        // 这里是个孤例。
+                        contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
                             .padding(horizontal = 2.dp)
