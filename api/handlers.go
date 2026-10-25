@@ -1361,8 +1361,18 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 			//
 			// K 与 `cars.efficiency` **无关**（能量反推口径不需要 kWh/km 常数），
 			// 所以用它推出的「出厂满电标定续航」不受那个可改常数影响。
-			// 实测本机 K = 6.8446 km/kWh（17 个满充点，相对离散度 1.51%）。
-			if p.RatedRangeKm != nil && *p.CapacityKwhEnergy > 0 {
+			// 实测本机 K = 6.8686 km/kWh（16 个严格档满充点，相对离散度 1.51%）。
+			// ⚠️ **v0.62.0 修正**：只用**严格档**（充到 100%）的点。
+			//
+			// 90~98% 的点里，`rated_range_km` 是**那一刻的读数**（不是满电读数），
+			// 而 `capacity_kwh_energy` 是**折算到满电**的容量 ——
+			// 两者**不在同一刻度**，比值会系统性偏低（实测那一个 98% 点：
+			// 441.02 km ÷ 66.04 度 = 6.68，而满充点在 6.84 附近）。
+			// 混进来会把 K 拉低，进而把「出厂同刻度续航」算小。
+			//
+			// 判据与 v0.35.0 给衰减回归定的**严格档**完全一致：`end_soc == 100`。
+			if p.RatedRangeKm != nil && *p.CapacityKwhEnergy > 0 &&
+				p.EndSoc != nil && *p.EndSoc >= 100 {
 				scaleRatios = append(scaleRatios, *p.RatedRangeKm / *p.CapacityKwhEnergy)
 			}
 		}
