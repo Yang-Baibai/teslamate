@@ -3,6 +3,7 @@ package com.teslamate.app.ui
 import com.teslamate.app.Charge
 import com.teslamate.app.ConsumptionModel
 import com.teslamate.app.Drive
+import com.teslamate.app.SocProfilePoint
 import com.teslamate.app.SpeedBucket
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -305,5 +306,79 @@ class RoutePlanBuildTest {
             "没有站时决策句不得出现站间数据: ${p.verdict()}",
             !p.verdict().contains("站间"),
         )
+    }
+
+    // ── ⚠️ v0.53.0（第 29 轮崩溃与健壮性审计 P2-5）：剖面是插值的要说出来 ──
+
+    @Test
+    fun `拿不到真实剖面时标记为插值`() {
+        // 服务端 `route_profile` 有 **400 段上限**（实测那条 6227 公里线现在就有 191 段），
+        // 超限会 400；客户端**静默**退回「端点 + 充电跳升」的插值，
+        // 而插值在山区的误差实测达 **13 公里**（自述「会导致危险决策」）。
+        //
+        // ⇒ 这个降级必须**在界面上说出来**，不能静默。
+        val (drives, charges) = scenario()
+        val tpl = buildRouteTemplates(drives, charges, 200.0)[0]
+        val model = ConsumptionModel(
+            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
+            cruiseKph = 50.0,
+        )
+        val plan = buildRoutePlan(
+            template = tpl,
+            charges = charges,
+            stationStats = emptyMap(),
+            consumption = model,
+            batteryCapacityKwh = 65.0,
+            planSpeedKph = 50.0,
+            socProfile = null,
+        )!!
+        assertTrue("拿不到真实剖面时必须标记为插值", plan.socProfileInterpolated)
+    }
+
+    @Test
+    fun `有真实剖面时不标记为插值`() {
+        val (drives, charges) = scenario()
+        val tpl = buildRouteTemplates(drives, charges, 200.0)[0]
+        val model = ConsumptionModel(
+            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
+            cruiseKph = 50.0,
+        )
+        val plan = buildRoutePlan(
+            template = tpl,
+            charges = charges,
+            stationStats = emptyMap(),
+            consumption = model,
+            batteryCapacityKwh = 65.0,
+            planSpeedKph = 50.0,
+            // 真实剖面至少要 3 个点（`socProfile?.takeIf { it.size >= 3 }`）
+            socProfile = listOf(
+                SocProfilePoint(0.0, 100.0),
+                SocProfilePoint(100.0, 70.0),
+                SocProfilePoint(200.0, 40.0),
+            ),
+        )!!
+        assertTrue("有真实剖面时不该标记为插值", !plan.socProfileInterpolated)
+    }
+
+    @Test
+    fun `真实剖面少于三个点时仍按插值处理`() {
+        // ⚠️ `real = socProfile?.takeIf { it.size >= 3 }` ——
+        // 少于 3 个点时**照样走插值**，所以标志也必须是 true。
+        val (drives, charges) = scenario()
+        val tpl = buildRouteTemplates(drives, charges, 200.0)[0]
+        val model = ConsumptionModel(
+            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
+            cruiseKph = 50.0,
+        )
+        val plan = buildRoutePlan(
+            template = tpl,
+            charges = charges,
+            stationStats = emptyMap(),
+            consumption = model,
+            batteryCapacityKwh = 65.0,
+            planSpeedKph = 50.0,
+            socProfile = listOf(SocProfilePoint(0.0, 100.0)),
+        )!!
+        assertTrue("真实剖面不足 3 点时按插值处理", plan.socProfileInterpolated)
     }
 }

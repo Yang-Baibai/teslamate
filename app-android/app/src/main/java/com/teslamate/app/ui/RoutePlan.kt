@@ -613,6 +613,20 @@ data class RoutePlan(
      * 前提行原来是无条件写「已按实测爬升系数做加性修正」——
      * 那时这句话是**假的**。
      */
+    /**
+     * ⚠️ **v0.53.0（第 29 轮崩溃与健壮性审计 P2-5）**：剖面是**真实逐公里**的还是**插值**的？
+     *
+     * true = 拿不到 `/route_profile`（服务端 **400 段上限**，或端点没拉到），
+     * 剖面退回「端点 + 充电跳升」的**插值**。
+     *
+     * ⚠️ 插值在山区的误差实测达 **13 公里**
+     * （真实跌破 20% 保底在第 244 公里，插值算出来是 231 公里）——
+     * 用户按 231 公里规划，到 244 公里时电已经见底 ⇒ **会导致危险决策**。
+     *
+     * 原来这个降级是**完全静默**的：界面上的数字看起来和真剖面一样精确。
+     * 现在在「余量口径与误差带」里**明说**。
+     */
+    val socProfileInterpolated: Boolean = false,
     val climbCorrectionApplied: Boolean = false,
     /**
      * ⚠️ **v0.36.0：≤10°C 的样本条数**（低温修正是否可信的判据）。
@@ -1900,6 +1914,11 @@ fun buildRoutePlan(
         climbDescentM = routeDescentM,
         // ⚠️ v0.36.0：前提行要如实说「有没有做爬升修正」
         climbCorrectionApplied = climbModel != null,
+        // ⚠️ **v0.53.0（第 29 轮崩溃与健壮性审计 P2-5）**：
+        // 记下「这一次的剖面是插值的还是真实的」——
+        // 服务端 `route_profile` 有 **400 段上限**（实测那条 6227 公里线现在就有 191 段），
+        // 超限会 400，而客户端**静默**退回插值（山区误差 13 公里）。
+        socProfileInterpolated = real == null,
         // ⚠️ v0.36.0：低温样本数（动态，不再写死）
         lowTempSamples = consumption?.lowTempSamples,
         // ⚠️ **v0.43.0**：误差带换算到**最长那一跳** ——
@@ -2637,6 +2656,15 @@ fun RoutePlanCard(
             Column {
                 Text(
                     "余量按各段真实均速取本车实测 Wh/km；" +
+                        // ⚠️ **v0.53.0（第 29 轮崩溃与健壮性审计 P2-5）**：
+                        // 剖面是**插值**的时候必须**明说** ——
+                        // 插值在山区的误差达 **13 公里**，
+                        // 而「会导致危险决策」；原来这个降级是**完全静默**的。
+                        (if (plan.socProfileInterpolated) {
+                            "电量剖面是插值的（没拿到逐公里实测剖面，山区误差可达 13 公里）；"
+                        } else {
+                            ""
+                        }) +
                         (if (plan.climbCorrectionApplied) {
                             "已按实测爬升系数做加性修正"
                         } else {
