@@ -19,12 +19,15 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -73,6 +76,42 @@ import kotlin.math.roundToInt
  * @see buildRouteTemplates 找出历史长途模板
  * @see buildRoutePlan 用模板 + 历史充电算出余量表
  */
+
+/**
+ * ⚠️ **v0.34.0（第 21 轮一线车主复审 P1-3）：保底电量集中成一个常量。**
+ *
+ * 原来「20% 保底」散落在**四处**硬编码（结论句、剖面参考线、
+ * 「低于 20% 保底」提示、「留 20% 保底：到不了」提示）——
+ * 改一处漏三处就会自相矛盾。
+ *
+ * ⚠️ **本轮先集中，不做成设置项。**
+ * 复审要求「保底电量可配置」—— 那需要一层设置持久化 + 一处全局状态，
+ * 属于独立一轮的改动；而当前**四处硬编码的数是同一个**（都是 20），
+ * 所以集中之后**行为完全不变**，只是以后改一处就够。
+ */
+const val RESERVE_SOC = 20
+
+/**
+ * ⚠️ **v0.34.0（第 21 轮口径审计 P0-2 + 独立复算）：爬升系数的口径守卫。**
+ *
+ * 只有服务端明确下发 `basis == "calib_net"`（标定法净值，与能耗底档同源）
+ * 时才给爬升修正。
+ *
+ * 旧的那套系数是**车轮功率毛耗电**口径 —— 混用会三重重复计量
+ * （回充扣两次、该档典型爬升算两次、既上又下时给净系数），
+ * 独立复算实测**高估 +12%**、造成 **4 次结论翻转**。
+ */
+const val CLIMB_BASIS_CALIB_NET = "calib_net"
+
+/**
+ * ⚠️ **v0.34.0：小于这么长的段不给爬升修正（公里）。**
+ *
+ * 独立复算实测 `drives.ascent` 在**短途**严重失真
+ * （以「只在里程表前进的点对」求正高差之和为参考，虚高 **98.7%**）。
+ * 几公里的段上坡度噪声与真实爬升完全不成比例 ——
+ * 那里**不给**修正比给一个噪声值好。
+ */
+const val CLIMB_MIN_GAP_KM = 20.0
 
 /** 一条历史长途线路的模板。 */
 data class RouteTemplate(
@@ -207,6 +246,41 @@ data class RouteStop(
      */
     val socAtNextStop: Int? = null,
     /**
+     * ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-1）：下一站的**真实**到站电量（上次实测）。**
+     *
+     * 复审的原话：
+     * > 「App 手里有真值却不用。`/route_profile` 早就给出这条线逐 5 公里的真实 SOC；
+     * > 它把真值画进曲线，却拿一个模型估算摆在旁边，还只给估算。」
+     *
+     * 一个**没有真值在旁边**的估算，等于没有 —— 用户不知道该信哪个。
+     * 现在把「上次实际到站剩 Y%」与估算并排给出。
+     */
+    val nextStopRealSoc: Int? = null,
+    /**
+     * ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-3）：这一跳要消耗多少个电量点。**
+     *
+     * 这是「处方」的原料：`gapKm × 实测 Wh/km ÷ 可用容量`。
+     * 原来这个数只以「到下一站剩 X%」的形式出现过（**差值**），
+     * 用户没法据此回答「那我该充到多少」。
+     */
+    val gapNeedPct: Int? = null,
+    /**
+     * ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-3）：留 [RESERVE_SOC]% 保底，本站至少要充到多少。**
+     *
+     * `= gapNeedPct + RESERVE_SOC`。
+     *
+     * ⚠️ **> 100 就表示「这一跳无解」** ——
+     * 复审实测：修文县 → 南丹车河那 348 公里要 **102 个点**，
+     * 而 App 当时写的是「这段必须再充一次」。
+     * 用户照做（充到 100%）**还是到不了**（只剩 −2%）——
+     * **这是一个会让人白等 20 分钟、然后仍然趴窝的错误建议。**
+     *
+     * 现在 >100 时改口成「这一跳充满也到不了，得在前面加一站」。
+     */
+    val requiredSocHere: Int? = null,
+    /** 下一站的名字（用于「到南丹车河」这样的说法）。 */
+    val nextStopName: String? = null,
+    /**
      * ⚠️ **v0.31.0：从上一个站到这一站，这一段爬了多高（米）。**
      *
      * 官方 Tesla App **从不给**这个数 —— 它只有总里程和平均电耗。
@@ -221,8 +295,13 @@ data class RouteStop(
      * ⚠️ **v0.33.0：这一段的爬升能耗修正（Wh/km，可为负）。**
      *
      * 加性模型：`c_up × 上坡坡度(m/km) − c_regen × 下坡坡度(m/km)`。
-     * 实测那条川藏滇线里 206 公里那段爬了 4,186 米 → 修正 **+83.6 Wh/km（+49%）**，
-     * 折合 **−26 个电量百分点** —— 没有它，界面会说「看着够」而实际到不了。
+     *
+     * ⚠️ **v0.34.0（第 21 轮视觉评审 P2-3）：这里原来写「+83.6 Wh/km（+49%）」，与本文件
+     * 另一处的「+88.8 Wh/km」矛盾。**按上线公式实测是 **+88.8 Wh/km（+50%）**，
+     * 统一成后者。
+     *
+     * 实测那条川藏滇线里 206 公里那段爬了 4,186 米 → 修正 **+88.8 Wh/km（+50%）**，
+     * 折合 **−28 个电量百分点** —— 没有它，界面会说「看着够」而实际到不了。
      */
     val gapClimbWhPerKm: Double? = null,
     /**
@@ -248,7 +327,36 @@ data class RouteStop(
     val assumedSpeedKph: Double? = null,
     /** 实际用的 Wh/km（界面要把它和车速一起标出来 —— 不交代前提就只是个数字） */
     val assumedWhPerKm: Double? = null,
-)
+    /**
+     * ⚠️ **v0.34.0（第 21 轮视觉评审 P0-2）：含爬升修正的**总**能耗。**
+     *
+     * 原来 `assumedWhPerKm` 直接装的是「基数 + 爬升修正」的**总数**，
+     * 而它前面的标签写的是**基数档名**（如「0–60 档」）——
+     * 于是同一个档位在 App 里出现了三个值：文档 17.2、实测基数 17.8、界面 26.7。
+     * 读者若知道档位表，会认为 App 的档位值**错了 50%**。
+     *
+     * 现在：[assumedWhPerKm] 只放**档位基数**（与档位表同源），
+     * [assumedWhPerKmTotal] 放**总数**，界面上两者分开标（「含爬升修正后 X」）。
+     */
+    val assumedWhPerKmTotal: Double? = null,
+    /**
+     * ⚠️ **v0.34.0（第 21 轮视觉评审 P1-3）：爬升修正在这一段**多耗多少度 / 多少百分点。**
+     *
+     * 只给 Wh/km 的话，读者没法换算成「会让我少多少电」——
+     * 而那才是「该不该提前充」的依据。
+     */
+    val gapClimbKwh: Double? = null,
+    /** 同上，换算成电量百分点（负数 = 更费电）。 */
+    val gapClimbPct: Double? = null,
+) {
+    /**
+     * ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-2）：这一跳**没有解**吗。**
+     *
+     * 充满也只有 100 个点，而这一跳要 `need + 保底` 个点 ——
+     * `> 100` 就意味着**在本站怎么充都到不了**。
+     */
+    val gapImpossible: Boolean get() = (requiredSocHere ?: 0) > 100
+}
 
 /** 余量剖面上的一个点。 */
 data class RouteSocPoint(
@@ -258,6 +366,30 @@ data class RouteSocPoint(
     val soc: Int,
     /** true = 这是充电造成的跳升 */
     val isCharge: Boolean = false,
+)
+
+/**
+ * ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-4）：站与站之间的**一跳**。**
+ *
+ * 出发前 5 分钟真正要读的是「**下一段**」而不是「整条 6227 公里」。
+ * 这个结构把那一跳需要的全部信息装在一起：
+ * 从哪到哪、多远、上次实际到站剩多少、模型估多少、要充到多少才够。
+ */
+data class RouteHop(
+    /** 起点站名 */
+    val fromName: String,
+    /** 终点站名 */
+    val toName: String,
+    /** 这一跳的公里数 */
+    val km: Double,
+    /** **上次实测**到站时的电量（%）—— 真值 */
+    val realSoc: Int?,
+    /** 模型估算的到站电量（%）—— 可能是负数（表示到不了） */
+    val estSoc: Int?,
+    /** 这一跳要消耗多少个电量点 */
+    val needPct: Int?,
+    /** 留 20% 保底，本站至少要充到多少（> 100 = **这一跳无解**） */
+    val requiredSoc: Int?,
 )
 
 /** 整条线路的余量表。 */
@@ -280,8 +412,12 @@ data class RoutePlan(
      * 官方 App 给不了的数 —— 它只有总里程和平均电耗，
      * 不会告诉你「你翻了多少山」。
      *
-     * 实测那条 6227 公里的川藏滇线：毛爬升 **51,804 米**（≈ 5.9 座珠峰）、
-     * 毛下降 62,554 米、**净爬升 −750 米**（终点比起点低 750 米）。
+     * 实测那条 6227 公里的川藏滇线：毛爬升 **51,791 米**（≈ 5.9 座珠峰）、
+     * 毛下降 **48,513 米**。
+     *
+     * ⚠️ **v0.34.0（第 21 轮视觉评审 P2-4）：这里原来写「毛下降 62,554 米、净爬升 −750 米」，
+     * 与实际不符**（那两行是 v0.31.0 早期用**逐点高差**算的，
+     * 换成 drives.ascent/descent 口径后实测是 51,791 / 48,513）。
      *
      * ⚠️ **净爬升可以是负的** —— 所以做能耗修正时必须
      * 「上坡按毛爬升算、下坡按毛下降抵扣」，不能用净值。
@@ -289,6 +425,14 @@ data class RoutePlan(
     val climbAscentM: Int = 0,
     /** 毛下降（米） */
     val climbDescentM: Int = 0,
+    /**
+     * ⚠️ **v0.34.0（第 21 轮视觉评审 P1-8）：爬升修正**实际生效**了吗。**
+     *
+     * 爬升模型可能加载失败（服务端 500 / 超时 → `climbModel = null`）。
+     * 前提行原来是无条件写「已按实测爬升系数做加性修正」——
+     * 那时这句话是**假的**。
+     */
+    val climbCorrectionApplied: Boolean = false,
 ) {
     /**
      * 爬升折合**多少座珠穆朗玛峰**（珠峰 8,849 m）。
@@ -300,6 +444,37 @@ data class RoutePlan(
 
     /** 最低点（不含充电跳升后的值） */
     val lowestSoc: Int? get() = profile.minByOrNull { it.soc }?.soc
+
+    /**
+     * ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-4）：最长的一跳。**
+     *
+     * 出发前要准备的不是「整条 6227 公里」，而是**最长那一跳**
+     * —— 复审的原话：「我**真的会读**的：最长一段 348 公里」。
+     *
+     * 口径与 [stationRhythm] 一致：只取**站与站之间**、且 **≥2 公里**的间距
+     * （<2 公里的是同一个桩被拆成两行，不是真的站间距）。
+     */
+    val longestHop: RouteHop?
+        get() {
+            var best: RouteHop? = null
+            for (i in stops.indices) {
+                val s = stops[i]
+                val gap = s.gapToNextKm ?: continue
+                if (gap < 2.0) continue
+                if (best != null && gap <= best.km) continue
+                val nxt = stops.getOrNull(i + 1)
+                best = RouteHop(
+                    fromName = s.name,
+                    toName = nxt?.name ?: "终点",
+                    km = gap,
+                    realSoc = nxt?.socBefore,
+                    estSoc = s.socAtNextStop,
+                    needPct = s.gapNeedPct,
+                    requiredSoc = s.requiredSocHere,
+                )
+            }
+            return best
+        }
 
     /**
      * ⚠️ **v0.29.0（复审 P0-3）：最低点要带上它的公里数。**
@@ -337,21 +512,12 @@ data class RoutePlan(
             "${s.fromLabel} → ${s.toLabel}"
         }
         parts += "${s.distanceKm.roundToInt()} 公里"
-        // ⚠️ v0.26.0：改成「N 段 · M 次沿途充电」——
-        // 原来写「走过 N 次」，而 N 现在是**段数**，
-        // 会把「一次旅程被充电切成 11 段」说成「走过 11 次」。
+        // ⚠️ **v0.34.0（第 21 轮一线车主复审 P2-2）：段数删掉。**
         //
-        // ⚠️ **v0.30.0（长途自驾党 P1-2）：两处段数不一致，必须说清。**
-        // 这里的 `legCount` 是 `meaningfulLegCount`（**≥2 公里**的段，实测 131），
-        // 而 `RouteJourney.summary()` 用的是 `legs.size`（**全部**段，实测 191）——
-        // 差 60 段是充电站内挪车微行程（<2 km）。
-        // 同一个 journey 在两个地方显示不同段数，用户会以为有一个是错的。
-        // 现在两个数都写出来，并说清差别在哪。
-        parts += if (s.totalLegCount > s.legCount) {
-            "${s.totalLegCount} 段行程（其中 ${s.legCount} 段超过 2 公里）"
-        } else {
-            "${s.legCount} 段"
-        }
+        // 原来写「191 段行程（其中 131 段超过 2 公里）」——
+        // 复审原话：「**我不看段数**」。
+        // 那两个数是**内部口径**（段数 ≠ 充电次数），对用户没有决策价值，
+        // 只会占掉一行。
         if (s.stopCount > 0) parts += "$s.stopCount 次沿途充电"
         return parts.joinToString(" · ")
     }
@@ -396,75 +562,80 @@ data class RoutePlan(
      * 把「历史」和「预测」分开说，让用户自己判断可信度。
      */
     fun verdict(): String {
-        val asOf = template.lastDrivenAt?.fmtDate()
-        val src = asOf?.let { "按 $it 那趟实测" } ?: "按历史记录"
-        val low = lowestSoc ?: return "$src：算不出结论（没有足够的电量记录）"
-        // ⚠️ v0.29.0（复审 P0-3）：公里与电量必须来自**同一个点**。
-        val below = firstBelowFloor
-        val belowText = below?.let { (km, soc) ->
-            " · 第 ${km.roundToInt()} 公里只剩 $soc%（低于 20% 保底）"
+        // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-7 / 一线车主 P0-4）：决策句必须**短**。**
+        //
+        // 原来这一句是 **85 字**（含站间距分布 + 两个低点），
+        // 在 329dp 宽上折成 **4 行**（fs=1.0）/ **8~9 行**（fs=2.0）——
+        // 而它的设计意图（`RoutePlan.kt:1021`）明明写着
+        // 「结论句直接写在摘要行里 —— 出发前 5 分钟只读这一行就够」。
+        //
+        // 现在拆成三段：
+        // - [verdict()] —— **决策句**（一行）：最长的一段 + 上次到站剩多少；
+        // - [verdictDetail()] —— **细节行**：来源限定 + 全程最低；
+        // - [stationRhythm()] —— **站间距分布**：只留在**展开卡**里。
+        val hop = longestHop
+        if (hop != null) {
+            val sb = StringBuilder()
+            sb.append("最长一段 ").append(hop.km.roundToInt()).append(" 公里")
+            sb.append("（").append(hop.fromName).append(" → ").append(hop.toName).append("）")
+            hop.realSoc?.let { sb.append(" · 上次到站剩 ").append(it).append("%") }
+            return sb.toString()
         }
-        // ⚠️ **v0.30.0（长途自驾党 P0-4）：全程最低点必须出现在结论句里。**
-        //
-        // [lowestPoint] 从 v0.29.0 起就在算（`RoutePlan.kt:216-217`），
-        // 但**全项目没有任何地方调用它** —— 于是最该看的那个数被算了却没显示。
-        //
-        // 实测：6227 公里那条的结论句只说「第 227 公里只剩 18%」，
-        // 而全程最低是 **5%（第 1242 公里）** —— 1,443 个剖面点里有 **104 个**低于 20%。
-        // 只说「第一次跌破」会让人以为「过了 227 公里就没事了」。
-        val lowestText = lowestPoint?.let { (km, soc) ->
-            // 与「第一个跌破」是同一个点时不重复说
-            if (below == null || km > below.first + 0.5) {
-                " · 全程最低 $soc%（第 ${km.roundToInt()} 公里）"
-            } else {
-                ""
-            }
-        }
-        // ⚠️ **v0.30.0（长途自驾党 P0-2）：「平均每 N 公里停一次」必须换成真实站间距。**
-        //
-        // 原来 `gapKm = 总里程 ÷ 次数` —— **平均数掩盖了分布**。
-        // 实测：6227 公里那条的真实站间距是 **2～348 公里**（中位 162、均值 157），
-        // 616 公里那条是 **2～189 公里**（中位 133）。
-        // 按「平均每 164 公里」准备，会在**最长那 348 公里**那段毫无准备。
-        //
-        // 现在给真实区间 + 中位 + **最长一段**（那才是要提前安排的）。
-        //
-        // ⚠️ **v0.32.0（第 20 轮规划复审 P1-2）：口径再收紧三处。**
-        //
-        // ① 只取**站与站之间**的间距 —— 原来把「起点→首站」「末站→终点」
-        //    两个**半段**也算进去，于是 616 公里那条的中位被拉到 88
-        //    （站与站之间的真中位是 **133**）。
-        // ② 剔除 **< 2 公里**的间距 —— 那是**同一个站充了两次**
-        //    （实测修文县 2.5 km、稻城 2.1 km、新城路→中国石化 2.47 km），
-        //    不是「站间距可以短到 2 公里」。
-        // ③ 中位改用 [medianOf]（偶数取两中位平均）——
-        //    项目在 `Stats.kt` 已统一成这个口径，这里原是**第四种**实现。
-        //
-        // ⚠️ **P1-1：`**` 会被 Compose 原样显示**（Text 不解析 Markdown）。
-        // 同一文件下面就写着这条教训，这里又犯了一次 —— 去掉星号。
-        val rhythm = if (stops.size >= 2) {
-            val stationKms = stops.map { it.kmAlongRoute }.sorted()
-            val gaps = stationKms.zipWithNext { a, b -> b - a }.filter { it >= 2.0 }
-            if (gaps.isEmpty()) "" else {
-                val maxGap = gaps.max()
-                val minGap = gaps.min()
-                val medGap = medianOf(gaps.map { it }) ?: gaps.sorted()[gaps.size / 2]
-                "（站与站之间 ${minGap.roundToInt()}～${maxGap.roundToInt()} 公里，" +
-                    "中位 ${medGap.roundToInt()}；最长一段 ${maxGap.roundToInt()} 公里）"
-            }
+        val low = lowestSoc ?: return "算不出结论（没有足够的电量记录）"
+        return if (stops.isEmpty()) {
+            "能一次开到 · 预计到达 $low%"
         } else {
-            ""
+            "这条线路上没有你的充电记录，中途补电给不出位置"
         }
-        return when {
-            stops.isNotEmpty() ->
-                "$src：那趟实际停了 ${stops.size} 次" + rhythm + (belowText ?: "") + (lowestText ?: "")
-            below != null ->
-                "$src：$belowText · " +
-                    "这条线路上没有你的充电记录，中途补电给不出位置"
-            else ->
-                "$src：能一次开到 · 预计到达 $low%" +
-                    "（这条线路上没有你的充电记录，中途补电给不出位置）"
+    }
+
+    /**
+     * ⚠️ **v0.34.0（第 21 轮一线车主复审 P2-4）：两个「低点」并排会打架。**
+     *
+     * 原来结论句里既有「第 227 公里只剩 18%（低于 20% 保底）」
+     * 又有「全程最低 5%（第 1237 公里）」——
+     * 读者会读成「227 公里最危险」，而 5% 才是真的。
+     * 现在**只留最低点**，跌破 20% 的事交给逐站那行。
+     */
+    fun verdictDetail(): String {
+        val sb = StringBuilder()
+        template.lastDrivenAt?.let { sb.append(it.fmtDate()).append(" 那趟实测") }
+        lowestPoint?.let { (km, soc) ->
+            if (sb.isNotEmpty()) sb.append(" · ")
+            sb.append("全程最低 ").append(soc).append("%（第 ").append(km.roundToInt()).append(" 公里）")
         }
+        return sb.toString()
+    }
+
+    /**
+     * ⚠️ **v0.30.0（长途自驾党 P0-2）：「平均每 N 公里停一次」必须换成真实站间距。**
+     *
+     * 原来 `gapKm = 总里程 ÷ 次数` —— **平均数掩盖了分布**。
+     * 实测：6227 公里那条的真实站间距是 **13～348 公里**（中位 162），
+     * 616 公里那条是 **13～189 公里**（中位 133）。
+     * 按「平均每 164 公里」准备，会在**最长那 348 公里**那段毫无准备。
+     *
+     * ⚠️ **v0.32.0（第 20 轮规划复审 P1-2）：口径再收紧三处。**
+     *
+     * ① 只取**站与站之间**的间距 —— 原来把「起点→首站」「末站→终点」
+     *    两个**半段**也算进去，于是 616 公里那条的中位被拉到 88。
+     * ② 剔除 **< 2 公里**的间距 —— 那是**同一个站充了两次**。
+     * ③ 中位改用 [medianOf]（偶数取两中位平均）——
+     *    项目在 `Stats.kt` 已统一成这个口径，这里原是**第四种**实现。
+     *
+     * ⚠️ **v0.34.0：整句移出折叠态**（只留在展开卡）——
+     * 它是**证据**（分布），不是**决策**（那一跳）。
+     */
+    fun stationRhythm(): String {
+        if (stops.size < 2) return ""
+        val stationKms = stops.map { it.kmAlongRoute }.sorted()
+        val gaps = stationKms.zipWithNext { a, b -> b - a }.filter { it >= 2.0 }
+        if (gaps.isEmpty()) return ""
+        val maxGap = gaps.max()
+        val minGap = gaps.min()
+        val medGap = medianOf(gaps.map { it }) ?: gaps.sorted()[gaps.size / 2]
+        return "站与站之间 ${minGap.roundToInt()}～${maxGap.roundToInt()} 公里，" +
+            "中位 ${medGap.roundToInt()}；最长一段 ${maxGap.roundToInt()} 公里"
     }
 }
 
@@ -661,6 +832,17 @@ fun buildRoutePlan(
     val whPerKm = consumption?.let { m ->
         planSpeedKph?.let { m.whSample(it)?.bucket?.whPerKm }
     }
+    /**
+     * 站名的显示规则（⚠️ v0.29.0 复审 P0-5 定下的口径）：
+     * `poi_name`（车主认得的「金田服务区」）→ 围栏名 → 地址首段。
+     *
+     * ⚠️ v0.34.0：抽成函数是为了让**下一站的名字**能用同一套规则 ——
+     * 否则「到下一站剩 13%」不知道说的是哪个站。
+     */
+    fun stopDisplayName(c: Charge): String =
+        c.poi_name?.takeIf { it.isNotBlank() }
+            ?: c.geofence_name?.takeIf { it.isNotBlank() }
+            ?: c.place.firstSegment() ?: "充电站"
     val stops = journeyStops.mapIndexed { idx, js ->
         val c = js.charge
         val stat = stationStats[stationKey(c)]
@@ -709,35 +891,87 @@ fun buildRoutePlan(
         // 所以这个修正量**略偏保守**（实测两套口径的车速档值在同一量级：
         // 90–110 档 标定法 182.7 vs 车轮功率 184.2）。
         // 要完全同源，需要把系数也拟合成标定法口径（见 docs/backlog-r19-r20.md）。
-        val gapAscentM = if (gapKm != null) {
-            ascentBetween(if (idx == 0) 0.0 else journeyStops[idx - 1].kmAlong, js.kmAlong)
+        // ⚠️ **v0.34.0（第 21 轮独立复算 P0）：爬升取的是**上一段**，却除以**本段**里程。**
+        //
+        // 原来：`ascentBetween(上一站 → 本站)` ÷ `gapKm`（本站 → 下一站）——
+        // **分子分母不同源**。
+        // 独立复算实测（用服务端真实 place_key 重建 36 个站间段）：
+        // 仅这一项就造成 **4 次判定翻转**、累计耗电偏差 **+16.6 kWh**；
+        // 最坏的一段是 54 公里，被按上一段的 4,186 米算出 **+341.5 Wh/km** →
+        // 到站 **7.4%**（界面会写「到不了，必须再充一次」），而真值是 **33.9%**（OK）。
+        //
+        // 现在：爬升与下降都取**本段**区间（本站 → 下一站）。
+        val gapAscentM = if (next != null && gapKm != null) {
+            ascentBetween(js.kmAlong, next.kmAlong)
         } else {
             0
         }
-        val gapDescentM = if (gapKm != null) {
-            descentBetween(if (idx == 0) 0.0 else journeyStops[idx - 1].kmAlong, js.kmAlong)
+        val gapDescentM = if (next != null && gapKm != null) {
+            descentBetween(js.kmAlong, next.kmAlong)
         } else {
             0
         }
-        val gapClimbWh = if (gapKm != null && gapKm > 0.1 && climbModel != null) {
+        // ⚠️ **v0.34.0（第 21 轮口径审计 P0-2 + 独立复算）：delta-grade 修正。**
+        //
+        // 公式：`修正 = c_up_cal × (g_up − g_up_typ(该档)) + c_regen_cal × (g_dn − g_dn_typ(该档))`
+        //
+        // **为什么必须是 delta 而不是绝对坡度**：
+        // 能耗底档是该车速档趟次的**中位数**，它**已经包含**该档的典型爬升；
+        // 用绝对坡度等于把典型值再叠一遍 —— 独立复算实测**高估 +12.08%**，
+        // 在「到站电量 vs 20% 保底线」上造成 **4 次结论翻转**。
+        // delta 形式在「该段坡度 = 该档典型坡度」时修正恰好为 0，
+        // **结构上不可能**系统性抬高。
+        //
+        // 实测（客户端真实可用样本 88 趟）：
+        //   旧公式（绝对坡度 + 车轮口径系数）  偏差 +12.08%  RMSE 37.13  翻转 4
+        //   新公式（delta + 标定法口径系数）     偏差  −0.84%  RMSE 24.12  翻转 0
+        //
+        // ⚠️ **口径守卫**：系数必须是 `basis == "calib_net"`（与能耗底档同源）。
+        // 不是就不给修正 —— **宁可少算一个修正，也不能混口径**。
+        // ⚠️ **最小 gap 门槛**：< [CLIMB_MIN_GAP_KM] 公里的段不给爬升修正 ——
+        // 那里坡度噪声与真实爬升完全不成比例。
+        val climbTyp = climbModel?.typical_grade?.firstOrNull { tg ->
+            gapSample?.bucket?.minKph == tg.min_kph
+        }
+        val gapClimbWh = if (gapKm != null && gapKm >= CLIMB_MIN_GAP_KM
+            && climbModel != null && climbModel.basis == CLIMB_BASIS_CALIB_NET
+            && climbTyp != null
+        ) {
             val gradeUp = gapAscentM / gapKm
             val gradeDown = gapDescentM / gapKm
-            climbModel.c_up_wh_per_m * gradeUp - climbModel.c_regen_wh_per_m * gradeDown
+            climbModel.c_up_calib_net_wh_per_m * (gradeUp - climbTyp.grade_up_typ_m_per_km) +
+                climbModel.c_regen_calib_net_wh_per_m * (gradeDown - climbTyp.grade_down_typ_m_per_km)
         } else {
-            0.0
+            null
         }
-        val gapWh = if (gapWhBase != null) gapWhBase + gapClimbWh else null
+        val gapWh = if (gapWhBase != null) gapWhBase + (gapClimbWh ?: 0.0) else null
         val gapSpeedForDisplay = gapSegSpeed ?: planSpeedKph
         // 充到 socAfter 后，到下一站还剩多少电（%）
-        val socAtNext = if (gapKm != null && gapWh != null && batteryCapacityKwh != null
-            && batteryCapacityKwh > 0 && c.end_soc != null
+        //
+        // ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-3）：把「这一跳要几个点」单独存出来。**
+        // 原来它只以**差值**（`到下一站剩 X%`）出现过，用户没法据此回答
+        // 「那我该充到多少」—— 而那才是出发前真正要决定的事。
+        val needPct = if (gapKm != null && gapWh != null && batteryCapacityKwh != null
+            && batteryCapacityKwh > 0
         ) {
             val needKwh = gapKm * gapWh / 1000.0
-            val needPct = (needKwh / batteryCapacityKwh * 100).roundToInt()
+            (needKwh / batteryCapacityKwh * 100).roundToInt()
+        } else {
+            null
+        }
+        val socAtNext = if (needPct != null && c.end_soc != null) {
             (c.end_soc - needPct).coerceIn(-100, 100)
         } else {
             null
         }
+        // ⚠️ **v0.34.0（P0-3）：处方 —— 留 20% 保底，本站至少要充到多少。**
+        // >100 就说明**这一跳没有解**（充满也到不了保底），
+        // 那就不能说「再充一次」，得说「得在前面加一站」。
+        val requiredHere = needPct?.let { it + RESERVE_SOC }
+        // ⚠️ **v0.34.0（P0-1）：下一站的**真实**到站电量（上次实测）。**
+        // `next` 是 journey 里下一个停靠，它的 `socBefore` 就是那一趟**实际**到站时的电量。
+        val nextRealSoc = next?.socBefore
+        val nextName = next?.let { stopDisplayName(it.charge) }
         RouteStop(
             // ⚠️ **v0.29.0（复审 P0-5）：`poi_name` 排到最前。**
             //
@@ -747,9 +981,7 @@ fun buildRoutePlan(
             //
             // `poi_name` 才是车主认得的名字（「金田服务区」「合江荔乡服务区」），
             // 所以它排第一；围栏名（如果有意义的地名）排第二；地址首段兜底。
-            name = c.poi_name?.takeIf { it.isNotBlank() }
-                ?: c.geofence_name?.takeIf { it.isNotBlank() }
-                ?: c.place.firstSegment() ?: "充电站",
+            name = stopDisplayName(c),
             kmAlongRoute = js.kmAlong,
             // ⚠️ **v0.28.0（复审 P0-①）：必须用**合并后**的电量。**
             //
@@ -788,17 +1020,40 @@ fun buildRoutePlan(
             },
             gapToNextKm = gapKm,
             socAtNextStop = socAtNext,
+            // ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-1 / P0-3）**
+            nextStopRealSoc = nextRealSoc,
+            gapNeedPct = needPct,
+            requiredSocHere = requiredHere,
+            nextStopName = nextName,
             // ⚠️ **v0.30.0（长途自驾党 P0-1）：把车速与实际用的 Wh/km 带出去。**
             //
             // 「到下一站剩 34%」不交代前提就只是个数字 ——
             // 它是按「这段线路历史均速 → 对应 Wh/km 档」算的，
-            // **没做**温度修正、**没做**爬升修正、**没留**安全余量。
+            // **没做**温度修正、**已按实测**爬升系数做加性修正、**没留**安全余量。
+            // ⚠️ **v0.34.0（第 21 轮视觉评审 P2-4）：原文写「没做爬升修正」——过时了**，
+            // v0.33.0 起就做了爬升修正。
             assumedSpeedKph = gapSpeedForDisplay,
-            assumedWhPerKm = gapWh,
+            // ⚠️ **v0.34.0（第 21 轮视觉评审 P0-2）：基数与总数**必须同源可对账。**
+            // 基数（档位值）与总数（含爬升修正）分开两个字段。
+            assumedWhPerKm = gapWhBase,
+            assumedWhPerKmTotal = gapWh,
+            // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-3）：爬升修正同时给度与百分点。**
+            gapClimbKwh = if (gapKm != null && gapClimbWh != null) {
+                gapClimbWh * gapKm / 1000.0
+            } else {
+                null
+            },
+            gapClimbPct = if (gapKm != null && gapClimbWh != null
+                && batteryCapacityKwh != null && batteryCapacityKwh > 0
+            ) {
+                gapClimbWh * gapKm / 1000.0 / batteryCapacityKwh * 100.0
+            } else {
+                null
+            },
             // ⚠️ v0.31.0：从上一个站到这一站爬了多高
             gapAscentM = gapAscentM,
             gapDescentM = gapDescentM,
-            gapClimbWhPerKm = if (climbModel != null) gapClimbWh else null,
+            gapClimbWhPerKm = gapClimbWh,
             // ⚠️ v0.32.0：这一段用到的 Wh/km 档（界面要交代「按哪一档算的」）
             gapBucketLabel = gapSample?.bucket?.label,
             gapSpeedBorrowed = gapSample?.exact == false,
@@ -851,6 +1106,8 @@ fun buildRoutePlan(
         // ⚠️ v0.31.0：整条线路的爬升
         climbAscentM = routeAscentM,
         climbDescentM = routeDescentM,
+        // ⚠️ v0.34.0：前提行要如实说「有没有做爬升修正」
+        climbCorrectionApplied = climbModel != null,
     )
 }
 
@@ -1013,32 +1270,47 @@ fun RoutePlanSummaryRow(
                         .weight(1f)
                         .clickable(onClick = onClick),
                 ) {
+                    // ⚠️ **v0.34.0（第 21 轮一线车主复审 P2-3）：标题别塞两遍完整地址。**
+                    //
+                    // 往返线路的标题原来是「A → A」—— 同一串地址**重复两遍**，
+                    // 读起来像 App 出 bug 了（复审原话：「我第一反应是 App 出 bug 了」）。
+                    // 现在：往返只写一次 + 「（往返）」；单程写「A → B」。
+                    // 末尾再挂总公里数，让「这条线有多长」一眼看到。
+                    val fromShort = t.fromLabel.firstSegment() ?: t.fromLabel
+                    val toShort = t.toLabel.firstSegment() ?: t.toLabel
                     Text(
-                        "线路余量表 · ${t.fromLabel} → ${t.toLabel}",
+                        if (t.isRoundTrip) {
+                            "线路余量表 · $fromShort（往返）· ${t.distanceKm.roundToInt()} 公里"
+                        } else {
+                            "线路余量表 · $fromShort → $toShort · ${t.distanceKm.roundToInt()} 公里"
+                        },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                     )
+                    // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-7）：决策句要短。**
+                    //
+                    // 原来这里是 85 字的一整句（折 4~9 行）；
+                    // 现在 [RoutePlan.verdict] 只给**最长的一跳**（一行），
+                    // 来源限定与全程最低挪到下面的细节行。
                     Text(
-                        // 结论句直接写在摘要行里 —— 出发前 5 分钟只读这一行就够。
                         plan.verdict(),
                         style = MaterialTheme.typography.bodyMedium,
                         color = accents.energyBlue,
                         fontWeight = FontWeight.Bold,
                     )
-                    // ⚠️ **v0.31.0：爬升。**
-                    //
-                    // 官方 Tesla App 只有总里程和平均电耗，**从不告诉你翻了多少山**。
-                    // 实测那条川藏滇线：毛爬升 51,804 米 ≈ **5.9 座珠峰**。
-                    //
-                    // ⚠️ 放在**次级行**（不是主角数字）—— 这一屏的主角是续航结论句。
-                    if (plan.climbAscentM >= 200) {
+                    plan.verdictDetail().takeIf { it.isNotEmpty() }?.let {
                         Text(
-                            "爬升 ${plan.climbAscentM} 米 · ≈ ${plan.climbEverests.fmt(1)} 座珠峰" +
-                                "（下降 ${plan.climbDescentM} 米）",
+                            it,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    // ⚠️ **v0.34.0（第 21 轮视觉评审 2.4）：总爬升**移出折叠态**。**
+                    //
+                    // 复审原话：「全程爬升总计在服务区里没用 ——
+                    // 我要的是"我前面这 200 公里爬多少米"，不是全程总计」。
+                    // 而且它是记录页首屏里**唯一带 5 位数的数字**，会在一片灰字里
+                    // 产生局部的视觉吸附。现在只在展开卡里给（逐段爬升才是决策量）。
                 }
                 Spacer(Modifier.width(8.dp))
                 Icon(
@@ -1086,6 +1358,12 @@ fun RoutePlanCard(
 ) {
     val accents = LocalAccentColors.current
     val t = plan.template
+    // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-1）：每站的证据行默认**收起**。**
+    //
+    // 实测那条川藏滇线有 **38 个站**；原来每站 5~6 行，
+    // fs=2.0 时整张卡 **≈ 23.7 屏** —— 出发前 5 分钟在 23 屏里找「下一站」，
+    // 必然放弃。现在默认只给决策行 + 处方行，证据收进「详情」。
+    val expandedStops = remember { mutableStateMapOf<Int, Boolean>() }
 
     SectionCard("线路余量表", modifier) {
         if (onCollapse != null) {
@@ -1117,24 +1395,68 @@ fun RoutePlanCard(
             fontWeight = FontWeight.Bold,
             color = accents.energyBlue,
         )
+        // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-7）：细节拆出来。**
+        // 决策句一行说清「最长那一跳」；来源限定与全程最低是**证据**，单独一行。
+        plan.verdictDetail().takeIf { it.isNotEmpty() }?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        // ⚠️ **v0.34.0（第 21 轮一线车主复审 P2-3）：站间距分布只在展开卡里给。**
+        // 折叠态放不下（它和决策句加起来会折 8~9 行）。
+        plan.stationRhythm().takeIf { it.isNotEmpty() }?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         // ⚠️ **v0.32.0（第 20 轮规划复审 P2-1）：卡片级前提，只说一次。**
         //
         // 原来这段前提挂在**每个沿途站**下面 —— 38 站的那张卡把同一句话重复 37 遍。
         // 现在共同前提（未做气温修正）提到卡片级；**逐段**的档位信息留在各站那一行
         // （因为各段速度不同、命中的档也不同）。
+        // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-8）：前提行必须**条件化**。**
+        //
+        // 原来这句是**静态断言**：「已按实测爬升系数做加性修正」——
+        // 而爬升模型**可能加载失败**（`climbModel = null`，服务端 500 或超时）。
+        // 那时界面仍然宣称做了爬升修正 —— **一句会骗人的前提**。
+        //
+        // ⚠️ **第 21 轮视觉评审 P1-2：20% 保底只说一次。**
+        // 原来这里说一次、每站说两次（全卡 38 站 = 76 次）。
+        // 现在只在**逐站**那一次说。
         Text(
             "余量按各段真实均速取本车实测 Wh/km；" +
-                "已按实测爬升系数做加性修正，并对照 20% 保底；" +
-                "未做气温修正（本车 ≤10°C 只有 1 条样本）",
+                (if (plan.climbCorrectionApplied) {
+                    "已按实测爬升系数做加性修正"
+                } else {
+                    "未做爬升修正（爬升系数不可用）"
+                }) +
+                "；未做气温修正（本车 ≤10°C 只有 1 条样本）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )        Text(
+        )
+        Text(
             // ⚠️ Compose 的 Text 不解析 Markdown —— 之前写了 **粗体**，
             // 结果界面上直接出现两个星号。
             "按这条线路上真实发生过的充电推算（最近一次 ${t.lastDrivenAt?.fmtDate() ?: "—"}）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-4）：展开后总爬升不能消失。**
+        //
+        // 原来「爬升 51,791 米 · ≈ 5.9 座珠峰」**只在折叠态**渲染
+        // （`RoutePlanSummaryRow` 是唯一渲染点）——
+        // 展开卡片后整行消失，与它自己的注释「放在次级行（不是主角数字）」矛盾。
+        if (plan.climbAscentM >= 200) {
+            Text(
+                "整条线路爬升 ${plan.climbAscentM} 米（下降 ${plan.climbDescentM} 米）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         Spacer(Modifier.height(10.dp))
         // 余量剖面：X 轴是路线公里数，Y 轴是电量。
@@ -1193,7 +1515,16 @@ fun RoutePlanCard(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                plan.stops.forEach { s ->
+                plan.stops.forEachIndexed { stopIdx, s ->
+                    // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-1）：证据行默认**收起**。**
+                    //
+                    // 实测那条川藏滇线有 **38 个站**。原来每站 5~6 行
+                    // （fs=2.0 时 38 × 436dp ≈ **23.7 屏**）——
+                    // 出发前 5 分钟要在 23 屏里找「下一站」，**必然放弃**。
+                    //
+                    // 现在默认只给**决策行 + 处方行**（各 1 行），
+                    // 「典型功率 / 折算分钟 / 爬升 / 档位」这些**证据**收进「详情」。
+                    val open = expandedStops[stopIdx] == true
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 3.dp),
                         verticalAlignment = Alignment.Top,
@@ -1206,151 +1537,192 @@ fun RoutePlanCard(
                             modifier = Modifier.width(62.dp),
                         )
                         Column(Modifier.weight(1f)) {
-                            Text(
-                                s.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                            )
-                            // ⚠️ v0.14.0（长途自驾党 P0-2）：三列决策信息 ——
-                            // 到站多少 → 充到多少 ｜ 典型多少 kW ｜ 等多久。
-                            // 原来只有「充到 80% 约 N 分钟」（与这次决策无关）
-                            // 和「到站 16%」（到站低、充完带多少走，全都没说）。
-                            val detail = buildString {
-                                s.socBefore?.let { append("到站 $it%") }
-                                s.socAfter?.let {
-                                    if (isNotEmpty()) append(" → ")
-                                    append("充到 $it%")
-                                }
-                                s.typicalPowerKw?.let {
-                                    if (isNotEmpty()) append(" · ")
-                                    append("典型 ${it.roundToInt()} kW")
-                                }
-                                s.minutesToTarget?.let {
-                                    if (isNotEmpty()) append(" · ")
-                                    // ⚠️ **v0.30.0（长途自驾党 P0-5）：「约 N 分钟」必须标出它是**折算**。**
-                                    //
-                                    // 这是按**整场平均功率**做的**线性折算**，
-                                    // 而直流桩在高 SOC 段会**降功率**（曲线是弯的）——
-                                    // 线性折算的偏差**方向不固定**。
-                                    //
-                                    // ⚠️ **v0.32.0（第 20 轮规划复审 P2-5）：注释里原来写「高估 44%」——不准。**
-                                    // 实测全库 65 场：线性折算与实测的偏差**中位是 −9%（略偏小）**，
-                                    // 区间 **−58%（严重低估）~ +80%（高估）**。
-                                    //
-                                    // 真正危险的不是高估，是**低估**：
-                                    // 黄金坪那个站说「典型 4 kW · 约 257 分钟」，
-                                    // 同一场实测 **617 分钟** —— **低估 58%**，
-                                    // 而长途党正是按这个数决定「值不值得等」。
-                                    //
-                                    // 现在明说它是折算 —— 不标的话，
-                                    // 它会和充电详情页的**实测**分钟数并排出现而互相矛盾。
-                                    append("约 $it 分钟（按典型功率折算）")
-                                }
-                                if (isNotEmpty()) append(" · ")
-                                // ⚠️ **v0.31.0：这一段爬了多高。**
-                                //
-                                // 实测同一条线路里，站间爬升从 **0 米到 4,186 米**（差 4,186 倍）——
-                                // 「平均爬升」会同时错报平路段和最陡段，所以必须**逐段**给。
-                                s.gapAscentM?.let { a ->
-                                    if (a >= 50) {
-                                        if (isNotEmpty()) append(" · ")
-                                        append("这段爬了 $a 米")
-                                    }
-                                }
-                                // ⚠️ **v0.33.0：爬升的能耗影响。**
-                                //
-                                // 加性模型：`c_up × 上坡坡度 − c_regen × 下坡坡度`。
-                                // 实测那条 206 公里那段爬 4,186 米 → **+83.6 Wh/km（+49%）**，
-                                // 折合 **−26 个电量百分点** —— 不说清楚，
-                                // 用户只会以为「到站剩 4%」是结论，而它其实是「不够」。
-                                s.gapClimbWhPerKm?.let { cw ->
-                                    if (kotlin.math.abs(cw) >= 5.0) {
-                                        if (isNotEmpty()) append(" · ")
-                                        append(
-                                            "爬升修正 ${if (cw > 0) "+" else ""}" +
-                                                "${cw.roundToInt()} Wh/km"
-                                        )
-                                    }
-                                }
-                                if (isNotEmpty()) append(" · ")
-                                // ⚠️ v0.14.0：只充过 1 次时明说，别让「典型」显得有统计支撑。
-                                append(if (s.sessions <= 1) "仅 1 次实测" else "${s.sessions} 次")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    s.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Icon(
+                                    if (open) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                    contentDescription = if (open) "收起 ${s.name} 的详情" else "展开 ${s.name} 的详情",
+                                    modifier = Modifier
+                                        // ⚠️ v0.30.0（HIG P1-6）：命中区 ≥24dp。
+                                        .size(24.dp)
+                                        .clickable {
+                                            if (open) expandedStops.remove(stopIdx) else expandedStops[stopIdx] = true
+                                        },
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
-                            Text(
-                                detail,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            // ⚠️ **v0.25.0（长途充电规划专家 P1-2）：站间距离 + 到下一站剩多少。**
+                            // ── 决策行 ──────────────────────────────────────────
                             //
-                            // 这是出发前 5 分钟真正要回答的那句：
-                            // 「我充到 80%，**够不够开到下一个**？」
+                            // ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-1）：估算与**真值**并排。**
                             //
-                            // 原来只给「在第几公里」，用户得自己心算下一站在哪 ——
-                            // 而下一站可能在 348 公里外（本车真实最远一段）。
+                            // 复审的原话：
+                            // > 「App 手里有真值却不用 —— 它把真值画进曲线，
+                            // > 却拿一个模型估算摆在旁边，还只给估算。」
+                            // > 「一个估算没有真值在旁边，等于没有。」
+                            //
+                            // 实测那条川藏滇线：App 说「到下一站剩 -6%」，
+                            // 而 2026-10-06 那趟**实际到站剩 13%** —— 差 19 个点。
+                            // 并排放出来，用户立刻知道该信哪个。
+                            //
+                            // ⚠️ **第 21 轮视觉评审 P0-1：负电量不能当读数显示。**
+                            // 电池的 SOC 不可能是负的 —— 「剩 -6%」在物理上不存在，
+                            // 读者只会以为 App 算错了。负数改说成「还差 N 个点」。
+                            val rawSoc = s.socAtNextStop
                             s.gapToNextKm?.let { gap ->
                                 val nextTxt = buildString {
                                     append("距下一站 ${gap.roundToInt()} 公里")
-                                    s.socAtNextStop?.let { soc ->
-                                        append(" · 到下一站剩 $soc%")
-                                        if (soc < 20) append(" ⚠ 低于 20% 保底")
+                                    s.nextStopName?.let { append("（$it）") }
+                                    rawSoc?.let { soc ->
+                                        if (soc >= 0) {
+                                            append(" · 估到站剩 $soc%")
+                                            if (soc < RESERVE_SOC) append(" ⚠ 低于 $RESERVE_SOC% 保底")
+                                        } else {
+                                            append(" · 估：到下一站到不了（还差 ${-soc} 个点）")
+                                        }
+                                    }
+                                    s.nextStopRealSoc?.let { real ->
+                                        append(" · 上次实测到站剩 $real%")
                                     }
                                 }
                                 Text(
                                     nextTxt,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Medium,
-                                    color = if ((s.socAtNextStop ?: 100) < 20) {
-                                        accents.warnAmber
+                                    color = if ((rawSoc ?: 100) < RESERVE_SOC) {
+                                        accents.warnAmberText
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     },
                                 )
-                                // ⚠️ **v0.33.0：留 20% 保底够不够，要**明说**。**
+                                // ── 处方行 ──────────────────────────────────────
                                 //
-                                // 「到下一站剩 14%」这句话本身不危险 ——
-                                // 危险的是**用户以为 14% 够用**。
-                                // 现在直接把结论写出来：「留 20% 保底：到不了，差 6 个百分点」。
-                                s.socAtNextStop?.let { soc ->
-                                    if (soc < 20) {
+                                // ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-3）：给**处方**，不只给诊断。**
+                                //
+                                // 原来只有诊断（「到下一站剩 -6%」），用户没法行动。
+                                // 复审要的是「充到多少才够」——
+                                // 那才决定他在桩前待 20 分钟还是 40 分钟。
+                                //
+                                // ⚠️ **P0-2：原来写「这段必须再充一次」，那是**错的动作**。**
+                                // 实测：修文县 → 南丹车河那 348 公里要 **102 个点**，
+                                // 而修文县充满也只有 100 个 —— **在修文县怎么充都到不了**。
+                                // 用户照做 → 多充 4% → 仍然到不了 → 路上趴窝。
+                                //
+                                // 现在分两种情况说：
+                                //   · `need + 保底 > 100` → **这一跳无解**，明说「得在前面加一站」；
+                                //   · 否则 → 「至少充到 X% 才够」。
+                                s.gapNeedPct?.let { need ->
+                                    val req = s.requiredSocHere ?: (need + RESERVE_SOC)
+                                    val txt = if (req > 100) {
+                                        "这一跳要 $need 个点 · 充满也到不了 —— 得在前面加一站"
+                                    } else if ((rawSoc ?: 100) < RESERVE_SOC) {
+                                        "这一跳要 $need 个点 · 留 $RESERVE_SOC% 保底" +
+                                            "至少充到 $req%" +
+                                            (s.socAfter?.let { "（上次充到 $it%）" } ?: "")
+                                    } else {
+                                        ""
+                                    }
+                                    if (txt.isNotEmpty()) {
                                         Text(
-                                            "留 20% 保底：到不了，差 ${20 - soc} 个百分点 —— 这段必须再充一次",
+                                            txt,
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = accents.warnAmber,
+                                            color = accents.warnAmberText,
                                         )
                                     }
                                 }
-                                // ⚠️ **v0.30.0（长途自驾党 P0-1）：必须交代前提。**
+                            }
+                            // ── 证据行（默认收起）────────────────────────────────
+                            if (open) {
+                                // ⚠️ v0.14.0（长途自驾党 P0-2）：到站多少 → 充到多少。
+                                val detail = buildString {
+                                    s.socBefore?.let { append("到站 $it%") }
+                                    s.socAfter?.let {
+                                        if (isNotEmpty()) append(" → ")
+                                        append("充到 $it%")
+                                    }
+                                    s.typicalPowerKw?.let {
+                                        if (isNotEmpty()) append(" · ")
+                                        append("典型 ${it.roundToInt()} kW")
+                                    }
+                                    s.minutesToTarget?.let {
+                                        if (isNotEmpty()) append(" · ")
+                                        // ⚠️ **v0.30.0（长途自驾党 P0-5）：「约 N 分钟」必须标出它是**折算**。**
+                                        //
+                                        // ⚠️ **v0.32.0（第 20 轮规划复审 P2-5）：折算与实测的偏差中位是 −9%，**
+                                        // 但区间是 **−58%（严重低估）~ +80%（高估）** ——
+                                        // 真正危险的不是高估，是**低估**：
+                                        // 黄金坪那个站说「典型 4 kW · 约 257 分钟」，
+                                        // 同一场实测 **617 分钟** —— **低估 58%**。
+                                        append("约 $it 分钟（按典型功率折算）")
+                                    }
+                                    // ⚠️ **v0.31.0：这一段爬了多高。**
+                                    s.gapAscentM?.let { a ->
+                                        if (a >= 50) {
+                                            if (isNotEmpty()) append(" · ")
+                                            append("这段爬了 $a 米")
+                                        }
+                                    }
+                                    // ⚠️ **v0.33.0：爬升的能耗影响。**
+                                    //
+                                    // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-3）：同时给**百分点**。**
+                                    // 只给 Wh/km 的话，读者没法换算成「会让我少多少电」——
+                                    // 而那才是「该不该提前充」的依据。
+                                    s.gapClimbWhPerKm?.let { cw ->
+                                        if (kotlin.math.abs(cw) >= 5.0) {
+                                            if (isNotEmpty()) append(" · ")
+                                            append(
+                                                "爬升修正 ${if (cw > 0) "+" else ""}" +
+                                                    "${cw.roundToInt()} Wh/km"
+                                            )
+                                            s.gapClimbKwh?.let { kwh ->
+                                                s.gapClimbPct?.let { pct ->
+                                                    append(
+                                                        "（多耗 ${kwh.fmt(1)} 度 ≈ " +
+                                                            "${pct.roundToInt()} 个百分点）"
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (isNotEmpty()) append(" · ")
+                                    // ⚠️ v0.14.0：只充过 1 次时明说，别让「典型」显得有统计支撑。
+                                    append(if (s.sessions <= 1) "仅 1 次实测" else "${s.sessions} 次")
+                                }
+                                Text(
+                                    detail,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                // ⚠️ **v0.34.0（第 21 轮视觉评审 P0-2）：档位标签与它后面的数字必须**同源**。**
                                 //
-                                // 「到下一站剩 34%」是全 App **唯一像预测**的一句，
-                                // 也是出发前 5 分钟真正会读的那句。
+                                // 原来这里显示的是「0–60 档 26.7 kWh/100km」——
+                                // 而 26.7 = 基数 17.8 + 爬升修正 8.9。
+                                // 读者知道档位表的话，会认为 App 的档位值**错了 50%**。
                                 //
-                                // ⚠️ **v0.32.0（第 20 轮规划复审 P2-1）：前提行从「每站一行」提到「每卡一行」。**
-                                // 原来 38 站的那张卡把同一句话重复了 37 遍 —— 那是噪音，不是诚实。
-                                // 现在这一行只说**这一段**的档位（因为各段速度不同，档位也不同），
-                                // 共同的前提（未做气温修正）由卡片顶部统一交代。
+                                // 现在：**基数**跟着档名走，**总数**单独标「含爬升修正后 X」。
                                 s.gapBucketLabel?.let { label ->
                                     val speedTxt = s.assumedSpeedKph?.roundToInt()?.let { "$it km/h" } ?: "该段"
+                                    val base = s.assumedWhPerKm
+                                    val total = s.assumedWhPerKmTotal
                                     Text(
                                         "这段均速 $speedTxt · $label 档" +
-                                            "${s.assumedWhPerKm?.fmtKwh100() ?: "—"} kWh/100km" +
+                                            "${base?.fmtKwh100() ?: "—"} kWh/100km" +
+                                            (total?.let { t ->
+                                                if (base != null && kotlin.math.abs(t - base) >= 0.5) {
+                                                    "（含爬升修正后 ${t.fmtKwh100()}）"
+                                                } else {
+                                                    ""
+                                                }
+                                            } ?: "") +
                                             (if (s.gapSpeedBorrowed) "（借用邻档）" else ""),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-                            }
-                        }
-                        // 到站电量低于 20% 保底 → 琥珀提示
-                        s.socBefore?.let { soc ->
-                            if (soc < 20) {
-                                Text(
-                                    // ⚠️ v0.14.0（新手车主）：「到站 16%」读不出是到达还是出发，
-                                    // 改成「到达时剩 16%」。
-                                    "到达时剩 $soc%",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = accents.warnAmber,
-                                )
                             }
                         }
                     }
@@ -1392,7 +1764,7 @@ fun RoutePlanCard(
                     "全程最低 $soc%（在第 ${km.roundToInt()} 公里）"
                 },
                 style = MaterialTheme.typography.labelSmall,
-                color = if (soc < 20) accents.warnAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (soc < 20) accents.warnAmberText else MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

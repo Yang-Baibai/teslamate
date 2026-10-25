@@ -161,6 +161,59 @@ data class ClimbModel(
     val method: String = "",
     /** 警告说明 */
     val caveat: String = "",
+
+    // ────────────────────────────────────────────────────────────
+    // ⚠️ **v0.34.0（第 21 轮口径审计 P0-2 + 独立复算）：标定法口径的新系数。**
+    //
+    // 上面那套（c_up / c_regen）是**车轮功率毛耗电**口径，
+    // 与能耗底档（标定法净值）**不同源** —— 混用会三重重复计量，
+    // 实测高估 **+12%**、造成 **4 次结论翻转**。
+    //
+    // 现在**只用**下面这套（[basis] 必须是 "calib_net"）。
+    // ────────────────────────────────────────────────────────────
+
+    /** 口径标记：固定 "calib_net"。不是这个值就**不给**修正。 */
+    val basis: String = "",
+    /** 标定法口径的上坡系数（Wh/m，正数 = 上坡每米多耗） */
+    val c_up_calib_net_wh_per_m: Double = 0.0,
+    /**
+     * 标定法口径的下坡系数（Wh/m）。
+     *
+     * ⚠️ **是负数**：标定法净值口径下「下降越多、净 Wh/km 越低」（回充已抵扣）。
+     * 客户端按**带符号**使用：`修正 = c_up × Δg_up + c_regen × Δg_dn`。
+     */
+    val c_regen_calib_net_wh_per_m: Double = 0.0,
+    /** 上坡系数的标准误 */
+    val c_up_calib_net_se: Double = 0.0,
+    /** 下坡系数的标准误 */
+    val c_regen_calib_net_se: Double = 0.0,
+    /** 上坡系数的 95% 置信区间 */
+    val c_up_calib_net_ci95: List<Double> = emptyList(),
+    /** 下坡系数的 95% 置信区间 */
+    val c_regen_calib_net_ci95: List<Double> = emptyList(),
+    /** 参与标定法拟合的行程数 */
+    val n_calib: Int = 0,
+    /** 标定法回归 R² */
+    val r2_calib: Double = 0.0,
+    /** 每个车速档的典型坡度（delta 基准） */
+    val typical_grade: List<TypicalGrade> = emptyList(),
+)
+
+/**
+ * ⚠️ **v0.34.0：某个车速档的典型坡度（delta 基准）。**
+ *
+ * 口径：该档**所有**可用趟次的 `ascent/km`、`descent/km` 的中位数。
+ * 为什么必须要它：能耗底档是该档趟次的中位数，**已经包含**该档的典型爬升；
+ * 用绝对坡度等于把典型值再叠一遍（实测高估 +12%）。
+ */
+@Serializable
+data class TypicalGrade(
+    val min_kph: Int = 0,
+    /** 末档为 0（开区间） */
+    val max_kph: Int = 0,
+    val grade_up_typ_m_per_km: Double = 0.0,
+    val grade_down_typ_m_per_km: Double = 0.0,
+    val n: Int = 0,
 )
 
 @Serializable

@@ -21,10 +21,25 @@ import (
 //
 // - 必须是**加性**：重力位能 m·g·h 是**绝对量**，与车速、与基础 Wh/km 无关；
 //   实测交互项 −0.007、R² 只涨 0.0002，分速带斜率跨 20~80 km/h 恒为 5.6~6.9。
-// - 上坡系数 **c_up ≈ 6.4 Wh/m**（n=99、R²=0.67），
-//   隐含传动效率 **78%** —— 落在物理区间（电机+逆变+电池往返 75~90%）✓
-// - 下坡回充系数 **c_regen ≈ 3.4 Wh/m**，但**纯下坡样本只有 5 趟**、
-//   R² 仅 0.22、分裂半 2.72~4.37（±23%）→ **不能宣称「本车实测」**。
+// - 上坡系数 **c_up ≈ 6.4 Wh/m**（n=99、R²=0.67）。
+// - 下坡回充系数 **c_regen ≈ 3.2 Wh/m**，纯下坡样本只有 5 趟 → **不能宣称「本车实测」**。
+//
+// ⚠️ **v0.34.0（第 21 轮口径审计 + 独立复算）：这套系数已**降级为交叉核对**。**
+//
+// 独立复算发现两个硬伤：
+//
+// ① **口径不同源** —— 这里的系数是**车轮功率毛耗电**口径，
+//    而客户端的能耗底档是**标定法净值**口径。混用会三重重复计量
+//    （回充扣两次、该档典型爬升算两次、既上又下时给净系数），
+//    实测**高估 +12.08%**、造成 **4 次结论翻转**。
+//    → 客户端现在只准用 `climb_calib.go` 里的**标定法口径**系数。
+// ② **系数没有物理解释** —— `drives.ascent` **不是物理高差**
+//    （能量自洽性实测算出 **142% > 100%**，物理不可能）。
+//    → 「隐含传动效率 78%」这句话**不成立**，本文件头注释里的
+//    「隐含传动效率 78% —— 落在物理区间内」已作废。
+//
+// ⚠️ 本文件头的「R² 仅 0.22、分裂半 2.72~4.37（±23%）」也是**过期数字**
+// （当前数据是 R²=0.694、分裂半 2.94~3.36）—— 已一并订正。
 //
 // ## 为什么必须在服务端算
 //
@@ -242,6 +257,18 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 	upTrustworthy := len(list) >= climbMinDrives
 	regenTrustworthy := pureDown >= climbMinPureDown
 
+	// ⚠️ **v0.34.0（第 21 轮口径审计 P0-2 + 独立复算）：并入标定法口径的系数。**
+	//
+	// 上面那套（车轮功率毛耗电口径）**不再发给客户端当修正用** ——
+	// 客户端的能耗底档是标定法净值口径，混用会三重重复计量。
+	// 保留它只作**物理交叉核对**。
+	calib, err := computeClimbCalib(carID)
+	if err != nil {
+		// 标定法口径样本不足时**不阻断**（车轮口径那套仍然可用作交叉核对），
+		// 但客户端会因为 basis 为空而**不给**修正 —— 宁可少算，不混口径。
+		calib = ClimbModel{Basis: ""}
+	}
+
 	out := ClimbModel{
 		CUpWhPerM:            round2(cUp),
 		CRegenWhPerM:         round2(cRegen),
@@ -257,10 +284,21 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 		MinKm:                minKm,
 		CUpTrustworthy:       upTrustworthy,
 		CRegenTrustworthy:    regenTrustworthy,
-		Method:               "positions.power × Δt 整趟积分；毛耗电 max(P,0) 与回充 max(−P,0) 分开拟合；回归式 Wh/km ~ 1 + 车速 + 坡度(m/km) + 时长(h)；分裂半交叉验证",
+		Method:               "口径 calib_net：y = (Δ标定续航) × cars.efficiency × 1000 / 里程（与客户端能耗底档同源）；回归式 wh_per_km ~ 1 + 车速 + 上坡坡度(m/km) + 下坡坡度(m/km) + 时长(h)；修正用 delta-grade（相对该车速档的典型坡度）。另有车轮功率毛耗电口径（positions.power 积分）作物理交叉核对。",
 		Caveat:               climbCaveat(upTrustworthy, regenTrustworthy, pureDown),
 		ConservativeCRegen:   round2(conservativeRegen(splitRegen, cRegen, regenTrustworthy)),
-		ImpliedEtaNote:       "上坡隐含效率 = m·g ÷ c_up；下坡隐含效率 = c_regen ÷ m·g；m=1850kg，只在「这是本车」时才有意义",
+		ImpliedEtaNote:       "⚠️ 隐含效率**不可信**：drives.ascent 不是物理高差（能量自洽性实测 142% > 100%），系数只能当经验标定值看，不要解读成传动效率。",
+		// ── v0.34.0：标定法口径（客户端唯一该用的那套） ──
+		Basis:              calib.Basis,
+		CUpCalibNet:        calib.CUpCalibNet,
+		CRegenCalibNet:     calib.CRegenCalibNet,
+		CUpCalibNetSE:      calib.CUpCalibNetSE,
+		CRegenCalibNetSE:   calib.CRegenCalibNetSE,
+		CUpCalibNetCI95:    calib.CUpCalibNetCI95,
+		CRegenCalibNetCI95: calib.CRegenCalibNetCI95,
+		NCalib:             calib.NCalib,
+		R2Calib:            calib.R2Calib,
+		TypicalGrade:       calib.TypicalGrade,
 	}
 	return out, nil
 }
@@ -292,16 +330,21 @@ func conservativeRegen(split []float64, fitted float64, trustworthy bool) float6
 func climbCaveat(upOK, regenOK bool, pureDown int) string {
 	var parts []string
 	if upOK {
-		parts = append(parts, "上坡系数为本车实测（隐含传动效率在物理区间内）")
+		// ⚠️ **v0.34.0（第 21 轮独立复算）：不能再宣称「隐含传动效率在物理区间内」。**
+		// 独立复算的能量自洽性显示 `drives.ascent` **不是物理高差**（算出 142% > 100%，
+		// 物理不可能）—— 所以「m·g ÷ c_up」得到的效率数字**没有物理意义**。
+		// 系数只能当**经验标定值**看。
+		parts = append(parts, "上坡系数为本车标定值（经验值，非物理效率）")
 	} else {
 		parts = append(parts, "上坡系数样本不足，按保守值处理")
 	}
 	if regenOK {
-		parts = append(parts, "回充系数为本车实测")
+		parts = append(parts, "回充系数为本车标定值")
 	} else {
 		parts = append(parts, "回充系数纯下坡样本仅 "+strconv.Itoa(pureDown)+
 			" 趟（<8），按分裂半下界的保守值处理，**不是纯实测**")
 	}
+	parts = append(parts, "坡度取 drives.ascent/descent 原样，**不是物理高差**；客户端修正用 delta 口径（相对该车速档的典型坡度）")
 	return joinCN(parts, "；")
 }
 

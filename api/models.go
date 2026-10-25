@@ -396,6 +396,60 @@ type ClimbModel struct {
 	Caveat string `json:"caveat"`
 	// 隐含效率的物理前提
 	ImpliedEtaNote string `json:"implied_eta_note"`
+
+	// ────────────────────────────────────────────────────────────
+	// ⚠️ **v0.34.0（第 21 轮口径审计 P0-2 + 独立复算）：标定法口径的新系数。**
+	//
+	// 上面那套（c_up / c_regen）是**车轮功率毛耗电**口径，
+	// 而客户端的能耗底档是**标定法净值**口径 —— **两者不同源**，
+	// 混用会造成三重重复计量（回充扣两次、该档典型爬升算两次、
+	// 同段既上又下时给 (c_up−c_regen)×grade）。
+	//
+	// 实测偏差：旧口径公式比真实能耗**高估 +12.08%**，
+	// 在「到站电量 vs 20% 保底线」上造成 **4 次结论翻转**；
+	// 新口径偏差 **−0.84%**、**0 次翻转**。
+	//
+	// 客户端**只准用**下面这套（[Basis] 必须等于 calib_net）。
+	// ────────────────────────────────────────────────────────────
+
+	// 口径标记：固定 "calib_net"（标定法净值，与能耗底档同源）。
+	// 客户端据此拒绝使用旧口径的系数。
+	Basis string `json:"basis"`
+	// 标定法口径的上坡系数（Wh/m，正数 = 上坡每米多耗）
+	CUpCalibNet float64 `json:"c_up_calib_net_wh_per_m"`
+	// 标定法口径的下坡系数（Wh/m，正数 = 下坡每米回充抵扣）
+	CRegenCalibNet float64 `json:"c_regen_calib_net_wh_per_m"`
+	// 上面两个系数的标准误（抽样不确定度）
+	CUpCalibNetSE float64 `json:"c_up_calib_net_se"`
+	CRegenCalibNetSE float64 `json:"c_regen_calib_net_se"`
+	// 上面两个系数的 95% 置信区间（[下界, 上界]）
+	CUpCalibNetCI95 []float64 `json:"c_up_calib_net_ci95"`
+	CRegenCalibNetCI95 []float64 `json:"c_regen_calib_net_ci95"`
+	// 参与标定法拟合的行程数
+	NCalib int `json:"n_calib"`
+	// 标定法回归的 R²
+	R2Calib float64 `json:"r2_calib"`
+	// 每个车速档的**典型坡度**（delta 基准）
+	TypicalGrade []TypicalGrade `json:"typical_grade"`
+}
+
+// ⚠️ **v0.34.0：某个车速档的典型坡度（delta 基准）。**
+//
+// 口径：该档**所有**可用趟次的 `ascent/km`、`descent/km` 的**中位数**。
+// 为什么必须要它：能耗底档是该档趟次的中位数，**已经包含**该档的典型爬升；
+// 用绝对坡度等于把典型值再叠一遍。delta 形式在「该段坡度 = 该档典型坡度」时
+// 修正恰好为 0，**结构上不可能**系统性抬高。
+type TypicalGrade struct {
+	// 档位下界（km/h）
+	MinKph int `json:"min_kph"`
+	// 档位上界（km/h）；末档为 0 表示开区间
+	MaxKph int `json:"max_kph"`
+	// 典型上坡坡度（m/km）
+	GradeUpTyp float64 `json:"grade_up_typ_m_per_km"`
+	// 典型下坡坡度（m/km）
+	GradeDownTyp float64 `json:"grade_down_typ_m_per_km"`
+	// 该档样本数
+	N int `json:"n"`
 }
 
 // ⚠️ v0.27.0：**驾驶风格画像**（最近 N 趟行程的评分 + 汇总）。

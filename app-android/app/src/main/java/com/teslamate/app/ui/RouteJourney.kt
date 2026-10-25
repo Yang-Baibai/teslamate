@@ -88,6 +88,27 @@ object RouteJourneyLimits {
 
     /** 充电与行程边界的匹配容差（公里）。实测充电里程与上一段 `end_km` 的误差 ≤ 0.1 公里。 */
     const val BOUNDARY_TOL_KM = 3.0
+
+    /**
+     * ⚠️ **v0.34.0（第 21 轮一线车主复审 P1-1）：同一个桩被拆成两行。**
+     *
+     * 原来只有一条合并规则：**同一地点键 + 里程差 ≤ 1 公里**。
+     * 而「修文县」在库里是**两个 OSM 节点**（`a113` 与 `a111`，相距 **1.9 公里**）——
+     * 地点键不同，里程差又超过 1 公里，**两道门都卡不住**。
+     *
+     * 后果：沿途站列表里「修文县」出现**两行**，
+     * 中间夹一个 **2.5 公里的假段** —— 于是
+     * 「站与站之间 2～348 公里」里的那个「2」是假的，
+     * 而用户按这个数字准备补电点会算错。
+     *
+     * 现在增加第二条规则：**里程差 ≤ [NEARBY_STOP_MERGE_KM] 的相邻站一律合并**，
+     * 不看名字 —— 一次出门中间隔 3 公里以内连充两次电，
+     * 在物理上就是**同一个地方**（除非是服务区两侧各一个桩，但那时显示成两行反而更糟）。
+     */
+    const val NEARBY_STOP_MERGE_KM = 3.0
+
+    /** 同一地点键的合并阈值（公里）—— 一次插枪被 TeslaMate 切成两个 process。 */
+    const val SAME_STOP_MERGE_KM = 1.0
 }
 
 /** 旅程中的一段（一趟连续行驶）。 */
@@ -383,11 +404,16 @@ fun buildJourneys(
                 // 不合并的话：沿途站列表会**同一站列两行**，
                 // 而 `verdict()` 的「需充 N 次」会**虚高**。
                 //
-                // 合并判据：**同一地点键 + 里程差 ≤ 1 公里**。
+                // 合并判据（⚠️ v0.34.0 两条）：
+                //   ① 同一地点键 + 里程差 ≤ 1 公里 —— 一次插枪被切成两个 process；
+                //   ② 里程差 ≤ 3 公里 —— 同一个桩被地理编码拆成两个 OSM 节点
+                //      （实测「修文县」两个节点相距 1.9 公里，原来被拆成两行）。
                 // socBefore 取**首场**的 start_soc，socAfter 取**末场**的 end_soc。
                 val merged = stops.indexOfFirst {
-                    placeKey(it.charge) == placeKey(c) &&
-                        kotlin.math.abs(it.charge.start_odometer_km!! - odo) <= 1.0
+                    val d = kotlin.math.abs(it.charge.start_odometer_km!! - odo)
+                    (placeKey(it.charge) == placeKey(c) &&
+                        d <= RouteJourneyLimits.SAME_STOP_MERGE_KM) ||
+                        d <= RouteJourneyLimits.NEARBY_STOP_MERGE_KM
                 }
                 if (merged >= 0) {
                     val prevStop = stops[merged]

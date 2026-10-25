@@ -211,10 +211,20 @@ fun buildStationStats(charges: List<Charge>): Map<String, StationStat> {
             batteryCapacityKwh = capacity,
             // ⚠️ **v0.31.0：实测样本**（服务端逐点直读，不是折算）。
             //
-            // 实测 30 场有效（78 场里 38.5%）：
+            // 实测 30 场有效（接口可见 69 场里 30 场 = 43.5%）：
             // 直流中位 31.4 分钟、P90 41.0 分钟；
-            // 折算口径中位高估 **+33%**、最大 **+185%**。
-            measuredSamples = list.mapNotNull { c ->
+            // 折算口径中位偏差 **−9%**、区间 **−58%（严重低估）~ +80%（高估）**。
+            //
+            // ⚠️ **v0.34.0（第 21 轮口径审计 P1-4）：只收**直流**场次。**
+            //
+            // 原来不过滤 `is_dc`，于是 **3 场交流慢充混进了「直流」统计**：
+            // 最慢那场 **576 分钟**（37%→80%，636 分钟的慢充）——
+            // 一个「中位 31 分钟」里混进 576 分钟的样本，
+            // 中位虽然抗离群，但「同起点最慢一次」会直接跳成 576，
+            // 而那正是长途党最需要提前知道的数，却给错了原因。
+            //
+            // 现在：交流场次**不进入**直流统计（交流站的等待时间由折算给出）。
+            measuredSamples = list.filter { it.is_dc == true }.mapNotNull { c ->
                 val m = c.measured_minutes_to_80 ?: return@mapNotNull null
                 val from = c.measured_from_soc ?: return@mapNotNull null
                 StationStat.MeasuredSample(from, m)

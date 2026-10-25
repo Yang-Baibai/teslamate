@@ -328,21 +328,40 @@ CM2=$(curl -s -m 180 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/climb_m
 echo "$CM2" | python -c "
 import json,sys
 d=json.load(sys.stdin)
-c_up = d['c_up_wh_per_m']; c_regen = d['c_regen_wh_per_m']
-eta_up = d['implied_eta_up']; eta_regen = d['implied_eta_regen']
-# 上坡：消耗 > 势能（效率 < 1）→ eta = m·g / c_up
-# 下坡：回收 < 势能（效率 < 1）→ eta = c_regen / m·g
-assert 3.0 < c_up < 9.0, 'c_up out of physical range: %s' % c_up
-assert 1.0 < c_regen < 6.0, 'c_regen out of physical range: %s' % c_regen
-assert 0.60 < eta_up <= 1.0, 'implied eta_up not physical: %s' % eta_up
-assert 0.40 < eta_regen <= 1.0, 'implied eta_regen not physical: %s' % eta_regen
-assert d['n_drive'] >= 30, 'too few drives: %s' % d['n_drive']
-assert d['c_up_trustworthy'] is True, 'c_up should be trustworthy'
-assert d['conservative_c_regen'] > 0, 'conservative c_regen must be positive'
-assert d['conservative_c_regen'] <= c_regen + 0.01, 'conservative must not exceed fitted'
+
+# ── 标定法口径（客户端唯一该用的那套）────────────────────────────
+# ⚠️ v0.34.0（第 21 轮口径审计 P0-2 + 独立复算）：
+# 旧的「物理自洽」闸门（0.60 < eta_up <= 1.0）建立在
+# 「drives.ascent 是物理高差」的假设上 —— 独立复算的**能量自洽性**显示它**不是**：
+# 被审计段算出 142%（>100%，物理不可能）。
+# 所以 eta 不能当物理效率，系数只能当**经验标定值**。
+# 闸门改成：**口径 + 样本量 + 拟合优度 + 置信区间宽度 + 基准坡度**。
+assert d.get('basis') == 'calib_net', 'basis must be calib_net: %s' % d.get('basis')
+c_up = d['c_up_calib_net_wh_per_m']; c_dn = d['c_regen_calib_net_wh_per_m']
+assert c_up > 0, 'c_up_calib_net must be positive: %s' % c_up
+assert c_dn < 0, 'c_dn_calib_net must be negative (more descent -> lower net): %s' % c_dn
+n = d['n_calib']; assert n >= 30, 'too few calib drives: %s' % n
+r2 = d['r2_calib']; assert r2 >= 0.70, 'calib r2 too low: %s' % r2
+se_up = d['c_up_calib_net_se']; se_dn = d['c_regen_calib_net_se']
+assert se_up > 0 and se_dn > 0, 'missing standard errors'
+ci = d['c_up_calib_net_ci95']; assert len(ci) == 2 and ci[0] < c_up < ci[1], 'bad ci95: %s' % ci
+half = (ci[1] - ci[0]) / 2.0
+assert half / c_up < 0.30, 'c_up ci95 too wide: +-%.1f%%' % (half / c_up * 100)
+tg = d['typical_grade']; assert len(tg) >= 1, 'missing typical_grade'
+for t in tg:
+    assert t['n'] >= 2, 'typical_grade bucket with too few samples: %s' % t
+    assert t['grade_up_typ_m_per_km'] >= 0 and t['grade_down_typ_m_per_km'] >= 0, 'negative typical grade'
 assert d.get('caveat'), 'missing caveat'
+
+# ── 车轮功率口径（仅作物理交叉核对，客户端不用）────────────────────
+old_up = d['c_up_wh_per_m']; old_regen = d['c_regen_wh_per_m']
+assert 3.0 < old_up < 9.0, 'wheel-caliber c_up out of range: %s' % old_up
+assert 1.0 < old_regen < 6.0, 'wheel-caliber c_regen out of range: %s' % old_regen
+assert d['n_drive'] >= 30, 'too few drives: %s' % d['n_drive']
+assert d['conservative_c_regen'] > 0, 'conservative c_regen must be positive'
+assert d['conservative_c_regen'] <= old_regen + 0.01, 'conservative must not exceed fitted'
 " 2>/dev/null \
-  && ok "climb_model（爬升能耗系数 + 物理自洽）" || fail "climb_model（爬升能耗系数）"
+  && ok "climb_model（标定法 delta 系数 + 口径守卫 + CI）" || fail "climb_model（爬升能耗系数）"
 # 20. 自更新元数据
 L=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" $B/api/v1/app/latest)
 echo "$L" | python -c "import json,sys;d=json.load(sys.stdin);assert d['version_code'].isdigit()" 2>/dev/null \

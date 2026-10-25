@@ -262,6 +262,53 @@ SELECT drive_id, km, minutes, ascent_m, descent_m, gross_kwh, regen_kwh
 FROM de
 ORDER BY drive_id`
 
+// ⚠️ **v0.34.0（第 21 轮口径审计 P0-2 + 独立复算）：标定法口径的爬升系数。**
+//
+// ## 为什么必须再拟合一套
+//
+// v0.33.0 的系数（c_up=6.43 / c_regen=3.22）是在**车轮功率毛耗电**口径上拟合的，
+// 而客户端的底档 whSample(...).bucket.whPerKm 来自**标定法净值**口径
+// （(Δrated_range) × efficiency × 1000 / km，回充**已抵扣**）。
+//
+// **两个口径混用会造成三重重复计量**（独立复算实测）：
+//   ① 回充被扣两次（底档已抵扣净值，公式又减一次 c_regen × 下降坡度）；
+//   ② 该档的**典型爬升**被算两次（底档本身建自那些趟次，公式再叠绝对坡度）；
+//   ③ 同段既上又下时给 (c_up − c_regen) × grade，而正确增量应基于**相对该档典型**的增量。
+//
+// 实测偏差：当前公式比真实能耗**高估 +12.08%**（88 趟客户端可用样本），
+// 在「到站电量 vs 20% 保底线」这个判据上造成 **4 次结论翻转**；
+// 改成「标定法系数 + delta-grade」后偏差 **−0.84%**、**0 次翻转**。
+//
+// ## 口径
+//
+// - y = wh_per_km（**标定法净值**，与客户端底档**同源**）
+// - X = [1, 均速(kph), 上坡坡度(m/km), 下坡坡度(m/km), 时长(h)]
+// - 样本过滤与客户端 `ConsumptionModel.from()` **逐条一致**：
+//   km ≥ 20、均速 > 0、wh ∈ [50,400]、只取**最近 500 趟**（客户端也是 500）
+//
+// ⚠️ 与客户端 `ConsumptionModel.EDGES = [0, 60, 90, 110, 130, MAX]` 同边界。
+const sqlClimbCalib = `
+SELECT d.id AS drive_id,
+       d.distance::float8 AS km,
+       d.duration_min::float8 AS minutes,
+       COALESCE(d.ascent, 0)::float8 AS ascent_m,
+       COALESCE(d.descent, 0)::float8 AS descent_m,
+       round(d.distance::numeric / d.duration_min * 60)::int AS avg_speed_kph,
+       (d.start_rated_range_km - d.end_rated_range_km)::float8
+         * c.efficiency * 1000.0 / d.distance AS wh_per_km
+FROM drives d
+JOIN cars c ON c.id = d.car_id
+WHERE d.car_id = $1
+  AND d.distance >= 20.0
+  AND d.duration_min > 0
+  AND d.start_rated_range_km IS NOT NULL
+  AND d.end_rated_range_km IS NOT NULL
+  AND d.start_rated_range_km > d.end_rated_range_km
+  AND (d.start_rated_range_km - d.end_rated_range_km)::float8
+        * c.efficiency * 1000.0 / d.distance BETWEEN 50.0 AND 400.0
+ORDER BY d.start_date DESC
+LIMIT 500`
+
 const sqlDrives = `
 WITH` + cteChargeDC + `,
 ` + cteAddrNorm + `,
@@ -429,10 +476,17 @@ odo_km AS (
   -- 实测全库 12 次断档合计 1459.62 公里，最大一次 502.59 公里
   -- （开车全程 positions 只有 75 行，且全部落在断档末端）。
   -- 那些公里**车真的开了**，但 TeslaMate 没记行程 → drives.distance 漏掉了它们。
+  --
+  -- ⚠️ **v0.34.0（第 21 轮口径审计 P1-9）：补上 distance >= 0.1 过滤。**
+  --
+  -- 原来这里**只 join drive_id**，没有里程过滤 ——
+  -- 于是 **78 趟 / 3.915 公里**的微行程（挪车）进了里程表跨度的分母，
+  -- 却**没进** drives_km 的分母（那边有 distance >= 0.1）。
+  -- 两个分母**不同源**，虽然差 <0.05%，但口径纪律要求同源。
   SELECT COALESCE(MAX(p.odometer) - MIN(p.odometer), 0)::float8 AS km_odometer
   FROM positions p
   JOIN drives d2 ON d2.id = p.drive_id
-  WHERE d2.car_id = $1 AND p.odometer IS NOT NULL
+  WHERE d2.car_id = $1 AND p.odometer IS NOT NULL AND d2.distance >= 0.1
     AND (d2.start_date AT TIME ZONE 'UTC') >= $2
 )
 SELECT COALESCE(SUM(CASE WHEN cd.is_dc THEN cp.charge_energy_used ELSE 0 END), 0)::float8 AS dc_used_kwh,
@@ -610,9 +664,21 @@ SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
        -- 原来显示的是**反向地理编码的长串**（「汕昆高速公路, 北庄, 宜州区, 河池市…」），
        -- 而库里其实有 OSM 的原始 POI 名 —— 「金田服务区」「合江荔乡服务区」这种。
        -- 用户要找的是「**哪个服务区**」，不是一段地址。
-       NULLIF(a.raw->>'name', '') AS poi_name,
+       --
+       -- ⚠️ **v0.34.0（第 21 轮口径审计 P1-1）：POI 名取**原地址**，不是归一后的地址。**
+       --
+       -- 原来 poi_name 也取 canonical 地址 —— 而 canonical 是「500 米内最popular 的那个」。
+       -- 实测后果：充电 session id=62（2026-10-07，**61.28 kWh**）的
+       -- 原地址是「中石化富民加油站」（POI 名也是它），
+       -- canonical 却是 114 米外的「梧州市第五中学」——
+       -- 于是界面上那场充电显示成「**梧州市第五中学**」。
+       -- 这正是「POI 名」这个功能本来要防的事。
+       --
+       -- 现在：POI 名优先取**原地址**，canonical 只作兜底；
+       -- place（地址）仍然取 canonical —— 那是有意统一的（同一个地方显示同一个地址）。
+       COALESCE(NULLIF(ao.raw->>'name', ''), NULLIF(a.raw->>'name', '')) AS poi_name,
        -- POI 类型（services / charging_station / fuel …）
-       NULLIF(a.raw->>'type', '') AS poi_type,
+       COALESCE(NULLIF(ao.raw->>'type', ''), NULLIF(a.raw->>'type', '')) AS poi_type,
        wgs84_to_gcj02_lat(sp.latitude::float8, sp.longitude::float8) AS map_lat,
        wgs84_to_gcj02_lng(sp.latitude::float8, sp.longitude::float8) AS map_lng,
        COALESCE(cd.is_dc, false) AS is_dc,
@@ -634,6 +700,8 @@ SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
 FROM charging_processes cp
 LEFT JOIN addr_norm an ON an.id = cp.address_id
 LEFT JOIN addresses a ON a.id = an.canonical_id
+-- ⚠️ v0.34.0：原地址（POI 名取它，见上面的注释）
+LEFT JOIN addresses ao ON ao.id = cp.address_id
 LEFT JOIN geofences g ON g.id = cp.geofence_id
 LEFT JOIN ch_measured cm ON cm.cp_id = cp.id
 LEFT JOIN positions sp ON sp.id = cp.position_id
