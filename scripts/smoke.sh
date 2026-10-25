@@ -175,6 +175,24 @@ if d['has_step']:
 # 显著性标记必须与置信区间一致（跨过 0 就不该标显著）
 if not d['naive_significant']:
     assert d['naive_ci_lo'] <= 0 <= d['naive_ci_hi'], 'naive significance flag disagrees with the CI'
+# ⚠️ v0.41.0：**结论强度**必须自洽 —— 「detectable」是重承诺，必须两项稳健性检查都过
+assert d.get('conclusion') in ('detectable', 'weak', 'not_detectable', 'insufficient'), \
+    'bad conclusion: %s' % d.get('conclusion')
+if d['conclusion'] == 'detectable':
+    assert d['adjusted_significant'] and d['adjusted_ci_hi'] < 0, \
+        'detectable requires the temperature-adjusted CI to exclude 0'
+    assert d['leave_one_out_total'] > 0 and d['leave_one_out_significant'] == d['leave_one_out_total'], \
+        'detectable requires every leave-one-out fit to stay significant'
+# 气温模型：系数可正可负，但方差解释比例必须在 0~1
+assert 'temp_per_c' in d and 'temp_r2' in d and 'temp_n' in d, 'missing temperature fields'
+assert 0.0 <= d['temp_r2'] <= 1.0, 'temp_r2 out of range: %s' % d['temp_r2']
+# 留一法：总数必须等于样本数（每次去掉一个点）
+if d['n'] >= 9:
+    assert d['leave_one_out_total'] == d['n'], \
+        'leave_one_out_total %s != n %s' % (d['leave_one_out_total'], d['n'])
+# ⚠️ v0.41.0：caveat 不得再出现旧的假断言「残差里大部分是充电时气温」
+assert '残差里大部分是充电时气温' not in d.get('caveat', ''), \
+    'caveat still claims most residual is temperature'
 assert d.get('method') and d.get('caveat'), 'missing method/caveat'
 " 2>/dev/null \
   && ok "battery 衰减判定（严格档 + 阶跃 + CI 自洽）" || fail "battery 衰减判定"

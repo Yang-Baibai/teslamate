@@ -33,9 +33,40 @@ import (
 // （前段 −0.0733，t = −1.72；后段 −0.0507，t = −1.36）——
 // 这正是「缓慢连续衰减 + 一次不连续」的指纹。
 //
-// 换句话说：现在界面报的「每 1000 公里 −0.138 度」**高估了 2.3 倍**，
-// 因为它把一次性的阶跃**抹成了连续趋势**。
-// 真实连续速率只有 −0.060 度/1000km。
+// ⚠️ **v0.41.0（第 24 轮对抗性审计 ②③④）：上面那些数字**不能直接说成「检出了衰减」**。**
+//
+// 三处「说过头」：
+//
+// ① **显著性的刀刃在 0 上** —— 扣阶跃后的 95% 区间是 [−0.118, **−0.0006**]，
+//    上界离 0 只有 0.0006（点估计的 1.0%）⇒ 说「显著」等于把结论架在刀尖上。
+//
+// ② **气温是混杂因素，而且被说反了** ——
+//    旧文案写「残差里**大部分**是充电时气温」，
+//    实测 Pearson **r = +0.424 ⇒ R² = 0.180**（气温只解释 **18%** 的残差方差）；
+//    但气温系数 **+0.00916 度/°C**，27°C 与 11°C 相差 **0.147 度** ——
+//    **与那个「阶跃」同量级**。
+//    也就是说：气温**不是**残差的大头，却**足以左右结论**：
+//    把气温放进模型后，连续速率变成 −0.0553，区间 [−0.1112, **+0.0007**] ⇒ **检不出**。
+//
+// ③ **阶跃是「挑」出来的** —— 12 个候选切点里取 R² 最大者，
+//    而报出的 t = −3.92 **没有做多重比较校正**（胜者诅咒）。
+//    次优切点 k=7 只差 0.4% 的 R²，就给出 −0.0550，区间 [−0.1168, **+0.0068**] ⇒ 不显著。
+//    而且原始序列根本不是台阶 —— 满电续航估值按时间排是一条**单调下滑带噪声**的曲线，
+//    「阶跃」是把这段斜坡人为劈成两半的产物。
+//
+// ## v0.41.0 的做法
+//
+// 不再「判定」出一个衰减结论，而是**给出结论强度**，并把稳健性检查做出来：
+//
+//   · **加气温模型**：y = a + b·km + c·T + d·D ⇒ 报告 b 的点估计与区间；
+//   · **留一法**：去掉任意一个点重算 ⇒ 报告速率的取值范围与「显著」的次数；
+//   · **空会话剔除**：没实际充电的场次（end − start < 1 个点）不是独立测量点。
+//
+// 三档结论（见 [DecayConclusion]）：
+//
+//	detectable    —— 加气温后仍显著 **且** 留一法每次都显著；
+//	weak          —— 方向一致（点估计为负）但稳健性检查没过；
+//	not_detectable—— 检不出。
 //
 // ## 口径
 //
@@ -46,15 +77,29 @@ import (
 // - 显著性用 **t 检验**（95%），而不是样本数闸门。
 //
 // ⚠️ **这个端点是「经验标定」，不是物理测量**：
-// 容量 = 续航估值 × 效率常数，而续航估值受**充电时气温**影响
-// （残差 σ 里大部分是气温，不是测量噪声）。所以结论只在这段里程内有效。
+// 容量 = 续航估值 × 效率常数，而续航估值受**充电时气温**影响。
+// 所以结论只在这段里程内有效。
 
 // decayPoint 一个满充测量点。
 type decayPoint struct {
-	date string
-	km   float64
-	kwh  float64
+	date  string
+	km    float64
+	kwh   float64
+	tempC float64 // 充电时平均气温（°C）；缺失时为 0 且不参与气温模型
+	hasT  bool
 }
+
+// ⚠️ **v0.41.0：结论强度**的三档。
+const (
+	// DecayDetectable —— 加气温后仍显著，且留一法每次都显著。
+	DecayDetectable = "detectable"
+	// DecayWeak —— 方向一致（点估计为负），但稳健性检查没过。
+	DecayWeak = "weak"
+	// DecayNotDetectable —— 检不出持续衰减趋势。
+	DecayNotDetectable = "not_detectable"
+	// DecayInsufficient —— 点数不够，任何结论都不给。
+	DecayInsufficient = "insufficient"
+)
 
 // BatteryDecay 电池容量衰减的判定结果。
 type BatteryDecay struct {
@@ -64,6 +109,9 @@ type BatteryDecay struct {
 	StrictN int `json:"strict_n"`
 	// 未计入的非满充点数
 	ExcludedN int `json:"excluded_n"`
+	// ⚠️ v0.41.0：**没有实际充电**的场次数（同一场会话被 TeslaMate 拆成两段的尾巴）。
+	// 那不是独立的测量点 —— 实测本机有 1 场（100%→100%、0.04 度、1 分钟）。
+	DroppedEmpty int `json:"dropped_empty"`
 	// 覆盖的里程跨度（公里）与天数
 	SpanKm   float64 `json:"span_km"`
 	SpanDays int    `json:"span_days"`
@@ -85,7 +133,7 @@ type BatteryDecay struct {
 	StepSignificant bool    `json:"step_significant"`
 	R2Step          float64 `json:"r2_step"`
 	// 阶跃把斜率「抹高」了多少倍（1 = 没有抹）
-	NaiveOverstate  float64 `json:"naive_overstate"`
+	NaiveOverstate float64 `json:"naive_overstate"`
 
 	// ── 扣掉阶跃后的连续速率 ──────────────────────────────
 	UnderlyingPer1000Km  float64 `json:"underlying_per_1000km"`
@@ -100,6 +148,32 @@ type BatteryDecay struct {
 	PostPer1000Km  float64 `json:"post_per_1000km"`
 	PostSignificant bool   `json:"post_significant"`
 	PostN          int     `json:"post_n"`
+
+	// ── ⚠️ v0.41.0：气温混杂 ──────────────────────────────
+	// 气温系数（度/°C，模型 y = a + b·km + c·T）
+	TempPerC float64 `json:"temp_per_c"`
+	// 气温能解释**朴素模型残差**的多少方差（0~1）
+	TempR2 float64 `json:"temp_r2"`
+	// 参与气温模型的有效点数
+	TempN int `json:"temp_n"`
+
+	// ── ⚠️ v0.41.0：加气温 + 阶跃后的连续速率 ────────────
+	AdjustedPer1000Km  float64 `json:"adjusted_per_1000km"`
+	AdjustedCiLo       float64 `json:"adjusted_ci_lo"`
+	AdjustedCiHi       float64 `json:"adjusted_ci_hi"`
+	AdjustedSignificant bool   `json:"adjusted_significant"`
+
+	// ── ⚠️ v0.41.0：留一法稳健性 ─────────────────────────
+	// 去掉任意一个点重算时，连续速率的取值范围
+	LeaveOneOutMin         float64 `json:"leave_one_out_min"`
+	LeaveOneOutMax         float64 `json:"leave_one_out_max"`
+	// 留一法里「仍然显著」的次数 / 总次数
+	LeaveOneOutSignificant int `json:"leave_one_out_significant"`
+	LeaveOneOutTotal       int `json:"leave_one_out_total"`
+
+	// ── ⚠️ v0.41.0：结论强度 ─────────────────────────────
+	// detectable / weak / not_detectable / insufficient
+	Conclusion string `json:"conclusion"`
 
 	// 方法与警告
 	Method string `json:"method"`
@@ -140,24 +214,128 @@ func tSignificant(beta, se, tc float64) bool {
 	return math.Abs(beta) >= tc*se
 }
 
+// stepFit 一次「线性 + 一次阶跃」的拟合。
+type stepFit struct {
+	beta []float64
+	se   []float64
+	r2   float64
+	k    int // 切点下标（-1 = 没找到）
+	ok   bool
+}
+
+// fitStepModel 在序列里**枚举**所有切点，取 R² 最大者。
+//
+// ⚠️ **v0.41.0：这个「取最大值」本身就是一个多重比较问题 ——**
+// 12 个候选切点里挑 R² 最大的，报出的 t 值**没有做多重比较校正**（胜者诅咒）。
+// 所以调用方**不能**只凭这里的显著性就下结论，必须配合留一法与气温模型。
+//
+// ⚠️ **候选必须「真的更好」**：先算**不带阶跃**的同列模型作基线，
+// 只有 R² **严格大于**基线的候选才算「检测到落差」。
+// 否则一条完全平的序列会因为「取第一个成功的拟合」而被误判成有落差 ——
+// v0.35.0 的回归测试 `TestBatteryDecayFlatSeriesHasNoStep` 守的就是这条。
+func fitStepModel(pts []decayPoint, withTemp bool) stepFit {
+	best := stepFit{k: -1}
+	n := len(pts)
+	if n < 6 {
+		return best
+	}
+	mt := meanTempOf(pts)
+	ys := make([]float64, n)
+	for i, p := range pts {
+		ys[i] = p.kwh
+	}
+
+	// 基线：同列但不含阶跃项的模型
+	base := make([][]float64, n)
+	for i, p := range pts {
+		row := []float64{1, p.km}
+		if withTemp {
+			row = append(row, tempOf(p, mt))
+		}
+		base[i] = row
+	}
+	_, _, baseR2, okBase := olsFitFull(base, ys)
+	if !okBase {
+		return best
+	}
+
+	for k := 3; k <= n-3; k++ {
+		xs := make([][]float64, n)
+		for i, p := range pts {
+			d := 0.0
+			if i >= k {
+				d = 1.0
+			}
+			row := []float64{1, p.km}
+			if withTemp {
+				row = append(row, tempOf(p, mt))
+			}
+			row = append(row, d)
+			xs[i] = row
+		}
+		b, s, r2, ok := olsFitFull(xs, ys)
+		if !ok {
+			continue
+		}
+		// ⚠️ 必须**严格优于基线**才算「检测到落差」。
+		if r2 <= baseR2 {
+			continue
+		}
+		if !best.ok || r2 > best.r2 {
+			best = stepFit{beta: b, se: s, r2: r2, k: k, ok: true}
+		}
+	}
+	return best
+}
+
+// tempOf 取某点的气温；**缺失时用全体均值填补**。
+//
+// ⚠️ 不能当成 0°C —— 那是「0 度」的真实取值，会把缺失当成极寒天气，
+// 直接把气温系数带偏。
+func tempOf(p decayPoint, meanTemp float64) float64 {
+	if p.hasT {
+		return p.tempC
+	}
+	return meanTemp
+}
+
+// meanTempOf 有气温的点的均值。
+func meanTempOf(pts []decayPoint) float64 {
+	sum, n := 0.0, 0
+	for _, p := range pts {
+		if p.hasT {
+			sum += p.tempC
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return sum / float64(n)
+}
+
 // analyzeBatteryDecay 判定电池容量是不是「已经能看出趋势」。
 //
-// @param strict  严格档（end_soc == 100）且里程/容量齐全的点（按里程升序）
-// @param excluded 未计入的非满充点数
-// @param spanDays 数据覆盖的天数
-func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int) *BatteryDecay {
+// @param strict      严格档（end_soc == 100）且里程/容量齐全的点（按里程升序）
+// @param excluded    未计入的非满充点数
+// @param spanDays    数据覆盖的天数
+// @param droppedEmpty 没实际充电的场次数
+func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int, droppedEmpty int) *BatteryDecay {
 	out := &BatteryDecay{
-		N:         len(strict),
-		StrictN:   len(strict),
-		ExcludedN: excluded,
-		SpanDays:  spanDays,
-		Method:    "严格档（充到 100%）按里程做最小二乘；先检验是否存在一次性阶跃（y = a + b·km + c·D），" +
-			"再给出扣掉阶跃后的连续速率；显著性用 t 检验（95% 置信区间）。",
+		N:           len(strict),
+		StrictN:     len(strict),
+		ExcludedN:   excluded,
+		DroppedEmpty: droppedEmpty,
+		SpanDays:    spanDays,
+		Method: "严格档（充到 100%）按里程做最小二乘；先检验是否存在一次性落差（y = a + b·km + c·D），" +
+			"再给出扣掉落差后的连续速率；显著性用 t 检验（95% 置信区间）。" +
+			"⚠️ v0.41.0：额外做了**加充电时气温**的模型与**留一法**稳健性检查，结论强度见 conclusion 字段。",
 	}
 	if len(strict) >= 2 {
 		out.SpanKm = strict[len(strict)-1].km - strict[0].km
 	}
 	if len(strict) < decayMinPoints {
+		out.Conclusion = DecayInsufficient
 		out.Caveat = "只有 " + strconv.Itoa(len(strict)) + " 个 100% 满充点，不足以判定趋势。" +
 			"（判定趋势至少要 " + strconv.Itoa(decayMinPoints) + " 个点）"
 		return out
@@ -171,6 +349,7 @@ func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int) *Batte
 	}
 	beta, se, r2, ok := olsFitFull(xs, ys)
 	if !ok {
+		out.Conclusion = DecayInsufficient
 		out.Caveat = "线性拟合失败（样本共线或不足）。"
 		return out
 	}
@@ -182,63 +361,194 @@ func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int) *Batte
 	out.NaiveSignificant = tSignificant(beta[1], se[1], tc)
 	out.R2Linear = round3(r2)
 
-	// ── 阶跃检测：y = a + b·km + c·D_k ────────────────────
-	// 枚举所有切点，取 R² 最大者。
-	bestR2 := r2
-	bestK := -1
-	var bestBeta, bestSe []float64
-	for k := 3; k <= len(strict)-3; k++ {
-		xs3 := make([][]float64, len(strict))
-		for i, p := range strict {
-			d := 0.0
-			if i >= k {
-				d = 1.0
-			}
-			xs3[i] = []float64{1, p.km, d}
-		}
-		b3, s3, r3, ok3 := olsFitFull(xs3, ys)
-		if !ok3 {
-			continue
-		}
-		if r3 > bestR2 {
-			bestR2 = r3
-			bestK = k
-			bestBeta = b3
-			bestSe = s3
-		}
-	}
+	// ── 气温能解释多少残差方差（朴素模型）──────────────────
+	out.TempR2 = round3(tempPartialR2(strict, beta))
+	out.TempN = countWithTemp(strict)
 
-	if bestK >= 0 && len(bestBeta) == 3 {
+	// ── 阶跃检测：y = a + b·km + c·D_k ────────────────────
+	best := fitStepModel(strict, false)
+	if best.ok && len(best.beta) == 3 {
 		df3 := len(ys) - 3
 		tc3 := tCrit975(df3)
 		stepT := 0.0
-		if bestSe[2] > 0 {
-			stepT = bestBeta[2] / bestSe[2]
+		if best.se[2] > 0 {
+			stepT = best.beta[2] / best.se[2]
 		}
 		out.HasStep = true
-		out.StepKwh = round3(bestBeta[2])
-		out.StepCiLo = round3(bestBeta[2] - tc3*bestSe[2])
-		out.StepCiHi = round3(bestBeta[2] + tc3*bestSe[2])
+		out.StepKwh = round3(best.beta[2])
+		out.StepCiLo = round3(best.beta[2] - tc3*best.se[2])
+		out.StepCiHi = round3(best.beta[2] + tc3*best.se[2])
 		out.StepSignificant = tSignificant(stepT, 1, tc3)
-		out.StepKm = strict[bestK].km
-		out.StepDate = strict[bestK].date
-		out.R2Step = round3(bestR2)
-		out.UnderlyingPer1000Km = round3(bestBeta[1] * 1000)
-		out.UnderlyingCiLo = round3((bestBeta[1] - tc3*bestSe[1]) * 1000)
-		out.UnderlyingCiHi = round3((bestBeta[1] + tc3*bestSe[1]) * 1000)
-		out.UnderlyingSignificant = tSignificant(bestBeta[1], bestSe[1], tc3)
-		if bestBeta[1] != 0 {
-			out.NaiveOverstate = round3(math.Abs(beta[1] / bestBeta[1]))
+		out.StepKm = strict[best.k].km
+		out.StepDate = strict[best.k].date
+		out.R2Step = round3(best.r2)
+		out.UnderlyingPer1000Km = round3(best.beta[1] * 1000)
+		out.UnderlyingCiLo = round3((best.beta[1] - tc3*best.se[1]) * 1000)
+		out.UnderlyingCiHi = round3((best.beta[1] + tc3*best.se[1]) * 1000)
+		out.UnderlyingSignificant = tSignificant(best.beta[1], best.se[1], tc3)
+		if best.beta[1] != 0 {
+			out.NaiveOverstate = round3(math.Abs(beta[1] / best.beta[1]))
 		}
 		// 阶跃前后两段各自的速率
-		out.PreN = bestK
-		out.PostN = len(strict) - bestK
-		out.PrePer1000Km, out.PreSignificant = segmentSlope(strict[:bestK])
-		out.PostPer1000Km, out.PostSignificant = segmentSlope(strict[bestK:])
+		out.PreN = best.k
+		out.PostN = len(strict) - best.k
+		out.PrePer1000Km, out.PreSignificant = segmentSlope(strict[:best.k])
+		out.PostPer1000Km, out.PostSignificant = segmentSlope(strict[best.k:])
 	}
 
+	// ── ⚠️ v0.41.0：加气温 + 落差的模型 ────────────────────
+	// y = a + b·km + c·T + d·D —— b 就是「扣掉气温影响后的连续速率」。
+	if out.TempN >= 5 {
+		adj := fitStepModel(strict, true)
+		if adj.ok && len(adj.beta) == 4 {
+			df4 := len(ys) - 4
+			tc4 := tCrit975(df4)
+			out.TempPerC = round3(adj.beta[2])
+			out.AdjustedPer1000Km = round3(adj.beta[1] * 1000)
+			out.AdjustedCiLo = round3((adj.beta[1] - tc4*adj.se[1]) * 1000)
+			out.AdjustedCiHi = round3((adj.beta[1] + tc4*adj.se[1]) * 1000)
+			out.AdjustedSignificant = tSignificant(adj.beta[1], adj.se[1], tc4)
+		}
+	}
+
+	// ── ⚠️ v0.41.0：留一法稳健性 ─────────────────────────
+	looMin, looMax, looSig, looTotal := leaveOneOut(strict)
+	out.LeaveOneOutMin = round3(looMin)
+	out.LeaveOneOutMax = round3(looMax)
+	out.LeaveOneOutSignificant = looSig
+	out.LeaveOneOutTotal = looTotal
+
+	out.Conclusion = decayConclusion(out)
 	out.Caveat = decayCaveat(out)
 	return out
+}
+
+// tempPartialR2 气温能解释**朴素模型残差**的多少方差。
+//
+// ⚠️ 旧文案写「残差里**大部分**是充电时气温」——
+// 实测 r = +0.424 ⇒ R² = 0.180（只有 18%）。这个函数把真值算出来。
+func tempPartialR2(pts []decayPoint, beta []float64) float64 {
+	var ts []float64
+	var rs []float64
+	for _, p := range pts {
+		if !p.hasT {
+			continue
+		}
+		ts = append(ts, p.tempC)
+		rs = append(rs, p.kwh-(beta[0]+beta[1]*p.km))
+	}
+	if len(ts) < 3 {
+		return 0
+	}
+	// 残差对气温做一元线性回归，取 R²
+	meanT, meanR := 0.0, 0.0
+	for i := range ts {
+		meanT += ts[i]
+		meanR += rs[i]
+	}
+	meanT /= float64(len(ts))
+	meanR /= float64(len(rs))
+	var sxy, sxx, syy float64
+	for i := range ts {
+		dt := ts[i] - meanT
+		dr := rs[i] - meanR
+		sxy += dt * dr
+		sxx += dt * dt
+		syy += dr * dr
+	}
+	if sxx <= 1e-12 {
+		return 0
+	}
+	r2 := (sxy * sxy) / (sxx * syy)
+	if r2 < 0 {
+		return 0
+	}
+	return r2
+}
+
+// countWithTemp 有气温的点数。
+func countWithTemp(pts []decayPoint) int {
+	n := 0
+	for _, p := range pts {
+		if p.hasT {
+			n++
+		}
+	}
+	return n
+}
+
+// leaveOneOut 留一法：每次去掉一个点重算「扣落差后的连续速率」。
+//
+// 返回：速率的最小/最大值、「仍然显著」的次数、总次数。
+//
+// ⚠️ 这是**检验结论稳不稳**最便宜的办法 ——
+// 一个「显著」的结论如果去掉任意一个点就不显著了，那它就架在刀尖上。
+func leaveOneOut(pts []decayPoint) (float64, float64, int, int) {
+	if len(pts) < decayMinPoints+1 {
+		return 0, 0, 0, 0
+	}
+	mn, mx := 0.0, 0.0
+	first := true
+	sig, total := 0, 0
+	for i := range pts {
+		sub := make([]decayPoint, 0, len(pts)-1)
+		sub = append(sub, pts[:i]...)
+		sub = append(sub, pts[i+1:]...)
+		f := fitStepModel(sub, false)
+		if !f.ok || len(f.beta) != 3 {
+			continue
+		}
+		df := len(sub) - 3
+		if df < 1 {
+			continue
+		}
+		tc := tCrit975(df)
+		slope := f.beta[1] * 1000
+		if first {
+			mn, mx = slope, slope
+			first = false
+		} else {
+			if slope < mn {
+				mn = slope
+			}
+			if slope > mx {
+				mx = slope
+			}
+		}
+		total++
+		lo := f.beta[1] - tc*f.se[1]
+		hi := f.beta[1] + tc*f.se[1]
+		if hi < 0 || lo > 0 {
+			sig++
+		}
+	}
+	return mn, mx, sig, total
+}
+
+// decayConclusion 给出**结论强度**。
+//
+// ⚠️ **v0.41.0：不再简单地「显著 / 不显著」两分。**
+// 一个只差 0.001 就跨过 0 的区间，嘴上说「显著」是**过度承诺**。
+//
+// 判据（两项都过才算「区分得开」）：
+// ① 加气温后区间仍然**不含 0**；
+// ② 留一法**每一次**都仍然显著。
+//
+// 任一项没过、但点估计方向是负的（衰减方向）⇒ weak。
+// 方向都不是负的 ⇒ not_detectable。
+func decayConclusion(d *BatteryDecay) string {
+	if d.N < decayMinPoints {
+		return DecayInsufficient
+	}
+	adjOK := d.AdjustedSignificant && d.AdjustedCiHi < 0
+	looOK := d.LeaveOneOutTotal > 0 && d.LeaveOneOutSignificant == d.LeaveOneOutTotal
+	if adjOK && looOK {
+		return DecayDetectable
+	}
+	if d.UnderlyingPer1000Km < 0 || d.AdjustedPer1000Km < 0 {
+		return DecayWeak
+	}
+	return DecayNotDetectable
 }
 
 // segmentSlope 一段序列的斜率（每 1000 公里）与是否显著。
@@ -264,32 +574,73 @@ func segmentSlope(pts []decayPoint) (float64, bool) {
 	return round3(beta[1] * 1000), tSignificant(beta[1], se[1], tc)
 }
 
+// decayCaveat 口径提示。
+//
+// ⚠️ **v0.41.0：全部改成实测值，不再有「大部分是气温」这种没有依据的说法。**
 func decayCaveat(d *BatteryDecay) string {
 	var parts []string
 	if d.HasStep {
 		if d.StepSignificant {
 			parts = append(parts, fmt.Sprintf(
-				"检测到一次性阶跃：%s（%.0f 公里处）掉了 %.3f 度（95%% 区间 %.3f ~ %.3f，t 检验显著）",
+				"检测到一次落差：%s（%.0f 公里处）%.3f 度（95%% 区间 %.3f ~ %.3f）",
 				d.StepDate, d.StepKm, d.StepKwh, d.StepCiLo, d.StepCiHi))
 		} else {
 			parts = append(parts, fmt.Sprintf(
-				"序列里有一个疑似阶跃（%s，%.0f 公里处，%.3f 度），但**统计上不显著**，仅供参考",
+				"序列里有一个疑似落差（%s，%.0f 公里处，%.3f 度），但**统计上不显著**，仅供参考",
 				d.StepDate, d.StepKm, d.StepKwh))
 		}
+		parts = append(parts, "它**可能不是**电池变化 —— 也可能是车机重新标定了续航估值；" +
+			"本 App 分不清这两者，别把它当成「电池掉了一次」")
 		if d.NaiveOverstate > 1.15 {
 			parts = append(parts, fmt.Sprintf(
-				"⚠️ 不扣这次阶跃的话，表面速率会被**高估 %.1f 倍**（%.3f → %.3f 度/1000 公里）",
+				"⚠️ 不扣这次落差的话，表面速率会被**高估 %.1f 倍**（%.3f → %.3f 度/1000 公里）",
 				d.NaiveOverstate, d.NaivePer1000Km, d.UnderlyingPer1000Km))
 		}
 	} else {
-		parts = append(parts, "没有检测到一次性阶跃，整段按一条直线拟合")
+		parts = append(parts, "没有检测到一次性落差，整段按一条直线拟合")
 	}
-	if !d.PreSignificant && !d.PostSignificant {
-		parts = append(parts, "阶跃前后两段**单独看都没有显著趋势** —— 这正是一次性阶跃的指纹")
+
+	// ⚠️ v0.41.0：把「区间离 0 有多远」和**稳健性检查**说清楚。
+	if d.UnderlyingCiHi < 0 && d.UnderlyingCiHi > -0.01 {
+		parts = append(parts, fmt.Sprintf(
+			"扣掉落差后的连续速率区间上界是 %.4f —— **离 0 只有 %.4f，几乎区分不开**",
+			d.UnderlyingCiHi, -d.UnderlyingCiHi))
+	}
+	if d.TempN >= 5 {
+		parts = append(parts, fmt.Sprintf(
+			"把**充电时气温**放进模型后：连续速率 %.3f（区间 %.3f ~ %.3f）%s",
+			d.AdjustedPer1000Km, d.AdjustedCiLo, d.AdjustedCiHi,
+			ifStr(d.AdjustedSignificant && d.AdjustedCiHi < 0, "⇒ 仍然显著", "⇒ **检不出**")))
+		parts = append(parts, fmt.Sprintf(
+			"气温系数 %+.5f 度/°C —— 20°C 的温差就值 %.3f 度，**与那个落差同量级**",
+			d.TempPerC, math.Abs(d.TempPerC*20)))
+	}
+	if d.LeaveOneOutTotal > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"留一法（去掉任意一个点重算）：速率落在 %.3f ~ %.3f，其中 %d/%d 次仍然显著",
+			d.LeaveOneOutMin, d.LeaveOneOutMax, d.LeaveOneOutSignificant, d.LeaveOneOutTotal))
+	}
+	if d.TempN >= 3 {
+		parts = append(parts, fmt.Sprintf(
+			"气温只解释残差方差的 **%.0f%%**（不是「大部分」）；残差里还有别的东西",
+			d.TempR2*100))
+	}
+	if d.DroppedEmpty > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"剔除了 %d 场**没有实际充电**的场次（同一场会话被拆成两段的尾巴，不是独立测量点）",
+			d.DroppedEmpty))
 	}
 	parts = append(parts, fmt.Sprintf(
-		"容量口径是「续航估值 × 效率常数」，残差里大部分是**充电时气温**而不是测量噪声；"+
+		"容量口径是「续航估值 × 效率常数」（= 车机上报的续航估值 × 0.146，**不是物理测量**）；"+
 			"结论只在这 %.0f 公里 / %d 天内有效，不能外推",
 		d.SpanKm, d.SpanDays))
 	return joinCN(parts, "；")
+}
+
+// ifStr 条件为真取 a，否则取 b。
+func ifStr(cond bool, a, b string) string {
+	if cond {
+		return a
+	}
+	return b
 }

@@ -1309,10 +1309,12 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		baselineCaps []float64
 		strictPts    []decayPoint
 		excludedPts  int
+		droppedEmpty int
 	)
 	for rows.Next() {
 		p := &BatteryPoint{}
-		if err := rows.Scan(&p.Date, &p.CapacityKwh, &p.EndSoc, &p.EfficiencyUsed, &p.OdometerKm, &p.CapacityKwhEnergy); err != nil {
+		if err := rows.Scan(&p.Date, &p.CapacityKwh, &p.EndSoc, &p.EfficiencyUsed, &p.OdometerKm,
+			&p.CapacityKwhEnergy, &p.OutsideTempAvg, &p.StartSoc, &p.DurationMin); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -1358,11 +1360,32 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		// 实测：混用 29 个点斜率 −0.1656；只用严格档 17 个点斜率 −0.1375（**差 17%**）。
 		if p.CapacityKwh != nil && p.OdometerKm != nil {
 			if p.EndSoc != nil && *p.EndSoc >= 100 {
-				strictPts = append(strictPts, decayPoint{
-					date: p.Date.Format("2006-01-02"),
-					km:   *p.OdometerKm,
-					kwh:  *p.CapacityKwh,
-				})
+				// ⚠️ **v0.41.0（第 24 轮对抗性审计 ②⑧）：剔除「没实际充电」的场次。**
+				//
+				// 实测本机有一场 `charging_processes.id=31`：
+				// `start_battery_level=100, end_battery_level=100,
+				//  charge_energy_added=0.04 度, duration_min=1` ——
+				// 车本来就是满的，插了 1 分钟充进 0.04 度。
+				// 它是**同一场会话被 TeslaMate 拆成的尾巴**，
+				// 它的续航估值读数与前一场几乎相同（65.830 vs 65.791），
+				// **不是一次独立的测量**，却进了回归（还是阶跃点之一）。
+				//
+				// 判据：`end − start < 1 个点` ⇒ 这一场没有实际充电。
+				if p.StartSoc != nil && *p.EndSoc-*p.StartSoc < 1 {
+					droppedEmpty++
+				} else {
+					dp := decayPoint{
+						date: p.Date.Format("2006-01-02"),
+						km:   *p.OdometerKm,
+						kwh:  *p.CapacityKwh,
+					}
+					// ⚠️ v0.41.0：带上充电时气温 —— 它是混杂因素，必须能建模。
+					if p.OutsideTempAvg != nil {
+						dp.tempC = *p.OutsideTempAvg
+						dp.hasT = true
+					}
+					strictPts = append(strictPts, dp)
+				}
 			} else {
 				excludedPts++
 			}
@@ -1384,7 +1407,7 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		if first, last, ok := strictDateRange(strictPts); ok {
 			spanDays = int(last.Sub(first).Hours() / 24)
 		}
-		h.Decay = analyzeBatteryDecay(strictPts, excludedPts, spanDays)
+		h.Decay = analyzeBatteryDecay(strictPts, excludedPts, spanDays, droppedEmpty)
 	}
 
 	// ⚠️ v0.22.0（P1-1）：**相对首测** —— 唯一不受 `cars.efficiency` 影响的健康指标。

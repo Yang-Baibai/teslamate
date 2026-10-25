@@ -976,6 +976,31 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                                // ⚠️ **v0.41.0（第 24 轮对抗性审计 ②③④）：完整推导进折叠区。**
+                                //
+                                // 服务端的 `caveat` / `method` 从 v0.35.0 起就在下发，
+                                // 但客户端**从来没渲染过它们** ——
+                                // 于是界面上留着的是客户端自己写的那句
+                                // 「残差里大部分是充电时气温」（实测只有 12%）。
+                                //
+                                // 现在：口径提示与服务端判定**同一份**，
+                                // 完整推导（气温系数、留一法、方差解释比例）
+                                // 收进「怎么算的」—— 数据一点没丢，但不占常驻版面。
+                                val detail = BatteryDecayText.detailLines(d)
+                                if (detail.isNotEmpty()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    CollapsibleSection("怎么算的") {
+                                        Column {
+                                            detail.forEach { line ->
+                                                Text(
+                                                    line,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

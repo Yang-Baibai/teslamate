@@ -637,6 +637,47 @@ data class BatteryDecay(
     val post_per_1000km: Double = 0.0,
     val post_significant: Boolean = false,
     val post_n: Int = 0,
+    /**
+     * ⚠️ **v0.41.0：没实际充电的场次数**（同一场会话被 TeslaMate 拆成两段的尾巴）。
+     * 那不是独立的测量点 —— 实测本机有 1 场（100%→100%、0.04 度、1 分钟）。
+     */
+    val dropped_empty: Int = 0,
+    /**
+     * ⚠️ **v0.41.0：气温系数（度/°C）** —— 模型 `y = a + b·km + c·T` 里的 c。
+     *
+     * 「续航估值 × 效率常数」这个口径受气温影响，所以气温是**混杂因素**。
+     * 实测 +0.0090 度/°C —— 20°C 的温差就值 0.18 度，**与那个落差同量级**。
+     */
+    val temp_per_c: Double = 0.0,
+    /** ⚠️ v0.41.0：气温能解释**残差方差**的多少（0~1）。实测只有 12% —— 不是「大部分」。 */
+    val temp_r2: Double = 0.0,
+    /** ⚠️ v0.41.0：参与气温模型的有效点数 */
+    val temp_n: Int = 0,
+    /**
+     * ⚠️ **v0.41.0：加气温 + 落差后的连续速率**（度/1000km）。
+     *
+     * 这是「把气温这个混杂因素扣掉之后」的连续速率。
+     * 实测 −0.054，区间 [−0.114, +0.006] ⇒ **检不出**。
+     */
+    val adjusted_per_1000km: Double = 0.0,
+    val adjusted_ci_lo: Double = 0.0,
+    val adjusted_ci_hi: Double = 0.0,
+    val adjusted_significant: Boolean = false,
+    /**
+     * ⚠️ **v0.41.0：留一法** —— 去掉任意一个点重算时连续速率的取值范围。
+     * 实测 [−0.316, −0.038]，且 16 次里只有 1 次仍然显著。
+     */
+    val leave_one_out_min: Double = 0.0,
+    val leave_one_out_max: Double = 0.0,
+    val leave_one_out_significant: Int = 0,
+    val leave_one_out_total: Int = 0,
+    /**
+     * ⚠️ **v0.41.0：结论强度** —— `detectable` / `weak` / `not_detectable` / `insufficient`。
+     *
+     * 不再简单地「显著 / 不显著」两分：一个只差 0.001 就跨过 0 的区间，
+     * 嘴上说「显著」是**过度承诺**。
+     */
+    val conclusion: String = "",
     val method: String = "",
     val caveat: String = "",
 )

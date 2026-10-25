@@ -787,6 +787,15 @@ type BatteryPoint struct {
 	OdometerKm *float64 `json:"odometer_km"`
 	// ⚠️ 能量反推口径的容量（不需要 kWh/km 常数）。
 	CapacityKwhEnergy *float64 `json:"capacity_kwh_energy"`
+	// ⚠️ **v0.41.0**：充电时平均气温（°C）。
+	// 「续航估值 × 效率常数」这个口径受气温影响 ——
+	// 它是衰减回归的**混杂因素**，不建模会把气温当成电池变化。
+	OutsideTempAvg *float64 `json:"outside_temp_avg"`
+	// ⚠️ **v0.41.0**：插枪时电量 —— 与 end_soc 相同说明**这一场没实际充电**，
+	// 那它就不是一个独立的容量测量点。
+	StartSoc *int `json:"start_soc"`
+	// ⚠️ **v0.41.0**：本次充电时长（分钟）。
+	DurationMin *int `json:"duration_min"`
 }
 
 // AppLatest — App 内更新元数据。

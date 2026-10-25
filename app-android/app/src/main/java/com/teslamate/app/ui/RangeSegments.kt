@@ -26,7 +26,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.teslamate.app.Charge
 import com.teslamate.app.Drive
@@ -277,17 +280,30 @@ fun RangeSegmentsCard(
         // 这张卡在它下面，34sp 会形成**层级倒置**（下面的数字比上面的还大）。
         BigStat(
             "${median.roundToInt()}",
-            // ⚠️ **v0.40.0（第 24 轮对抗性审计 ①）：标题必须带「折算值」。**
+            // ⚠️ **v0.40.0（第 24 轮对抗性审计 ①）：副标题必须带「折算值」。**
             //
             // 这个数是「从 X% 开到 Y% 跑了多少公里」按掉电比例**折算**到满电的，
             // 用的是**净掉电** —— 所以**下坡回充被抵扣了**，系统性偏乐观。
             // 不标出来，读者会把它当成「跑满一箱能跑多远」的实测。
-            "实测满电续航（公里，中位 · 折算值）",
+            //
+            // ⚠️ **v0.41.0（第 25 轮 HIG 复审 P1-1）：删掉重复的「实测满电续航」。**
+            // 卡标题（`SectionCard(title = "实测满电续航")`）已经说了，
+            // 副标题再说一遍 —— 同一个词在同一张卡里出现两次。
+            // HIG 实测：删掉后 fs=2.0 时副标从 2 行（64dp）降到 **1 行**，
+            // 满续航卡 @360dp/fs2.0 从 408dp → **376dp（−32dp）**。
+            "公里 · 中位（折算值）",
             mid = true,
         )
         Spacer(Modifier.height(2.dp))
+        // ⚠️ **v0.41.0（第 25 轮 HIG 复审 P1-2）：坏消息要用琥珀色，不用中性灰。**
+        //
+        // 「实测低 23%」是**低于官方标称** —— 按本仓库的色彩语义，
+        // 低于阈值的结论应该是琥珀（`warnAmberText`，对比度 6.39:1 / 8.39:1 ✅）。
+        // ⚠️ **不用特斯拉红**：`Theme.kt` 写明红 = 强调/危险/品牌点缀，
+        // **不用于表达健康电量** —— 这里是标称口径差，不是电量告警。
+        val accents = LocalAccentColors.current
         Text(
-            buildString {
+            buildAnnotatedString {
                 append("基于 ${segments.size} 段实测（每次充完到下次充上）")
                 official?.let {
                     // ⚠️ **v0.40.0（第 24 轮对抗性审计 ①）：百分比方向曾经反了。**
@@ -297,7 +313,9 @@ fun RangeSegmentsCard(
                     val diff = fullChargeVsOfficialPercent(median, it)
                     append(" · 官方标称 ${it.roundToInt()} 公里")
                     if (diff != null) {
-                        append(if (diff >= 0) "，实测高 $diff%" else "，实测低 ${-diff}%")
+                        withStyle(SpanStyle(color = accents.warnAmberText)) {
+                            append(if (diff >= 0) "，实测高 $diff%" else "，实测低 ${-diff}%")
+                        }
                     }
                 }
             },
@@ -334,12 +352,21 @@ fun RangeSegmentsCard(
                 //
                 // 现在说清三件事：① 这是折算值、怎么折的；
                 // ② 它**含下坡回充**（偏乐观）；③ 规划要用哪个数。
+                //
+                // ⚠️ **v0.41.0（第 25 轮车主复审 P8/P9）：压缩 + 改掉含混的说法。**
+                //
+                // 车主复审实测：原来 85 em → v0.40.0 的 135 em（**+59%**），
+                // fs=1.0 下 4 → **6 行**、fs=2.0 下 7 → **12 行** ——
+                // 藏在「折叠」区里却比正文还长。
+                // 现在压到 ~100 em，且把「两个都是实测」改成
+                // 「**一个折算、一个直读**」（P9：卡名就叫「实测满电续航」，
+                // 再说「两个都是实测」读者会以为是同一类东西）。
                 Text(
                     "这是折算值：把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电，" +
-                        "所以含没充满就走的段（比如 50%→29%）。" +
-                        "折算用的是净掉电 —— 下坡回充会被抵扣，所以这个数偏乐观。" +
-                        (official?.let { "官方标称 ${it.roundToInt()} 公里是车机满电时报的数，" } ?: "") +
-                        "两个都是实测，只是口径不同：规划请用上面的线路余量表（那里不含回充抵扣）。",
+                        "含没充满就走的段。折算用净掉电，下坡回充被抵扣，所以偏乐观。" +
+                        (official?.let { "车机满电时自己报的是 ${it.roundToInt()} 公里；" } ?: "") +
+                        "这两个数都是这车跑出来的，区别是一个折算、一个直读：" +
+                        "规划请用上面的线路余量表。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

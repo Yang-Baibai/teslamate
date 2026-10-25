@@ -903,7 +903,15 @@ SELECT cp.end_date,
              AND cp.charge_energy_added > 0
          THEN cp.charge_energy_added * 100.0
               / (cp.end_battery_level - cp.start_battery_level)
-       END AS capacity_kwh_energy
+       END AS capacity_kwh_energy,
+       -- ⚠️ **v0.41.0（第 24 轮对抗性审计 ②）**：充电时平均气温 ——
+       -- 它是「续航估值」这个口径的**混杂因素**（气温系数 +0.00916 度/°C）。
+       cp.outside_temp_avg AS outside_temp_avg,
+       -- ⚠️ **v0.41.0**：没实际充电的场次不是独立的测量点 ——
+       -- 实测本机有 1 场（100%→100%、0.04 度、1 分钟），
+       -- 那是同一场会话被 TeslaMate 拆成的尾巴，rating 读数与前一场几乎相同。
+       cp.start_battery_level AS start_battery_level,
+       cp.duration_min AS duration_min
 FROM charging_processes cp
 JOIN cars c ON c.id = cp.car_id
 JOIN LATERAL (

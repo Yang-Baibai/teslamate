@@ -141,4 +141,83 @@ class RoutePlanHonestyTest {
         // 旧名仍可用，但语义相同
         assertEquals(p.belowReserveHopCount, p.impossibleHopCount)
     }
+
+    // ── ③ 告警行（琥珀）必须有**动作**，且不能重复决策句 ──────────
+
+    private fun planWithBelowReserve(): RoutePlan = RoutePlan(
+        RouteTemplate(
+            key = "j1", fromLabel = "永丰社区", toLabel = "石化大道西",
+            distanceKm = 6227.0, startSoc = 100, endSoc = 50,
+            legCount = 191, stopCount = 36,
+            lastDrivenAt = java.time.Instant.parse("2026-10-07T00:00:00Z"),
+            startOdoKm = 100000.0,
+        ),
+        emptyList(),
+        listOf(
+            stop("修文县", 4929.0, gapKm = 351.0, need = 88, required = 108, realSoc = 13, estSoc = 8),
+            stop("建设南路", 4262.0, gapKm = 328.0, need = 83, required = 103, realSoc = 8, estSoc = 17),
+            stop("G210 车河镇", 5280.0, gapKm = 120.0, need = 45, required = 65, realSoc = 30),
+        ),
+    )
+
+    @Test
+    fun `告警行必须给出动作`() {
+        val n = planWithBelowReserve().belowReserveNotice()
+        assertTrue("必须给告警行: $n", n != null)
+        // ⚠️ **v0.41.0（第 25 轮车主复审 P3）**：删掉假动作后必须给**真动作**。
+        assertTrue("必须给动作: $n", n!!.contains("想留住就得提前一站补电"))
+    }
+
+    @Test
+    fun `告警行不得说充满也到不了`() {
+        val n = planWithBelowReserve().belowReserveNotice()!!
+        assertTrue("不得出现假事实「充满也到不了」: $n", !n.contains("充满也到不了"))
+        assertTrue("不得说「得在前面加一站」（那是空建议）: $n", !n.contains("得在前面加一站"))
+        // 必须说清「充满也只剩多少」与「低于多少保底」
+        assertTrue("应说明充满也只剩 12%: $n", n.contains("充满也只剩 12%"))
+        assertTrue("应说明低于 20% 保底: $n", n.contains("低于 20% 保底"))
+    }
+
+    @Test
+    fun `告警行不得重复决策句里的真值`() {
+        // ⚠️ **v0.41.0（第 25 轮 HIG 复审 P0-2）**：同一张卡里说两遍 = 重复信息。
+        // 决策句已经说了「上次剩 13%」，琥珀行就不该再说一次。
+        val p = planWithBelowReserve()
+        val v = p.verdict()
+        val n = p.belowReserveNotice()!!
+        assertTrue("决策句应含真值: $v", v.contains("上次剩 13%"))
+        assertTrue("告警行不应重复真值: $n", !n.contains("上次剩 13%"))
+    }
+
+    @Test
+    fun `够得着保底时没有告警行`() {
+        val p = RoutePlan(
+            RouteTemplate(
+                key = "j1", fromLabel = "A", toLabel = "B",
+                distanceKm = 120.0, startSoc = 100, endSoc = 50,
+                legCount = 2, stopCount = 1,
+                lastDrivenAt = java.time.Instant.parse("2026-10-07T00:00:00Z"),
+                startOdoKm = 100000.0,
+            ),
+            emptyList(),
+            listOf(stop("A", 0.0, gapKm = 120.0, need = 45, required = 65, realSoc = 22, estSoc = 30)),
+        )
+        assertNull("够得着保底就不该有告警行", p.belowReserveNotice())
+    }
+
+    @Test
+    fun `三个数各有各的标签 不会读成 App 算错了`() {
+        // ⚠️ **v0.41.0（第 25 轮车主复审 P2）**：
+        // v0.40.0 把「上次到站剩 13%」与「充满也只剩 12%」并排，
+        // 标签却都用「剩」字 —— 读者看到 13 > 12 会以为 App 算错了。
+        // 现在三个标签互不相同。
+        val p = planWithBelowReserve()
+        val v = p.verdict()
+        assertTrue("观测值标签: $v", v.contains("上次剩 13%"))
+        assertTrue("模型估算标签: $v", v.contains("估算剩 8%"))
+        assertFalse("观测标签不应再是「上次到站剩」: $v", v.contains("上次到站剩"))
+        // 「充满也只剩」只出现在告警行里
+        val n = p.belowReserveNotice()!!
+        assertTrue(n.contains("充满也只剩 12%"))
+    }
 }
