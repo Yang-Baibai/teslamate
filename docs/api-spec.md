@@ -146,7 +146,7 @@
 | `year` | 月 | 12 | **近 12 个自然月** | 当月是**进行中**数据，数值会随当月继续增长 |
 
 ### /battery
-`current_capacity_kwh`（最近一次估算）`max_capacity_kwh`（历史最佳）`health_percent`（当前/最佳）
+`current_capacity_kwh`（最近一次估算）`max_capacity_kwh`（历史最佳）`health_percent`（相对出厂可用容量的 SOH）`factory_rated_range_km`（出厂同刻度满电标定续航）
 `series[]`：每次「充到 ≥90%」会话的 `{date, capacity_kwh, end_soc}`。
 
 ### ⚠️ v0.35.0：`/cars/{id}/battery` 的 `decay` 块（电池容量衰减判定）
@@ -342,7 +342,7 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/cars/1/st
 | `current_capacity_kwh` | 最近一次满充实测容量（从 ≥90% 的充电会话反算） |
 | `max_capacity_kwh` | 记录中的最大实测值。**仅供趋势参考，不作为健康度分母** |
 | `nominal_capacity_kwh` | **铭牌（出厂标称）容量**，来自环境变量 `NOMINAL_BATTERY_KWH`。健康度的分母 |
-| `health_percent` | `current ÷ 基准 × 100`。基准优先用铭牌容量，未配置时回退 `max_capacity_kwh`（该口径不可信，见下） |
+| `health_percent` | `当前实测可用容量 ÷ 出厂标称可用容量 × 100` ＝ **电池健康度（SOH）**。分母来自 `NOMINAL_BATTERY_KWH`；**未配置时直接不给这个数（null）**，不再回退 `max_capacity_kwh`（那口径不可信，见下） |
 
 **为什么不能用历史最大值当分母**：历史最大值本身是衰减后的测量值，会随时间往下漂；车越老分母越小，「当前/历史最大」永远逼近 100%，健康度虚高且不可跨车比较。本车曾因此显示 98%，实际 65.41 / 76.8 = **85.2%**。
 

@@ -1325,12 +1325,13 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		energyCaps   []float64
 		baselineCaps []float64
 		strictPts    []decayPoint
+		scaleRatios  []float64
 		excludedPts  int
 		droppedEmpty int
 	)
 	for rows.Next() {
 		p := &BatteryPoint{}
-		if err := rows.Scan(&p.Date, &p.CapacityKwh, &p.EndSoc, &p.EfficiencyUsed, &p.OdometerKm,
+		if err := rows.Scan(&p.Date, &p.CapacityKwh, &p.RatedRangeKm, &p.EndSoc, &p.EfficiencyUsed, &p.OdometerKm,
 			&p.CapacityKwhEnergy, &p.OutsideTempAvg, &p.StartSoc, &p.DurationMin); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1356,6 +1357,14 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		}
 		if p.CapacityKwhEnergy != nil {
 			energyCaps = append(energyCaps, *p.CapacityKwhEnergy)
+			// ⚠️ **v0.62.0**：**本车刻度系数** K = 满电标定续航 ÷ 能量反推容量。
+			//
+			// K 与 `cars.efficiency` **无关**（能量反推口径不需要 kWh/km 常数），
+			// 所以用它推出的「出厂满电标定续航」不受那个可改常数影响。
+			// 实测本机 K = 6.8446 km/kWh（17 个满充点，相对离散度 1.51%）。
+			if p.RatedRangeKm != nil && *p.CapacityKwhEnergy > 0 {
+				scaleRatios = append(scaleRatios, *p.RatedRangeKm / *p.CapacityKwhEnergy)
+			}
 		}
 		if p.OdometerKm != nil {
 			if firstOdo == nil {
@@ -1489,6 +1498,20 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 	if last != nil && base != nil && *base > 0 {
 		v := *last * 100 / *base
 		h.HealthPercent = &v
+	}
+	// ⚠️ **v0.62.0（第 31 轮电池出厂态核查）：**「出厂满电标定续航」——
+	// 出厂可用容量 × 本车刻度系数 K（median(满电标定续航 ÷ 能量反推容量)）。
+	//
+	// 为什么要有这个数：
+	//   ① 车主最关心的单位是「公里」，不是「度」；
+	//   ② 它与车机读数**同一套刻度**，所以「现在 446 km vs 出厂 526 km」
+	//      才是**同一把尺子**下的对照 —— 而官方 CLTC 627 km 是**另一把尺子**
+	//      （实测刻度差 +19%），不能直接比。
+	//   ③ K **不需要 `cars.efficiency`** —— 车主改那个常数不影响这个数。
+	if h.NominalCapacityKwh != nil && len(scaleRatios) > 0 {
+		k := medianOfFloats(scaleRatios)
+		v := *h.NominalCapacityKwh * k
+		h.FactoryRatedRangeKm = &v
 	}
 	writeJSON(w, h)
 }

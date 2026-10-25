@@ -896,6 +896,17 @@ GROUP BY 1 ORDER BY 1`
 const sqlBattery = `
 SELECT cp.end_date,
        (ch.rated_battery_range_km::float8 * c.efficiency * 100.0 / ch.usable_battery_level) AS capacity_kwh,
+       -- ⚠️ **v0.62.0（第 31 轮电池出厂态核查）**：**车机自己报的满电标定续航**（km）。
+       --
+       -- 为什么要单独下发：它是**与 kWh 无关的独立刻度** ——
+       -- 「满电能开多远」是车主唯一真正关心的单位，
+       -- 而「度」只是中间量。之前 App 里只有「度」，
+       -- 导致「电池健康」这件事没法用车主自己的语言说清楚。
+       --
+       -- 同时它是**判定官方 CLTC 能不能直接对比**的唯一证据：
+       -- 库里这个刻度与官方 CLTC（627 km）**不是同一套**（实测比值差 20%），
+       -- 所以绝不能拿官方 CLTC 去比车机读数。
+       ch.rated_battery_range_km::float8 AS rated_range_km,
        cp.end_battery_level,
        c.efficiency AS efficiency_used,
        ep.odometer::float8 AS odometer_km,
