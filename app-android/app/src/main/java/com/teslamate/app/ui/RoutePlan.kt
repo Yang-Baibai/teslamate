@@ -1313,6 +1313,30 @@ fun RoutePlan.hopsArrivingBelowReserve(startIdx: Int): List<RouteHop> {
 }
 
 /**
+ * ⚠️ **v0.58.0（第 30 轮长途自驾党评审 P1-3）**：处方接近**电池上限**时的提示。
+ *
+ * ## 为什么需要它
+ *
+ * 逐站 L1 的处方可能是「充到 100%」——
+ * 而 **100% 是电池上限**，不是「一个可以充到的目标」。
+ * 直流桩在 80% 以后会**降功率**，能不能真到 100%
+ * 取决于桩、电池温度与充电策略。
+ *
+ * 实测（川藏滇线 36 跳）：处方 =100% 的 **1 跳**、>90% 的 **8 跳**。
+ * 用户照着「充到 100%」走，实际可能到不了 ⇒ 到站比模型估的**更低**。
+ *
+ * ⚠️ 这里**不改数**，只加一句**事实性提示** ——
+ * 「直流桩在 80% 附近降功率」是本 App 自己在**充电详情页脚注**里写着的既有结论，
+ * 不是新引入的判断。
+ */
+fun chargeTargetHint(requiredSoc: Int): String? =
+    if (requiredSoc >= 95) {
+        "（已接近电池上限，直流桩 80% 以上会降功率，实际可能充不到）"
+    } else {
+        null
+    }
+
+/**
  * ⚠️ **v0.47.0（第 28 轮对抗性审计 P0-1 / P2-1）**：档位行的「爬升修正」片段。
  *
  * 抽成**纯函数**是为了能被 JVM 单测直接断言 ——
@@ -3186,6 +3210,8 @@ fun RoutePlanCard(
                                                     append("出发时 ").append(socNow).append("% 已够")
                                                 } else {
                                                     append("出发前至少充到 ").append(req).append("%")
+                                                    // ⚠️ **v0.58.0（P1-3）**：同上，接近电池上限时给提示。
+                                                    chargeTargetHint(req)?.let { append(it) }
                                                 }
                                             }
                                         }
@@ -3205,6 +3231,10 @@ fun RoutePlanCard(
                                                     .append(RESERVE_SOC).append("% 保底")
                                             } else {
                                                 append("充到 ").append(req).append("%")
+                                                // ⚠️ **v0.58.0（第 30 轮长途自驾党评审 P1-3）**：
+                                                // 处方接近**电池上限**时补一句事实性提示 ——
+                                                // 「充到 100%」是**上限**，不是「可以充到的目标」。
+                                                chargeTargetHint(req)?.let { append(it) }
                                             }
                                         }
                                     }

@@ -3,6 +3,7 @@ package com.teslamate.app.ui
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
@@ -475,5 +476,34 @@ class RoutePlanLogicTest {
         val p = plan(emptyList())
         assertTrue(p.verdict().isNotEmpty())
         assertNull(p.longestHop)
+    }
+
+    // ── ⚠️ v0.58.0（第 30 轮长途自驾党评审 P1-3）───────────────────────
+
+    @Test
+    fun `处方接近电池上限时给提示`() {
+        // 「充到 100%」是**电池上限**，不是「一个可以充到的目标」——
+        // 直流桩 80% 以后降功率，能不能真到 100% 取决于桩与电池温度。
+        // 实测川藏滇线 36 跳里 =100% 的 1 跳、>90% 的 8 跳。
+        assertNotNull("处方 100% 时必须给提示", chargeTargetHint(100))
+        assertNotNull("处方 95% 时必须给提示", chargeTargetHint(95))
+        assertNotNull("处方 98% 时必须给提示", chargeTargetHint(98))
+    }
+
+    @Test
+    fun `处方离上限还远时不给提示`() {
+        // 低于 95% 时那句话是噪音 —— 每个站都挂一句等于没挂。
+        assertNull("处方 90% 时不该提示", chargeTargetHint(90))
+        assertNull("处方 68% 时不该提示", chargeTargetHint(68))
+        assertNull("处方 20% 时不该提示", chargeTargetHint(20))
+    }
+
+    @Test
+    fun `提示里不能说充不满就不管了`() {
+        // 提示是**事实性**的（直流桩会降功率），不是「所以别管了」。
+        val t = chargeTargetHint(100)!!
+        assertTrue("应说明是直流桩降功率: $t", t.contains("直流桩"))
+        assertTrue("应说明 80% 以上: $t", t.contains("80%"))
+        assertTrue("不能是放弃的口吻: $t", !t.contains("别管") && !t.contains("放弃"))
     }
 }
