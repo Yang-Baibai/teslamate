@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# 客户端回归闸门 —— 本项目**没有** JVM 单测（app-android 无 src/test / src/androidTest），
-# 所以这两条 shell 闸门是唯一能挡住客户端文案/几何回归的机制。
+# 客户端回归闸门 —— 界面文案与几何的**源码级**闸门。
+#
+# ⚠️ v0.37.0 起，客户端**已经有 JVM 单元测试**了
+# （`app-android/app/src/test/`，接进 `scripts/unit-tests.sh` + `scripts/smoke.sh`）。
+# 那边的闸门**直接调用**纯函数（比这里的正则解析源码更可靠）；
+# 这里保留两条**覆盖面不同**的检查：
+#   ① 界面文案里不许出现 Markdown 星号（要扫**全部** .kt 源码，JVM 测试做不到）；
+#   ② 电量环几何金标准（正则从源码里抠常量，编译期也做不到）。
 #
 # 用法：bash scripts/client-gates.sh      （在仓库根）
 set -uo pipefail
