@@ -253,7 +253,67 @@ assert 0 < ck <= d['total_km'] + 1, 'covered_km out of range'
 assert d['overall_wh_per_km_gross'] > 0, 'gross must be > 0'
 " 2>/dev/null \
   && ok "energy_profile covered_km（分子分母同源）" || fail "energy_profile covered_km"
-# 13. 自更新元数据
+# 13. 地点归一：同一地点必须只有一个名字 + 有稳定的 place_key（v0.31.0）
+CH=$(curl -s -m 15 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charges?limit=200")
+echo "$CH" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert d, 'no charges'
+for c in d:
+    assert c.get('place_key'), 'missing place_key'
+    assert c.get('place') is not None, 'missing place'
+# 归一后同一个 key 只能对应一个显示名
+m = {}
+for c in d:
+    m.setdefault(c['place_key'], set()).add(c['place'])
+bad = {k: v for k, v in m.items() if len(v) > 1}
+assert not bad, 'place_key maps to multiple names: %s' % list(bad.items())[:3]
+" 2>/dev/null \
+  && ok "charges place_key 地点归一（一地一名）" || fail "charges place_key 地点归一"
+
+# 14. 充电实测口径（v0.31.0）：折算高估 +33%~185%，必须给实测值
+echo "$CH" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+for c in d:
+    assert 'measured_minutes_to_80' in c, 'missing measured_minutes_to_80'
+    assert 'measured_from_soc' in c, 'missing measured_from_soc'
+    assert 'measured_unavailable_reason' in c, 'missing measured_unavailable_reason'
+    m = c['measured_minutes_to_80']
+    if m is not None:
+        assert 0 < m <= 600, 'measured minutes out of range: %s' % m
+        assert c['measured_from_soc'] is not None, 'measured without from_soc'
+        assert c['measured_from_soc'] < 80, 'measured from_soc >= 80'
+" 2>/dev/null \
+  && ok "charges 实测口径（measured_minutes_to_80）" || fail "charges 实测口径"
+
+# 15. 每公里成本的双分母（v0.31.0）：遥测断档会让两者不等
+CSY=$(curl -s -m 20 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/cost_summary?period=year")
+echo "$CSY" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'km_drives' in d and 'km_odometer' in d, 'missing dual denominator'
+assert d['km_drives'] >= 0 and d['km_odometer'] >= 0, 'negative km'
+assert d['km_odometer'] >= d['km_drives'], 'odometer span must be >= drives distance'
+" 2>/dev/null \
+  && ok "cost_summary 双分母（每公里成本区间）" || fail "cost_summary 双分母"
+
+# 16. /stats 的 period 白名单必须与 cost_summary 一致
+SB=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/stats?period=bogus")
+[[ "$SB" == "400" ]] && ok "stats 未知 period → 400" || fail "stats 未知 period → 400 (实际 $SB)"
+
+# 17. route_profile 必须带爬升（v0.31.0）
+RP=$(curl -s -m 30 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/route_profile?drive_ids=198,240,188&step_km=5")
+echo "$RP" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'ascent_m' in d and 'descent_m' in d, 'missing ascent/descent'
+assert d['ascent_m'] >= 0 and d['descent_m'] >= 0, 'negative ascent'
+for l in d.get('legs', []):
+    assert 'ascent_m' in l and 'descent_m' in l, 'leg missing ascent'
+" 2>/dev/null \
+  && ok "route_profile 爬升（ascent/descent）" || fail "route_profile 爬升"
+# 18. 自更新元数据
 L=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" $B/api/v1/app/latest)
 echo "$L" | python -c "import json,sys;d=json.load(sys.stdin);assert d['version_code'].isdigit()" 2>/dev/null \
   && ok "app/latest 元数据" || fail "app/latest 元数据"

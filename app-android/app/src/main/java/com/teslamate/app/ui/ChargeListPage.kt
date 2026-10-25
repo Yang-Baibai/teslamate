@@ -184,7 +184,7 @@ private fun formatHours(minutes: Double): String {
  * 代价是「典型」这个词在没有统计支撑时不成立 ——
  * 所以 1 次的时候改说「实测」，并标「仅 1 次」。
  */
-internal fun stationSummaryLine(stat: StationStat): String {
-    if (stat.sessions >= 2) return stat.summary()
+internal fun stationSummaryLine(stat: StationStat, fromSoc: Int? = null): String {
+    if (stat.sessions >= 2) return stat.summary(fromSoc)
     return "该站实测 ${stat.typicalPowerKw.roundToInt()} kW（仅 1 次）"
 }

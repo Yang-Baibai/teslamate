@@ -168,6 +168,14 @@ type Drive struct {
 	Distance    *float64   `json:"distance_km"`
 	StartPlace  *string    `json:"start_place"`
 	EndPlace    *string    `json:"end_place"`
+	// ⚠️ **v0.31.0：归一后的地点标识。**
+	//
+	// 形如 `g1`（围栏 1）或 `a71`（归一后的地址 71）。
+	// 实测「永丰社区」与「新湖路」相距 **300 米**（同一个小区，被地理编码拆成两个地址），
+	// 原来 App 把 6227 公里的**往返**显示成「永丰社区 → 新湖路」的**单程** ——
+	// 客户端靠这两个 key 相等与否判断「是不是回到了同一个地方」。
+	StartPlaceKey *string `json:"start_place_key"`
+	EndPlaceKey   *string `json:"end_place_key"`
 	StartSoc    *int       `json:"start_soc"`
 	EndSoc      *int       `json:"end_soc"`
 	EnergyKwh   *float64   `json:"energy_kwh"`
@@ -204,15 +212,20 @@ type Drive struct {
 type CostSummary struct {
 	// 公共桩（直流）网侧度数
 	DcUsedKwh float64 `json:"dc_used_kwh"`
-	// 家充（交流）网侧度数
+	// ⚠️ **v0.31.0：这里的注释原来写「家充（交流）」，是错的。**
+	//
+	// v0.30.0 起「家充」有了**真凭据**（充电围栏），就是下面的 [HomeUsedKwh]。
+	// 而 [AcUsedKwh] 是**全部交流**（含没有围栏归属的异地交流）。
+	//
+	// 字段名与注释互相矛盾，正是「交流 ⇒ 家充」这个误读的源头 —— 订正。
 	AcUsedKwh float64 `json:"ac_used_kwh"`
 	// 公共桩场次
 	DcSessions int `json:"dc_sessions"`
-	// 家充场次
+	// 交流场次（**不是**家充场次 —— 家充场次见 [HomeSessions]）
 	AcSessions int `json:"ac_sessions"`
 	// 公共桩总时长（分钟）—— 按分钟计服务费时用它
 	DcMinutes float64 `json:"dc_minutes"`
-	// 家充总时长（分钟）
+	// 交流总时长（分钟）（**不是**家充时长 —— 家充时长见 [HomeMinutes]）
 	AcMinutes float64 `json:"ac_minutes"`
 
 	// ⚠️ **v0.30.0（第 19 轮财务评审 P0-3）：围栏命中的「真家充」。**
@@ -230,6 +243,21 @@ type CostSummary struct {
 	HomeSessions int `json:"home_sessions"`
 	// 围栏命中的家充总时长（分钟）
 	HomeMinutes float64 `json:"home_minutes"`
+
+	// ⚠️ **v0.31.0（第 20 轮费用复审 P0-1）：行驶里程的两个分母。**
+	//
+	// - [KmDrives]：`sum(drives.distance)` —— App 记录到的行驶里程。
+	// - [KmOdometer]：里程表在窗口内的**跨度**（MAX − MIN）——
+	//   它**包含**「两趟行程之间的遥测断档」里车真的开过的那些公里。
+	//
+	// 实测两者差 **1459.62 公里（16.71%）**，且**全部断档都发生在 2026-10-01 之前** ——
+	// 所以「今天 / 7 天 / 本月」三段两者几乎相等（差 0.10%~0.12%），
+	// 而「1 年」段差 16.71%。
+	//
+	// 因此「每公里成本」在长窗口上是一个**区间**：费用 ÷ 里程表（下界）~ 费用 ÷ 行驶里程（上界）。
+	// 客户端据此显示区间，不显示点值。
+	KmDrives   float64 `json:"km_drives"`
+	KmOdometer float64 `json:"km_odometer"`
 }
 
 // SocProfilePoint 剖面上的一个点（真实逐公里 SOC）。
@@ -262,6 +290,17 @@ type RouteProfile struct {
 	//   用「各段之和」当横轴长度会把曲线尾巴画到轴外面去。
 	//   跨度才是采样点横轴的真实长度。
 	TotalKm float64 `json:"total_km"`
+	// ⚠️ **v0.31.0：整条路线的毛爬升 / 毛下降 / 净爬升（米）。**
+	//
+	// 毛爬升 = 各段 ascent 之和；净爬升 = 毛爬升 − 毛下降。
+	//
+	// ⚠️ **净爬升可以是负的**：实测那条 6227 公里的川藏滇线
+	// 毛爬升 51,804 米、毛下降 62,554 米、**净爬升 −750 米**
+	// （终点比起点低 750 米）—— 所以**不能用净爬升**做能耗修正，
+	// 必须「上坡按毛爬升算、下坡按毛下降抵扣」。
+	AscentM    int `json:"ascent_m"`
+	DescentM   int `json:"descent_m"`
+	NetAscentM int `json:"net_ascent_m"`
 	// Legs 参与这条路线的各段，按 App 传入的行驶顺序。
 	Legs []RouteProfileLeg `json:"legs"`
 	// Points 整条路线上的采样点，按 km 升序。
@@ -281,6 +320,15 @@ type RouteProfileLeg struct {
 	// ⚠️ 它保证**正好落在本段第一个采样点上**，
 	// 这样 App 把段边界和曲线对齐时不会错位。
 	KmOffset float64 `json:"km_offset"`
+	// ⚠️ **v0.31.0：这一段的爬升 / 下降（米）。**
+	//
+	// 口径 = `drives.ascent` / `drives.descent`（原样，不去噪）。
+	// 实测 drives.ascent == 相邻点正高差之和（439/439 逐条精确相等）。
+	//
+	// ⚠️ 含 GPS 量化噪声：长途大段偏差只有 0.8%~2.3%，
+	// 短途行程中位虚高 17.1% —— **只适合长途场景**。
+	AscentM  int `json:"ascent_m"`
+	DescentM int `json:"descent_m"`
 }
 
 // RouteProfilePoint 路线上的一个 SOC 采样点。
@@ -399,6 +447,12 @@ type Charge struct {
 	StartSoc    *int       `json:"start_soc"`
 	EndSoc      *int       `json:"end_soc"`
 	Place       *string    `json:"place"`
+	// ⚠️ **v0.31.0：归一后的地点标识**（形如 `g1` / `a71`）。
+	//
+	// 客户端的「同一个地方」判定以前用「名字 + 坐标四舍五入到 2 位小数」——
+	// 而 300 米的两个点会被**舍入边界**劈开（22.57 / 22.58），
+	// 于是同一个地方被算成两个。现在由服务端按**真实距离**聚类后下发。
+	PlaceKey *string `json:"place_key"`
 	// ⚠️ v0.24.0：**真实 POI 名**（「金田服务区」这种）。
 	//
 	// 原来只有 `place` —— 那是**反向地理编码的长串**
@@ -447,6 +501,56 @@ type Charge struct {
 	CableType      *string  `json:"cable_type,omitempty"`          // GB_AC / GB_DC / Tesla
 	ChargerBrand   *string  `json:"charger_brand,omitempty"`       // fast_charger_brand
 	LossPercent    *float64 `json:"loss_percent,omitempty"`        // (表计-充入)/表计 ×100
+	// ⚠️ **v0.31.0（第 20 轮充电系统数据专家 P0-1）：本场「实测」从起始 SOC 充到 80% 的分钟数。**
+	//
+	// ## 口径
+	//
+	// - **来源**：`charges` 表逐点采样直读，**不是**任何模型折算。
+	// - **起点**：本场 charges 表**第一个采样点**的 `battery_level`
+	//   （不是 `cp.start_battery_level` —— 曲线可能中途才接上监控；
+	//   实测本机 30 场有效样本全部与 `cp.start_date` 重合，但护栏必须留）。
+	// - **终点**：**首个** `battery_level >= 80` 的采样点。
+	// - **取值**：`floor((t80 - t0) / 60s)`，**截断取整**
+	//   （与 Kotlin `Duration.toMinutes()` 一致，不是四舍五入）。
+	// - **不可用时为 null**，原因见 [MeasuredUnavailableReason]。
+	//
+	// ## 为什么必须有它（v0.30.0 遗留的硬伤）
+	//
+	// 原来 App 的「充到 80% 约 N 分钟」是**线性折算**：
+	// `needKwh ÷ (整场时间加权平均功率) × 60`。
+	// 而直流桩在高 SOC 段会**降功率**（曲线是弯的）——
+	// 整场平均功率被 80%→100% 的拖尾砍掉近一半：
+	//
+	// 实测 id=76：起始→80% 段实跑 **70.7 kW**，
+	// 80%→100% 拖尾只有 **13.0 kW** 却占了 **57.6 分钟**（整场 94 分钟），
+	// 整场时间加权平均只有 **37 kW** —— 用 37 kW 去外推 70 kW 的那一段 → 时间翻倍。
+	//
+	// 实测 30 组可比场次：高估中位 **+33%**，P75 **+72%**，最大 **+185%**；
+	// 18/30 高估 >20%，13/30 高估 >50%，仅 4/30 低估。
+	//
+	// 这两个数曾**同时出现在同一张屏上**（详情页「约 63 分钟」与「实测 36 分钟」），
+	// 差 **72%**，却没有任何一句话解释它们是两个口径。
+	//
+	// ⚠️ **与 [AvgPowerKwTrue] 是互补的，不是替代关系**：
+	// `avg_power_kw_true` 回答「这个桩平均能跑多少 kW」，
+	// 本字段回答「**这一次**真的花了多久」。两者都要留。
+	// ⚠️ v0.31.0：**不加 omitempty** —— 字段必须**始终**出现（不可用时为 null）。
+	// 否则「这个服务端没有这个字段」与「这个字段不可用」在客户端看起来一样。
+	MeasuredMinutesTo80 *int `json:"measured_minutes_to_80"`
+	// ⚠️ v0.31.0：本字段的**口径起点**（= 曲线首个采样点的 battery_level）。
+	//
+	// 必须随 [MeasuredMinutesTo80] 一起下发 ——
+	// 不然用户会把它当成「从 0% 充到 80%」或「从本次到站电量充到 80%」，
+	// 而实际起点是**曲线的第一个采样点**。
+	MeasuredFromSoc *int `json:"measured_from_soc"`
+	// ⚠️ v0.31.0：[MeasuredMinutesTo80] 为 null 时的**原因**（机器可读）。
+	//
+	// 取值：`start_soc_ge_80` / `never_reached_80` / `too_few_points` /
+	//       `soc_regressed` / `too_fast` / `too_long`。
+	// 服务端统计：78 场里 41 场没充到 80%、7 场起始就 ≥80%、
+	// 有效实测仅 **30 场（38.5%）**。
+	// 客户端据此决定显示什么文案 —— 而不是一律显示「—」。
+	MeasuredUnavailableReason *string `json:"measured_unavailable_reason"`
 }
 
 type CurvePoint struct {

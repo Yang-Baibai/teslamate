@@ -29,7 +29,26 @@ import kotlin.math.roundToInt
  *    而真实情况是这车几乎全按公共桩价买的电。
  *
  * ③ **分母是「行驶里程」**（`sum(drives.distance)`），
- *    不是里程表读数 —— 后者含停车期累计误差（实测差 16.6%）。
+ *    不是里程表读数。
+ *
+ *    ⚠️ **v0.31.0（第 20 轮费用复审 P0-1）：这条注释原来把因果写反了。**
+ *
+ *    原文写的是「后者含停车期累计误差（实测差 16.6%）」——
+ *    事实**不是**这样：
+ *    - `sum(drives.distance)` 与**逐段里程表差之和完全相等**（ratio 1.0000），
+ *      所以 `drives.distance` **没有测距误差**；
+ *    - 差的那 1459.62 公里是**两趟行程之间的遥测断档** ——
+ *      12 次断档（最大 502.59 公里）里车**真的开了**，
+ *      但 TeslaMate **没记行程**（开车全程 positions 只有 75 行，且全在断档末端），
+ *      连充电记录也是 0 场。
+ *
+ *    所以：**里程表是物理真值，`drives.distance` 漏掉的是没被记录的那部分**，
+ *    两者都不算「错的那个」。
+ *
+ *    现在两个分母都下发（`km_drives` / `km_odometer`），
+ *    客户端在差 > 1% 时把「每公里成本」显示成**区间**（下界 ÷ 里程表，上界 ÷ 行驶里程）。
+ *    实测：今天 / 7 天 / 本月三段两者只差 0.10%~0.12%（区间退化成点值），
+ *    「1 年」段差 **16.71%**。
  *
  * ## 服务费必须能按分钟或按度
  *
@@ -106,34 +125,16 @@ data class ChargeCost(
 }
 
 /**
- * 按车主的电价估算费用。
+ * ⚠️ **v0.31.0（第 20 轮费用复审 P2-5）：删掉死代码 `estimateChargeCost`。**
  *
- * @param charges 充电会话（需要 `energy_used_kwh` / `duration_min` / `is_dc`）。
- * @param rates 车主填的电价。
+ * 它是 0 调用点的**第二份**分桶/计价实现 —— 将来必然与 [buildCost] 分叉。
+ * 实际在用的是：
+ * - [estimateSingleChargeCost]（充电详情页单场）
+ * - [estimateCost]（用量页窗口聚合）
+ *
+ * ⚠️ 原来那个函数还在的时候，它把「有围栏归属的交流」判成家充 ——
+ * 而 [buildCost] 现在也这么做，两边一致才没出事；删掉一份就少一个分叉点。
  */
-fun estimateChargeCost(
-    charges: List<Charge>,
-    rates: ChargeRates,
-): ChargeCost {
-    var homeKwh = 0.0
-    var acOtherKwh = 0.0
-    var dcKwh = 0.0
-    var publicMinutes = 0.0
-    charges.forEach { c ->
-        // ⚠️ P0-2：用**网侧送出**（桩按这个数收费），不是充入电池。
-        val used = c.energy_used_kwh ?: c.energy_added_kwh ?: 0.0
-        if (c.is_dc) {
-            dcKwh += used
-            publicMinutes += (c.duration_min ?: 0).toDouble()
-        } else if (!c.geofence_name.isNullOrBlank()) {
-            // ⚠️ v0.30.0：**有围栏归属**的交流 = 真家充（不再靠「交流 ⇒ 家充」猜）
-            homeKwh += used
-        } else {
-            acOtherKwh += used
-        }
-    }
-    return buildCost(homeKwh, acOtherKwh, dcKwh, publicMinutes, rates)
-}
 
 /**
  * ⚠️ **v0.30.0：把度数换算成金额的唯一入口。**
@@ -232,6 +233,7 @@ fun estimateCost(summary: com.teslamate.app.CostSummary, rates: ChargeRates): Ch
  *   「如果我今天全是公共桩充的电，每公里多花多少」= **长途的边际成本**
  */
 data class CostPerKm(
+    /** 上界：总费用 ÷ **App 记录到的**行驶里程（`sum(drives.distance)`） */
     val allPerKm: Double?,
     val dcPerKm: Double?,
     /** 交流慢充占总度数的百分比 */
@@ -243,9 +245,32 @@ data class CostPerKm(
      * 现在围栏能给出真凭据，这个数才是真的「家充占比」。
      */
     val homeSharePercent: Int?,
+    /**
+     * ⚠️ **v0.31.0（第 20 轮费用复审 P0-1）：下界** —— 总费用 ÷ **里程表跨度**。
+     *
+     * 里程表跨度**包含**「两趟行程之间的遥测断档」里车真开过的公里 ——
+     * 实测全库 12 次断档合计 **1459.62 公里（16.71%）**，
+     * 最大一次 502.59 公里（开车全程 positions 只有 75 行，全在断档末端）。
+     *
+     * 所以长窗口的「每公里成本」是**区间**：
+     * 下界 = 费用 ÷ 里程表，上界 = 费用 ÷ App 记录的行驶里程。
+     */
+    val allPerKmLow: Double? = null,
+    /**
+     * ⚠️ v0.31.0：两个分母的差异百分比。
+     *
+     * ≥1% 才值得显示区间；短窗口（今天 / 7 天 / 本月）实测只有 0.10%~0.12%，
+     * 那时区间退化成点值，不给界面加噪音。
+     */
+    val denominatorGapPercent: Int? = null,
 )
 
-fun costPerKm(cost: ChargeCost, drivingKm: Double): CostPerKm {
+fun costPerKm(
+    cost: ChargeCost,
+    drivingKm: Double,
+    /** 里程表在窗口内的跨度（km）—— 可为 null（拿不到就不给下界） */
+    odometerKm: Double? = null,
+): CostPerKm {
     if (drivingKm <= 0.1) return CostPerKm(null, null, null, null)
     val totalUsed = cost.totalKwh
     val acShare = if (totalUsed > 0.01) {
@@ -258,11 +283,24 @@ fun costPerKm(cost: ChargeCost, drivingKm: Double): CostPerKm {
     } else {
         null
     }
+    // ⚠️ v0.31.0：区间只在两个分母**差得够多**时才给。
+    val gapPct = if (odometerKm != null && odometerKm > drivingKm) {
+        ((odometerKm - drivingKm) / drivingKm * 100).roundToInt()
+    } else {
+        null
+    }
+    val low = if (odometerKm != null && odometerKm > 0.1 && (gapPct ?: 0) >= 1) {
+        cost.totalYuan / odometerKm
+    } else {
+        null
+    }
     return CostPerKm(
         allPerKm = cost.totalYuan / drivingKm,
         dcPerKm = cost.dcYuan / drivingKm,
         acSharePercent = acShare,
         homeSharePercent = homeShare,
+        allPerKmLow = low,
+        denominatorGapPercent = gapPct,
     )
 }
 

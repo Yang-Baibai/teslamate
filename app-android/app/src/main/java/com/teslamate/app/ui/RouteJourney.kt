@@ -115,6 +115,26 @@ data class JourneyLeg(
      * 于是「到下一站剩 34%」是按一个跟这趟毫无关系的速度算的。
      */
     val durationMin: Int? = null,
+    /**
+     * ⚠️ **v0.31.0：归一后的地点标识**（形如 `g1` / `a24`）。
+     *
+     * 用来判断「这一趟的起点与终点是不是**同一个地方**」。
+     */
+    val startPlaceKey: String? = null,
+    /** 同上：终点 */
+    val endPlaceKey: String? = null,
+    /**
+     * ⚠️ **v0.31.0：这一段的爬升（米）。**
+     *
+     * 口径 = `drives.ascent`（原样，不去噪）——
+     * 实测它**逐条**等于「相邻点正高差之和」（439/439，最大差 0 米）。
+     *
+     * ⚠️ 含 GPS 量化噪声：长途大段偏差只有 0.8%~2.3%（够准），
+     * 短途行程中位虚高 17.1% —— 所以**只适合长途场景**。
+     */
+    val ascentM: Int? = null,
+    /** 同上：下降（米） */
+    val descentM: Int? = null,
 )
 
 /** 旅程中的一个充电停靠。 */
@@ -147,7 +167,21 @@ data class Journey(
     val endKm: Double,
     val startDate: Instant,
     val endDate: Instant,
+    /** ⚠️ v0.31.0：归一后的起点地点标识 */
+    val fromKey: String? = null,
+    /** ⚠️ v0.31.0：归一后的终点地点标识 */
+    val toKey: String? = null,
 ) {
+    /**
+     * ⚠️ **v0.31.0：这一趟是不是「回到了同一个地方」。**
+     *
+     * 实测：6227 公里那条的起点与终点是**同一个小区**
+     * （「永丰社区」与「新湖路」相距 **300 米**，被地理编码拆成了两个名字），
+     * 原来 App 把它显示成「永丰社区 → 新湖路」的**单程**线路 ——
+     * 读起来像「从 A 开到 B」，而实际上是**往返**。
+     */
+    val isRoundTrip: Boolean
+        get() = fromKey != null && toKey != null && fromKey == toKey
     val distanceKm: Double get() = endKm - startKm
     val legCount: Int get() = legs.size
 
@@ -217,6 +251,12 @@ fun buildJourneys(
             endDate = d.end_date ?: d.start_date,
             // ⚠️ v0.30.0：带上时长，用于算 journey 的真实均速
             durationMin = d.duration_min,
+            // ⚠️ v0.31.0：带上归一后的地点标识（判断是不是往返）
+            startPlaceKey = d.start_place_key,
+            endPlaceKey = d.end_place_key,
+            // ⚠️ v0.31.0：带上爬升/下降（官方 App 给不了的数）
+            ascentM = d.ascent_m,
+            descentM = d.descent_m,
         )
     }.sortedBy { it.startKm }
 
@@ -386,6 +426,9 @@ fun buildJourneys(
             endKm = endKm,
             startDate = first.startDate,
             endDate = last.startDate,
+            // ⚠️ v0.31.0：归一后的起止地点标识（判断「往返」）
+            fromKey = first.startPlaceKey,
+            toKey = last.endPlaceKey,
         )
     }.sortedByDescending { it.startDate }
 }
@@ -409,8 +452,23 @@ fun buildJourneys(
  * - 途中的「修文县」4 次 → 两个键（26.85 / 26.83，差 1.8 公里是不同车位），
  *   但它们相隔不到 50 公里，**本来也不会**触发「回来了」
  * - 「中国石化」3 个城市 → 3 个键 ✓
+ *
+ * ⚠️ **v0.31.0：服务端已经按**真实距离**把 500 米内的地址聚类了，
+ * 现在直接用它下发的 `place_key` —— 上面这套组合键有两个真问题：**
+ *
+ * 1. **舍入边界**：坐标四舍五入到 2 位（≈1.1 km）会把**相距 300 米**的两个点
+ *    劈到两边 —— 实测「永丰社区」(22.5771) → 「22.58」而「新湖路」(22.5749) → 「22.57」，
+ *    于是**同一个小区**被算成两个地方。
+ * 2. **名字本身会变**：地理编码给同一个小区两个名字，
+ *    组合键把名字也算进去 → 归一了坐标却没归一名字。
+ *
+ * 服务端的新做法：按真实球面距离聚类（500 m），
+ * 取**被引用次数最多**的 display_name 作为该地点的统一名字，
+ * 并下发 `place_key`（形如 `g1` / `a24`）。
  */
 private fun placeKey(c: Charge): String {
+    c.place_key?.takeIf { it.isNotBlank() }?.let { return it }
+    // 服务端还没给（旧版本 API）时的兜底：老逻辑。
     val name = c.poi_name?.takeIf { it.isNotBlank() }
         ?: c.geofence_name?.takeIf { it.isNotBlank() }
         ?: c.place?.firstSegment()
@@ -424,7 +482,15 @@ private fun placeKey(c: Charge): String {
 fun Journey.summary(): String {
     val parts = mutableListOf<String>()
     parts += "${distanceKm.roundToInt()} 公里"
-    parts += "$legCount 段"
+    // ⚠️ **v0.31.0（数据口径审计 P1-2）：段数与 `RoutePlan.conclusion()` 保持一致。**
+    // 原来这里给**全部**段数（191），而结论句给 **≥2 公里**的段数（131）——
+    // 同一个 journey 在两个地方显示不同段数，用户会以为有一个是错的。
+    // 现在两个都给出，并说清差别（差的是充电站内挪车微行程）。
+    parts += if (meaningfulLegCount < legCount) {
+        "$legCount 段行程（其中 $meaningfulLegCount 段超过 2 公里）"
+    } else {
+        "$legCount 段"
+    }
     if (midStopCount > 0) parts += "$midStopCount 次沿途充电"
     return parts.joinToString(" · ")
 }

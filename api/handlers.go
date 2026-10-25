@@ -253,7 +253,8 @@ func handleDrives(w http.ResponseWriter, r *http.Request) {
 		var d Drive
 		if err := rows.Scan(
 			&d.ID, &d.StartDate, &d.EndDate, &d.DurationMin, &d.Distance,
-			&d.StartPlace, &d.EndPlace, &d.StartSoc, &d.EndSoc,
+			&d.StartPlace, &d.EndPlace, &d.StartPlaceKey, &d.EndPlaceKey,
+			&d.StartSoc, &d.EndSoc,
 			&d.EnergyKwh, &d.WhPerKm, &d.SpeedMax, &d.OutsideTemp, &d.OdoStart, &d.OdoEnd,
 			&d.AvgSpeedKph, &d.AscentM, &d.DescentM, &d.InsideTempAvg,
 			&d.PowerMaxKw, &d.PowerMinKw,
@@ -347,6 +348,8 @@ func handleCostSummary(w http.ResponseWriter, r *http.Request) {
 		&out.DcMinutes, &out.AcMinutes,
 		// ⚠️ v0.30.0：围栏命中的家充桶（交流 ∧ 有 geofence_id）
 		&out.HomeUsedKwh, &out.HomeSessions, &out.HomeMinutes,
+		// ⚠️ v0.31.0：行驶里程的两个分母（每公里成本要显示成区间）
+		&out.KmDrives, &out.KmOdometer,
 	)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -503,14 +506,17 @@ func handleRouteProfile(w http.ResponseWriter, r *http.Request) {
 			startKm    float64
 			endKm      float64
 			distanceKm float64
+			ascentM    int
+			descentM   int
 			kmOffset   float64
 			km         float64
 			soc        float64
 		)
 		// ⚠️ Scan 的顺序必须和 SELECT 的列顺序**严格一致**：
-		//   ord, drive_id, start_km, end_km, distance_km, km_offset, km, soc
+		//   ord, drive_id, start_km, end_km, distance_km, ascent_m, descent_m,
+		//   km_offset, km, soc
 		if err := rows.Scan(&ord, &driveID, &startKm, &endKm,
-			&distanceKm, &kmOffset, &km, &soc); err != nil {
+			&distanceKm, &ascentM, &descentM, &kmOffset, &km, &soc); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -524,6 +530,8 @@ func handleRouteProfile(w http.ResponseWriter, r *http.Request) {
 					EndKm:      round2(endKm),
 					DistanceKm: round2(distanceKm),
 					KmOffset:   round2(kmOffset),
+					AscentM:    ascentM,
+					DescentM:   descentM,
 				},
 			})
 		}
@@ -536,8 +544,12 @@ func handleRouteProfile(w http.ResponseWriter, r *http.Request) {
 	// 段按行驶顺序（App 传进来的顺序）排
 	sort.SliceStable(legRows, func(i, j int) bool { return legRows[i].ord < legRows[j].ord })
 	minStartKm, maxEndKm := 0.0, 0.0
+	// ⚠️ v0.31.0：整条路线的毛爬升 / 毛下降（各段相加）。
+	totalAscent, totalDescent := 0, 0
 	for i, lr := range legRows {
 		out.Legs = append(out.Legs, lr.leg)
+		totalAscent += lr.leg.AscentM
+		totalDescent += lr.leg.DescentM
 		if i == 0 {
 			minStartKm, maxEndKm = lr.leg.StartKm, lr.leg.EndKm
 			continue
@@ -549,6 +561,9 @@ func handleRouteProfile(w http.ResponseWriter, r *http.Request) {
 			maxEndKm = lr.leg.EndKm
 		}
 	}
+	out.AscentM = totalAscent
+	out.DescentM = totalDescent
+	out.NetAscentM = totalAscent - totalDescent
 	// 点按 km 升序（稳定排序：里程相同的点保持段的先后顺序）
 	sort.SliceStable(out.Points, func(i, j int) bool { return out.Points[i].Km < out.Points[j].Km })
 	// total_km = 路线跨度 = 最远终点 − 最早起点。
@@ -696,7 +711,7 @@ func handleCharges(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&c.ID, &c.StartDate, &c.EndDate, &c.DurationMin,
 			&c.EnergyAdded, &c.EnergyUsed, &c.Cost, &c.StartSoc, &c.EndSoc,
-			&c.Place, &c.PoiName, &c.PoiType, &c.MapLat, &c.MapLng, &c.IsDC,
+			&c.Place, &c.PlaceKey, &c.PoiName, &c.PoiType, &c.MapLat, &c.MapLng, &c.IsDC,
 			&c.GeofenceName,
 			&c.StartRangeKm, &c.EndRangeKm,
 			&c.StartOdoKm, &c.EndOdoKm,
@@ -708,6 +723,8 @@ func handleCharges(w http.ResponseWriter, r *http.Request) {
 			&c.OutsideTempAvg,
 			&c.ChargerPhases, &c.ChargerVolts, &c.ChargerAmps,
 			&c.CableType, &c.ChargerBrand, &c.IsTeslaSC,
+			// ⚠️ v0.31.0：实测口径（见 sqlCharges 的 ch_measured 注释）
+			&c.MeasuredMinutesTo80, &c.MeasuredFromSoc, &c.MeasuredUnavailableReason,
 		); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1146,15 +1163,27 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	// 两个数都在界面上却不加区分，用户对不上账。
 	isCalendarMonth := false
 	switch r.URL.Query().Get("period") {
+	case "today":
+		// ⚠️ **v0.31.0（第 20 轮费用复审 P1-4）：`/stats` 与 `cost_summary` 同契约。**
+		// 原来 `default: 30 天` 会把任何拼错的 period **默默夹到 30 天** ——
+		// 而 `cost_summary` 已经改成白名单 + 400 了，同一个客户端调用模式
+		// 一个报错一个静默返回，口径不一致。
+		// 现在两个端点用**同一套** period 白名单。
+		granularity, buckets = "day", 1
 	case "week":
 		granularity, buckets = "day", 7
+	case "month":
+		granularity, buckets = "day", 30
 	case "year":
 		granularity, buckets = "month", 12
 	case "calendar_month":
 		granularity, buckets = "day", 0
 		isCalendarMonth = true
 	default:
-		granularity, buckets = "day", 30
+		// ⚠️ 越界要 400，不能默默夹到边界（项目自己的纪律）。
+		writeErr(w, http.StatusBadRequest,
+			"period 只能是 today / week / month / calendar_month / year")
+		return
 	}
 	tz := getenv("TZ_NAME", "Asia/Shanghai")
 	loc, err := time.LoadLocation(tz)

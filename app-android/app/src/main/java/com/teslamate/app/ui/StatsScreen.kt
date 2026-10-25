@@ -452,17 +452,53 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         // **同一个指标给两个相反的答案**。
                         //
                         // 现在改成**互斥三分支**：估算 > 服务端记录 > 都没有。
-                        val hasClientEstimate = costSummary != null && rates.configured && sum.km > 0.1
+                        //
+                        // ⚠️ **v0.31.0（第 20 轮费用复审 P2-2）：「没有里程」不等于「没有费用数据」。**
+                        //
+                        // 原来 `sum.km > 0.1` 一把关，「今天」段（今天还没开车，里程 0）
+                        // 就掉进「充电费用 **未记录**」分支，还说「需在 TeslaMate 网页端手填单价」——
+                        // 而事实是**今天没充过电，费用就是 ¥0**。
+                        // 把「没有里程」误报成「没有数据」，还把责任推给用户的配置。
+                        val hasCostData = costSummary != null && rates.configured
+                        val hasClientEstimate = hasCostData && sum.km > 0.1
+                        // ⚠️ costSummary 是 delegated property（var by remember）→ 不能 smart cast，
+                        // 先取一个局部 val。
+                        val cs = costSummary
                         if (!hasClientEstimate) {
                             if (sum.cost > 0) {
                                 KV("充电费用", "${sum.cost.fmt(2)} 元")
+                            } else if (hasCostData && cs != null) {
+                                // 有费用数据，只是**这段没有行驶** → 给费用，不给每公里成本
+                                val charged = cs.dc_used_kwh + cs.ac_used_kwh
+                                if (charged > 0.01) {
+                                    val c = estimateCost(cs, rates)
+                                    KV("充电费用", "≈ ${c.totalYuan.fmtYuan()}")
+                                    Text(
+                                        "这段没有行驶记录，所以给不出每公里成本",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(bottom = 4.dp),
+                                    )
+                                } else {
+                                    KV("充电费用", "¥0.00")
+                                    Text(
+                                        "这段时间没有充电记录",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(bottom = 4.dp),
+                                    )
+                                }
                             } else {
                                 // ⚠️ v0.17.0：说明文字**拆到下一行** ——
                                 // 原来把它塞进值里（「未记录 —— 在 TeslaMate 网页端手填单价后才有」），
                                 // 值太长会换行成两行、右对齐还顶到边角，很难读。
+                                //
+                                // ⚠️ **v0.31.0**：那句「在 TeslaMate 网页端手填单价」**已经过时** ——
+                                // 电价是在**本 App 的设置页**填的（v0.25.0 起），
+                                // TeslaMate 那边的 `tou_rates` 是另一套东西（且至今 0 行）。
                                 KV("充电费用", "未记录")
                                 Text(
-                                    "费用需在 TeslaMate 网页端手填单价后才有",
+                                    "在「设置 → 电价与成本」填上电价后，这里就能估算",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(bottom = 4.dp),
@@ -498,17 +534,46 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         // 官方 FAQ 自己承认与里程表对不上。我们有真实里程。
                         if (hasClientEstimate) {
                             val cost = estimateCost(costSummary!!, rates)
-                            val perKm = costPerKm(cost, sum.km)
+                            // ⚠️ **v0.31.0（第 20 轮费用复审 P0-1）：两个分母。**
+                            //
+                            // `km_drives` = App 记录到的行驶里程；
+                            // `km_odometer` = 里程表跨度，**包含**遥测断档里车真开过的公里
+                            // （实测全库 12 次断档合计 1459.62 公里 = 16.71%，且全在 10-01 之前）。
+                            //
+                            // 所以长窗口的「每公里成本」是**区间**，不是点值。
+                            val kmDrives = costSummary?.km_drives ?: 0.0
+                            val kmOdo = costSummary?.km_odometer ?: 0.0
+                            val perKm = costPerKm(cost, sum.km, kmOdo)
                             KV("充电费用", "≈ ${cost.totalYuan.fmtYuan()}")
                             perKm.allPerKm?.let {
                                 // ⚠️ v0.27.0：覆盖度不足时必须限定口径 ——
                                 // 「每公里成本」的分母是**这段时间的里程**，
                                 // 而「1 年」实际只有 4 个月有数据 → 这个数不是年成本。
+                                val range = perKm.allPerKmLow?.let { lo ->
+                                    "≈ ${lo.fmtYuan()} ~ ${it.fmtYuan()} /公里"
+                                } ?: "≈ ${it.fmtYuan()} /公里"
                                 KV(
                                     "每公里成本",
-                                    "≈ ${it.fmtYuan()} /公里" +
-                                        if (coverageLow) "（按这 $filledBuckets $bucketUnit 算）" else "",
+                                    range + if (coverageLow) "（按这 $filledBuckets $bucketUnit 算）" else "",
                                 )
+                            }
+                            // ⚠️ **v0.31.0（P0-1）：分母有缺口时必须说清楚。**
+                            //
+                            // 不说的话，用户会把上界当成**确定值** ——
+                            // 而它其实是个上界（真值低 3.4%~11.9%）。
+                            perKm.denominatorGapPercent?.let { gap ->
+                                if (gap >= 1) {
+                                    Text(
+                                        "分母说明：这 $filledBuckets $bucketUnit 里 App 记录到 " +
+                                            "${kmDrives.roundToInt()} 公里行驶，" +
+                                            "而里程表走了 ${kmOdo.roundToInt()} 公里 —— " +
+                                            "差的 $gap% 是 **TeslaMate 没在记录**的遥测断档" +
+                                            "（那些路车真开了，但没记行程），所以每公里成本是**区间**。",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(bottom = 4.dp),
+                                    )
+                                }
                             }
                             // ⚠️ P0-3：**直流桩边际成本**必须单独给 ——
                             // 实测本车交流慢充只占 3%，混算会给人「我享受了家充电价」的错觉，
@@ -560,9 +625,24 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             //
                             // 实测：不填服务费 → ¥2,201.17；按分钟 0.50 → ¥3,295.67，
                             // **低估 ¥1,094.50（33.2%）** —— 而界面一声不吭。
-                            if (rates.serviceFeeMissing) {
+                            //
+                            // ⚠️ **v0.31.0（第 20 轮费用复审 P2-1）**：
+                            // ① 「三分之一」是**硬编码**，实测各段占比不同：
+                            //    1 年 32.9% / 本月 33.3% / **7 天 47.8%** —— 7 天段是「约一半」。
+                            // ② 纯交流窗口（没有直流）时**服务费根本不参与**，提示完全不成立。
+                            // 现在：① 用实际占比；② 加直流闸门。
+                            if (rates.serviceFeeMissing && cost.dcKwh > 0.01) {
+                                val missingShare = cost.serviceYuanPerKwh?.let { svc ->
+                                    val total = cost.yuanPerKwh ?: return@let null
+                                    if (total > 0.01) (svc / total * 100).roundToInt() else null
+                                }
                                 Text(
-                                    "⚠ 没填公共桩服务费 —— 这类桩普遍收占位费，估算会偏低约三分之一",
+                                    if (missingShare != null) {
+                                        "⚠ 没填公共桩服务费 —— 这类桩普遍收占位费，" +
+                                            "实测不填会低估约 $missingShare%"
+                                    } else {
+                                        "⚠ 没填公共桩服务费 —— 这类桩普遍收占位费，估算会偏低"
+                                    },
                                     style = MaterialTheme.typography.labelSmall,
                                     color = LocalAccentColors.current.warnAmber,
                                     modifier = Modifier.padding(bottom = 4.dp),
@@ -571,7 +651,9 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // ⚠️ **v0.30.0（P0-3）：家充现在有**真凭据**了。**
                             //
                             // 原来的模型是「交流 ⇒ 家充」，靠充电枪类型猜地点 ——
-                            // 实测本机 5 场交流慢充**全部**在 286~1506 公里外，这个猜法 5/5 全错。
+                            // 实测本机 5 场交流慢充**没有一场在家**（最近的 287 公里，
+                            // 其余 1435/1435/1481 公里，还有一场 25.6 公里但充入 0 度），
+                            // 这个猜法 5/5 全错。
                             // 现在家充由 **TeslaMate 的充电围栏**判定，
                             // 剩下的交流（没有围栏归属）就是「不知道在哪」，
                             // 按你填的「其它交流慢充单价」计。
@@ -580,7 +662,9 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     "家充按 TeslaMate 的充电围栏判定（这段窗口里有 ${cost.homeKwh.fmt(0)} 度命中围栏）"
                                 } else {
                                     "这段窗口里没有任何一场充电命中充电围栏 —— App 分不出交流慢充是在家还是在酒店/路边" +
-                                        "（「家」围栏是 2026-10-25 才建的，之前的充电都没有归属）"
+                                        "（「家」围栏是 2026-10-25 才建的，之前的充电都没有归属）。" +
+                                        "没有归属的交流慢充现在按「${if (rates.acUsesHomePrice) "家充电价" else "公共桩价"}」计" +
+                                        "（设置里可改）"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

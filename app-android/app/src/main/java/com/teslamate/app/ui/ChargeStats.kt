@@ -8,6 +8,15 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
+ * ⚠️ **v0.31.0：实测样本的「同起点」带宽（±5 个百分点）。**
+ *
+ * 实测同站离散度：起始 SOC ≤37% 时 3%~4%（很小），
+ * ≥38% 时 20%~29%（慢会话会混进来）。
+ * 所以 ±5 是个既能攒到样本、又不至于混太杂的带宽。
+ */
+const val MEASURED_SOC_BAND = 5
+
+/**
  * 充电站历史统计 —— 回答长途自驾党最关心的那个问题：
  * **「这个桩到底快不快？我要等多久？够不够充到下一站？」**
  *
@@ -45,7 +54,54 @@ data class StationStat(
     val p90MinutesTo80: Int?,
     /** 反推出的电池容量（kWh），用于折算耗时 */
     val batteryCapacityKwh: Double,
+    /**
+     * ⚠️ **v0.31.0（第 20 轮充电系统数据专家 P0-1）：该站的**实测**样本。**
+     *
+     * 每项 = 「从该 SOC 起充到 80% 实测用了多少分钟」。
+     *
+     * ⚠️ 为什么是「起点区间」而不是固定「≤50%」：
+     * 固定口径会把起始 SOC 差 40 个百分点、功率差 5 倍的场次混在一起 ——
+     * 折算值互相没有可比性，这正是 v0.30.0 那个「同屏两个数差 50%」的结构性原因。
+     *
+     * 实测同站同区间的离散度很小：起始 SOC 13/14/15 的三场实测是 37 / 37 / 36 分钟
+     * （离散 3%）；但起始 SOC ≥38% 时离散会跳到 20%~29%（因为慢会话也进来了）。
+     */
+    val measuredSamples: List<MeasuredSample> = emptyList(),
 ) {
+    /**
+     * ⚠️ v0.31.0：一笔**实测**样本（起点 SOC + 分钟数）。
+     */
+    data class MeasuredSample(val fromSoc: Int, val minutes: Int)
+
+    /** 实测样本里落在「起点 ± [MEASURED_SOC_BAND]%」区间的数量 */
+    fun measuredCountNear(soc: Int?): Int {
+        if (soc == null) return 0
+        return measuredSamples.count { kotlin.math.abs(it.fromSoc - soc) <= MEASURED_SOC_BAND }
+    }
+
+    /**
+     * 同起点区间的**实测中位**（分钟）。
+     *
+     * 样本 < 2 时返回 null —— n=1 的「中位数」不是中位数。
+     */
+    fun measuredMedianNear(soc: Int?): Int? {
+        if (soc == null) return null
+        val vals = measuredSamples
+            .filter { kotlin.math.abs(it.fromSoc - soc) <= MEASURED_SOC_BAND }
+            .map { it.minutes }
+        if (vals.size < 2) return null
+        return medianOf(vals.map { it.toDouble() })?.roundToInt()
+    }
+
+    /** 同起点区间里**最慢的一次**（分钟）—— 代替原来那个从不显示的 P90 */
+    fun measuredSlowestNear(soc: Int?): Int? {
+        if (soc == null) return null
+        val vals = measuredSamples
+            .filter { kotlin.math.abs(it.fromSoc - soc) <= MEASURED_SOC_BAND }
+            .map { it.minutes }
+        return if (vals.isEmpty()) null else vals.max()
+    }
+
     /**
      * 从 [socFrom] 充到 [socTo] 需要多久（分钟）。
      *
@@ -108,13 +164,21 @@ fun buildStationStats(charges: List<Charge>): Map<String, StationStat> {
         // 长途新服务区的常态。结果：出发前最想知道的那个站，
         // 界面上只有「到站 16%」三个字，没有 kW、没有分钟。
         // 现在 1 次也保留，界面负责标注「仅 1 次」。
-        val powers = list.mapNotNull { it.effectiveAvgPowerKw() }.filter { it > 1.0 }
+        // ⚠️ **v0.31.0（第 20 轮充电系统数据专家 P0-3）：典型功率必须排除「零电量尾段」。**
+        //
+        // 实测 id=31（**0.04 度**、1 分钟、5 kW）把某站的典型功率从 32 kW 拉到 **18.5 kW** ——
+        // 而典型功率是「折算耗时」的分母，功率砍掉 42% → 时间翻倍，
+        // 直接造出了那一行 **+185%** 的偏差。
+        //
+        // 判据：充入 **< 0.5 度**的场次是「插了一下没充上」，不参与功率统计。
+        val powerList = list.filter { (it.energy_added_kwh ?: 0.0) >= 0.5 }
+        val powers = powerList.mapNotNull { it.effectiveAvgPowerKw() }.filter { it > 1.0 }
         if (powers.isEmpty()) return@mapNotNull null
         val typicalPower = medianOf(powers.map { it.toDouble() }) ?: return@mapNotNull null
 
         // ⚠️ v0.9.2：直流与交流**分开统计**。
         // AC 典型约 7 kW、DC 典型约 55 kW，混在一起取中位数得到的数两边都不是。
-        val dcPowers = list.filter { it.is_dc }.mapNotNull { it.effectiveAvgPowerKw() }.filter { it > 1.0 }
+        val dcPowers = powerList.filter { it.is_dc }.mapNotNull { it.effectiveAvgPowerKw() }.filter { it > 1.0 }
         val typicalPowerDc = if (dcPowers.size >= 2) medianOf(dcPowers.map { it.toDouble() }) else null
 
         // 从 ≤50% 出发的充电：算充到 80% 需要多久
@@ -145,6 +209,16 @@ fun buildStationStats(charges: List<Charge>): Map<String, StationStat> {
             // 样本 < 10 时不给（此时 P90 与最大值没有区别，标 P90 是误导）。
             p90MinutesTo80 = p90NearestRank(minutes),
             batteryCapacityKwh = capacity,
+            // ⚠️ **v0.31.0：实测样本**（服务端逐点直读，不是折算）。
+            //
+            // 实测 30 场有效（78 场里 38.5%）：
+            // 直流中位 31.4 分钟、P90 41.0 分钟；
+            // 折算口径中位高估 **+33%**、最大 **+185%**。
+            measuredSamples = list.mapNotNull { c ->
+                val m = c.measured_minutes_to_80 ?: return@mapNotNull null
+                val from = c.measured_from_soc ?: return@mapNotNull null
+                StationStat.MeasuredSample(from, m)
+            },
         )
     }.toMap()
 }
@@ -193,12 +267,25 @@ private fun median(values: List<Double>): Double = medianOf(values) ?: 0.0
 /**
  * 一句话摘要：这个桩的历史表现。
  *
- * 例：「该站历史 59 kW · 充到 80% 约 32 分钟（3 次）」
+ * 例：「该站历史 59 kW · 同起点实测充到 80% 中位 37 分钟（3 次）」
+ *
+ * ⚠️ **v0.31.0：优先给**实测**（同起点区间），折算只作兜底。**
+ *
+ * 原来只有折算值「充到 80% 约 54 分钟」——
+ * 而实测同区间中位是 **37.5 分钟**（**+44%**），最大偏差 **+185%**。
+ * 两个数曾**同屏并列**却不加解释。
  */
-fun StationStat.summary(): String {
+fun StationStat.summary(fromSoc: Int? = null): String {
     val sb = StringBuilder()
     sb.append("该站历史 ").append(typicalPowerKw.roundToInt()).append(" kW")
-    typicalMinutesTo80?.let { sb.append(" · 充到 80% 约 ").append(it).append(" 分钟") }
+    val measured = measuredMedianNear(fromSoc)
+    if (measured != null) {
+        sb.append(" · 同起点实测充到 80% 中位 ").append(measured).append(" 分钟")
+    } else {
+        typicalMinutesTo80?.let {
+            sb.append(" · 充到 80% 约 ").append(it).append(" 分钟（按典型功率折算）")
+        }
+    }
     sb.append("（").append(sessions).append(" 次）")
     return sb.toString()
 }

@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import com.teslamate.app.Charge
 import com.teslamate.app.Drive
 import com.teslamate.app.firstSegment
+import com.teslamate.app.fmt
 import com.teslamate.app.fmtDate
 import com.teslamate.app.fmtKwh100
 import java.time.Instant
@@ -126,6 +127,15 @@ data class RouteTemplate(
      * 实测：6227 公里那条 **64 km/h**，616 公里那条 **42 km/h**。
      */
     val avgSpeedKph: Double? = null,
+    /**
+     * ⚠️ **v0.31.0：这一趟是不是「回到了同一个地方」。**
+     *
+     * 实测：6227 公里那条的起点与终点是**同一个小区**
+     * （「永丰社区」与「新湖路」相距 **300 米**，被地理编码拆成两个名字），
+     * 原来显示成「永丰社区 → 新湖路」的**单程**线路 —— 读起来像「从 A 开到 B」，
+     * 实际是**往返**。
+     */
+    val isRoundTrip: Boolean = false,
     /** 最近一次的出发电量（%） */
     val lastStartSoc: Int? = null,
     /** 最近一次的到达电量（%） */
@@ -196,6 +206,15 @@ data class RouteStop(
      */
     val socAtNextStop: Int? = null,
     /**
+     * ⚠️ **v0.31.0：从上一个站到这一站，这一段爬了多高（米）。**
+     *
+     * 官方 Tesla App **从不给**这个数 —— 它只有总里程和平均电耗。
+     *
+     * 实测这条川藏滇线里，站间爬升从 **0 米到 4,186 米**（差 4,186 倍）——
+     * 用「平均爬升」会同时错报平路段和最陡段，所以必须**逐段**给。
+     */
+    val gapAscentM: Int? = null,
+    /**
      * ⚠️ **v0.30.0（长途自驾党 P0-1）：算 [socAtNextStop] 用到的车速（km/h）。**
      *
      * 原来**硬编码 90 km/h** —— 与这趟毫无关系。
@@ -235,7 +254,30 @@ data class RoutePlan(
      * 「到了城东路得先充一次才能到」，而实际上那是到达之后的动作。
      */
     val endpointStops: List<RouteStop> = emptyList(),
+    /**
+     * ⚠️ **v0.31.0：整条线路的毛爬升 / 毛下降（米）。**
+     *
+     * 官方 App 给不了的数 —— 它只有总里程和平均电耗，
+     * 不会告诉你「你翻了多少山」。
+     *
+     * 实测那条 6227 公里的川藏滇线：毛爬升 **51,804 米**（≈ 5.9 座珠峰）、
+     * 毛下降 62,554 米、**净爬升 −750 米**（终点比起点低 750 米）。
+     *
+     * ⚠️ **净爬升可以是负的** —— 所以做能耗修正时必须
+     * 「上坡按毛爬升算、下坡按毛下降抵扣」，不能用净值。
+     */
+    val climbAscentM: Int = 0,
+    /** 毛下降（米） */
+    val climbDescentM: Int = 0,
 ) {
+    /**
+     * 爬升折合**多少座珠穆朗玛峰**（珠峰 8,849 m）。
+     *
+     * 只给**一个**对比锚点 —— 给三个锚点就是装饰。
+     */
+    val climbEverests: Double
+        get() = if (climbAscentM > 0) climbAscentM / 8849.0 else 0.0
+
     /** 最低点（不含充电跳升后的值） */
     val lowestSoc: Int? get() = profile.minByOrNull { it.soc }?.soc
 
@@ -266,7 +308,14 @@ data class RoutePlan(
     fun conclusion(): String {
         val s = template
         val parts = mutableListOf<String>()
-        parts += "${s.fromLabel} → ${s.toLabel}"
+        // ⚠️ **v0.31.0：往返要明说。**
+        // 起点与终点是同一个地方时，写「永丰社区 → 永丰社区」会被读成「开了个来回」，
+        // 但读者不知道这是**6122 公里的往返**；写成「永丰社区（往返）」才准确。
+        parts += if (s.isRoundTrip) {
+            "${s.fromLabel}（往返）"
+        } else {
+            "${s.fromLabel} → ${s.toLabel}"
+        }
         parts += "${s.distanceKm.roundToInt()} 公里"
         // ⚠️ v0.26.0：改成「N 段 · M 次沿途充电」——
         // 原来写「走过 N 次」，而 N 现在是**段数**，
@@ -440,6 +489,8 @@ fun buildRouteTemplates(
             lastDistanceKm = j.distanceKm,
             // ⚠️ v0.30.0（P0-1）：真实均速（不再硬编码 90 km/h）
             avgSpeedKph = j.avgSpeedKph,
+            // ⚠️ v0.31.0：是不是往返
+            isRoundTrip = j.isRoundTrip,
             lastStartSoc = j.legs.first().startSoc,
             lastEndSoc = j.legs.last().endSoc,
             lastDriveId = j.legs.last().driveId,
@@ -507,6 +558,37 @@ fun buildRoutePlan(
     // 现在：归属在 [buildJourneys] 里做好了 —— 充电落在**两段之间的缺口**里才算沿途站。
     val journeyStops = template.stops
 
+    // ⚠️ **v0.31.0：爬升。**
+    //
+    // 数据来源：`drives.ascent` / `drives.descent`（客户端已经有的字段）。
+    // 口径：实测 drives.ascent **逐条**等于「相邻点正高差之和」（439/439，最大差 0 米），
+    // 但含 GPS 量化噪声（长途大段偏差 0.8%~2.3%，短途中位虚高 17.1%）——
+    // 所以**只适合长途场景**（本函数本来就只处理 ≥200 km 的线路）。
+    //
+    // ⚠️ **净爬升可以是负的**（实测那条线终点比起点低 750 米），
+    // 所以逐段给「上坡多少」，**不用净值**。
+    val journeyStartKm = template.legs.firstOrNull()?.startKm ?: 0.0
+    val legRanges = template.legs.map {
+        Triple(
+            it.startKm - journeyStartKm,
+            it.endKm - journeyStartKm,
+            it.ascentM ?: 0,
+        )
+    }
+    /** 某段里程区间内的爬升（按重叠比例分摊）。 */
+    fun ascentBetween(fromKm: Double, toKm: Double): Int {
+        if (toKm <= fromKm) return 0
+        var sum = 0.0
+        for ((s, e, a) in legRanges) {
+            val ov = minOf(e, toKm) - maxOf(s, fromKm)
+            if (ov <= 0.0 || e <= s) continue
+            sum += a * (ov / (e - s))
+        }
+        return sum.toInt()
+    }
+    val routeAscentM = template.legs.sumOf { it.ascentM ?: 0 }
+    val routeDescentM = template.legs.sumOf { it.descentM ?: 0 }
+
     // ⚠️ **v0.25.0（长途充电规划专家 P1-2）：站间距离 + 「到下一站剩多少电」。**
     //
     // 原来只给「在第几公里」，不给「到下一站多远」——
@@ -564,11 +646,24 @@ fun buildRoutePlan(
             // ⚠️ v0.14.0（长途自驾党 P0-2）：「从**本次到站电量**充到 socAfter」要多久。
             // 原来只有写死的「充到 80% 约 N 分钟」——
             // 我到站 16%、充到 60% 就走，这两个数毫无关系。
+            //
+            // ⚠️ **v0.31.0（第 20 轮充电系统数据专家 P0-1）：优先用**实测**。**
+            //
+            // 该站的**实测**样本（服务端逐点直读）与折算值差很多：
+            // 实测 30 场中位 **+33%**、最大 **+185%**（折算偏大）。
+            //
+            // ⚠️ 只在**充到 80%**这个区间用实测 ——
+            // 实测值就是「从起点到 80%」的分钟数，换个终点就得外推，
+            // 而外推会重新引入折算的偏差。所以非 80% 的终点仍用折算。
             minutesToTarget = stat?.let {
                 val kw = it.typicalPowerDcKw ?: it.typicalPowerKw
                 val from = c.start_soc
                 val to = c.end_soc
-                if (from != null && to != null && kw != null) it.minutesTo(from, to, kw) else null
+                if (from == null || to == null) null
+                else {
+                    val measured = if (to == 80) it.measuredMedianNear(from) else null
+                    measured ?: it.minutesTo(from, to, kw)
+                }
             },
             gapToNextKm = gapKm,
             socAtNextStop = socAtNext,
@@ -579,6 +674,11 @@ fun buildRoutePlan(
             // **没做**温度修正、**没做**爬升修正、**没留**安全余量。
             assumedSpeedKph = planSpeedKph,
             assumedWhPerKm = whPerKm,
+            // ⚠️ v0.31.0：从上一个站到这一站爬了多高
+            gapAscentM = ascentBetween(
+                if (idx == 0) 0.0 else journeyStops[idx - 1].kmAlong,
+                js.kmAlong,
+            ),
         )
     }
 
@@ -623,7 +723,12 @@ fun buildRoutePlan(
     }
 
     if (profile.size < 2) return null
-    return RoutePlan(template, profile, routeStops, endpointStops)
+    return RoutePlan(
+        template, profile, routeStops, endpointStops,
+        // ⚠️ v0.31.0：整条线路的爬升
+        climbAscentM = routeAscentM,
+        climbDescentM = routeDescentM,
+    )
 }
 
 /**
@@ -797,6 +902,20 @@ fun RoutePlanSummaryRow(
                         color = accents.energyBlue,
                         fontWeight = FontWeight.Bold,
                     )
+                    // ⚠️ **v0.31.0：爬升。**
+                    //
+                    // 官方 Tesla App 只有总里程和平均电耗，**从不告诉你翻了多少山**。
+                    // 实测那条川藏滇线：毛爬升 51,804 米 ≈ **5.9 座珠峰**。
+                    //
+                    // ⚠️ 放在**次级行**（不是主角数字）—— 这一屏的主角是续航结论句。
+                    if (plan.climbAscentM >= 200) {
+                        Text(
+                            "爬升 ${plan.climbAscentM} 米 · ≈ ${plan.climbEverests.fmt(1)} 座珠峰" +
+                                "（下降 ${plan.climbDescentM} 米）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 Spacer(Modifier.width(8.dp))
                 Icon(
@@ -986,6 +1105,17 @@ fun RoutePlanCard(
                                     // 现在明说它是折算 —— 不标的话，
                                     // 它会和充电详情页的**实测**分钟数并排出现而互相矛盾。
                                     append("约 $it 分钟（按典型功率折算）")
+                                }
+                                if (isNotEmpty()) append(" · ")
+                                // ⚠️ **v0.31.0：这一段爬了多高。**
+                                //
+                                // 实测同一条线路里，站间爬升从 **0 米到 4,186 米**（差 4,186 倍）——
+                                // 「平均爬升」会同时错报平路段和最陡段，所以必须**逐段**给。
+                                s.gapAscentM?.let { a ->
+                                    if (a >= 50) {
+                                        if (isNotEmpty()) append(" · ")
+                                        append("这段爬了 $a 米")
+                                    }
                                 }
                                 if (isNotEmpty()) append(" · ")
                                 // ⚠️ v0.14.0：只充过 1 次时明说，别让「典型」显得有统计支撑。

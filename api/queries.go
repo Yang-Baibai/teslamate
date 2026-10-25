@@ -162,8 +162,65 @@ charge_dc AS (
   GROUP BY charging_process_id
 )`
 
+// ⚠️ **v0.31.0（第 19 轮长途自驾党 + 数据口径审计）：地点归一。**
+//
+// ## 为什么需要
+//
+// 实测「永丰社区」（id 71/24）与「新湖路」（id 1）相距 **300 米** ——
+// 它们是**同一个小区**，只是被反向地理编码拆成了两个地址记录。
+// 于是 App 把 6227 公里的**往返**显示成「永丰社区 → 新湖路」的**单程**线路，
+// 充电站的名字也在两个名字之间摇摆（「新湖路」出现 24 次、「永丰社区」25 次）。
+//
+// ## 为什么按**距离**而不是按名字
+//
+// 地址表 267 行里有 234 个不同的 display_name、148 个不同的 POI 名 ——
+// **没有**任何字段能稳定标识「同一个地方」：
+// - `neighbourhood` 实际是**街道**级（西乡街道 / 园山街道），太粗；
+// - `raw->>'name'` 有时是路名（新湖路）、有时是小区名、时而是 POI 名；
+// - 坐标四舍五入到 2 位小数（≈1.1 km）会被**舍入边界**劈开：
+//   22.5749 → 「22.57」而 22.5771 → 「22.58」—— 300 米的两个点分到两边。
+//
+// 所以：**按真实球面距离聚类**，半径 500 m，取**被引用次数最多**的那个
+// display_name 作为该地点的统一名字。
+//
+// ⚠️ 半径 500 m 的依据（实测）：
+// - 「永丰社区 ↔ 新湖路」**300 m** → 必须合并
+// - 「新湖路, 径贝社区」(id 263) 离簇心 **964 m** → 不该合并（确实是另一个小区）
+// - 「荷坳立交 ↔ 荷坳路, 大园新村」**≈230 m** → 合并（同一片园区）
+// - 常驻点集合里也有一对 **243.3 m**（石化大道西 ↔ 龙山九路）——
+//   与 stay_points 的 250 m 合并阈值**同量级**，两个口径不冲突。
+//
+// ⚠️ 不用**传递闭包**：500 m 是「同一个地方」的物理尺度，
+// A-B 400 m、B-C 400 m 但 A-C 800 m 的情况在实测数据里不存在。
+const cteAddrNorm = `
+all_refs AS (
+  SELECT start_address_id AS address_id FROM drives
+  UNION ALL
+  SELECT end_address_id FROM drives
+  UNION ALL
+  SELECT address_id FROM charging_processes
+),
+addr_use AS (
+  SELECT a.id, a.display_name, a.latitude, a.longitude,
+         (SELECT count(*) FROM all_refs r WHERE r.address_id = a.id) AS uses
+  FROM addresses a
+),
+addr_norm AS (
+  SELECT u.id AS id,
+         (SELECT v.id FROM addr_use v
+          WHERE 6371000.0 * acos(least(1.0, greatest(-1.0,
+              cos(radians(u.latitude)) * cos(radians(v.latitude))
+            + sin(radians(u.latitude)) * sin(radians(v.latitude))
+            * cos(radians(u.longitude - v.longitude))
+          ))) <= 500
+          ORDER BY v.uses DESC, v.id ASC
+          LIMIT 1) AS canonical_id
+  FROM addr_use u
+)`
+
 const sqlDrives = `
 WITH` + cteChargeDC + `,
+` + cteAddrNorm + `,
 charge_link AS (
   -- 每个充电会话的「起始里程」+ 是否直流快充。
   -- TeslaMate 的 charging_processes 没有 start_odo 列，
@@ -209,6 +266,12 @@ charge_link AS (
 SELECT d.id, d.start_date, d.end_date, d.duration_min, d.distance,
        COALESCE(sg.name, sa.display_name) AS start_place,
        COALESCE(eg.name, ea.display_name) AS end_place,
+       -- ⚠️ v0.31.0：**归一后的地点标识**（围栏优先，否则用归一后的地址 id）。
+       -- 客户端据此判断「起止是不是同一个地方」——
+       -- 实测 6227 公里那条的起点与终点相距 **300 米**，
+       -- 是**往返**，原来却显示成「永丰社区 → 新湖路」的单程。
+       COALESCE('g' || sg.id::text, 'a' || an_s.canonical_id::text) AS start_place_key,
+       COALESCE('g' || eg.id::text, 'a' || an_e.canonical_id::text) AS end_place_key,
        sp.battery_level, ep.battery_level,
        -- ⚠️ v0.21.0：**负能耗护栏**。
        --
@@ -241,8 +304,10 @@ SELECT d.id, d.start_date, d.end_date, d.duration_min, d.distance,
        COALESCE(sc.charge_after_trip, false) AS charge_after_trip
 FROM drives d
 JOIN cars c ON c.id = d.car_id
-LEFT JOIN addresses sa ON sa.id = d.start_address_id
-LEFT JOIN addresses ea ON ea.id = d.end_address_id
+LEFT JOIN addr_norm an_s ON an_s.id = d.start_address_id
+LEFT JOIN addr_norm an_e ON an_e.id = d.end_address_id
+LEFT JOIN addresses sa ON sa.id = an_s.canonical_id
+LEFT JOIN addresses ea ON ea.id = an_e.canonical_id
 LEFT JOIN geofences sg ON sg.id = d.start_geofence_id
 LEFT JOIN geofences eg ON eg.id = d.end_geofence_id
 LEFT JOIN positions sp ON sp.id = d.start_position_id
@@ -304,7 +369,28 @@ GROUP BY 1 ORDER BY 1`
 // 不是第三个独立桶 —— 客户端用 `ac_used_kwh − home_used_kwh`
 // 得到「没有围栏归属的交流度数」，两者不会重复计数。
 const sqlCostSummary = `
-WITH` + cteChargeDC + `
+WITH` + cteChargeDC + `,
+drives_km AS (
+  -- ⚠️ **v0.31.0（第 20 轮费用复审 P0-1）：行驶里程的分母。**
+  -- 必须带 distance >= 0.1 —— 与 sqlStatsDrives 同过滤，
+  -- 否则 8759.94 与 8756.02 会差 3.92 公里。
+  SELECT COALESCE(SUM(d.distance), 0)::float8 AS km_drives
+  FROM drives d
+  WHERE d.car_id = $1 AND d.distance >= 0.1
+    AND (d.start_date AT TIME ZONE 'UTC') >= $2
+),
+odo_km AS (
+  -- 里程表在窗口内的**跨度**（MAX − MIN）。
+  -- 关键：它**包含**「两趟行程之间的遥测断档」——
+  -- 实测全库 12 次断档合计 1459.62 公里，最大一次 502.59 公里
+  -- （开车全程 positions 只有 75 行，且全部落在断档末端）。
+  -- 那些公里**车真的开了**，但 TeslaMate 没记行程 → drives.distance 漏掉了它们。
+  SELECT COALESCE(MAX(p.odometer) - MIN(p.odometer), 0)::float8 AS km_odometer
+  FROM positions p
+  JOIN drives d2 ON d2.id = p.drive_id
+  WHERE d2.car_id = $1 AND p.odometer IS NOT NULL
+    AND (d2.start_date AT TIME ZONE 'UTC') >= $2
+)
 SELECT COALESCE(SUM(CASE WHEN cd.is_dc THEN cp.charge_energy_used ELSE 0 END), 0)::float8 AS dc_used_kwh,
        COALESCE(SUM(CASE WHEN NOT cd.is_dc THEN cp.charge_energy_used ELSE 0 END), 0)::float8 AS ac_used_kwh,
        COUNT(*) FILTER (WHERE cd.is_dc)::int AS dc_sessions,
@@ -316,8 +402,17 @@ SELECT COALESCE(SUM(CASE WHEN cd.is_dc THEN cp.charge_energy_used ELSE 0 END), 0
                           THEN cp.charge_energy_used ELSE 0 END), 0)::float8 AS home_used_kwh,
        COUNT(*) FILTER (WHERE NOT cd.is_dc AND cp.geofence_id IS NOT NULL)::int AS home_sessions,
        COALESCE(SUM(CASE WHEN NOT cd.is_dc AND cp.geofence_id IS NOT NULL
-                          THEN cp.duration_min ELSE 0 END), 0)::float8 AS home_minutes
+                          THEN cp.duration_min ELSE 0 END), 0)::float8 AS home_minutes,
+       -- ⚠️ v0.31.0：两个分母（见 drives_km / odo_km 的注释）。
+       -- 客户端据此把「每公里成本」显示成**区间**而不是点值。
+       -- ⚠️ 必须包一层 MAX()：外层是聚合查询，这两个是单行 CTE 的列。
+       -- ⚠️ 还必须 COALESCE(…, 0)：窗口内**一场充电都没有**时，
+       --    WHERE 会把外层过滤成零行，聚合函数对空集返回 NULL（不是 0）。
+       COALESCE(MAX(dk.km_drives), 0) AS km_drives,
+       COALESCE(MAX(ok.km_odometer), 0) AS km_odometer
 FROM charging_processes cp
+CROSS JOIN drives_km dk
+CROSS JOIN odo_km ok
 LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
 WHERE cp.car_id = $1
   AND cp.end_date IS NOT NULL
@@ -383,11 +478,89 @@ WITH ch_agg AS (
   ) t
   WHERE prev IS NOT NULL AND charger_power > 0
   GROUP BY charging_process_id
-),` + cteChargeDC + `
+),` + cteChargeDC + `,
+` + cteAddrNorm + `,
+ch_measured AS (
+  -- ⚠️ **v0.31.0（第 20 轮充电系统数据专家 P0-1）：每场「实测」充到 80% 的分钟数。**
+  --
+  -- ## 为什么必须有它
+  --
+  -- 原来 App 的「充到 80% 约 N 分钟」是**线性折算**：
+  --   needKwh ÷ (整场时间加权平均功率) × 60。
+  -- 而直流桩在高 SOC 段会**降功率**（曲线是弯的）——
+  -- 整场平均功率被 80%→100% 的拖尾砍掉近一半：
+  --   实测 id=76：起始→80% 段实跑 **70.7 kW**，
+  --   80%→100% 拖尾只有 **13.0 kW** 却占了 **57.6 分钟**（整场 94 分钟），
+  --   整场时间加权平均只有 **37 kW**。用 37 kW 去外推 70 kW 的那一段 → 时间翻倍。
+  --
+  -- 实测 30 组可比场次：高估中位 **+33%**，最大 **+185%**。
+  -- 这两个数曾**同时出现在同一张屏上**（详情页「约 63 分钟」与「实测 36 分钟」），
+  -- 差 72%，却没有任何一句话解释它们是两个口径。
+  --
+  -- ## 口径
+  --
+  -- - 起点 = 本场 charges 表**第一个采样点**的 battery_level
+  --   （不是 cp.start_battery_level —— 曲线可能中途才接上监控；
+  --   实测本机 30 场有效样本全部与 cp.start_date 重合，但护栏必须留）。
+  -- - 终点 = **首个** battery_level >= 80 的采样点。
+  -- - 分钟数 = floor((t80 − t0) / 60s)，**截断**（与 Kotlin Duration.toMinutes() 一致）。
+  -- - 不可用时返回 NULL，并附原因（客户端据此显示不同文案）。
+  --
+  -- ## 性能（实测 2026-10-25，charges 22,912 行 / 349 页）
+  --
+  -- 全表扫 12.86 ms；生产形态（含 LAG 窗口 + join）15.09 ms，全部 buffer 命中。
+  -- **不需要新索引**（charging_process_id 上已有 btree）。
+  WITH curve AS (
+    SELECT ch.charging_process_id AS cp_id,
+           ch.date,
+           ch.battery_level,
+           LAG(ch.battery_level) OVER w AS prev_soc
+    FROM charges ch
+    JOIN charging_processes cp ON cp.id = ch.charging_process_id AND cp.car_id = $1
+    WINDOW w AS (PARTITION BY ch.charging_process_id ORDER BY ch.date)
+  ), agg AS (
+    SELECT cp_id,
+           MIN(date) AS t0,
+           (array_agg(battery_level ORDER BY date))[1] AS from_soc,
+           MIN(date) FILTER (WHERE battery_level >= 80) AS t80,
+           COUNT(*) AS npts,
+           -- ⚠️ 回落阈值取 **3 个百分点**：全库仅 2 处回落且都恰好 1%，
+           -- 那是 battery_level 量化噪声，不是真实回落。1% 回落不该否掉整场。
+           COUNT(*) FILTER (WHERE prev_soc IS NOT NULL AND battery_level < prev_soc - 2) AS n_drop
+    FROM curve
+    GROUP BY cp_id
+  )
+  SELECT cp_id,
+         from_soc,
+         npts,
+         CASE
+           WHEN from_soc IS NULL OR from_soc >= 80 THEN 'start_soc_ge_80'
+           WHEN t80 IS NULL THEN 'never_reached_80'
+           WHEN npts < 5 THEN 'too_few_points'
+           WHEN n_drop > 0 THEN 'soc_regressed'
+           WHEN EXTRACT(EPOCH FROM (t80 - t0)) / 60.0 < 0.5 THEN 'too_fast'
+           WHEN EXTRACT(EPOCH FROM (t80 - t0)) / 60.0 > 600 THEN 'too_long'
+           ELSE NULL
+         END AS unavailable_reason,
+         CASE
+           WHEN from_soc IS NULL OR from_soc >= 80 THEN NULL
+           WHEN t80 IS NULL THEN NULL
+           WHEN npts < 5 THEN NULL
+           WHEN n_drop > 0 THEN NULL
+           WHEN EXTRACT(EPOCH FROM (t80 - t0)) / 60.0 < 0.5 THEN NULL
+           WHEN EXTRACT(EPOCH FROM (t80 - t0)) / 60.0 > 600 THEN NULL
+           ELSE floor(EXTRACT(EPOCH FROM (t80 - t0)) / 60.0)::int
+         END AS minutes_to_80
+  FROM agg
+)
 SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
        cp.charge_energy_added::float8, cp.charge_energy_used::float8, cp.cost::float8,
        cp.start_battery_level, cp.end_battery_level,
        COALESCE(g.name, a.display_name) AS place,
+       -- ⚠️ v0.31.0：**归一后的地点标识**（围栏优先，否则用归一后的地址 id）。
+       -- 客户端的 placeKey 用它 —— 原来用「名字 + 坐标四舍五入到 2 位小数」，
+       -- 而 300 米的两个点会被**舍入边界**劈成两个键（22.57 / 22.58）。
+       COALESCE('g' || g.id::text, 'a' || an.canonical_id::text) AS place_key,
        -- ⚠️ v0.24.0（长途充电规划专家 P1-4）：**真实 POI 名**。
        --
        -- 原来显示的是**反向地理编码的长串**（「汕昆高速公路, 北庄, 宜州区, 河池市…」），
@@ -411,10 +584,14 @@ SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
        cp.outside_temp_avg::float8,
        ch_agg.last_phases, ch_agg.last_voltage, ch_agg.last_current,
        ch_agg.cable_type, ch_agg.brand,
-       COALESCE(ch_agg.tesla_sc, false) AS is_tesla_sc
+       COALESCE(ch_agg.tesla_sc, false) AS is_tesla_sc,
+       -- ⚠️ v0.31.0：实测口径（见 ch_measured 的注释）
+       cm.minutes_to_80, cm.from_soc, cm.unavailable_reason
 FROM charging_processes cp
-LEFT JOIN addresses a ON a.id = cp.address_id
+LEFT JOIN addr_norm an ON an.id = cp.address_id
+LEFT JOIN addresses a ON a.id = an.canonical_id
 LEFT JOIN geofences g ON g.id = cp.geofence_id
+LEFT JOIN ch_measured cm ON cm.cp_id = cp.id
 LEFT JOIN positions sp ON sp.id = cp.position_id
 LEFT JOIN positions ep ON ep.id = (SELECT id FROM positions WHERE car_id = cp.car_id AND date <= cp.end_date ORDER BY date DESC LIMIT 1)
 LEFT JOIN ch_agg ON ch_agg.charging_process_id = cp.id
@@ -564,7 +741,23 @@ WITH ordered AS (
          d.id AS drive_id,
          d.start_km::float8 AS start_km,
          d.end_km::float8 AS end_km,
-         d.distance::float8 AS distance_km
+         d.distance::float8 AS distance_km,
+         -- ⚠️ v0.31.0：爬升/下降（原样取 drives 的值）。
+         --
+         -- 口径：drives.ascent 实测 == 相邻点正高差之和（439/439 逐条精确相等，
+         -- 最大差 0 米），所以**可以直接信任**。
+         --
+         -- ⚠️ 但要知道它含噪声：positions.elevation 是整米量化的 smallint，
+         -- 而 TeslaMate 会把**同一个遥测快照重复写 ~12 次**
+         -- （96.8% 的点对时间差 < 1 秒，里程表只在 3.0% 的点对上变化）。
+         -- 「里程表没动但高差变了」的点对有 56,736 对，累计正高差 60,259 米
+         -- —— 占全库爬升的 89.3%，净偏差只有 +3,312 米（4.9%）。
+         --
+         -- 实测偏差：**长途大段只有 0.8%~2.3%**（长途规划场景够准），
+         -- 短途行程中位虚高 17.1%（最长 100%）。
+         -- 所以：**长途用 drives.ascent，短途另议。**
+         COALESCE(d.ascent, 0) AS ascent_m,
+         COALESCE(d.descent, 0) AS descent_m
   FROM unnest($1::int4[]) WITH ORDINALITY AS o(drive_id, ord)
   JOIN drives d ON d.id = o.drive_id AND d.car_id = $2
   -- 起止里程缺失的行程没法定位，直接剔除（不做插值）
@@ -590,7 +783,7 @@ WITH ordered AS (
   --   再查一次 positions 等于把最贵的那一步做两遍。
   -- 一段都没有可用采样（battery_level 全空 / odometer 全空）的行程
   -- 直接跳过 —— **不伪造点**，宁可少一段也不要画出一条假的平线。
-  SELECT o.ord, o.drive_id, o.start_km, o.end_km, o.distance_km
+  SELECT o.ord, o.drive_id, o.start_km, o.end_km, o.distance_km, o.ascent_m, o.descent_m
   FROM ordered o
   JOIN (SELECT DISTINCT drive_id FROM buckets) k ON k.drive_id = o.drive_id
 ), origin AS (
@@ -603,6 +796,8 @@ SELECT li.ord,
        li.start_km,
        li.end_km,
        li.distance_km,
+       li.ascent_m,
+       li.descent_m,
        li.start_km - o.base_km AS km_offset,
        b.abs_km - o.base_km AS km,
        b.soc

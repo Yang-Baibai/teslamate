@@ -1304,7 +1304,9 @@ private fun SettingsRatesPage(
                     }
                     Text(
                         "服务区快充普遍按**分钟**收服务费（占位时间也要钱）。" +
-                            "本机实测：按分钟 ≈ ¥1,094.50、按度 ≈ ¥902.76（差 5.8%）；" +
+                            "本机实测：按分钟 ≈ ¥1,094.50、按度 ≈ ¥902.76 —— " +
+                            "这两个**服务费金额**之间差 21.2%；" +
+                            "换成**总费用**看是 ¥3,295.67 vs ¥3,103.93（差 5.8%）。" +
                             "**不填服务费会低估约 33%**。家用交流桩反过来必须按度算。",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -260,6 +260,17 @@ data class Drive(
     val distance_km: Double? = null,
     val start_place: String? = null,
     val end_place: String? = null,
+    /**
+     * ⚠️ **v0.31.0：归一后的地点标识**（形如 `g1` / `a24`）。
+     *
+     * 服务端按**真实距离**把 500 米内的地址聚成一个「地点」，
+     * 取被引用最多的那个名字 —— 解决「永丰社区」与「新湖路」
+     * 实为同一小区（相距 300 m）却被拆成两个名字的问题。
+     *
+     * 客户端靠这两个 key 相等与否判断「这一趟是不是**往返**」。
+     */
+    val start_place_key: String? = null,
+    val end_place_key: String? = null,
     val start_soc: Int? = null,
     val end_soc: Int? = null,
     val energy_kwh: Double? = null,
@@ -324,6 +335,31 @@ data class Charge(
      * 而库里还有 OSM 的原始 POI 名 —— 用户要找的是「哪个服务区」，不是一段地址。
      */
     val poi_name: String? = null,
+    /**
+     * ⚠️ **v0.31.0：归一后的地点标识**（形如 `g1` / `a11`）。
+     *
+     * 客户端原来用「名字 + 坐标四舍五入到 2 位小数」当地点键，
+     * 而 **300 米**的两个点会被**舍入边界**劈开（22.57 / 22.58）——
+     * 于是同一个地方被算成两个。现在由服务端按真实距离聚类后下发。
+     */
+    val place_key: String? = null,
+    /**
+     * ⚠️ **v0.31.0（第 20 轮充电系统数据专家 P0-1）：本场「实测」从起始 SOC 充到 80% 的分钟数。**
+     *
+     * 来源是 `charges` 表的**逐点采样直读**，不是任何模型折算。
+     * 口径起点 = 曲线**第一个采样点**的电量（见 [measured_from_soc]），
+     * 终点 = 首个 ≥80% 的采样点，分钟数**截断**取整。
+     *
+     * 不可用时为 null，原因见 [measured_unavailable_reason]。
+     */
+    val measured_minutes_to_80: Int? = null,
+    /** 实测口径的**起点** SOC（= 曲线首个采样点的电量）—— 必须与上面一起显示 */
+    val measured_from_soc: Int? = null,
+    /**
+     * 实测不可用的原因：`start_soc_ge_80` / `never_reached_80` / `too_few_points` /
+     * `soc_regressed` / `too_fast` / `too_long`。
+     */
+    val measured_unavailable_reason: String? = null,
     /** POI 类型（primary / secondary / fuel / cafe / services …） */
     val poi_type: String? = null,
     /**
@@ -738,6 +774,18 @@ data class CostSummary(
     val home_used_kwh: Double = 0.0,
     val home_sessions: Int = 0,
     val home_minutes: Double = 0.0,
+    /**
+     * ⚠️ **v0.31.0（第 20 轮费用复审 P0-1）：行驶里程的两个分母。**
+     *
+     * - [km_drives] = `sum(drives.distance)`（App 记录到的行驶里程）
+     * - [km_odometer] = 里程表在窗口内的跨度（**包含遥测断档里车真开过的公里**）
+     *
+     * 实测两者差 1459.62 公里（16.71%），且断档全在 2026-10-01 之前 ——
+     * 所以短窗口几乎相等，长窗口差很多。
+     * 「每公里成本」据此显示**区间**而不是点值。
+     */
+    val km_drives: Double = 0.0,
+    val km_odometer: Double = 0.0,
 )
 
 @Serializable

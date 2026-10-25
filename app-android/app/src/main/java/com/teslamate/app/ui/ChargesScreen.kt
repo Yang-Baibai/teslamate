@@ -338,7 +338,7 @@ internal fun ChargeItem(
             // 结果界面上一个字都没有。1 次时改说「实测」并标「仅 1 次」。
             if (stat != null && stat.sessions >= 1) {
                 Text(
-                    stationSummaryLine(stat),
+                    stationSummaryLine(stat, c.start_soc),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -599,12 +599,29 @@ internal fun ChargeDetail(
                     // 峰值只出现在起步那几分钟）。真正决定「值不值得进」的是
                     // 这个站**历史实测**的典型水平，以及你这次比中位快还是慢。
                     val stat = stats[stationKey(charge)]
+                    val fromSoc = charge.start_soc
                     if (stat != null && stat.sessions >= 2) {
                         Text(
-                            stat.summary(),
+                            stat.summary(fromSoc),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        // ⚠️ **v0.31.0（P0-2）：把「实测」放在「折算」**前面**，并说清差多少。**
+                        //
+                        // 原来这块只有折算值「从 31% 充到 80% 约 43 分钟」，
+                        // 而曲线实测是 36 分钟 —— 差 20%，却没有任何解释。
+                        // 实测口径下折算**系统性高估**（30 场实测：中位 +33%、最大 +185%）。
+                        val measuredMed = stat.measuredMedianNear(fromSoc)
+                        val measuredSlow = stat.measuredSlowestNear(fromSoc)
+                        if (measuredMed != null) {
+                            KV(
+                                "该站同起点实测中位",
+                                "$measuredMed 分钟（${stat.measuredCountNear(fromSoc)} 次实测）",
+                            )
+                        }
+                        if (measuredSlow != null) {
+                            KV("该站同起点最慢一次", "$measuredSlow 分钟")
+                        }
                         stat.compareTo(charge.effectiveAvgPowerKw()?.toDouble())?.let {
                             Text(
                                 "本次：$it",
@@ -620,27 +637,32 @@ internal fun ChargeDetail(
                         //   从 31% 充到 80%：约 43 分钟
                         //   从 31% 充到 90%：约 62 分钟（多花 19 分钟）
                         // 这是站在服务区最需要的两个数。
+                        //
+                        // ⚠️ **v0.31.0：折算值**降级为次要信息**并自曝偏差方向** ——
+                        // 直流桩在 80% 附近会降功率，所以折算通常**偏大**。
                         val power = if (charge.is_dc) {
                             stat.typicalPowerDcKw ?: stat.typicalPowerKw
                         } else {
                             stat.typicalPowerKw
                         }
-                        val from = charge.start_soc
-                        if (from != null && from < 95) {
-                            val m80 = stat.minutesTo(from, 80, power)
-                            val m90 = stat.minutesTo(from, 90, power)
+                        if (fromSoc != null && fromSoc < 95) {
+                            val m80 = stat.minutesTo(fromSoc, 80, power)
+                            val m90 = stat.minutesTo(fromSoc, 90, power)
                             if (m80 != null) {
-                                KV("从 $from% 充到 80%", "约 $m80 分钟")
+                                val bias = measuredMed?.let { m80 - it }
+                                KV(
+                                    "从 $fromSoc% 充到 80%（折算）",
+                                    "约 $m80 分钟" + (bias?.let { "（比实测多 $it 分钟）" } ?: ""),
+                                )
                             }
                             if (m90 != null) {
                                 val extra = if (m80 != null) "（多花 ${m90 - m80} 分钟）" else ""
-                                KV("从 $from% 充到 90%", "约 $m90 分钟$extra")
+                                KV("从 $fromSoc% 充到 90%（折算）", "约 $m90 分钟$extra")
                             }
-                            // ⚠️ v0.9.2：「最坏情况我等多久」—— 中位数是乐观的一半。
-                            // P90 样本不足 5 次时不给（编数据比不给更危险）。
-                            stat.p90MinutesTo80?.let {
+                            if (measuredMed != null || m80 != null) {
                                 Text(
-                                    "该站历史 P90（10 次里最慢的那次）：充到 80% 约 $it 分钟",
+                                    "折算 = 用该站典型功率线性外推；直流桩在 80% 附近会降功率，所以折算通常**偏大**。" +
+                                        "「实测」读自充电曲线的真实时间戳。",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -765,18 +787,53 @@ internal fun ChargeDetail(
                             // 曲线常常从 30% 甚至 68% 才开始（中途才接上监控），
                             // 写死 10% 会让「从 68% 到 80%」被说成「从 10% 到 80%」。
                             // （实测踩过：一次 51 分钟的充电被算成「9 分钟」。）
-                            val startPt = curve.firstOrNull()
-                            val t80 = curve.firstOrNull { (it.battery_level ?: -1) >= 80 }?.date
-                            val startSoc = startPt?.battery_level
-                            if (startPt != null && t80 != null && startSoc != null &&
-                                t80.isAfter(startPt.date) && startSoc < 80
-                            ) {
-                                val mins = java.time.Duration.between(startPt.date, t80).toMinutes()
-                                if (mins in 1..600) {
+                            // ⚠️ **v0.31.0（第 20 轮充电系统数据专家 P0-5）：实测值由**服务端**算，客户端不再自己算。**
+                            //
+                            // 原来客户端从曲线自己算一遍、服务端将来再算一遍 → 两套算法必然漂移，
+                            // 就会出现「列表页 36 分钟、详情页 38 分钟」。
+                            // 现在口径**只有一处**（服务端 `measured_minutes_to_80`）。
+                            val mServer = charge.measured_minutes_to_80
+                            val fromServer = charge.measured_from_soc
+                            if (mServer != null && fromServer != null) {
+                                Text(
+                                    "本次实测：从 $fromServer% 充到 80% 用了 $mServer 分钟（读自充电曲线）",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            } else {
+                                // 兜底：老服务端没有这个字段时，用客户端的曲线算法。
+                                val startPt = curve.firstOrNull()
+                                val t80 = curve.firstOrNull { (it.battery_level ?: -1) >= 80 }?.date
+                                val startSoc = startPt?.battery_level
+                                if (startPt != null && t80 != null && startSoc != null &&
+                                    t80.isAfter(startPt.date) && startSoc < 80
+                                ) {
+                                    val mins = java.time.Duration.between(startPt.date, t80).toMinutes()
+                                    if (mins in 1..600) {
+                                        Text(
+                                            "实测从 $startSoc% 充到 80% 用了 $mins 分钟（从曲线直接读）",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                    }
+                                }
+                            }
+                            // 不可用时说明**为什么** —— 不能一律显示「—」。
+                            charge.measured_unavailable_reason?.let { why ->
+                                val whyCn = when (why) {
+                                    "start_soc_ge_80" -> "本次到站已经 80% 以上，不用充到 80%"
+                                    "never_reached_80" -> "本次没充到 80% 就离开了，算不出这段耗时"
+                                    "too_few_points" -> "本次充电采样点太少，实测耗时不可用"
+                                    "soc_regressed" -> "本次电量曲线有回落，实测耗时不可用"
+                                    "too_fast" -> "本次充电不足 30 秒，实测耗时不可用"
+                                    "too_long" -> "本次充电超过 10 小时，不是「一次充电」"
+                                    else -> null
+                                }
+                                if (whyCn != null) {
                                     Text(
-                                        "实测从 $startSoc% 充到 80% 用了 $mins 分钟（从曲线直接读）",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurface,
+                                        "实测耗时不可用：$whyCn",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
                             }
