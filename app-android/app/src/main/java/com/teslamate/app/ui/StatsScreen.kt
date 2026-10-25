@@ -900,10 +900,20 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         //
                         // 现在说**可验证**的话：占铭牌多少、本车实测上限是多少。
                         if (b.health_percent != null) {
-                            KV("占铭牌", "${b.health_percent!!.fmt(1)}%")
+                            // ⚠️ **v0.62.0（第 31 轮电池出厂态核查）**：
+                            // 原来叫「占铭牌」，还配了一句「它不是衰减了多少」——
+                            // **那句话是错的**。
+                            //
+                            // `nominal_capacity_kwh` 存的就是**出厂可用容量**，
+                            // 分子（实测可用容量）分母（出厂可用容量）**同一口径**，
+                            // 比值就是**电池健康度（SOH）**，一个标准指标。
+                            // 旧名「占铭牌」恰恰把标准指标说成了别的意思，
+                            // 还让车主以为自己读到的是「不是衰减」——
+                            // 于是 84.9% 会被读成「还有 84.9%」而不是「衰减了 15%」。
+                            KV("电池健康度（相对出厂）", "${b.health_percent!!.fmt(1)}%")
                         } else {
                             Text(
-                                "暂无「占铭牌」（未配置铭牌容量，服务端不给分母）",
+                                "暂无「电池健康度」（未配置出厂容量，服务端不给分母）",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -924,15 +934,51 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             .sortedBy { it.capacity_kwh }
                             .getOrNull(1)?.date?.fmtDate()
                         b.health_percent_of_baseline?.let {
+                            // ⚠️ **v0.62.0**：降级为「近期趋势」——
+                            // 98.4% 这个数**很容易被读成「电池还有 98.4%」**，
+                            // 而它只是「比 2026-08-02 那次测的低了多少」，
+                            // 那个起点**当时车就已经开了 4 个月**。
+                            // 名字里必须带「趋势」，否则它会盖过上面那个真正的健康度。
                             KV(
-                                "相对首测" + (baselineDate?.let { d -> "（$d）" } ?: ""),
+                                "近期趋势（相对首测" + (baselineDate?.let { d -> " $d" } ?: "") + "）",
                                 "${it.fmt(1)}%",
+                            )
+                        }
+                        // ⚠️ **v0.62.0（第 31 轮电池出厂态核查）**：**满电标定续航**。
+                        //
+                        // 这是车主最关心的单位（「公里」），而且可以和「出厂折算」比 ——
+                        // 因为两者**同一套刻度**（车机自己报的那把尺子）。
+                        //
+                        // ⚠️ 官方 CLTC（2021 款 P74D 中国版 627 km）**不能**直接比：
+                        // 实测本车刻度系数 K = 6.8446 km/kWh（17 个满充点，离散 1.51%），
+                        // 若刻度是 CLTC，K 应为 627/76.8 = 8.164 —— **差 19%**。
+                        // 那是**两把不同的尺子**，拿官方数字直接比会得出「只剩 71%」的假结论。
+                        val latestFullPoint = b.series.orEmpty()
+                            .filter { it.end_soc != null && it.end_soc!! >= 100 && it.rated_range_km != null }
+                            .maxByOrNull { it.date }
+                        val nowRatedKm = latestFullPoint?.rated_range_km
+                        if (nowRatedKm != null) {
+                            val factoryRatedKm = b.factory_rated_range_km
+                            KV(
+                                "满电标定续航",
+                                buildString {
+                                    append(nowRatedKm.toInt())
+                                    append(" km")
+                                    if (factoryRatedKm != null) {
+                                        append("（新电池同口径 ")
+                                        append(factoryRatedKm.toInt())
+                                        append(" km，少 ")
+                                        append((factoryRatedKm - nowRatedKm).toInt())
+                                        append(" km）")
+                                    }
+                                },
                             )
                         }
                         Text(
                             buildString {
-                                append("「占铭牌」= 可用容量 ÷ 铭牌毛容量，两者不是同一口径，")
-                                append("它不是「衰减了多少」。")
+                                append("「电池健康度」= 现在还能装的度 ÷ 新电池标称的度 —— ")
+                                append("两边都是「可用容量」，同一口径，")
+                                append("所以这个比值就是相对出厂衰减了多少。")
                                 // ⚠️ **v0.44.0（第 24 轮对抗性审计 ⑪）：分子依赖一个**用户可改的常数**。**
                                 //
                                 // 分子 = 车机上报的续航估值 × `cars.efficiency`（本机 0.146）。
@@ -952,7 +998,7 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         if (b.health_percent_of_baseline != null) {
                             Text(
                                 buildString {
-                                    append("「相对首测」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
+                                    append("「近期趋势（相对首测）」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
                                     append("不受行驶能耗常数影响，是看衰减更准的那个数。")
                                     if (baselineDate != null) {
                                         append("⚠️ 首测（$baselineDate）不是新车容量 —— ")

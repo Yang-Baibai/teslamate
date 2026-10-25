@@ -579,6 +579,14 @@ data class BatteryPoint(
     val odometer_km: Double? = null,
     /** 能量反推口径的容量（充入 kWh ÷ ΔSOC% × 100，不需要 kWh/km 常数） */
     val capacity_kwh_energy: Double? = null,
+    /**
+     * ⚠️ **v0.62.0**：车机自己报的**满电标定续航**（km）。
+     *
+     * 与「度」无关的**独立刻度** —— 车主真正关心的单位。
+     * 实测本车满充读数约 446 km，而官方 CLTC 是 627 km ——
+     * **两者不是同一把尺子**（实测刻度差 19%），不能直接比。
+     */
+    val rated_range_km: Double? = null,
 )
 
 /**
@@ -686,9 +694,23 @@ data class BatteryDecay(
 data class BatteryHealth(
     val current_capacity_kwh: Double? = null,
     val max_capacity_kwh: Double? = null,
-    /** 铭牌（出厂标称）容量 —— 「占铭牌」的分母。缺它就无法验算这个数。 */
+    /** 铭牌（出厂标称）容量 —— 「电池健康度」的分母。缺它就无法验算这个数。 */
     val nominal_capacity_kwh: Double? = null,
+    /**
+     * ⚠️ **v0.62.0**：**电池健康度（SOH）** = 当前实测可用容量 ÷ 出厂标称可用容量 × 100。
+     *
+     * v0.22.0 的注释说它「不是衰减了多少」—— **已证伪并纠正**：
+     * `nominal_capacity_kwh` 存的就是**出厂可用容量**，
+     * 分子分母**同一口径**，比值就是相对出厂衰减了多少。
+     */
     val health_percent: Double? = null,
+    /**
+     * ⚠️ **v0.62.0**：**出厂满电标定续航**（km），与车机读数**同一套刻度**。
+     *
+     * 服务端推导：出厂可用容量 × median(满电标定续航 ÷ 能量反推容量)，
+     * **全程不需要 cars.efficiency**。
+     */
+    val factory_rated_range_km: Double? = null,
     /**
      * ⚠️ **v0.50.0（第 29 轮崩溃与健壮性审计 P1-1）**：改成**可空**。
      *
