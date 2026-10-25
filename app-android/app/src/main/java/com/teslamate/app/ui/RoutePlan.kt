@@ -966,6 +966,29 @@ data class RoutePlan(
         profile.minByOrNull { it.soc }?.let { it.km to it.soc }
 
     /**
+     * ⚠️ **v0.56.0（第 30 轮长途自驾党评审 P0-3）**：从第 [startIdx] 站起算的**最低点**。
+     *
+     * ## 为什么要有它
+     *
+     * `lowestPoint` 是**全线**的最低点 —— 但折叠态的细节行
+     * 「全程最低 5%（第 1237 公里 · 蔚来换电站之后）」在**选了起点站之后**
+     * 仍然报第 1237 公里。
+     *
+     * 实测：选第 3055 公里（稻城－香格里拉）起算，那个最低点在我**身后 1818 公里** ——
+     * 我**已经开过去了**，它对「我从这儿出发够不够电」**没有任何意义**。
+     *
+     * ⇒ 选完起点站之后，落点信息必须**重新算**。
+     *
+     * 口径：只取 `km >= 起点站的 kmAlongRoute` 的剖面点。
+     */
+    fun lowestPointFrom(startIdx: Int): Pair<Double, Int>? {
+        val fromKm = stops.getOrNull(startIdx)?.kmAlongRoute ?: return lowestPoint
+        val sub = profile.filter { it.km >= fromKm - 0.5 }
+        if (sub.isEmpty()) return null
+        return sub.minByOrNull { it.soc }?.let { it.km to it.soc }
+    }
+
+    /**
      * 第一个跌破 20% 保底的点（公里 + **该点的**电量）。
      *
      * ⚠️ v0.29.0：公里与电量必须来自**同一个点**（见 [lowestPoint] 的说明）。
@@ -1153,7 +1176,12 @@ data class RoutePlan(
      * 读者会读成「227 公里最危险」，而 5% 才是真的。
      * 现在**只留最低点**，跌破 20% 的事交给逐站那行。
      */
-    fun verdictDetail(): String {
+    /**
+     * ⚠️ **v0.56.0（第 30 轮长途自驾党评审 P0-3）**：细节行，**随起点站重算**。
+     *
+     * [startIdx] < 0 或越界 ⇒ 等价于 [verdictDetail]（全线）。
+     */
+    fun verdictDetail(startIdx: Int = -1): String {
         val sb = StringBuilder()
         // ⚠️ **v0.36.0（第 21 轮视觉评审 P1-5）：细节行只留**最低点**，日期挪到展开卡。**
         //
@@ -1163,7 +1191,14 @@ data class RoutePlan(
         //
         // ⚠️ **车主复审明确说「全程最低 5%（第 1237 公里）」是他会读的两个数之一** ——
         // 所以这条**保留**，只砍掉重复的日期。
-        lowestPoint?.let { (km, soc) ->
+        // ⚠️ **v0.56.0（P0-3）**：落点要**随起点站重算** ——
+        // 全线最低点可能在你**身后**（已经开过去了），对「从这儿出发够不够」没有意义。
+        val lowPoint = if (startIdx >= 0 && startIdx < stops.size) {
+            lowestPointFrom(startIdx)
+        } else {
+            lowestPoint
+        }
+        lowPoint?.let { (km, soc) ->
             sb.append("全程最低 ").append(soc).append("%（第 ").append(km.roundToInt()).append(" 公里")
             // ⚠️ **v0.39.0（第 23 轮车主复审 C6）：给**落点**。**
             lowestHopFrom?.let { from ->
@@ -2302,7 +2337,9 @@ fun RoutePlanSummaryRow(
                             color = accents.warnAmberText,
                         )
                     }
-                    plan.verdictDetail().takeIf { it.isNotEmpty() }?.let {
+                    // ⚠️ **v0.56.0（第 30 轮长途自驾党评审 P0-3）**：传 `startIdx` ——
+                    // 落点要**随起点站重算**（全线最低点可能在你身后）。
+                    plan.verdictDetail(startIdx).takeIf { it.isNotEmpty() }?.let {
                         Text(
                             // ⚠️ **v0.54.0（第 30 轮长途自驾党评审）**：
                             // 「全程最低 X%（第 N 公里）」是**从剖面来的**
@@ -2690,7 +2727,9 @@ fun RoutePlanCard(
         )
         // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-7）：细节拆出来。**
         // 决策句一行说清「最长那一跳」；来源限定与全程最低是**证据**，单独一行。
-        plan.verdictDetail().takeIf { it.isNotEmpty() }?.let {
+        // ⚠️ **v0.56.0（第 30 轮长途自驾党评审 P0-3）**：同样传 `startIdx` ——
+        // 落点要**随起点站重算**（全线最低点可能在你身后 1818 公里）。
+        plan.verdictDetail(startIdx).takeIf { it.isNotEmpty() }?.let {
             Text(
                 it,
                 style = MaterialTheme.typography.labelSmall,

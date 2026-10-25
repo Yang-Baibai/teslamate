@@ -442,4 +442,61 @@ class RoutePlanHonestyTest {
         )
         assertNull("够得着保底就不该有告警行", p.belowReserveNotice())
     }
+
+    // ── ⚠️ v0.56.0（第 30 轮长途自驾党评审 P0-3）──────────────────────
+
+    @Test
+    fun `落点要随起点站重算`() {
+        // ⚠️ **第 30 轮 P0-3**：`verdictDetail()` 原来**没有 startIdx** ——
+        // 选了第 3055 公里的起点站之后，它仍然报「全线最低 5%（第 1237 公里）」，
+        // 而那个最低点在我**身后 1818 公里**，我已经开过去了，
+        // 对「我从这儿出发够不够电」**没有任何意义**。
+        val p = RoutePlan(
+            RouteTemplate(
+                key = "j1", fromLabel = "A", toLabel = "B",
+                distanceKm = 3000.0, startSoc = 100, endSoc = 40,
+                legCount = 3, stopCount = 2,
+                lastDrivenAt = java.time.Instant.parse("2026-10-18T00:00:00Z"),
+                startOdoKm = 100000.0,
+            ),
+            // 剖面：第 1237 公里是全线最低（5%），第 3055 公里之后还有 20%
+            listOf(
+                RouteSocPoint(0.0, 100),
+                RouteSocPoint(1237.0, 5),
+                RouteSocPoint(3055.0, 60),
+                RouteSocPoint(3100.0, 20),
+            ),
+            listOf(
+                stop("起点", 0.0, gapKm = 3055.0, need = 40, required = 60, realSoc = 60, estSoc = 60),
+                stop("第二站", 3055.0, gapKm = 45.0, need = 10, required = 30, realSoc = 22, estSoc = 20),
+            ),
+        )
+        // 全线：最低点是第 1237 公里的 5%
+        val all = p.verdictDetail()
+        assertTrue("全线细节行应报第 1237 公里: $all", all.contains("1237"))
+        assertTrue("全线细节行应报 5%: $all", all.contains("全程最低 5%"))
+        // 从第 3055 公里起算：最低点变成第 3100 公里的 20%
+        val fromSecond = p.verdictDetail(1)
+        assertTrue("从第二站起算不应再报身后的 1237 公里: $fromSecond", !fromSecond.contains("1237"))
+        assertTrue("从第二站起算应报第 3100 公里: $fromSecond", fromSecond.contains("3100"))
+        assertTrue("从第二站起算应报 20%: $fromSecond", fromSecond.contains("全程最低 20%"))
+    }
+
+    @Test
+    fun `起点越界时退回全线`() {
+        val p = RoutePlan(
+            RouteTemplate(
+                key = "j1", fromLabel = "A", toLabel = "B",
+                distanceKm = 120.0, startSoc = 100, endSoc = 50,
+                legCount = 2, stopCount = 1,
+                lastDrivenAt = java.time.Instant.parse("2026-10-07T00:00:00Z"),
+                startOdoKm = 100000.0,
+            ),
+            listOf(RouteSocPoint(0.0, 100), RouteSocPoint(120.0, 50)),
+            listOf(stop("A", 0.0, gapKm = 120.0, need = 45, required = 65, realSoc = 22, estSoc = 30)),
+        )
+        // 越界 ⇒ 等价于全线，不崩
+        assertEquals(p.verdictDetail(), p.verdictDetail(999))
+        assertEquals(p.verdictDetail(), p.verdictDetail(-1))
+    }
 }
