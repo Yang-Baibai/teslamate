@@ -96,6 +96,14 @@ enum class SettingsRoute {
     /** 保养与轮胎基准 */
     Maintenance,
 
+    /**
+     * ⚠️ **v0.25.0（第 16 轮充电成本专家 P1-5）：电价与成本。**
+     *
+     * 官方 Tesla App 能填住宅电价，但它**给不出「每公里成本」** ——
+     * 它不知道你的真实行驶里程口径。我们有。
+     */
+    Rates,
+
     /** 怎么找到地址和令牌 */
     Help,
 
@@ -178,6 +186,9 @@ fun SettingsScreen(
     // 服务器组保存完，不该让「保养」页也显示「已保存」。
     var serverSaved by remember { mutableStateOf(false) }
     var baselineSaved by remember { mutableStateOf(false) }
+    // ⚠️ v0.25.0：电价编辑态 + 独立的保存反馈（与服务器/保养分开）。
+    var rates by remember(settings) { mutableStateOf(settings.currentRates) }
+    var ratesSaved by remember { mutableStateOf(false) }
     /** 车辆列表兜底：App 级拉取失败时，用户能在这里手动重试。 */
     var reloadTick by remember { mutableStateOf(0) }
     var listError by remember { mutableStateOf<String?>(null) }
@@ -244,9 +255,30 @@ fun SettingsScreen(
         serverSaved = false
     }
 
-    /** 只切当前车。服务器地址与令牌原样带回（**绝不碰**）。 */
-    fun saveCarSelection() {
+    /**
+     * ⚠️ **v0.25.0（第 16 轮充电成本专家 P1-5）：只写电价。**
+     *
+     * 与 [saveServer] / [saveBaselines] 同样的纪律 ——
+     * **只写自己那组字段**，其余从 `settings` 原样带回，
+     * 绝不碰服务器地址、令牌与保养基准。
+     */
+    fun saveRates(r: com.teslamate.app.ChargeRates) {
         scope.launch {
+            val next = settings.ratePerCar.toMutableMap()
+            if (r.configured) {
+                next[carId] = r
+            } else {
+                next.remove(carId)
+            }
+            ctx.saveSettings(settings.copy(ratePerCar = next))
+        }
+        ratesSaved = true
+        serverSaved = false
+        baselineSaved = false
+    }
+
+    /** 只切当前车。服务器地址与令牌原样带回（**绝不碰**）。 */
+    fun saveCarSelection() {        scope.launch {
             ctx.saveSettings(settings.copy(carId = carId))
         }
         serverSaved = false
@@ -398,6 +430,17 @@ fun SettingsScreen(
                     onBack = { onRouteChange(null) },
                 )
             }
+            SettingsRoute.Rates -> {
+                BackHandler { onRouteChange(null) }
+                SettingsRatesPage(
+                    rates = rates,
+                    carName = cars.firstOrNull { it.id == carId }?.name,
+                    onChange = { rates = it; ratesSaved = false },
+                    onSave = { saveRates(rates) },
+                    saved = ratesSaved,
+                    onBack = { onRouteChange(null) },
+                )
+            }
             SettingsRoute.About -> {
                 BackHandler { onRouteChange(null) }
                 SettingsAboutPage(onBack = { onRouteChange(null) })
@@ -449,6 +492,21 @@ private fun SettingsRootPage(
                         title = "保养与轮胎",
                         subtitle = baselineSummary(settings.currentBaselines),
                     ) { onOpen(SettingsRoute.Maintenance) }
+                }
+            }
+            item {
+                SectionCard("成本", Modifier.animateItem()) {
+                    // ⚠️ v0.25.0：**电价**入口 ——
+                    // 填了之后用量页就能给「每公里成本」（官方 App 给不了这个数）。
+                    SettingRow(
+                        title = "电价与成本",
+                        subtitle = if (settings.currentRates.configured) {
+                            "家充 ${settings.currentRates.homeYuanPerKwh.fmtRate("元/度")}" +
+                                " · 公共桩 ${settings.currentRates.publicYuanPerKwh.fmtRate("元/度")}"
+                        } else {
+                            "填上就能算每公里成本"
+                        },
+                    ) { onOpen(SettingsRoute.Rates) }
                 }
             }
             item {
@@ -1082,6 +1140,171 @@ private fun SettingsServerStatusPage(
         }
     }
 }
+
+/**
+ * ⚠️ **v0.25.0（第 16 轮充电成本专家 P0-1 / P1-5）：电价与成本页。**
+ *
+ * 三档而不是一个单价：
+ * - **家充电价**（元/度）—— 家充必须按度算：实测 id=44 插枪 617 分钟只充入 17 度
+ *   （有效功率 1.65 kW），插枪时长含大量闲置，按分钟算会严重高估。
+ * - **公共桩电费**（元/度）
+ * - **公共桩服务费**（按**分钟**或按**度**）——
+ *   实测同一台车两种算法差 **34.6%**（2022 元 vs 2722 元），
+ *   而服务区快充普遍按分钟收服务费（占位时间也要钱）。
+ */
+@Composable
+private fun SettingsRatesPage(
+    rates: com.teslamate.app.ChargeRates,
+    carName: String?,
+    onChange: (com.teslamate.app.ChargeRates) -> Unit,
+    onSave: () -> Unit,
+    saved: Boolean,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var homeText by remember(rates) { mutableStateOf(rates.homeYuanPerKwh.toPlainString()) }
+    var publicText by remember(rates) { mutableStateOf(rates.publicYuanPerKwh.toPlainString()) }
+    var serviceText by remember(rates) { mutableStateOf(rates.publicServiceYuan.toPlainString()) }
+    var perMinute by remember(rates) { mutableStateOf(rates.publicServiceMode == com.teslamate.app.ChargeRates.MODE_PER_MINUTE) }
+
+    Column(modifier) {
+        SecondaryTitleBar(title = "电价与成本", backLabel = "设置", onBack = onBack)
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                SectionCard("电价" + (carName?.let { " · $it" } ?: ""), Modifier.animateItem()) {
+                    Text(
+                        "填上你的电价，App 就能算出「每公里成本」—— " +
+                            "这个数官方 Tesla App 给不了（它不知道你的真实行驶里程口径）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    IosField(
+                        label = "家充电价（元/度）",
+                        value = homeText,
+                        onValueChange = {
+                            homeText = it.filter { c -> c.isDigit() || c == '.' }
+                            onChange(
+                                rates.copy(homeYuanPerKwh = it.toDoubleOrNull() ?: 0.0)
+                            )
+                        },
+                        placeholder = "0.68",
+                        keyboardType = KeyboardType.Number,
+                    )
+                    IosField(
+                        label = "公共桩电费（元/度）",
+                        value = publicText,
+                        onValueChange = {
+                            publicText = it.filter { c -> c.isDigit() || c == '.' }
+                            onChange(
+                                rates.copy(publicYuanPerKwh = it.toDoubleOrNull() ?: 0.0)
+                            )
+                        },
+                        placeholder = "1.20",
+                        keyboardType = KeyboardType.Number,
+                    )
+                    IosField(
+                        label = "公共桩服务费（元/" + if (perMinute) "分钟" else "度" + "）",
+                        value = serviceText,
+                        onValueChange = {
+                            serviceText = it.filter { c -> c.isDigit() || c == '.' }
+                            onChange(
+                                rates.copy(publicServiceYuan = it.toDoubleOrNull() ?: 0.0)
+                            )
+                        },
+                        placeholder = "0.50",
+                        keyboardType = KeyboardType.Number,
+                    )
+                    // 服务费计费方式：**按分钟 / 按度**二选一。
+                    // 这是本轮最关键的一个开关 —— 两种算法实测差 34.6%。
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            "服务费按",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IosSwitch(
+                            checked = perMinute,
+                            onCheckedChange = {
+                                perMinute = it
+                                onChange(
+                                    rates.copy(
+                                        publicServiceMode = if (it) {
+                                            com.teslamate.app.ChargeRates.MODE_PER_MINUTE
+                                        } else {
+                                            com.teslamate.app.ChargeRates.MODE_PER_KWH
+                                        }
+                                    )
+                                )
+                            },
+                            label = "服务费按分钟计",
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (perMinute) "分钟" else "度",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                    Text(
+                        "服务区快充普遍按**分钟**收服务费（占位时间也要钱）；" +
+                            "按度算会低估 25%~35%。家用交流桩反过来必须按度算。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            item {
+                SectionCard("保存", Modifier.animateItem()) {
+                    Button(
+                        onClick = onSave,
+                        enabled = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 44.dp)
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = "保存电价设置"
+                            },
+                    ) {
+                        Text(
+                            when {
+                                saved -> "已保存 ✓"
+                                else -> "保存电价"
+                            },
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Text(
+                        "电价按车分别保存。保存后用量页会显示「每公里成本」。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * ⚠️ **v0.25.0（第 16 轮充电成本专家 P1-1 / P1-5）**：把电量输入框里的数字读成可编辑文本。
+ *
+ * `IosField` 存的是 String，这里只是把 Double 变成「不带多余 0 的文本」。
+ */
+private fun Double.toPlainString(): String =
+    if (this == 0.0) "" else {
+        val s = String.format(java.util.Locale.CHINA, "%.3f", this).trimEnd('0').trimEnd('.')
+        s
+    }
 
 @Composable
 private fun SettingsAboutPage(onBack: () -> Unit, modifier: Modifier = Modifier) {    Column(modifier) {

@@ -176,6 +176,11 @@ fun RecordsScreen(
      * 于是每次切到记录页都重拉 367 KB 并全量重算（实测单帧停顿 430 ms）。
      */
     store: RecordsStore = remember { RecordsStore() },
+    /**
+     * ⚠️ v0.25.0：本车**实测**能耗模型（用于「到下一站剩多少电」）。
+     * 来自 [StatusStore] —— 官方标称比实测乐观 50%，不能用标称算。
+     */
+    consumption: com.teslamate.app.ConsumptionModel? = null,
 ) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
@@ -196,6 +201,16 @@ fun RecordsScreen(
     val records = remember(drives, charges) { mergeRecords(drives, charges) }
     // 该站历史统计（充电页原来用它）
     val stationStats = remember(charges) { buildStationStats(charges) }
+    // ⚠️ **v0.25.0：本车可用电池容量（度）** ——
+    // 「到下一站剩多少电」要把度数换算成电量百分点，需要本车的**可用**容量。
+    //
+    // 它从站点统计里反推（充入 kWh ÷ ΔSOC% × 100）—— 那是**本车**的容量，
+    // 与站点无关；官方标称（76.8 度）比实测**乐观**，不能拿来算。
+    val batteryCapacityKwh = remember(stationStats) {
+        stationStats.values.mapNotNull { it.batteryCapacityKwh }
+            .takeIf { it.isNotEmpty() }
+            ?.let { com.teslamate.app.medianOf(it) }
+    }
     // ⚠️ v0.11.0（长途自驾党 P0-1）：**线路余量表** ——
     // 出发前 5 分钟真正要看的那张表：这条线路历史上真实发生过哪些充电、
     // 每次到站时剩多少、充到多少、在第几公里。
@@ -226,9 +241,18 @@ fun RecordsScreen(
         }.onSuccess { socProfile = it }
             .onFailure { socProfile = null }
     }
-    val routePlan = remember(drives, charges, stationStats, selectedRouteKey, socProfile) {
+    val routePlan = remember(drives, charges, stationStats, selectedRouteKey, socProfile, consumption, batteryCapacityKwh) {
         val tpl = pickedTemplate
-        tpl?.let { buildRoutePlan(it, charges, stationStats, socProfile) }
+        tpl?.let {
+            buildRoutePlan(
+                it, charges, stationStats, socProfile,
+                // ⚠️ v0.25.0：「到下一站剩多少电」要用**本车实测**能耗模型
+                // 与**可用**容量（官方标称比实测乐观 50%）。
+                consumption = consumption,
+                batteryCapacityKwh = batteryCapacityKwh,
+                planSpeedKph = 90.0,
+            )
+        }
     }
     // ⚠️ v0.17.0（车队运营评审 P0-1）：**按线路分组的历史** ——
     // 「这趟比上趟好吗」的分组信息本来就该有（`buildRouteTemplates` 已经在按起止分组），
@@ -366,6 +390,8 @@ fun RecordsScreen(
                     stats = stationStats,
                     onSelect = { onSelectionChange(RecordSelection.Ch(it)) },
                     onBack = { onSelectionChange(null) },
+                    // ⚠️ v0.25.0：电价（按车隔离）—— 有就显示每场充电的估算费用。
+                    rates = settings.currentRates,
                 )
             }
             if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
@@ -382,6 +408,8 @@ private fun RecordTimeline(
     routeTemplates: List<RouteTemplate> = emptyList(),
     selectedRouteKey: String? = null,
     onSelectRouteKey: (String) -> Unit = {},
+    /** ⚠️ v0.25.0：电价（按车隔离）—— 充电行用它算估算费用。 */
+    rates: com.teslamate.app.ChargeRates? = null,
     onSelect: (RecordItem) -> Unit,
 ) {
     TimelineList(
@@ -411,6 +439,8 @@ private fun TimelineList(
     routeTemplates: List<RouteTemplate> = emptyList(),
     selectedRouteKey: String? = null,
     onSelectRouteKey: (String) -> Unit = {},
+    /** ⚠️ v0.25.0：电价（按车隔离）—— 充电行用它算估算费用。 */
+    rates: com.teslamate.app.ChargeRates? = null,
     onSelect: (RecordItem) -> Unit,
 ) {
     // 按月份分组，但保持整体的时间倒序
@@ -496,6 +526,8 @@ private fun TimelineRow(
     item: RecordItem,
     stationStats: Map<String, StationStat>,
     isLast: Boolean,
+    /** ⚠️ v0.25.0：电价（按车隔离）。 */
+    rates: com.teslamate.app.ChargeRates? = null,
     /**
      * ⚠️ v0.17.0（车队运营评审 P0-1）：**同线路对比的摘要**。
      *
@@ -560,7 +592,7 @@ private fun TimelineRow(
                     ) { onClick() }
                     is RecordItem.ChargeItem -> {
                         val stat = stationStats[stationKey(item.charge)]
-                        ChargeItem(item.charge, stat) { onClick() }
+                        ChargeItem(item.charge, stat, rates = rates) { onClick() }
                     }
                 }
             }

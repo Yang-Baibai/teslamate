@@ -280,6 +280,31 @@ WHERE p.drive_id = $1
   AND p.odometer IS NOT NULL
 GROUP BY 1 ORDER BY 1`
 
+// ⚠️ v0.25.0（第 16 轮充电成本专家 P0-2 / P1-7）：**成本汇总**（给定时间窗口）。
+//
+// 为什么要单独一个端点：
+//   - 用量页的「7 天 / 30 天 / 1 年」是**服务端时区**的窗口，
+//     而客户端的 `api.charges()` 是「最近 N 场」—— 两者范围不同，
+//     混用会算出「用 30 天的公里数除以全部历史的度数」这种错数；
+//   - 年度回顾需要**全量**行程（库里 440 趟），而 `api.drives` 上限 200 ——
+//     靠客户端拉全量做不出来。
+//
+// $1=car_id $2=窗口起点(timestamptz)
+const sqlCostSummary = `
+WITH` + cteChargeDC + `
+SELECT COALESCE(SUM(CASE WHEN cd.is_dc THEN cp.charge_energy_used ELSE 0 END), 0)::float8 AS dc_used_kwh,
+       COALESCE(SUM(CASE WHEN NOT cd.is_dc THEN cp.charge_energy_used ELSE 0 END), 0)::float8 AS ac_used_kwh,
+       COUNT(*) FILTER (WHERE cd.is_dc)::int AS dc_sessions,
+       COUNT(*) FILTER (WHERE NOT cd.is_dc)::int AS ac_sessions,
+       COALESCE(SUM(CASE WHEN cd.is_dc THEN cp.duration_min ELSE 0 END), 0)::float8 AS dc_minutes,
+       COALESCE(SUM(CASE WHEN NOT cd.is_dc THEN cp.duration_min ELSE 0 END), 0)::float8 AS ac_minutes
+FROM charging_processes cp
+LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
+WHERE cp.car_id = $1
+  AND cp.end_date IS NOT NULL
+  AND cp.charge_energy_added > 0.01
+  AND (cp.start_date AT TIME ZONE 'UTC') >= $2`
+
 const sqlTrack = `
 SELECT p.date,
        p.latitude::float8, p.longitude::float8,

@@ -61,6 +61,8 @@ fun ChargeListPage(
     onSelect: (Charge) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    /** ⚠️ v0.25.0：车主填的电价 —— 有就显示估算费用。 */
+    rates: com.teslamate.app.ChargeRates? = null,
 ) {
     // ⚠️ 分组必须在 LazyColumn **外面**算 ——
     // LazyListScope 的 content lambda **不是** @Composable 作用域，
@@ -153,7 +155,7 @@ fun ChargeListPage(
                 }
                 items(list, key = { it.id }) { c ->
                     val stat = stats[stationKey(c)]
-                    ChargeItem(c, stat, Modifier.animateItem()) { onSelect(c) }
+                    ChargeItem(c, stat, Modifier.animateItem(), rates = rates) { onSelect(c) }
                 }
             }
         }

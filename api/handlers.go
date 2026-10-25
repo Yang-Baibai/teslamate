@@ -267,6 +267,59 @@ func handleDrives(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, list)
 }
 
+// handleCostSummary 返回一个时间窗口内的**充电成本构成**。
+//
+// ⚠️ v0.25.0（第 16 轮充电成本专家 P0-2 / P1-7）。
+//
+// 单独一个端点而不是让客户端自己算：
+//   - 用量页的「7 天 / 30 天 / 1 年」是**服务端时区**的窗口，
+//     而客户端的 `api.charges()` 是「最近 N 场」—— 范围不同，混用会算错；
+//   - 年度回顾需要**全量**行程（库里 440 趟），而 `api.drives` 上限 200。
+//
+// 度数一律用**网侧送出**（`charge_energy_used`）——
+// 桩是按它送出去的度数收费的，实测与「充入电池」差 6.79%。
+func handleCostSummary(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "car id 无效")
+		return
+	}
+	tz := getenv("TZ_NAME", "Asia/Shanghai")
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "时区无效: "+tz)
+		return
+	}
+	// 窗口与 /stats 保持一致（同样的 period → 同样的起点）
+	var buckets int
+	switch r.URL.Query().Get("period") {
+	case "week":
+		buckets = 7
+	case "year":
+		buckets = 12
+	default:
+		buckets = 30
+	}
+	now := time.Now().In(loc)
+	var windowStart time.Time
+	if r.URL.Query().Get("period") == "year" {
+		windowStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, -(buckets - 1), 0)
+	} else {
+		windowStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -(buckets - 1))
+	}
+	var out CostSummary
+	err = db.QueryRow(context.Background(), sqlCostSummary, id, windowStart).Scan(
+		&out.DcUsedKwh, &out.AcUsedKwh,
+		&out.DcSessions, &out.AcSessions,
+		&out.DcMinutes, &out.AcMinutes,
+	)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, out)
+}
+
 // handleSocProfile 返回一趟行程的**真实逐公里 SOC 剖面**。
 //
 // ⚠️ v0.24.0（长途充电规划专家 P0-2）。

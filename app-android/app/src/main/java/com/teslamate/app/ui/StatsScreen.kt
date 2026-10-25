@@ -104,6 +104,10 @@ fun StatsScreen(
     var battery by remember { mutableStateOf<BatteryHealth?>(null) }
     // ⚠️ v0.22.0：电池健康**独立的错误** —— 它失败不该让整页不可用。
     var batteryError by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
+    // ⚠️ v0.25.0：充电成本构成（同一个时间窗口的聚合）。
+    var costSummary by remember { mutableStateOf<com.teslamate.app.CostSummary?>(null) }
+    // ⚠️ v0.25.0：车主填的电价（按车隔离）。
+    val rates = settings.currentRates
     // ⚠️ v0.14.0：error 改成存**异常**而不是字符串 ——
     // 只有拿到 kind（AUTH / NO_DATA / …）才能决定横幅样式与按钮。
     var error by remember { mutableStateOf<com.teslamate.app.UserFacingException?>(null) }
@@ -164,6 +168,19 @@ fun StatsScreen(
             batteryError = it as? com.teslamate.app.UserFacingException
                 ?: com.teslamate.app.UserFacingException(it.message ?: "出错了")
         }
+        // ③ 充电成本构成（v0.25.0）——
+        // 只在**配了电价**时才拉（没配就没必要算）。
+        if (settings.currentRates.configured) {
+            runCatching {
+                withContext(Dispatchers.IO) { api.costSummary(settings.carId, apiPeriod) }
+            }.onSuccess {
+                costSummary = it
+            }.onFailure {
+                costSummary = null
+            }
+        } else {
+            costSummary = null
+        }
     }
 
     LaunchedEffect(settings, apiPeriod) { load() }
@@ -195,7 +212,7 @@ fun StatsScreen(
         // 汇总卡里只能给出「未记录」—— 副标题承诺了却交白卷。
         // 现在只列**一定有**的三项；费用在真有数时自己出现在汇总卡里。
         Text(
-            "里程 · 能耗 · 充入电量",
+            if (rates.configured) "里程 · 能耗 · 充入电量 · 成本" else "里程 · 能耗 · 充入电量",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 2.dp),
@@ -360,14 +377,56 @@ fun StatsScreen(
                         // API **早就接了**（`SUM(cp.cost)`），是库里的 cost 全是 NULL，
                         // 也就是「**没填**」，不是「没接入」。
                         //
-                        // 现在合成一行：说明没数据 + 说清怎么才能有数据。
-                        if (sum.cost > 0 && sum.km > 0.1) {
+                        // ⚠️ **v0.25.0（第 16 轮充电成本专家 P0-1 / P0-2 / P0-3 / P0-4）**：
+                        // 现在**不用服务端的 cost**（全库 NULL），而是用**车主自己填的电价**
+                        // 在客户端算 —— 而且必须满足三条口径纪律：
+                        //
+                        // ① 分子用**网侧送出**（`energy_used`），不是充入电池（差 6.79%）；
+                        // ② 家充与公共桩**分两个数**，不混算（混算会系统性偏低）；
+                        // ③ 分母是**行驶里程** `sum.km`（不是里程表读数，误差 16.6%）。
+                        //
+                        // 「每公里成本」是**官方 Tesla App 给不了**的数 ——
+                        // 它用「总增加公里数」（充电量 ÷ 型号效率反推）当分母，
+                        // 官方 FAQ 自己承认与里程表对不上。我们有真实里程。
+                        if (costSummary != null && rates.configured && sum.km > 0.1) {
+                            val cost = estimateCost(costSummary!!, rates)
+                            val perKm = costPerKm(cost, sum.km)
+                            KV("充电费用", "≈ ${cost.totalYuan.fmtYuan()}")
+                            perKm.allPerKm?.let {
+                                KV("每公里成本", "≈ ${it.fmtYuan()} /公里")
+                            }
+                            // ⚠️ P0-3：**公共桩边际成本**必须单独给 ——
+                            // 实测本车家充电只占 3%，混算会给人「我享受了家充电价」的错觉，
+                            // 而真实情况是这车几乎全按公共桩价买的电。
+                            perKm.publicPerKm?.let {
+                                KV("公共桩边际成本", "≈ ${it.fmtYuan()} /公里")
+                            }
+                            cost.yuanPerKwh?.let {
+                                KV("实际每度电", "≈ ${it.fmtYuan()}")
+                            }
+                            Text(
+                                buildString {
+                                    append("按你填的电价估算（家充 ")
+                                    append(cost.homeKwh.fmt(0))
+                                    append(" 度 / 公共桩 ")
+                                    append(cost.publicKwh.fmt(0))
+                                    append(" 度）")
+                                    perKm.homeSharePercent?.let { append(" · 家充电占 $it%") }
+                                    append("。分母是行驶里程 ")
+                                    append(sum.km.fmt(0))
+                                    append(" 公里。")
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = 4.dp),
+                            )
+                        } else if (sum.cost > 0 && sum.km > 0.1) {
+                            // ⚠️ 服务端有 cost（用户配了 TeslaMate 的 tou_rates）时的老路径。
                             KV(
                                 "每公里成本",
                                 // ⚠️ 分子分母不同源：分子只含「被记录了费用」的充电，
                                 // 分母含全部里程（含家充跑的公里）→ 系统性偏低。
                                 // 所以必须写明覆盖度，不能当成一个干净的数。
-                                // ⚠️ v0.14.0（单位审校 P1-5）：值自带单位「/公里」。
                                 "${(sum.cost / sum.km).fmt(2)} 元/公里（仅含已记录电费的充电）",
                             )
                         }

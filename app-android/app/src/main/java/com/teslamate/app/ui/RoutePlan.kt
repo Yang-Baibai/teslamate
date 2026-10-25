@@ -129,6 +129,24 @@ data class RouteStop(
     val minutesToTarget: Int? = null,
     /** 该站历史充电次数 */
     val sessions: Int,
+    /**
+     * ⚠️ **v0.25.0（长途充电规划专家 P1-2）：到下一个充电站还有多少公里。**
+     *
+     * 原来只给「在第几公里」，不给「到下一站多远」——
+     * 而后者才是出发前真正要回答的那句：「我充到 80%，**够不够开到下一个**？」
+     *
+     * 数据来自相邻充电点的里程表差（`start_odometer_km`）——
+     * 实测本车真实节奏：**中位 128 公里，最远一段 348 公里**。
+     */
+    val gapToNextKm: Double? = null,
+    /**
+     * ⚠️ **v0.25.0：充到 [socAfter] 之后，到下一站还能剩多少电（%）。**
+     *
+     * 算法：`到下一站需要的度数 = 站间距离 × 本车实测 Wh/km`，
+     * 再换算成电量的百分点。
+     * 与 20% 保底对齐 —— 低于 20% 就该提示「这一段不够，得再充一次」。
+     */
+    val socAtNextStop: Int? = null,
 )
 
 /** 余量剖面上的一个点。 */
@@ -309,6 +327,17 @@ fun buildRoutePlan(
      * 有真实剖面就用它；没有（端点没拉到）才回落到插值。
      */
     socProfile: List<com.teslamate.app.SocProfilePoint>? = null,
+    /**
+     * ⚠️ **v0.25.0：到下一站剩多少电**要用的两个输入。
+     *
+     * - [consumption]：本车**实测**能耗模型（按车速分桶的 Wh/km）——
+     *   不用「官方标称」，因为标称比实测乐观 50%。
+     * - [batteryCapacityKwh]：本车**可用**电池容量（服务端按实测反推）。
+     */
+    consumption: com.teslamate.app.ConsumptionModel? = null,
+    batteryCapacityKwh: Double? = null,
+    /** 计划车速（km/h）—— 决定用哪一档 Wh/km。 */
+    planSpeedKph: Double? = null,
 ): RoutePlan? {
     val startOdo = template.startOdoKm ?: return null
     // ⚠️ v0.14.0（口径审计 P0-4）：里程窗口用**最近那一趟的真实里程**，不用中位数。
@@ -326,11 +355,38 @@ fun buildRoutePlan(
         odo >= startOdo - 5 && odo <= startOdo + runDistance + 5
     }.sortedBy { it.start_odometer_km ?: 0.0 }
 
-    val stops = onRoute.map { c ->
+    // ⚠️ **v0.25.0（长途充电规划专家 P1-2）：站间距离 + 「到下一站剩多少电」。**
+    //
+    // 原来只给「在第几公里」，不给「到下一站多远」——
+    // 而后者才是出发前真正要回答的那句：
+    // 「我充到 80%，**够不够开到下一个**？」
+    //
+    // 站间距离来自相邻充电点的里程表差（`start_odometer_km`），
+    // 实测本车真实节奏：中位 128 公里，最远一段 348 公里。
+    //
+    // 「到下一站剩多少」用**本车实测** Wh/km（不是官方标称 —— 标称乐观 50%）
+    // 与**可用容量**换算，并与 20% 保底对齐。
+    val whPerKm = consumption?.let { m ->
+        planSpeedKph?.let { m.whSample(it)?.bucket?.whPerKm }
+    }
+    val stops = onRoute.mapIndexed { idx, c ->
         val stat = stationStats[stationKey(c)]
+        val thisOdo = c.start_odometer_km ?: startOdo
+        val nextOdo = onRoute.getOrNull(idx + 1)?.start_odometer_km
+        val gapKm = nextOdo?.let { it - thisOdo }?.takeIf { it > 0.5 }
+        // 充到 socAfter 后，到下一站还剩多少电（%）
+        val socAtNext = if (gapKm != null && whPerKm != null && batteryCapacityKwh != null
+            && batteryCapacityKwh > 0 && c.end_soc != null
+        ) {
+            val needKwh = gapKm * whPerKm / 1000.0
+            val needPct = (needKwh / batteryCapacityKwh * 100).roundToInt()
+            (c.end_soc - needPct).coerceIn(-100, 100)
+        } else {
+            null
+        }
         RouteStop(
             name = c.geofence_name ?: c.place.firstSegment() ?: "充电站",
-            kmAlongRoute = ((c.start_odometer_km ?: startOdo) - startOdo).coerceAtLeast(0.0),
+            kmAlongRoute = (thisOdo - startOdo).coerceAtLeast(0.0),
             socBefore = c.start_soc,
             socAfter = c.end_soc,
             typicalPowerKw = stat?.typicalPowerDcKw ?: stat?.typicalPowerKw,
@@ -345,6 +401,8 @@ fun buildRoutePlan(
                 val to = c.end_soc
                 if (from != null && to != null && kw != null) it.minutesTo(from, to, kw) else null
             },
+            gapToNextKm = gapKm,
+            socAtNextStop = socAtNext,
         )
     }
 
@@ -748,6 +806,32 @@ fun RoutePlanCard(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // ⚠️ **v0.25.0（长途充电规划专家 P1-2）：站间距离 + 到下一站剩多少。**
+                            //
+                            // 这是出发前 5 分钟真正要回答的那句：
+                            // 「我充到 80%，**够不够开到下一个**？」
+                            //
+                            // 原来只给「在第几公里」，用户得自己心算下一站在哪 ——
+                            // 而下一站可能在 348 公里外（本车真实最远一段）。
+                            s.gapToNextKm?.let { gap ->
+                                val nextTxt = buildString {
+                                    append("距下一站 ${gap.roundToInt()} 公里")
+                                    s.socAtNextStop?.let { soc ->
+                                        append(" · 到下一站剩 $soc%")
+                                        if (soc < 20) append(" ⚠ 低于 20% 保底")
+                                    }
+                                }
+                                Text(
+                                    nextTxt,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if ((s.socAtNextStop ?: 100) < 20) {
+                                        accents.warnAmber
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
                         }
                         // 到站电量低于 20% 保底 → 琥珀提示
                         s.socBefore?.let { soc ->

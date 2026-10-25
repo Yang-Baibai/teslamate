@@ -498,6 +498,9 @@ private fun MainScaffold(
                         onCarChange = onCarChange,
                         // ⚠️ v0.24.0：App 级数据仓库（性能评审 P0-2）。
                         store = recordsStore,
+                        // ⚠️ v0.25.0：「到下一站剩多少电」要用本车实测能耗模型
+                        // 与可用容量（官方标称比实测乐观 50%）。
+                        consumption = statusStore.consumption,
                     )
                     Tab.USAGE -> StatsScreen(
                         settings,

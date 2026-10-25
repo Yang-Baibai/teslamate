@@ -232,6 +232,8 @@ internal fun ChargeItem(
     c: Charge,
     stat: StationStat?,
     modifier: Modifier = Modifier,
+    /** ⚠️ v0.25.0：车主填的电价 —— 有就显示估算费用。 */
+    rates: com.teslamate.app.ChargeRates? = null,
     onClick: () -> Unit,
 ) {
     val accents = LocalAccentColors.current
@@ -308,10 +310,16 @@ internal fun ChargeItem(
             ) {
                 InlineMetric("充入", "${c.energy_added_kwh?.fmt(1) ?: "—"} 度")
                 InlineMetric("电量", "${c.start_soc ?: "—"}→${c.end_soc ?: "—"}%")
-                if (c.cost != null) {
+                // ⚠️ v0.25.0（第 16 轮充电成本专家 P1-6）：
+                // 费用优先用服务端的 `cost`；没有就按**车主填的电价**本地估算，
+                // 并用 **≈** 前缀标明「这是估算」——
+                // 服务端 cost 全库 NULL（未配 tou_rates），所以这一行**永远**不显示，
+                // 而「每公里成本」恰恰是车主最想要的那个数。
+                val estCost = c.cost ?: rates?.let { estimateSingleChargeCost(c, it) }
+                if (estCost != null) {
                     InlineMetric(
                         "费用",
-                        "¥${c.cost.fmt(2)}",
+                        if (c.cost != null) "¥${c.cost.fmt(2)}" else "≈${estCost.fmtYuan()}",
                         // ⚠️ v0.8.3：原来用 primary（红）。红色在本 App 只表示告警，
                         // 费用不是告警 —— 与里程数字同理，去掉这层廉价感。
                         valueColor = MaterialTheme.colorScheme.onSurface,

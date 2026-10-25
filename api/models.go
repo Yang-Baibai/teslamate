@@ -185,6 +185,27 @@ type Drive struct {
 	ChargeAfterTrip bool `json:"charge_after_trip"`
 }
 
+// CostSummary 一个时间窗口内的充电成本构成。
+//
+// ⚠️ v0.25.0（第 16 轮充电成本专家 P0-2 / P1-7）。
+//
+// 度数一律是**网侧送出**（`charge_energy_used`）而不是充入电池 ——
+// 桩是按它送出去的度数收费的，实测两者差 6.79%。
+type CostSummary struct {
+	// 公共桩（直流）网侧度数
+	DcUsedKwh float64 `json:"dc_used_kwh"`
+	// 家充（交流）网侧度数
+	AcUsedKwh float64 `json:"ac_used_kwh"`
+	// 公共桩场次
+	DcSessions int `json:"dc_sessions"`
+	// 家充场次
+	AcSessions int `json:"ac_sessions"`
+	// 公共桩总时长（分钟）—— 按分钟计服务费时用它
+	DcMinutes float64 `json:"dc_minutes"`
+	// 家充总时长（分钟）
+	AcMinutes float64 `json:"ac_minutes"`
+}
+
 // SocProfilePoint 剖面上的一个点（真实逐公里 SOC）。
 //
 // ⚠️ v0.24.0（长途充电规划专家 P0-2）：

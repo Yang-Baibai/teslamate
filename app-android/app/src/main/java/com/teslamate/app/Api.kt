@@ -499,6 +499,19 @@ data class SocProfilePoint(
 )
 
 @Serializable
+data class CostSummary(
+    /** 公共桩（直流）网侧度数 —— 桩是按它送出去的度数收费的 */
+    val dc_used_kwh: Double = 0.0,
+    /** 家充（交流）网侧度数 */
+    val ac_used_kwh: Double = 0.0,
+    val dc_sessions: Int = 0,
+    val ac_sessions: Int = 0,
+    /** 公共桩总时长（分钟）—— 按分钟计服务费时用它 */
+    val dc_minutes: Double = 0.0,
+    val ac_minutes: Double = 0.0,
+)
+
+@Serializable
 data class AppLatest(    val version_code: String = "0",
     val version_name: String = "0.0.0",
     val apk_url: String = "",
@@ -721,4 +734,14 @@ class Api private constructor(private val base: String, private val token: Strin
      */
     fun socProfile(driveId: Int, stepKm: Int = 5): List<SocProfilePoint> =
         get("/api/v1/drives/$driveId/soc_profile?step_km=$stepKm")
+
+    /**
+     * ⚠️ v0.25.0：一个时间窗口内的**充电成本构成**（度数 / 场次 / 时长）。
+     *
+     * 单独一个端点而不是客户端自己算：
+     * 用量页的「7 天 / 30 天 / 1 年」是**服务端时区**的窗口，
+     * 而 `charges()` 是「最近 N 场」—— 范围不同，混用会算错。
+     */
+    fun costSummary(carId: Int, period: String): CostSummary =
+        get("/api/v1/cars/$carId/cost_summary?period=$period")
 }
