@@ -1332,6 +1332,9 @@ fun RoutePlan.hopsArrivingBelowReserve(startIdx: Int): List<RouteHop> {
  * `req = need + RESERVE_SOC` ⇒ 充到 `req%` 时**名义上**到站剩 20%；
  * 残差 ±pts ⇒ 到站可能 `(20 − pts)%` ~ `(20 + pts)%`。
  *
+ * ⚠️ **v0.61.0**：**只给到站区间**，不重复「模型残差 ±N 个点」——
+ * 那半句**详情行**已经说了（同一张卡说两遍 = 重复信息）。
+ *
  * `req > 100`（连充满也守不住保底）那一支**不给**这段 ——
  * 那里的文案已经是「充满也只剩 X%，低于 20% 保底」，语义不同，不叠加。
  */
@@ -1340,7 +1343,10 @@ fun prescriptionErrorText(requiredSoc: Int, errorPoints: Int?): String? {
     val pts = errorPoints?.takeIf { it > 0 } ?: return null
     val lo = (RESERVE_SOC - pts).coerceAtLeast(0)
     val hi = RESERVE_SOC + pts
-    return "（模型残差 ±$pts 个点，到站可能 $lo%~$hi%）"
+    // ⚠️ **v0.61.0**：**只给到站区间**，不再重复「模型残差 ±N 个点」——
+    // 那半句**详情行**已经说了（同一张卡说两遍 = 重复信息）。
+    // 各给各的没有的那一半：L1 给区间，详情行给残差。
+    return "（到站可能 $lo%~$hi%）"
 }
 
 /**

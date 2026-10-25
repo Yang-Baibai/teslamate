@@ -518,9 +518,11 @@ class RoutePlanLogicTest {
         // 实测（川藏滇线 #4 蔚来换电站，280 公里那一跳）：
         // 处方「充到 100%」，模型残差 ±10 点 ⇒ 实际到站可能 **10%~30%**。
         val t = prescriptionErrorText(requiredSoc = 100, errorPoints = 10)
-        assertNotNull("必须有误差带: $t", t)
-        assertTrue("应给出残差点数: $t", t!!.contains("±10 个点"))
-        assertTrue("应给出到站区间: $t", t.contains("10%~30%"))
+        assertNotNull("必须有到站区间: $t", t)
+        assertTrue("应给出到站区间: $t", t!!.contains("10%~30%"))
+        // ⚠️ **v0.61.0**：**不得**重复详情行已经有的「模型残差 ±N 个点」
+        // （同一张卡说两遍 = 重复信息）。
+        assertFalse("不应重复「模型残差」: $t", t.contains("模型残差"))
     }
 
     @Test
