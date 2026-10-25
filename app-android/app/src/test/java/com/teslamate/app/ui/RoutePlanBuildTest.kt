@@ -155,8 +155,25 @@ class RoutePlanBuildTest {
         )
         assertNotNull("plan 不应为 null", plan)
         val p = plan!!
-        assertEquals(2, p.stops.size)
-        val s0 = p.stops[0]
+        // ⚠️ **v0.43.0（第 25 轮车主复审 P0）：`stops` 的第 0 位是**合成的起点行**。**
+        //
+        // 原来 `stops` 只包含**充电站** ⇒「出发 → 第一个站」这一跳**完全没有模型**
+        // （实测那条线：出发 89%、第 276 公里到站只剩 6%，全线最险的一段零提示）。
+        // 现在起点被建成一行放在最前。
+        assertEquals(3, p.stops.size)
+        assertTrue("第 0 行必须是起点行", p.stops[0].isStart)
+        assertEquals("起点行里程 = 0", 0.0, p.stops[0].kmAlongRoute, 0.001)
+        // 起点行：0 → 100 公里，180 Wh/km，容量 65 度
+        //   → 100×180/1000 = 18 度；18 ÷ 65 × 100 = 27.7 → **28 个点**
+        assertEquals(28, p.stops[0].gapNeedPct)
+        assertEquals(48, p.stops[0].requiredSocHere)
+        assertEquals(100.0, p.stops[0].gapToNextKm!!, 0.001)
+        // 起点行的真值 = 第一个站的到站电量（70）
+        assertEquals(70, p.stops[0].nextStopRealSoc)
+        // 起点行估算：出发 100% − 28 个点 = 72%
+        assertEquals(72, p.stops[0].socAtNextStop)
+
+        val s0 = p.stops[1]
         // 站间 200 公里，180 Wh/km，容量 65 度 → 需要 200×180/1000/65 = 55.4 → 55 个点
         assertEquals(55, s0.gapNeedPct)
         // 留 20% 保底 → 至少充到 75%
@@ -212,9 +229,11 @@ class RoutePlanBuildTest {
             batteryCapacityKwh = 65.0,
             planSpeedKph = 50.0,
         )!!
-        assertEquals(2, plan.stops.size)
+        // ⚠️ v0.43.0：`stops` 第 0 位是**合成的起点行**（不是站）⇒ 3 行。
+        assertEquals(3, plan.stops.size)
         // 只有**最后一个**沿途站才有「距终点」
-        assertNull("第一站不该有「距终点」", plan.stops[0].distanceToEndKm)
+        assertNull("第一站不该有「距终点」", plan.stops[1].distanceToEndKm)
+        assertNull("起点行也不该有「距终点」", plan.stops[0].distanceToEndKm)
         val last = plan.stops.last()
         assertEquals(100.0, last.distanceToEndKm!!, 1.0)
         // 100 公里 × 180 Wh/km ÷ 1000 = 18 kWh；18 ÷ 65 × 100 = 27.7 → 28 个点
@@ -242,11 +261,14 @@ class RoutePlanBuildTest {
             planSpeedKph = 50.0,
         )!!
         // 第 1 站的 arrivalSoc = 第 1 趟行程的 end_soc = 70
-        assertEquals(70, plan.stops[0].arrivalSoc)
+        // ⚠️ v0.43.0：`stops[0]` 是**合成的起点行**（arrivalSoc = 出发电量 100），
+        // 真正的站从 `stops[1]` 开始。
+        assertEquals(100, plan.stops[0].arrivalSoc)
+        assertEquals(70, plan.stops[1].arrivalSoc)
         // 第 2 站 = 第 2 趟的 end_soc = 40
-        assertEquals(40, plan.stops[1].arrivalSoc)
+        assertEquals(40, plan.stops[2].arrivalSoc)
         // 决策行的真值与之同源
-        assertEquals(plan.stops[1].arrivalSoc, plan.stops[0].nextStopRealSoc)
+        assertEquals(plan.stops[2].arrivalSoc, plan.stops[1].nextStopRealSoc)
     }
 
     @Test

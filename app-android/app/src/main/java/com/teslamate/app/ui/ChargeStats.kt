@@ -83,6 +83,19 @@ data class StationStat(
      * ⚠️ 所以界面**必须**说清这个「最慢」是**哪个总体**里的最慢。
      */
     val dcNeverReached80: Int = 0,
+    /**
+     * ⚠️ **v0.43.0（第 26 轮口径审计 S6）：其中**停留很短**的场次数（≤20 分钟）。**
+     *
+     * ## 为什么要有这个数
+     *
+     * 界面原来写「最坏情况可能比这个数差」—— 那是**没有数据支撑的因果推测**。
+     * 第 26 轮独立复算发现：被排除的 31 场里
+     * **24 场停留 ≤20 分钟、0 场 >40 分钟、有效功率中位 89 kW**
+     * ⇒ 它们主要是「**人提前走了**」，**不是**「桩慢/桩坏/排队」。
+     *
+     * 所以归因要**用实测数据**，不能猜。
+     */
+    val dcNeverReached80Short: Int = 0,
 ) {
     /**
      * ⚠️ **v0.42.0**：被排除在「最慢一次」统计之外的直流场次数。
@@ -257,6 +270,12 @@ fun buildStationStats(charges: List<Charge>): Map<String, StationStat> {
             // 「最慢一次」只从成功子集里取最大值 ⇒ 必须披露这个总体。
             dcNeverReached80 = list.count { c ->
                 c.is_dc == true && c.measured_unavailable_reason == "never_reached_80"
+            },
+            // ⚠️ **v0.43.0**：其中**停留很短**的次数（≤20 分钟）——
+            // 用实测数据说明这些场次是「提前离场」还是「桩慢」。
+            dcNeverReached80Short = list.count { c ->
+                c.is_dc == true && c.measured_unavailable_reason == "never_reached_80"
+                    && (c.duration_min ?: Int.MAX_VALUE) <= 20
             },
         )
     }.toMap()

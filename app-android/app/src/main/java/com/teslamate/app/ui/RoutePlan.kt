@@ -301,6 +301,14 @@ data class RouteStop(
      */
     val requiredSocHere: Int? = null,
     /**
+     * ⚠️ **v0.43.0（第 25 轮车主复审）：这一行是不是「起点」。**
+     *
+     * 起点**不是充电站** —— 它是这次出门时的出发点（家），
+     * 出发时的电量是 [socBefore]。
+     * 所以它的「处方」语义不一样：**出发前**要充到多少，而不是「在这站充到多少」。
+     */
+    val isStart: Boolean = false,
+    /**
      * ⚠️ **v0.36.0（第 21 轮一线车主复审 C8）：这一跳的耗电估计**误差几个点**。**
      *
      * 复审原话：「这个 App 要么**给区间**，要么把上次实际值并排放。
@@ -672,25 +680,33 @@ data class RoutePlan(
         }
 
     /**
-     * ⚠️ **v0.42.0：端到端到站误差（实测 − 模型估计），**从这条线自己的数据算**。**
+     * ⚠️ **v0.42.0：端到端到站误差（估 − 实测），**从这条线自己的数据算**。**
      *
      * ## 为什么要有它
      *
      * 卡级前提行原来只说「余量估计的模型残差约 ±N 个点」——
      * 而那个 ±N 是**模型残差的 90 分位**，是**对称**的。
-     * 但端到端的实际误差是**单向偏乐观**的：
-     * 模型估的到站电量**系统性偏低**（估 21 / 实测 17 这种）。
+     * 但端到端的实际误差**不是对称的**。
      *
      * ⚠️ 以前这里写死过「中位 +4.5 点、最大 +26 点」——
      * 那是**某一条线**（6227 公里那条）的黑盒审计结果，
      * 拿它当**所有线路**的通用值就是**过度承诺**。
+     * 而且第 26 轮口径审计**独立复算发现它在当前代码 + 当前数据上复现不出来**
+     * （实测：中位 +2、乐观侧最大 +11、**保守侧最小 −12**）。
      *
-     * 现在：**从这条线自己的每一跳算**（每站都有 `socAtNextStop` 估算值
-     * 与 `nextStopRealSoc` 上次实测值）⇒ 数字只对这条线成立。
+     * ## ⚠️ **v0.43.0（第 26 轮口径审计 S3）：误差是**双侧**的，不是单向。**
      *
-     * @return (中位, 最大) 个电量点；样本不足时返回 null。
+     * 实测那条线 35 跳：**22 跳模型高估、12 跳模型低估、1 跳相等**。
+     * 所以：
+     * - 界面**不能**说「偏乐观」/「偏保守」（那是把双侧说成单侧）；
+     * - 「最坏」必须取**绝对值最大的那一个**，不分方向 ——
+     *   原来只取乐观侧，把真最坏（保守侧 −12 点）**整段藏掉**了。
+     *
+     * 现在直接给**区间**，不做定性。
+     *
+     * @return (中位, 最小, 最大) 个电量点；样本不足时返回 null。
      */
-    val endToEndErrorPoints: Pair<Int, Int>? get() {
+    val endToEndErrorPoints: Triple<Int, Int, Int>? get() {
         val errs = stops.mapNotNull { s ->
             val est = s.socAtNextStop ?: return@mapNotNull null
             val real = s.nextStopRealSoc ?: return@mapNotNull null
@@ -702,9 +718,7 @@ data class RoutePlan(
         if (errs.size < 3) return null
         val sorted = errs.sorted()
         val med = medianOf(sorted.map { it.toDouble() })?.roundToInt() ?: return null
-        // 最坏的一跳（方向最偏乐观的那个）
-        val worst = if (med >= 0) sorted.last() else sorted.first()
-        return med to worst
+        return Triple(med, sorted.first(), sorted.last())
     }
 
     /** 最低点（不含充电跳升后的值） */
@@ -946,8 +960,12 @@ data class RoutePlan(
      * 它是**证据**（分布），不是**决策**（那一跳）。
      */
     fun stationRhythm(): String {
-        if (stops.size < 2) return ""
-        val stationKms = stops.map { it.kmAlongRoute }.sorted()
+        // ⚠️ **v0.43.0（第 26 轮口径审计 W-3）：**起点不是站**，
+        // 不能混进站间距分布 —— 否则中位从 183 公里变成 187 公里。
+        // （起点行是 v0.43.0 为「起点 → 第一个站」那一跳合成的虚拟行。）
+        val rhythmStops = stops.filter { !it.isStart }
+        if (rhythmStops.size < 2) return ""
+        val stationKms = rhythmStops.map { it.kmAlongRoute }.sorted()
         val gaps = stationKms.zipWithNext { a, b -> b - a }.filter { it >= 2.0 }
         if (gaps.isEmpty()) return ""
         val maxGap = gaps.max()
@@ -1444,6 +1462,105 @@ fun buildRoutePlan(
     val routeStops = stops.filterIndexed { i, _ -> !journeyStops[i].isEndpoint }
     val endpointStops = stops.filterIndexed { i, _ -> journeyStops[i].isEndpoint }
 
+    // ⚠️ **v0.43.0（第 25 轮车主复审 P0）：把「起点 → 第一个站」也建成一行。**
+    //
+    // ## 为什么必须建
+    //
+    // 原来 `stops` 只包含**充电站**，于是「出发 → 第一个站」这一跳**完全没有模型**：
+    // 没有 need、没有处方、没有告警，也不在「需要注意的 N 跳」里。
+    //
+    // 而实测那条线：出发 **89%**，第一个站乐驿（第 276 公里）**到站只剩 6%**
+    // —— 低于 20% 保底，**全程最险的一段之一**，界面却一个字都不说。
+    //
+    // ## 做法
+    //
+    // 造一个**合成的起点行**（`isStart = true`）放进 `stops` ——
+    // 于是 `actionableHops` / `longestHop` / 站列表**自动**覆盖到它，
+    // **不需要第二套代码路径**。
+    //
+    // ⚠️ 但**剖面**仍然用原来的 `routeStops`（不含起点行）——
+    // 起点已经在剖面里单独加过了（`RouteSocPoint(0.0, startSoc)`），
+    // 再加一次会画出重复点。
+    val firstLegStop: RouteStop? = run {
+        val first = routeStops.firstOrNull() ?: return@run null
+        val km = first.kmAlongRoute
+        if (km <= 0.5) return@run null
+        val startSoc = template.lastStartSoc ?: template.startSoc
+        if (startSoc == null) return@run null
+        // 这一段（起点 → 第一个站）用到的行程
+        val legSegs = template.legs.filter { leg ->
+            val s = leg.startKm - journeyStartKm
+            val e = leg.endKm - journeyStartKm
+            e > 0.0 && s < km
+        }
+        val legMinutes = legSegs.sumOf { it.durationMin ?: 0 }
+        val segSpeed = if (legSegs.isNotEmpty() && legMinutes > 0) {
+            legSegs.sumOf { it.distanceKm } / (legMinutes / 60.0)
+        } else {
+            null
+        }
+        val sample = segSpeed?.let { v -> consumption?.whSample(v) }
+        val whBase = sample?.bucket?.whPerKm ?: whPerKm
+        // 爬升/下降取**本段**区间（起点 → 第一个站）
+        val ascM = ascentBetween(0.0, km)
+        val descM = descentBetween(0.0, km)
+        val typ = climbModel?.typical_grade?.firstOrNull { tg ->
+            sample?.bucket?.minKph == tg.min_kph
+        }
+        val climbWh = if (km >= CLIMB_MIN_GAP_KM && climbModel != null
+            && climbModel.basis == CLIMB_BASIS_CALIB_NET && typ != null
+        ) {
+            val gUp = ascM / km
+            val gDn = descM / km
+            climbModel.c_up_calib_net_wh_per_m * (gUp - typ.grade_up_typ_m_per_km) +
+                climbModel.c_regen_calib_net_wh_per_m * (gDn - typ.grade_down_typ_m_per_km)
+        } else {
+            null
+        }
+        val whTotal = if (whBase != null) whBase + (climbWh ?: 0.0) else null
+        val need = if (whTotal != null && batteryCapacityKwh != null && batteryCapacityKwh > 0) {
+            ((km * whTotal / 1000.0) / batteryCapacityKwh * 100).roundToInt()
+        } else {
+            null
+        }
+        RouteStop(
+            // ⚠️ 名字用**这次出发的地名**（如「永丰社区」）——
+            // 里程那一列已经写着「起点」，再叫一遍「起点」是重复；
+            // 而给地名能让摘要行变成「永丰社区 → 乐驿」，比「起点 → 乐驿」更有用。
+            name = template.fromLabel,
+            kmAlongRoute = 0.0,
+            socBefore = startSoc,
+            socAfter = null,
+            typicalPowerKw = null,
+            minutesTo80 = null,
+            sessions = 1,
+            gapToNextKm = km,
+            socAtNextStop = need?.let { (startSoc - it).coerceIn(-100, 100) },
+            nextStopRealSoc = first.arrivalSoc ?: first.socBefore,
+            gapNeedPct = need,
+            requiredSocHere = need?.let { it + RESERVE_SOC },
+            nextStopName = first.name,
+            isStart = true,
+            gapErrorPoints = consumption?.socErrorPoints(km, batteryCapacityKwh),
+            arrivalSoc = startSoc,
+            assumedSpeedKph = segSpeed ?: planSpeedKph,
+            assumedWhPerKm = whBase,
+            assumedWhPerKmTotal = whTotal,
+            gapClimbKwh = if (climbWh != null) climbWh * km / 1000.0 else null,
+            gapClimbPct = if (climbWh != null && batteryCapacityKwh != null && batteryCapacityKwh > 0) {
+                climbWh * km / 1000.0 / batteryCapacityKwh * 100.0
+            } else {
+                null
+            },
+            gapAscentM = ascM,
+            gapDescentM = descM,
+            gapClimbWhPerKm = climbWh,
+            gapBucketLabel = sample?.bucket?.label,
+            gapSpeedBorrowed = sample?.exact == false,
+        )
+    }
+    val displayStops = if (firstLegStop != null) listOf(firstLegStop) + routeStops else routeStops
+
     // 剖面：起点 → (每个**沿途**站：到站电量 → 充完电量) → 终点
     //
     // ⚠️ v0.14.0：端点用**最近那一趟**的真实电量（lastStartSoc/lastEndSoc），
@@ -1477,7 +1594,10 @@ fun buildRoutePlan(
 
     if (profile.size < 2) return null
     return RoutePlan(
-        template, profile, routeStops, endpointStops,
+        // ⚠️ **v0.43.0**：给的是 `displayStops`（含合成的「起点」行），
+        // 而**剖面**用的仍然是 `routeStops`（不含起点行）——
+        // 起点在剖面里已经单独加过（`RouteSocPoint(0.0, startSoc)`）。
+        template, profile, displayStops, endpointStops,
         // ⚠️ v0.31.0：整条线路的爬升
         climbAscentM = routeAscentM,
         climbDescentM = routeDescentM,
@@ -1485,9 +1605,11 @@ fun buildRoutePlan(
         climbCorrectionApplied = climbModel != null,
         // ⚠️ v0.36.0：低温样本数（动态，不再写死）
         lowTempSamples = consumption?.lowTempSamples,
-        // ⚠️ v0.36.0（C8）：模型自己的误差带（换算到最长那一跳）
+        // ⚠️ **v0.43.0**：误差带换算到**最长那一跳** ——
+        // ⚠️ 用 `displayStops`（含起点行），
+        // 否则「起点 → 第一个站」比所有站间段都长时，误差带会算错。
         modelErrorPoints = consumption?.socErrorPoints(
-            stops.maxOfOrNull { it.gapToNextKm ?: 0.0 } ?: 0.0,
+            displayStops.maxOfOrNull { it.gapToNextKm ?: 0.0 } ?: 0.0,
             batteryCapacityKwh,
         ),
     )
@@ -1966,26 +2088,29 @@ fun RoutePlanCard(
                         // 所以只说「模型残差」，不说「实测误差」——
                         // 否则就变成了**低报**风险。
                         (plan.modelErrorPoints?.let {
-                            // ⚠️ **v0.42.0：说清这个 ±N 是**哪一跳**的。**
-                            // 它取的是**最长那一跳**（`modelErrorPoints` 用的就是最长跳的里程），
-                            // 而同一张卡的逐站行用的是**每一跳自己的**里程 ——
-                            // 同屏两个数、同一句式、两个范围。
-                            "；余量估计的模型残差约 ±$it 个点（最长那一跳；短跳更小）"
+                            // ⚠️ **v0.43.0（第 26 轮口径审计 S4/S5）：**
+                            // ① **统一句式**：逐站那行也改成「模型残差 ±N 个点」——
+                            //    原来一个写「±N 个点」、一个写「模型残差约 ±N 个点」，
+                            //    同一个模型的两个总体用两种句式 ⇒ 读者以为它们性质不同。
+                            // ② 说清**范围**：这个 N 只对**最长那一跳**成立；
+                            //    同屏逐站行的 N 是**每一跳自己的**。
+                            // ⚠️ 还要说清它**不是**实测误差上限 ——
+                            // 实测那条线 35 跳里有 **10 跳**的端到端偏差超过它。
+                            "；余量估计的模型残差 ±$it 个点（最长那一跳；短跳按各自里程更小）" +
+                                "· 它是模型残差，不是实测误差上限"
                         } ?: "") +
-                        // ⚠️ **v0.42.0：端到端的**单向**偏差**也要说。
+                        // ⚠️ **v0.43.0（第 26 轮口径审计 S3）：直接给**区间**，不做定性。**
                         //
-                        // 那个 ±N 是**对称**的模型残差，但端到端实际误差是**单向**的：
-                        // 模型估的到站余量通常**偏高**（乐观）。
-                        // ⚠️ 数字从**这条线自己的每一跳**算（估 − 实），
-                        // 不用别的线的黑盒审计值 —— 那样就是过度承诺。
-                        (plan.endToEndErrorPoints?.let { (med, worst) ->
-                            if (med >= 0) {
-                                "；端到端模型估算偏乐观：比实测高 " +
-                                    "中位 $med 个点、最坏 $worst 个点"
-                            } else {
-                                "；端到端模型估算偏保守：比实测低 " +
-                                    "中位 ${-med} 个点、最坏 ${-worst} 个点"
-                            }
+                        // 以前写死过「中位 +4.5 点、最大 +26 点」——
+                        // 那是某一条线的黑盒审计结果，当前代码 + 数据上**复现不出来**
+                        // （实测：中位 +2、乐观侧最大 +11、**保守侧最小 −12**）。
+                        // 而且真实分布是**双侧**的（22 正 / 12 负 / 1 零），
+                        // 所以**不能**说「偏乐观」/「偏保守」。
+                        //
+                        // 现在从**这条线自己的每一跳**算（估 − 实），直接给区间。
+                        (plan.endToEndErrorPoints?.let { (med, lo, hi) ->
+                            "；端到端估算与上次实测的差：中位 $med 个点，区间 $lo ~ $hi 个点" +
+                                "（正数=模型把余量估高了，负数=估低了）"
                         } ?: "") +
                         // ⚠️ **v0.40.0（第 24 轮客户复审 C 部分 / 对抗性审计 ⑦）：**
                         // 「上次剩」这一栏的**定性**必须写进前提行。
@@ -2049,7 +2174,7 @@ fun RoutePlanCard(
             referenceValue = 20f,
             referenceLabel = "20% 保底",
             contentDescription = "余量剖面：从 ${plan.profile.firstOrNull()?.soc ?: "?"}% 到 ${plan.profile.lastOrNull()?.soc ?: "?"}%，" +
-                "沿途 ${plan.stops.size} 次充电，20% 保底线已标出",
+                "沿途 ${plan.stops.count { !it.isStart }} 次充电，20% 保底线已标出",
         )
         Text(
             "余量 (%) · 横轴 = 路线公里数 · 跳升处即充电",
@@ -2242,21 +2367,42 @@ fun RoutePlanCard(
                                 // ⚠️ **v0.40.0（第 24 轮客户复审 C1）：「无解」改成「到不了保底」。**
                                 val belowReserve = s.gapBelowReserve
                                 val l1 = buildString {
-                                    append("下一站 ")
-                                    s.nextStopName?.let { append(it).append(" · ") }
-                                    append(gap.roundToInt()).append(" 公里")
-                                    if (need != null && req != null) {
-                                        append(" · ")
-                                        if (belowReserve) {
-                                            // ⚠️ 原来写「充满也到不了 · 得在前面加一站」——
-                                            // 那是**假事实**（实测那两跳上次都到得了，只是低于保底）。
-                                            // 而且「充到 108%」本身是**不可能执行的指令**。
-                                            //
-                                            // 现在给**可执行的**说法：充满也只能剩多少。
-                                            append("充满也只剩 ").append(s.fullArrivalSoc).append("%，低于 ")
-                                                .append(RESERVE_SOC).append("% 保底")
-                                        } else {
-                                            append("充到 ").append(req).append("%")
+                                    if (s.isStart) {
+                                        // ⚠️ **v0.43.0（第 25 轮车主复审）：起点行的语义不同。**
+                                        //
+                                        // 起点**不是充电站** —— 它是这次出门的出发点（家）。
+                                        // 所以处方是「**出发前**至少充到多少」，
+                                        // 而不是「在这站充到多少」。
+                                        append("出发时 ").append(s.socBefore ?: "—").append("%")
+                                        append(" · 下一站 ")
+                                        s.nextStopName?.let { append(it).append(" · ") }
+                                        append(gap.roundToInt()).append(" 公里")
+                                        if (need != null && req != null) {
+                                            append(" · ")
+                                            if (belowReserve) {
+                                                append("出发前充满也只剩 ").append(s.fullArrivalSoc)
+                                                    .append("%，低于 ").append(RESERVE_SOC).append("% 保底")
+                                            } else {
+                                                append("出发前至少充到 ").append(req).append("%")
+                                            }
+                                        }
+                                    } else {
+                                        append("下一站 ")
+                                        s.nextStopName?.let { append(it).append(" · ") }
+                                        append(gap.roundToInt()).append(" 公里")
+                                        if (need != null && req != null) {
+                                            append(" · ")
+                                            if (belowReserve) {
+                                                // ⚠️ 原来写「充满也到不了 · 得在前面加一站」——
+                                                // 那是**假事实**（实测那两跳上次都到得了，只是低于保底）。
+                                                // 而且「充到 108%」本身是**不可能执行的指令**。
+                                                //
+                                                // 现在给**可执行的**说法：充满也只能剩多少。
+                                                append("充满也只剩 ").append(s.fullArrivalSoc).append("%，低于 ")
+                                                    .append(RESERVE_SOC).append("% 保底")
+                                            } else {
+                                                append("充到 ").append(req).append("%")
+                                            }
                                         }
                                     }
                                 }
@@ -2472,9 +2618,10 @@ fun RoutePlanCard(
                                         // 所以**在这站充到 100% 也不可能留住 $RESERVE_SOC% 保底**
                                         // ⇒ 想留住保底就**只能**提前一站补电。
                                         // 这是**算出来的**，不是猜的。
-                                        "这一跳要 $need 个点 · 充满也只剩 ${s.fullArrivalSoc}%，低于 $RESERVE_SOC% 保底" +
+                                        val prefix = if (s.isStart) "从起点到下一站要 $need 个点" else "这一跳要 $need 个点"
+                                        "$prefix · 充满也只剩 ${s.fullArrivalSoc}%，低于 $RESERVE_SOC% 保底" +
                                             (s.nextStopRealSoc?.let { " · 上次剩 $it%" } ?: "") +
-                                            " · 要留住保底得提前一站补电"
+                                            (if (s.isStart) "" else " · 要留住保底得提前一站补电")
                                     } else {
                                         // ⚠️ v0.36.0（视觉评审 P2-5）：加逗号 ——
                                         // 「留 20% 保底至少充到 108%」读起来是两个动作黏在一起。
@@ -2482,9 +2629,12 @@ fun RoutePlanCard(
                                         // ⚠️ **v0.36.0（车主复审 C8）：给**误差带**。**
                                         // 复审原话：「要么给区间，要么把上次实际值并排放」——
                                         // 这里的误差是**模型自己的残差 90 分位**，不是拍脑袋的数。
-                                        "这一跳要 $need 个点 · 留 $RESERVE_SOC% 保底，" +
-                                            "至少充到 $req%" +
-                                            (s.gapErrorPoints?.let { "（±$it 个点）" } ?: "") +
+                                        //
+                                        // ⚠️ **v0.43.0**：起点行的处方是「**出发前**充到多少」。
+                                        val prefix = if (s.isStart) "从起点到下一站要 $need 个点" else "这一跳要 $need 个点"
+                                        "$prefix · 留 $RESERVE_SOC% 保底，" +
+                                            (if (s.isStart) "出发前至少充到 $req%" else "至少充到 $req%") +
+                                            (s.gapErrorPoints?.let { "（模型残差 ±$it 个点）" } ?: "") +
                                             (s.socAfter?.let { "（上次充到 $it%）" } ?: "")
                                     }
                                     Text(

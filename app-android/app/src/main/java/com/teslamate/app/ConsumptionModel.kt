@@ -110,6 +110,20 @@ class ConsumptionModel(
      * 样本不足 10 条时为 null（不给数）。
      */
     val residualP90WhPerKm: Double? = null,
+    /**
+     * ⚠️ **v0.43.0（第 26 轮口径审计 R2/S1）：算 P90 用了**多少条样本**。**
+     *
+     * ## 为什么必须带出来
+     *
+     * 界面写「模型残差 90 分位」时，读者会以为它描述的是**自己的日常驾驶**。
+     * 而这个 P90 **只用 km ≥ 100 的长途样本**算
+     * （实测 20 条，档位分布 90–110×9 / 60–90×5 / 110–130×5 / **0–60×1**）——
+     * 而基数用的是 **0–60 市区档**。
+     *
+     * ⇒ **基数与误差带来自两个不同总体**，不说清楚就是**口径漂移**。
+     * 现在界面会把样本数与口径一起写出来。
+     */
+    val residualSamples: Int = 0,
 ) {
     /**
      * 把 [residualP90WhPerKm] 换算成**电量百分点**（一段路程上的误差）。
@@ -426,6 +440,8 @@ class ConsumptionModel(
             } else {
                 null
             }
+            // ⚠️ **v0.43.0**：把样本数带出来 —— 界面要能说清这个 P90 是**多少条**样本算的。
+            val residualN = if (residualP90 != null) residuals.size else 0
 
             return ConsumptionModel(
                 buckets = buckets,
@@ -436,6 +452,7 @@ class ConsumptionModel(
                 firstDrivenAt = firstAt,
                 lastDrivenAt = lastAt,
                 residualP90WhPerKm = residualP90,
+                residualSamples = residualN,
             )
         }
 

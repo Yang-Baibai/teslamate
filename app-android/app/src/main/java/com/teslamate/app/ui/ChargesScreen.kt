@@ -635,17 +635,28 @@ internal fun ChargeDetail(
                             //
                             // 实测本机：直流 65 场里 31 场 never_reached_80（47.7%），
                             // 有效的只有 28 场。
+                            //
+                            // ⚠️ **v0.43.0（第 26 轮口径审计 S6）：归因必须**用实测**，不能猜。**
+                            // 原来写「最坏情况可能比这个数差」——
+                            // 而独立复算发现：被排除的 31 场里 **24 场停留 ≤20 分钟、
+                            // 0 场 >40 分钟、有效功率中位 89 kW**
+                            // ⇒ 主要是「**人提前走了**」，**不是**「桩慢/桩坏/排队」。
+                            // 所以现在给**事实**（多少场没充到 80%、其中多少是短停留）。
                             val excluded = stat.excludedFromSlowest
+                            val shortExcluded = stat.dcNeverReached80Short
+                            val disclose = if (excluded > 0) {
+                                val shortTxt = if (shortExcluded > 0) {
+                                    "，其中 $shortExcluded 场只停留 20 分钟以内（多为提前离场）"
+                                } else {
+                                    ""
+                                }
+                                "（只统计充到 80% 成功的场次；另有 $excluded 场没充到 80%$shortTxt）"
+                            } else {
+                                ""
+                            }
                             KV(
                                 "该站同起点最慢一次",
-                                "$measuredSlow 分钟" + (
-                                    if (excluded > 0) {
-                                        "（只统计充到 80% 成功的场次；另有 $excluded 场没充到 80%，" +
-                                            "最坏情况可能比这个数差）"
-                                    } else {
-                                        ""
-                                    }
-                                    ),
+                                "$measuredSlow 分钟$disclose",
                             )
                         }
                         stat.compareTo(charge.effectiveAvgPowerKw()?.toDouble())?.let {

@@ -243,12 +243,13 @@ class RoutePlanHonestyTest {
 
     @Test
     fun `端到端偏差是从这条线自己算的`() {
-        // 估算比实测高 4 / 5 / 3 个点 ⇒ 中位 4、最坏 5
+        // 估算比实测高 4 / 5 / 3 个点 ⇒ 中位 4、区间 3 ~ 5
         val p = planWithErrors(18 to 14, 20 to 15, 16 to 13)
         val e = p.endToEndErrorPoints
         assertTrue("应算出偏差: $e", e != null)
         assertEquals("中位偏差 = 4", 4, e!!.first)
-        assertEquals("最坏偏差 = 5", 5, e.second)
+        assertEquals("最小偏差 = 3", 3, e.second)
+        assertEquals("最大偏差 = 5", 5, e.third)
     }
 
     @Test
@@ -259,10 +260,59 @@ class RoutePlanHonestyTest {
 
     @Test
     fun `端到端偏差能识别偏保守`() {
-        // 估算比实测**低** ⇒ 中位为负 ⇒ 界面应该说「偏保守」
+        // 估算比实测**低** ⇒ 中位为负 ⇒ 区间也全为负
         val p = planWithErrors(10 to 14, 10 to 15, 10 to 13)
         val e = p.endToEndErrorPoints!!
         assertTrue("中位应为负（模型保守）: ${e.first}", e.first < 0)
-        assertTrue("最坏也应为负: ${e.second}", e.second < 0)
+        assertTrue("最小也应为负: ${e.second}", e.second < 0)
+        assertTrue("最大也应为负: ${e.third}", e.third < 0)
+    }
+
+    @Test
+    fun `端到端偏差是双侧的 两端都要给出来`() {
+        // ⚠️ **v0.43.0（第 26 轮口径审计 S3）**：
+        // 实测那条线 35 跳是 **22 正 / 12 负 / 1 零** —— 误差是**双侧**的。
+        // 旧实现只取乐观侧的尾部 ⇒ **真最坏（保守侧）被整段藏掉**。
+        val p = planWithErrors(18 to 14, 10 to 15, 16 to 13)
+        val e = p.endToEndErrorPoints!!
+        assertEquals("中位 = 3", 3, e.first)
+        assertEquals("保守侧真最坏必须给出来 = −5", -5, e.second)
+        assertEquals("乐观侧 = 4", 4, e.third)
+    }
+
+    // ── ⑤ 起点行：站间距分布不能被它污染 ────────────────────────
+
+    @Test
+    fun `站间距分布不含起点`() {
+        // ⚠️ **v0.43.0（第 26 轮口径审计 W-3）**：
+        // 起点行是合成的虚拟行（km = 0），**不是站**。
+        // 混进站间距 ⇒ 中位从 183 公里变成 187 公里。
+        val p = RoutePlan(
+            RouteTemplate(
+                key = "j1", fromLabel = "家", toLabel = "B",
+                distanceKm = 1000.0, startSoc = 100, endSoc = 50,
+                legCount = 3, stopCount = 2,
+                lastDrivenAt = java.time.Instant.parse("2026-10-07T00:00:00Z"),
+                startOdoKm = 100000.0,
+            ),
+            emptyList(),
+            listOf(
+                // 起点行：km 0、到站 191 公里
+                RouteStop(
+                    name = "家", kmAlongRoute = 0.0, socBefore = 89, socAfter = null,
+                    typicalPowerKw = null, minutesTo80 = null, sessions = 1,
+                    gapToNextKm = 191.0, gapNeedPct = 50, requiredSocHere = 70,
+                    nextStopRealSoc = 12, socAtNextStop = 18, nextStopName = "B",
+                    isStart = true,
+                ),
+                // 真站：191 公里、383 公里
+                stop("B", 191.0, gapKm = 192.0),
+                stop("C", 383.0, gapKm = null),
+            ),
+        )
+        val rhythm = p.stationRhythm()
+        // 只算两个真站之间的 192 公里 ⇒ 不是 191~192
+        assertTrue("站间距应只含真站之间那 192 公里: $rhythm", rhythm.contains("192 公里"))
+        assertFalse("起点 0.0 不能混进站间距: $rhythm", rhythm.contains("191 公里"))
     }
 }

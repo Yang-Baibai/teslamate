@@ -812,32 +812,50 @@ private fun RangeAndOdometer(
                 reserveFactor = rf,
             )
         }
-        if (trueRangeFloor != null && trueRange != null) {
-            Text(
-                "留 20% 保底还能开 ${trueRangeFloor.fmt(0)} 公里",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        // ⚠️ **v0.42.0（第 24 轮对抗性审计 ⑤）：给这个数一个**区间**。**
+        // ⚠️ **v0.43.0（第 26 轮口径审计 S1/S2）：区间行必须**紧跟主角**，且保底行也要有区间。**
         //
-        // 同一个模型、同一个残差分布，线路余量表那边给「±N 个点」，
-        // 这边却给一个**裸整数** —— 同一个不确定度，一个页面给区间一个不给。
+        // 原来区间行排在「留 20% 保底还能开 174 公里」**下面** ——
+        // 读者会把「约 197 ~ 257 公里」读成 **174 公里**的区间，
+        // 而 **174 < 197**，看起来像 App 自相矛盾（实际是 223 的区间）。
         //
-        // ⚠️ 区间**非对称**（Wh/km 与续航成反比：省电那侧被放大、费电那侧也被放大），
-        // 所以不能写「±N 公里」。
+        // 而且**保底那一行也是同一个模型、同一个残差** ——
+        // 主角给了区间、下一行不给，就是 v0.42.0 刚修掉的那个 bug **原样复现**。
+        //
+        // ⚠️ 区间还必须**披露样本口径**：这个残差 P90 只用 **km ≥ 100 的长途样本**算
+        // （实测 20 条），而基数用的是 0–60 市区档 ⇒ **两个不同总体**，不说就是口径漂移。
         if (trueRange != null) {
-            consumption?.trueRangeBandKm(
+            val band = consumption?.trueRangeBandKm(
                 ratedRangeKm = ratedRange,
                 speedKph = refSpeed,
                 outsideTempC = st.outside_temp,
-            )?.let { (lo, hi) ->
+            )
+            val bandTxt = band?.let { (lo, hi) ->
+                "约 $lo ~ $hi 公里" +
+                    (consumption?.residualSamples?.takeIf { it > 0 }?.let {
+                        "（模型残差 90 分位，样本为 $it 条 ≥100 公里行程）"
+                    } ?: "（模型残差 90 分位）")
+            }
+            bandTxt?.let {
                 Text(
-                    "约 $lo ~ $hi 公里（模型自己的残差 90 分位）",
+                    it,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+        if (trueRangeFloor != null && trueRange != null) {
+            val floorBand = consumption?.trueRangeBandKm(
+                ratedRangeKm = ratedRange,
+                speedKph = refSpeed,
+                outsideTempC = st.outside_temp,
+                reserveFactor = reserveFactor ?: 0.90,
+            )
+            Text(
+                "留 20% 保底还能开 ${trueRangeFloor.fmt(0)} 公里" +
+                    (floorBand?.let { (lo, hi) -> "（约 $lo ~ $hi 公里）" } ?: ""),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：来源与温度可信度常驻显示。**
         if (scopeLine != null) {
