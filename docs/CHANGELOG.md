@@ -33,7 +33,7 @@
    而它实际意味着**相对出厂衰减了 15.1%**。
    → 本轮改名为「电池健康度（相对出厂）」，并重写说明文字。
 2. **官方 CLTC 627 km 不能和车机读数直接比 —— 用数据否掉了。**
-   本车 16 个严格档满充点的刻度系数
+   本车 严格档满充点（16 个，其中 15 个有能量口径）的刻度系数
    K = median(满电标定续航 ÷ 能量反推容量) = **6.8686 km/kWh**（相对离散度约 1.5%）。
    若刻度是 CLTC，K 应为 627 ÷ 76.8 = 8.164 —— **实测差 +19%**。
    直接比会得出「只剩 71%」的假结论。
@@ -48,7 +48,7 @@
 | 层 | 改了什么 |
 |---|---|
 | `api/queries.go` | `sqlBattery` 多下发一列 `rated_range_km`（车机自报的满电标定续航） |
-| `api/handlers.go` | 新增 `factory_rated_range_km` = 出厂可用容量 × K，K = median(满电标定续航_i ÷ 能量反推容量_i)；**全程不需要 `cars.efficiency`**（能量反推口径与那个常数无关） |
+| `api/handlers.go` | 新增 `factory_rated_range_km` = 出厂可用容量 × K，K = median(满电标定续航_i ÷ 能量反推容量_i)，**只用严格档（充到 100%）**；**全程不需要 `cars.efficiency`**（能量反推口径与那个常数无关） |
 | `api/models.go` | 纠正 `health_percent` 的口径注释（原文说「不是同一口径 / 不是衰减」——错的） |
 | `Api.kt` | `BatteryPoint.rated_range_km` + `BatteryHealth.factory_rated_range_km` |
 | `StatsScreen.kt` | 「占铭牌」→「**电池健康度（相对出厂）**」；新增「**满电标定续航**」行 `446 km（新电池同口径 527 km，少 81 km）`；「相对首测」→「**近期趋势（相对首测 2026-08-02）**」；说明文字改写 |

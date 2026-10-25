@@ -1361,7 +1361,7 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 			//
 			// K 与 `cars.efficiency` **无关**（能量反推口径不需要 kWh/km 常数），
 			// 所以用它推出的「出厂满电标定续航」不受那个可改常数影响。
-			// 实测本机 K = 6.8686 km/kWh（16 个严格档满充点，相对离散度 1.51%）。
+			// 实测本机 K = 6.8686 km/kWh（严格档满充点（16 个，其中 15 个有能量口径），相对离散度 1.51%）。
 			// ⚠️ **v0.62.0 修正**：只用**严格档**（充到 100%）的点。
 			//
 			// 90~98% 的点里，`rated_range_km` 是**那一刻的读数**（不是满电读数），
@@ -1518,10 +1518,8 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 	//      才是**同一把尺子**下的对照 —— 而官方 CLTC 627 km 是**另一把尺子**
 	//      （实测刻度差 +19%），不能直接比。
 	//   ③ K **不需要 `cars.efficiency`** —— 车主改那个常数不影响这个数。
-	if h.NominalCapacityKwh != nil && len(scaleRatios) > 0 {
-		k := medianOfFloats(scaleRatios)
-		v := *h.NominalCapacityKwh * k
-		h.FactoryRatedRangeKm = &v
+	if h.NominalCapacityKwh != nil {
+		h.FactoryRatedRangeKm = factoryRatedRangeKm(*h.NominalCapacityKwh, scaleRatios)
 	}
 	writeJSON(w, h)
 }
