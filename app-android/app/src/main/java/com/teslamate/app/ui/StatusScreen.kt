@@ -831,7 +831,7 @@ private fun RangeAndOdometer(
             Text(
                 tempCaveat,
                 style = MaterialTheme.typography.labelSmall,
-                color = accents.warnAmber,
+                color = accents.warnAmberText,
             )
         }
         Spacer(Modifier.height(4.dp))

@@ -174,6 +174,34 @@ data class JourneyStop(
     val socBefore: Int? = null,
     /** 充完后的电量（%） */
     val socAfter: Int? = null,
+    /**
+     * ⚠️ **v0.36.0（第 21 轮一线车主复审 C1）：到这个站时的**真实**电量。**
+     *
+     * ## 为什么不能用 [socBefore]
+     *
+     * `socBefore` 是**充电会话的插枪电量**（`charging_processes.start_battery_level`），
+     * 而「上次实测到站剩 Y%」要的是**车开到这儿时的电量**。
+     *
+     * 两者在**多数**场次相同，但有三个地方会错开：
+     *
+     * ① **合并时取错场次**：`sqlCharges` 是 `ORDER BY cp.start_date DESC`（新的在前），
+     *    客户端按里程**稳定排序** ⇒ 同一里程的两场充电里**后一场排在前**；
+     *    合并分支保留 `prevStop.socBefore` ⇒ 留的是**后一场**的插枪电量。
+     *    实测 35 站里 **6 站取错**，而且错的方向**一致地让人更放心**
+     *    （梧硕高速显示 27%、真值 8%；长征大道显示 94%、真值 39%）。
+     *
+     * ② **0 度空会话被 API 过滤**：`charge_energy_added > 0.01` 会滤掉 9 场空会话，
+     *    那一站的插枪电量就整个丢了（修文县差 1 个点）。
+     *
+     * ③ **插枪前可能已经走过一段**：插枪电量 ≠ 到站电量。
+     *
+     * ## 正确的真值
+     *
+     * **以该站里程为终点的那一趟行程的 `end_soc`**
+     * （服务端 `drives.end_soc` = `positions.battery_level` @ `end_position_id`）——
+     * 它就是车**开到**这个充电点时的电量。
+     */
+    val arrivalSoc: Int? = null,
 )
 
 /** 一次连续出门（一段 journey）。 */
@@ -435,6 +463,15 @@ fun buildJourneys(
                     isEndpoint = i == chain.lastIndex,
                     socBefore = c.start_soc,
                     socAfter = c.end_soc,
+                    // ⚠️ **v0.36.0（第 21 轮一线车主复审 C1）：到站真值取**那一趟行程的结束电量**。**
+                    //
+                    // 这一场充电落在**第 i 趟之后**的缺口里 → 车是开完第 i 趟才到的
+                    // → 真实到站电量 = `chain[i].endSoc`。
+                    //
+                    // 原来用 `socBefore`（插枪电量），在**合并时取错场次**、
+                    // **0 度空会话被过滤**、**插枪前还走过一段**这三种情况下会错 ——
+                    // 实测 35 站里 6 站错，且错的方向一致地**让人更放心**。
+                    arrivalSoc = chain[i].endSoc,
                 )
             }
         }

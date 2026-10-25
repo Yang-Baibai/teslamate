@@ -397,6 +397,16 @@ type ClimbModel struct {
 	// 隐含效率的物理前提
 	ImpliedEtaNote string `json:"implied_eta_note"`
 
+	// ⚠️ **v0.36.0（第 21 轮口径审计 P1-6）：标准误与 95% 置信区间。**
+	//
+	// 原来只上报**分裂半**（两半样本各拟合一次）—— 但分裂半只是**一次**实现，
+	// **不是估计量方差**：c_up 的分裂半是 ±2.3%，而真实抽样不确定度是 **±14.5%**。
+	// 只报分裂半会让读者以为精度好 6 倍。
+	CUpSE      float64   `json:"c_up_se"`
+	CRegenSE   float64   `json:"c_regen_se"`
+	CUpCI95    []float64 `json:"c_up_ci95"`
+	CRegenCI95 []float64 `json:"c_regen_ci95"`
+
 	// ────────────────────────────────────────────────────────────
 	// ⚠️ **v0.34.0（第 21 轮口径审计 P0-2 + 独立复算）：标定法口径的新系数。**
 	//
@@ -572,6 +582,11 @@ type Charge struct {
 	//（「汕昆高速公路, 北庄, 宜州区, 河池市…」），
 	// 而库里其实有 OSM 的原始 POI 名。用户要找的是「哪个服务区」，不是一段地址。
 	PoiName *string `json:"poi_name"`
+	// ⚠️ **v0.36.0（第 21 轮一线车主复审 P1-2）：地址的人类可读标签。**
+	//
+	// 没有 POI 名时的回退。第一段是**路名**时带上第二段（地名），
+	// 因为「G227;G318」在地图上根本搜不到，而「G227;G318 更登亚批社区」能。
+	PlaceLabel *string `json:"place_label"`
 	// POI 类型（services / charging_station / fuel …）
 	PoiType *string `json:"poi_type"`
 	// ⚠️ v0.24.0：**是不是特斯拉超充** ——

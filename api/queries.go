@@ -677,6 +677,60 @@ SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
        -- 现在：POI 名优先取**原地址**，canonical 只作兜底；
        -- place（地址）仍然取 canonical —— 那是有意统一的（同一个地方显示同一个地址）。
        COALESCE(NULLIF(ao.raw->>'name', ''), NULLIF(a.raw->>'name', '')) AS poi_name,
+       -- ⚠️ **v0.36.0（第 21 轮一线车主复审 P1-2）：地址的**人类可读标签**。**
+       --
+       -- 原来没有 POI 名时，界面回退到地址**第一段** ——
+       -- 而第一段经常是**路名**（「G227;G318」「沪聂线」「汕昆高速公路」「梧硕高速」）。
+       -- 复审原话：「服务区里我需要的是"哪个服务区"，不是"哪条路"」，
+       -- 「"G210" 我在地图上根本搜不到」。
+       --
+       -- 现在按优先级给一个**完整标签**：
+       --   ① POI 名 —— 但**当它本身就是路名时不算**（OSM 把路名也写进 name）；
+       --   ② 「路名 + 地点」两段 —— 那是唯一能识别位置的线索：
+       --        G227;G318 → G227;G318 更登亚批社区
+       --        沪聂线   → 沪聂线 呷洼乡
+       --        汕昆高速公路 → 汕昆高速公路 北庄
+       --        G210     → G210 车河镇
+       --   ③ 地址第一段（本来就是地名时：福中福社区、修文县、黄金坪…）。
+       --
+       -- ⚠️ 这**只改标签**，不改 place 字段（那是有意统一的地址，同一个地方显示同一个地址）。
+       COALESCE(
+         -- ① 原地址的 POI 名 —— 当它**不是**「高速名」时
+         --    （OSM 会把路名也写进 name，所以「name == address.road」时它不是场所名）
+         -- ⚠️ 用 COALESCE 把 NULL 的 road 变成 '' ——
+         --    否则 name = NULL 求值为 NULL、NOT(NULL) 还是 NULL，
+         --    整个分支会静默不成立，**把正常的 POI 名丢掉**。
+         CASE
+           WHEN ao.raw->>'name' IS NOT NULL AND ao.raw->>'name' <> ''
+                AND NOT (
+                  ao.raw->>'name' = COALESCE(ao.raw->'address'->>'road', '')
+                  AND split_part(ao.display_name, ',', 1) ~ '(^G[0-9]|高速$|公路$|国道$|省道$|线$)'
+                )
+             THEN ao.raw->>'name'
+         END,
+         -- ② 归一后地址的 POI 名（同上判据）
+         CASE
+           WHEN a.raw->>'name' IS NOT NULL AND a.raw->>'name' <> ''
+                AND NOT (
+                  a.raw->>'name' = COALESCE(a.raw->'address'->>'road', '')
+                  AND split_part(a.display_name, ',', 1) ~ '(^G[0-9]|高速$|公路$|国道$|省道$|线$)'
+                )
+             THEN a.raw->>'name'
+         END,
+         -- ③ 「路名 + 地点」—— **只在第一段像高速时**
+         --    （「三联大道」「城西大道」「长征大道」是城市道路，不是高速，不加）
+         CASE
+           WHEN split_part(ao.display_name, ',', 1) ~ '(^G[0-9]|高速$|公路$|国道$|省道$|线$)'
+                AND split_part(ao.display_name, ',', 2) <> ''
+                AND split_part(ao.display_name, ',', 2) !~ '街道$'
+             THEN split_part(ao.display_name, ',', 1) || ' ' || split_part(ao.display_name, ',', 2)
+         END,
+         -- ④ 原地址第一段
+         NULLIF(split_part(ao.display_name, ',', 1), ''),
+         -- ⑤ 归一后地址的 POI 名 / 第一段
+         NULLIF(a.raw->>'name', ''),
+         split_part(a.display_name, ',', 1)
+       ) AS place_label,
        -- POI 类型（services / charging_station / fuel …）
        COALESCE(NULLIF(ao.raw->>'type', ''), NULLIF(a.raw->>'type', '')) AS poi_type,
        wgs84_to_gcj02_lat(sp.latitude::float8, sp.longitude::float8) AS map_lat,

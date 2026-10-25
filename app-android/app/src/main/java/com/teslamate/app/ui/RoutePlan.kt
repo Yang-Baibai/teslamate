@@ -4,6 +4,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,29 +22,35 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.teslamate.app.Charge
 import com.teslamate.app.Drive
+import com.teslamate.app.Haptics
 import com.teslamate.app.firstSegment
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtDate
@@ -235,7 +249,7 @@ data class RouteStop(
      * 而后者才是出发前真正要回答的那句：「我充到 80%，**够不够开到下一个**？」
      *
      * 数据来自相邻充电点的里程表差（`start_odometer_km`）——
-     * 实测本车真实节奏：**中位 128 公里，最远一段 348 公里**。
+     * 实测本车真实节奏：**中位 128 公里，最远一段 351 公里**。
      */
     val gapToNextKm: Double? = null,
     /**
@@ -271,7 +285,7 @@ data class RouteStop(
      * `= gapNeedPct + RESERVE_SOC`。
      *
      * ⚠️ **> 100 就表示「这一跳无解」** ——
-     * 复审实测：修文县 → 南丹车河那 348 公里要 **102 个点**，
+     * 复审实测：修文县 → G210那 351 公里要 **88 个点**，
      * 而 App 当时写的是「这段必须再充一次」。
      * 用户照做（充到 100%）**还是到不了**（只剩 −2%）——
      * **这是一个会让人白等 20 分钟、然后仍然趴窝的错误建议。**
@@ -279,8 +293,17 @@ data class RouteStop(
      * 现在 >100 时改口成「这一跳充满也到不了，得在前面加一站」。
      */
     val requiredSocHere: Int? = null,
-    /** 下一站的名字（用于「到南丹车河」这样的说法）。 */
+    /** 下一站的名字（用于「到 G210 车河镇」这样的说法）。 */
     val nextStopName: String? = null,
+    /**
+     * ⚠️ **v0.36.0（第 21 轮一线车主复审 C4）：到**终点**还有多少公里。**
+     *
+     * 最后一个站之后往往还有 **146 公里**，而终点不是充电站 ——
+     * 那一段以前**一个字都不显示**。
+     */
+    val distanceToEndKm: Double? = null,
+    /** ⚠️ v0.36.0：按模型估算，到终点时剩多少电（%）。 */
+    val estSocAtEnd: Int? = null,
     /**
      * ⚠️ **v0.31.0：从上一个站到这一站，这一段爬了多高（米）。**
      *
@@ -434,6 +457,16 @@ data class RoutePlan(
      * 那时这句话是**假的**。
      */
     val climbCorrectionApplied: Boolean = false,
+    /**
+     * ⚠️ **v0.36.0：≤10°C 的样本条数**（低温修正是否可信的判据）。
+     *
+     * 原来卡片上**写死**了「本车 ≤10°C 只有 1 条样本」——
+     * 那个数当时是对的，但它是**硬编码**的：等冬天跑出更多低温行程，
+     * 这句话就会变成**假话**（而且没有任何人会去改它）。
+     *
+     * 现在取自能耗模型的实测值（`ConsumptionModel.lowTempSamples`）。
+     */
+    val lowTempSamples: Int? = null,
 ) {
     /**
      * 爬升折合**多少座珠穆朗玛峰**（珠峰 8,849 m）。
@@ -450,7 +483,7 @@ data class RoutePlan(
      * ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-4）：最长的一跳。**
      *
      * 出发前要准备的不是「整条 6227 公里」，而是**最长那一跳**
-     * —— 复审的原话：「我**真的会读**的：最长一段 348 公里」。
+     * —— 复审的原话：「我**真的会读**的：最长一段 351 公里」。
      *
      * 口径与 [stationRhythm] 一致：只取**站与站之间**、且 **≥2 公里**的间距
      * （<2 公里的是同一个桩被拆成两行，不是真的站间距）。
@@ -581,12 +614,21 @@ data class RoutePlan(
         if (hop != null) {
             val sb = StringBuilder()
             hop.realSoc?.let { sb.append("上次到站剩 ").append(it).append("%") }
-            hop.estSoc?.let { soc ->
-                if (sb.isNotEmpty()) sb.append(" · ")
-                if (soc >= 0) {
-                    sb.append("估算剩 ").append(soc).append("%")
-                } else {
-                    sb.append("估算到不了（差 ").append(-soc).append(" 个点）")
+            // ⚠️ **v0.36.0（第 21 轮一线车主复审 C3）：这一跳**无解**时不报估算。**
+            //
+            // 「估算剩 8%」会被读成「到了那儿剩 8%，紧但能到」——
+            // 而真相是「**充满也到不了**」（这一跳要 88 个点 + 20 保底 = 108 > 100）。
+            // 复审原话：「我会读成'到了那儿剩 8%，有点紧但能到'。」
+            val req = hop.requiredSoc
+            val impossible = req != null && req > 100
+            if (!impossible) {
+                hop.estSoc?.let { soc ->
+                    if (sb.isNotEmpty()) sb.append(" · ")
+                    if (soc >= 0) {
+                        sb.append("估算剩 ").append(soc).append("%")
+                    } else {
+                        sb.append("估算到不了（差 ").append(-soc).append(" 个点）")
+                    }
                 }
             }
             if (sb.isEmpty()) sb.append("这条线路上没有站间数据")
@@ -610,9 +652,15 @@ data class RoutePlan(
      */
     fun verdictDetail(): String {
         val sb = StringBuilder()
-        template.lastDrivenAt?.let { sb.append(it.fmtDate()).append(" 那趟实测") }
+        // ⚠️ **v0.36.0（第 21 轮视觉评审 P1-5）：细节行只留**最低点**，日期挪到展开卡。**
+        //
+        // 原来写「2026-10-07 那趟实测 · 全程最低 5%（第 1237 公里）」——
+        // 复审实测在 360dp 屏上占 **2 行**，而日期在展开卡里已经有了
+        // （「按这条线路上真实发生过的充电推算（最近一次 2026-10-07）」）。
+        //
+        // ⚠️ **车主复审明确说「全程最低 5%（第 1237 公里）」是他会读的两个数之一** ——
+        // 所以这条**保留**，只砍掉重复的日期。
         lowestPoint?.let { (km, soc) ->
-            if (sb.isNotEmpty()) sb.append(" · ")
             sb.append("全程最低 ").append(soc).append("%（第 ").append(km.roundToInt()).append(" 公里）")
         }
         return sb.toString()
@@ -622,9 +670,9 @@ data class RoutePlan(
      * ⚠️ **v0.30.0（长途自驾党 P0-2）：「平均每 N 公里停一次」必须换成真实站间距。**
      *
      * 原来 `gapKm = 总里程 ÷ 次数` —— **平均数掩盖了分布**。
-     * 实测：6227 公里那条的真实站间距是 **13～348 公里**（中位 162），
+     * 实测：6227 公里那条的真实站间距是 **13～351 公里**（中位 183），
      * 616 公里那条是 **13～189 公里**（中位 133）。
-     * 按「平均每 164 公里」准备，会在**最长那 348 公里**那段毫无准备。
+     * 按「平均每 164 公里」准备，会在**最长那 351 公里**那段毫无准备。
      *
      * ⚠️ **v0.32.0（第 20 轮规划复审 P1-2）：口径再收紧三处。**
      *
@@ -837,7 +885,7 @@ fun buildRoutePlan(
     // 而后者才是出发前真正要回答的那句：
     // 「我充到 80%，**够不够开到下一个**？」
     //
-    // 站间距离来自相邻充电点的里程差（实测本车真实节奏：中位 128 公里，最远 348 公里）。
+    // 站间距离来自相邻充电点的里程差（实测本车真实节奏：中位 128 公里，最远 351 公里）。
     // 「到下一站剩多少」用**本车实测** Wh/km（不是官方标称 —— 标称乐观 50%）
     // 与**可用容量**换算，并与 20% 保底对齐。
     val whPerKm = consumption?.let { m ->
@@ -851,7 +899,14 @@ fun buildRoutePlan(
      * 否则「到下一站剩 13%」不知道说的是哪个站。
      */
     fun stopDisplayName(c: Charge): String =
-        c.poi_name?.takeIf { it.isNotBlank() }
+        // ⚠️ **v0.36.0（第 21 轮一线车主复审 P1-2）：优先用服务端的**完整标签**。**
+        //
+        // 原来这里回退到 `place.firstSegment()` —— 而第一段经常是**路名**
+        // （「G210」「G227;G318」「沪聂线」「梧硕高速」），
+        // 复审原话：「"G210" 我在地图上根本搜不到」。
+        // 现在服务端的 `place_label` 会在是路名时带上地名（「G210 车河镇」）。
+        c.place_label?.takeIf { it.isNotBlank() }
+            ?: c.poi_name?.takeIf { it.isNotBlank() }
             ?: c.geofence_name?.takeIf { it.isNotBlank() }
             ?: c.place.firstSegment() ?: "充电站"
     val stops = journeyStops.mapIndexed { idx, js ->
@@ -864,7 +919,7 @@ fun buildRoutePlan(
         //
         // 原来用**整条线路**的均速选 Wh/km 档 —— 而最长的那几段恰恰是高速段：
         // 实测 6227 公里那条整条均速 66 km/h（落 60–90 档 174.3 Wh/km），
-        // 而 348 公里那段真实均速 **96 km/h**（90–110 档 183.0）、
+        // 而 351 公里那段真实均速 **96 km/h**（90–110 档 183.0）、
         // 229 公里那段 **112.7 km/h**（110–130 档 197.4）。
         //
         // 用整条均速算 = **系统性乐观 4.78%**，在长途最长的几段上结论直接反转：
@@ -979,10 +1034,36 @@ fun buildRoutePlan(
         // >100 就说明**这一跳没有解**（充满也到不了保底），
         // 那就不能说「再充一次」，得说「得在前面加一站」。
         val requiredHere = needPct?.let { it + RESERVE_SOC }
-        // ⚠️ **v0.34.0（P0-1）：下一站的**真实**到站电量（上次实测）。**
-        // `next` 是 journey 里下一个停靠，它的 `socBefore` 就是那一趟**实际**到站时的电量。
-        val nextRealSoc = next?.socBefore
+        // ⚠️ **v0.36.0（第 21 轮一线车主复审 C1）：真值改用**到站电量**。**
+        //
+        // 原来用 `next.socBefore`（**插枪**电量）—— 实测 35 站里 **6 站取错场次**
+        // （合并时按里程稳定排序 → 同一里程的两场里后一场排在前 →
+        // `socBefore` 留的是后一场的插枪电量），
+        // 而且错的方向一致地**让人更放心**（梧硕高速显示 27%、真值 8%；
+        // 长征大道显示 94%、真值 39%；高山别庄显示 100%、真值 43%）。
+        //
+        // 现在用**到站电量**（那一趟行程的 `end_soc`），它不受合并顺序、
+        // 0 度空会话被 API 过滤、插枪前还走过一段这三件事影响。
+        val nextRealSoc = next?.arrivalSoc ?: next?.socBefore
         val nextName = next?.let { stopDisplayName(it.charge) }
+        // ⚠️ **v0.36.0（第 21 轮一线车主复审 C4）：终点前那一段也要给余量。**
+        //
+        // 最后一个站之后往往还有 **146 公里**（6227 公里那条）/
+        // **88 公里**（616 公里那条），而终点不是充电站 →
+        // 永远没有「下一站」→ 那一段**一个字都不显示**。
+        val endGapKm = runDistance - js.kmAlong
+        val endNeedPct = if (endGapKm > 0.5 && whPerKm != null
+            && batteryCapacityKwh != null && batteryCapacityKwh > 0
+        ) {
+            ((endGapKm * whPerKm / 1000.0) / batteryCapacityKwh * 100).roundToInt()
+        } else {
+            null
+        }
+        val estSocAtEnd = if (endNeedPct != null) {
+            (js.socAfter ?: c.end_soc ?: 100) - endNeedPct
+        } else {
+            null
+        }
         RouteStop(
             // ⚠️ **v0.29.0（复审 P0-5）：`poi_name` 排到最前。**
             //
@@ -1036,6 +1117,8 @@ fun buildRoutePlan(
             gapNeedPct = needPct,
             requiredSocHere = requiredHere,
             nextStopName = nextName,
+            distanceToEndKm = if (endGapKm > 0.5) endGapKm else null,
+            estSocAtEnd = estSocAtEnd,
             // ⚠️ **v0.30.0（长途自驾党 P0-1）：把车速与实际用的 Wh/km 带出去。**
             //
             // 「到下一站剩 34%」不交代前提就只是个数字 ——
@@ -1117,8 +1200,10 @@ fun buildRoutePlan(
         // ⚠️ v0.31.0：整条线路的爬升
         climbAscentM = routeAscentM,
         climbDescentM = routeDescentM,
-        // ⚠️ v0.34.0：前提行要如实说「有没有做爬升修正」
+        // ⚠️ v0.36.0：前提行要如实说「有没有做爬升修正」
         climbCorrectionApplied = climbModel != null,
+        // ⚠️ v0.36.0：低温样本数（动态，不再写死）
+        lowTempSamples = consumption?.lowTempSamples,
     )
 }
 
@@ -1177,8 +1262,12 @@ fun RoutePlanChips(
                 shape = RoundedCornerShape(14.dp),
                 color = if (selected) accents.energyBlue.copy(alpha = 0.16f) else accents.cardInset,
                 // ⚠️ 选中态再加一道主色描边 —— 光靠底色深浅，在浅色模式下差别太弱。
+                //
+                // ⚠️ **v0.36.0（第 21 轮视觉评审 P2-6）：描边改**不透明**。**
+                // 原来 `energyBlue.copy(alpha = 0.55f)` 压在选中底上只有 **2.17:1**
+                // —— 低于非文字图形的 3:1，**这道描边自己就看不清**。
                 border = if (selected) {
-                    androidx.compose.foundation.BorderStroke(1.dp, accents.energyBlue.copy(alpha = 0.55f))
+                    androidx.compose.foundation.BorderStroke(1.dp, accents.energyBlue)
                 } else {
                     null
                 },
@@ -1214,7 +1303,15 @@ fun RoutePlanChips(
                         Spacer(Modifier.width(4.dp))
                     }
                     Text(
-                        "${t.fromLabel} → ${t.toLabel}",
+                        // ⚠️ **v0.36.0（第 21 轮一线车主复审 C5）：chip 要带公里数。**
+                        //
+                        // 原来只写「永丰社区 → 石化大道西」+「13 段」——
+                        // 复审实测 5 个 chip 里 **4 个重名或近似**，
+                        // 而「13 段 / 131 段」是**内部口径**，复审原话：「我不看段数」。
+                        // 现在换成「起 → 止 · N 公里」，一眼能分出 616 / 255 / 6227 公里。
+                        "${t.fromLabel.firstSegment() ?: t.fromLabel} → " +
+                            "${t.toLabel.firstSegment() ?: t.toLabel} · " +
+                            "${t.distanceKm.roundToInt()} 公里",
                         style = MaterialTheme.typography.labelMedium,
                         color = if (selected) {
                             MaterialTheme.colorScheme.onSurface
@@ -1227,16 +1324,6 @@ fun RoutePlanChips(
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    // ⚠️ v0.26.0：显示**段数**而不是「走过 N 次」——
-                    // journey 的段数是一次出门被充电切开的次数，不是「跑过几次」。
-                    if (t.legCount >= 1) {
-                        Spacer(Modifier.width(5.dp))
-                        Text(
-                            "${t.legCount} 段",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
             }
         }
@@ -1287,13 +1374,19 @@ fun RoutePlanSummaryRow(
                     // 读起来像 App 出 bug 了（复审原话：「我第一反应是 App 出 bug 了」）。
                     // 现在：往返只写一次 + 「（往返）」；单程写「A → B」。
                     // 末尾再挂总公里数，让「这条线有多长」一眼看到。
+                    //
+                    // ⚠️ **v0.36.0（第 21 轮视觉评审 P1-5）：去掉「线路余量表 ·」前缀。**
+                    //
+                    // 复审实测：标题在 360dp 屏上占 **2 行**，
+                    // 而「线路余量表」这个技术名在展开卡里已经是 SectionCard 标题。
+                    // 折叠态真正要认的是**这条线**（起止 + 公里数）。
                     val fromShort = t.fromLabel.firstSegment() ?: t.fromLabel
                     val toShort = t.toLabel.firstSegment() ?: t.toLabel
                     Text(
                         if (t.isRoundTrip) {
-                            "线路余量表 · $fromShort（往返）· ${t.distanceKm.roundToInt()} 公里"
+                            "$fromShort（往返）· ${t.distanceKm.roundToInt()} 公里"
                         } else {
-                            "线路余量表 · $fromShort → $toShort · ${t.distanceKm.roundToInt()} 公里"
+                            "$fromShort → $toShort · ${t.distanceKm.roundToInt()} 公里"
                         },
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
@@ -1311,30 +1404,58 @@ fun RoutePlanSummaryRow(
                     // 那张卡在折叠线**下面**，提上去会把**首屏**的主角挤到第二屏；
                     // 而且车主说出发前 5 分钟要读的是**最长一段**。
                     // 现在：记录页唯一 44sp = 最长那一跳；下面那张卡降到 26sp。
+                    //
+                    // ⚠️ **v0.36.0（第 21 轮视觉评审 P1-2）：大字号下**竖排**。**
+                    //
+                    // 复审实测 fs=2.0 @360dp 时右栏只剩 **113dp** ——
+                    // 「公里 · 最长一段」和站名各折 2 行 = **4 行小字 vs 1 行大字**，
+                    // 主角在自己的副标题里淹没了。
+                    // 现在 fs ≥ 1.35 走竖排（数字独占一行，副标题全宽）。
+                    val bigFont = LocalDensity.current.fontScale >= 1.35f
                     plan.longestHop?.let { hop ->
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text(
-                                hop.km.roundToInt().toString(),
-                                fontSize = 44.sp,
-                                lineHeight = 48.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = (-0.4).sp,
-                                style = MaterialTheme.typography.displayLarge,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Column(Modifier.weight(1f)) {
+                        if (bigFont) {
+                            Column {
                                 Text(
-                                    "公里 · 最长一段",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    hop.km.roundToInt().toString(),
+                                    fontSize = 44.sp,
+                                    lineHeight = 48.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = (-0.4).sp,
+                                    style = MaterialTheme.typography.displayLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                                 Text(
-                                    "${hop.fromName} → ${hop.toName}",
-                                    style = MaterialTheme.typography.labelSmall,
+                                    "公里 · 最长一段 · ${hop.fromName} → ${hop.toName}",
+                                    style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
+                            }
+                        } else {
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                Text(
+                                    hop.km.roundToInt().toString(),
+                                    fontSize = 44.sp,
+                                    lineHeight = 48.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = (-0.4).sp,
+                                    style = MaterialTheme.typography.displayLarge,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        "公里 · 最长一段",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                    Text(
+                                        "${hop.fromName} → ${hop.toName}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
                     }
@@ -1349,6 +1470,24 @@ fun RoutePlanSummaryRow(
                         color = accents.energyBlue,
                         fontWeight = FontWeight.Bold,
                     )
+                    // ⚠️ **v0.36.0（第 21 轮一线车主复审 C3）：折叠态也要给「这一跳无解」。**
+                    //
+                    // 复审实测：折叠态的 44sp 主角**恰好就是**「充满也到不了」的那一跳
+                    //（修文县 → G210，351 公里，要 88 个点 + 20 保底 = 108 > 100），
+                    // 而折叠态只说「估算剩 8%」——
+                    // 用户会读成「到了那儿剩 8%，有点紧但能到」。
+                    //
+                    // 而这句只在展开态第 28 行的处方行里 —— **点开之前根本看不到**。
+                    plan.longestHop?.let { hop ->
+                        val req = hop.requiredSoc
+                        if (req != null && req > 100) {
+                            Text(
+                                "这一跳要 ${hop.needPct} 个点 · 充满也到不了 —— 得在前面加一站",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = accents.warnAmberText,
+                            )
+                        }
+                    }
                     plan.verdictDetail().takeIf { it.isNotEmpty() }?.let {
                         Text(
                             it,
@@ -1411,7 +1550,7 @@ fun RoutePlanCard(
     val t = plan.template
     // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-1）：每站的证据行默认**收起**。**
     //
-    // 实测那条川藏滇线有 **38 个站**；原来每站 5~6 行，
+    // 实测那条川藏滇线有 **36 个站**；原来每站 5~6 行，
     // fs=2.0 时整张卡 **≈ 23.7 屏** —— 出发前 5 分钟在 23 屏里找「下一站」，
     // 必然放弃。现在默认只给决策行 + 处方行，证据收进「详情」。
     val expandedStops = remember { mutableStateMapOf<Int, Boolean>() }
@@ -1428,7 +1567,10 @@ fun RoutePlanCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .clickable(onClick = onCollapse)
-                        .padding(vertical = 4.dp),
+                        // ⚠️ **v0.36.0（第 21 轮视觉评审 P2-8）：命中区 24dp → 44dp。**
+                        // 原来只有 `vertical = 4.dp`，高 = 16 + 8 = **恰好 24dp**，
+                        // 而且无触感、无动效 —— 看起来像静态文字。
+                        .padding(vertical = 14.dp),
                 )
                 Spacer(Modifier.weight(1f))
             }
@@ -1438,6 +1580,21 @@ fun RoutePlanCard(
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
         )
+        // ⚠️ **v0.36.0（第 21 轮视觉评审 P1-1）：展开态也要保留**视觉锚点**。**
+        //
+        // 复审实测：`RoutePlanCard` 全文最大字号 = bodyMedium 15sp ——
+        // **点开的瞬间，44sp 主角掉到 12sp**（折叠↔展开是二选一），
+        // 这叫**层级断层**：iOS 的 disclosure 约定是展开后保留锚点。
+        //
+        // 现在展开态也给一个 **26sp** 的次级主角（复用 `BigStat` 的 `mid` 档，
+        // 层级比 44 : 26 = 1.69×）。
+        plan.longestHop?.let { hop ->
+            BigStat(
+                hop.km.roundToInt().toString(),
+                "公里 · 最长一段 · ${hop.fromName} → ${hop.toName}",
+                mid = true,
+            )
+        }
         // ⚠️ v0.14.0（长途自驾党 P0-1）：**决策句放在图的上方** ——
         // 出发前 5 分钟，读者只读这一行；图是证据，不是结论。
         Text(
@@ -1466,7 +1623,7 @@ fun RoutePlanCard(
         }
         // ⚠️ **v0.32.0（第 20 轮规划复审 P2-1）：卡片级前提，只说一次。**
         //
-        // 原来这段前提挂在**每个沿途站**下面 —— 38 站的那张卡把同一句话重复 37 遍。
+        // 原来这段前提挂在**每个沿途站**下面 —— 36 站的那张卡把同一句话重复 37 遍。
         // 现在共同前提（未做气温修正）提到卡片级；**逐段**的档位信息留在各站那一行
         // （因为各段速度不同、命中的档也不同）。
         // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-8）：前提行必须**条件化**。**
@@ -1476,8 +1633,16 @@ fun RoutePlanCard(
         // 那时界面仍然宣称做了爬升修正 —— **一句会骗人的前提**。
         //
         // ⚠️ **第 21 轮视觉评审 P1-2：20% 保底只说一次。**
-        // 原来这里说一次、每站说两次（全卡 38 站 = 76 次）。
+        // 原来这里说一次、每站说两次（全卡 36 站 = 72 次）。
         // 现在只在**逐站**那一次说。
+        // ⚠️ **v0.36.0：低温样本数改成**实测值**，不再写死。**
+        //
+        // 原来写死「本车 ≤10°C 只有 1 条样本」—— 当时是对的，
+        // 但它是**硬编码**：等冬天跑出更多低温行程，这句话就成了假话。
+        val lowTempTxt = plan.lowTempSamples?.let { n ->
+            if (n == 0) "未做气温修正（本车没有 ≤10°C 的行程样本）"
+            else "未做气温修正（本车 ≤10°C 有 $n 条行程样本，不足以支撑低温修正）"
+        } ?: "未做气温修正"
         Text(
             "余量按各段真实均速取本车实测 Wh/km；" +
                 (if (plan.climbCorrectionApplied) {
@@ -1485,7 +1650,7 @@ fun RoutePlanCard(
                 } else {
                     "未做爬升修正（爬升系数不可用）"
                 }) +
-                "；未做气温修正（本车 ≤10°C 只有 1 条样本）",
+                "；" + lowTempTxt,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1569,13 +1734,25 @@ fun RoutePlanCard(
                 plan.stops.forEachIndexed { stopIdx, s ->
                     // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-1）：证据行默认**收起**。**
                     //
-                    // 实测那条川藏滇线有 **38 个站**。原来每站 5~6 行
-                    // （fs=2.0 时 38 × 436dp ≈ **23.7 屏**）——
+                    // 实测那条川藏滇线有 **36 个站**。原来每站 5~6 行
+                    // （fs=2.0 时 36 × 436dp ≈ **23.7 屏**）——
                     // 出发前 5 分钟要在 23 屏里找「下一站」，**必然放弃**。
                     //
                     // 现在默认只给**决策行 + 处方行**（各 1 行），
                     // 「典型功率 / 折算分钟 / 爬升 / 档位」这些**证据**收进「详情」。
                     val open = expandedStops[stopIdx] == true
+                    // ⚠️ **v0.36.0（第 21 轮视觉评审 P1-3）：照抄仓库已定型的 `CollapsibleSection` 模式。**
+                    //
+                    // 原来这里是**降级版**：箭头瞬时替换、内容硬切、无触感、
+                    // 无语义状态、`contentDescription` 还把站名**念两遍**
+                    // （相邻 Text 已经念过一次）。
+                    // 而仓库的 `CollapsibleSection`（`Widgets.kt:879`）6 项全都有 —— **零新依赖**。
+                    val stopCtx = LocalContext.current
+                    val stopArrow by animateFloatAsState(
+                        targetValue = if (open) 180f else 0f,
+                        animationSpec = tween(Motion.ChevronRotate, easing = FastOutSlowInEasing),
+                        label = "stopArrow",
+                    )
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 3.dp),
                         verticalAlignment = Alignment.Top,
@@ -1588,7 +1765,20 @@ fun RoutePlanCard(
                             modifier = Modifier.width(62.dp),
                         )
                         Column(Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                // ⚠️ **整行可点**（iOS disclosure 的惯例：点标题就展开）——
+                                // 命中区比只有 24dp 的图标**大得多**，且不增加卡片高度。
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        Haptics.tick(stopCtx)
+                                        if (open) expandedStops.remove(stopIdx) else expandedStops[stopIdx] = true
+                                    }
+                                    .semantics(mergeDescendants = true) {
+                                        stateDescription = if (open) "已展开" else "已折叠"
+                                    },
+                            ) {
                                 Text(
                                     s.name,
                                     style = MaterialTheme.typography.bodyMedium,
@@ -1596,14 +1786,17 @@ fun RoutePlanCard(
                                     modifier = Modifier.weight(1f),
                                 )
                                 Icon(
-                                    if (open) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                                    contentDescription = if (open) "收起 ${s.name} 的详情" else "展开 ${s.name} 的详情",
+                                    Icons.Filled.ExpandMore,
+                                    // ⚠️ contentDescription = null：站名已由相邻 Text 提供，
+                                    // 再写一遍会让 TalkBack **念两遍**
+                                    // （同 `Widgets.kt:915-921` 写明「不要再犯」的同款错误）。
+                                    contentDescription = null,
                                     modifier = Modifier
-                                        // ⚠️ v0.30.0（HIG P1-6）：命中区 ≥24dp。
+                                        // ⚠️ v0.30.0（HIG P1-6）：命中区 ≥24dp（WCAG 2.5.8 AA）。
                                         .size(24.dp)
-                                        .clickable {
-                                            if (open) expandedStops.remove(stopIdx) else expandedStops[stopIdx] = true
-                                        },
+                                        // ⚠️ v0.36.0：箭头**旋转**而不是瞬时替换
+                                        // （同 `CollapsibleSection` 的做法）。
+                                        .graphicsLayer { rotationZ = stopArrow },
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
@@ -1624,6 +1817,17 @@ fun RoutePlanCard(
                             // 电池的 SOC 不可能是负的 —— 「剩 -6%」在物理上不存在，
                             // 读者只会以为 App 算错了。负数改说成「还差 N 个点」。
                             val rawSoc = s.socAtNextStop
+                            // ⚠️ **v0.36.0（第 21 轮一线车主复审 C2）：估算比真值低多少，要说出来。**
+                            //
+                            // 复审实测有 2 跳「估 21% / 真值 17%」「估 24% / 真值 16%」——
+                            // 估 21% 读起来是「刚好够」，实测 17% 读起来是「不够」。
+                            // **光把两个数并排放还不够**，用户仍会只看估算那个；
+                            // 得**说出差多少个点**。
+                            val gapVsReal = if (rawSoc != null && s.nextStopRealSoc != null) {
+                                rawSoc - s.nextStopRealSoc
+                            } else {
+                                null
+                            }
                             s.gapToNextKm?.let { gap ->
                                 val nextTxt = buildString {
                                     append("距下一站 ${gap.roundToInt()} 公里")
@@ -1638,6 +1842,9 @@ fun RoutePlanCard(
                                     }
                                     s.nextStopRealSoc?.let { real ->
                                         append(" · 上次实测到站剩 $real%")
+                                    }
+                                    if (gapVsReal != null && gapVsReal <= -3) {
+                                        append(" · 比上次实测低 ${-gapVsReal} 个点")
                                     }
                                 }
                                 Text(
@@ -1659,7 +1866,7 @@ fun RoutePlanCard(
                                 // 那才决定他在桩前待 20 分钟还是 40 分钟。
                                 //
                                 // ⚠️ **P0-2：原来写「这段必须再充一次」，那是**错的动作**。**
-                                // 实测：修文县 → 南丹车河那 348 公里要 **102 个点**，
+                                // 实测：修文县 → G210那 351 公里要 **88 个点**，
                                 // 而修文县充满也只有 100 个 —— **在修文县怎么充都到不了**。
                                 // 用户照做 → 多充 4% → 仍然到不了 → 路上趴窝。
                                 //
@@ -1671,7 +1878,9 @@ fun RoutePlanCard(
                                     val txt = if (req > 100) {
                                         "这一跳要 $need 个点 · 充满也到不了 —— 得在前面加一站"
                                     } else if ((rawSoc ?: 100) < RESERVE_SOC) {
-                                        "这一跳要 $need 个点 · 留 $RESERVE_SOC% 保底" +
+                                        // ⚠️ v0.36.0（视觉评审 P2-5）：加逗号 ——
+                                        // 「留 20% 保底至少充到 108%」读起来是两个动作黏在一起。
+                                        "这一跳要 $need 个点 · 留 $RESERVE_SOC% 保底，" +
                                             "至少充到 $req%" +
                                             (s.socAfter?.let { "（上次充到 $it%）" } ?: "")
                                     } else {
@@ -1686,8 +1895,46 @@ fun RoutePlanCard(
                                     }
                                 }
                             }
+                            // ⚠️ **v0.36.0（第 21 轮一线车主复审 C4）：终点前那一段也要给余量。**
+                            //
+                            // 最后一个站之后往往还有 **146 公里**（6227 公里那条）/
+                            // **88 公里**（616 公里那条），而终点不是充电站 →
+                            // `gapToNextKm` 为 null → 那一段以前**一个字都不显示**。
+                            s.distanceToEndKm?.let { endKm ->
+                                Text(
+                                    buildString {
+                                        append("距终点 ").append(endKm.roundToInt()).append(" 公里")
+                                        s.estSocAtEnd?.let { soc ->
+                                            append(" · 估到终点剩 ").append(soc).append("%")
+                                            if (soc < RESERVE_SOC) {
+                                                append(" ⚠ 低于 ").append(RESERVE_SOC).append("% 保底")
+                                            }
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if ((s.estSocAtEnd ?: 100) < RESERVE_SOC) {
+                                        accents.warnAmberText
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                )
+                            }
                             // ── 证据行（默认收起）────────────────────────────────
-                            if (open) {
+                            //
+                            // ⚠️ **v0.36.0（第 21 轮视觉评审 P1-3）：展开/收起要有过渡。**
+                            // 原来 `if (open) { … }` 是**硬切** —— 内容瞬间出现/消失、
+                            // 父容器高度瞬间跳变，把下方所有内容顶下去再弹回来。
+                            // 现在照抄 `CollapsibleSection` 的动画规格（`Motion` token）。
+                            AnimatedVisibility(
+                                visible = open,
+                                enter = fadeIn(Motion.FadeIn) + expandVertically(
+                                    tween(Motion.ExpandHeight, easing = FastOutSlowInEasing),
+                                ),
+                                exit = fadeOut(tween(Motion.ExpandFadeOut)) + shrinkVertically(
+                                    tween(Motion.ExpandHeight, easing = FastOutSlowInEasing),
+                                ),
+                            ) {
                                 // ⚠️ v0.14.0（长途自驾党 P0-2）：到站多少 → 充到多少。
                                 val detail = buildString {
                                     s.socBefore?.let { append("到站 $it%") }

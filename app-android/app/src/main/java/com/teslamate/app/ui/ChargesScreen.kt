@@ -272,7 +272,13 @@ internal fun ChargeItem(
                     //
                     // 原来取的是 `place.firstSegment()`（地址第一段）——
                     // 那是个**地名**，而 OSM 的 POI 名才是**场所名**。
-                    c.poi_name?.takeIf { it.isNotBlank() }
+                    // ⚠️ **v0.36.0（第 21 轮一线车主复审 P1-2）：优先用服务端的完整标签。**
+                    //
+                    // 原来取的是 `poi_name` → `place.firstSegment()`，
+                    // 而这两者在 OSM 把**路名**写进 name 时都是路名（「G210」「沪聂线」）。
+                    // 服务端的 `place_label` 会在是路名时带上地名（「G210 车河镇」）。
+                    c.place_label?.takeIf { it.isNotBlank() }
+                        ?: c.poi_name?.takeIf { it.isNotBlank() }
                         ?: c.place.firstSegment()
                         ?: "未知地点",
                     style = MaterialTheme.typography.bodyLarge,

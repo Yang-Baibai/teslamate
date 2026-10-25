@@ -711,7 +711,7 @@ func handleCharges(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(
 			&c.ID, &c.StartDate, &c.EndDate, &c.DurationMin,
 			&c.EnergyAdded, &c.EnergyUsed, &c.Cost, &c.StartSoc, &c.EndSoc,
-			&c.Place, &c.PlaceKey, &c.PoiName, &c.PoiType, &c.MapLat, &c.MapLng, &c.IsDC,
+			&c.Place, &c.PlaceKey, &c.PoiName, &c.PlaceLabel, &c.PoiType, &c.MapLat, &c.MapLng, &c.IsDC,
 			&c.GeofenceName,
 			&c.StartRangeKm, &c.EndRangeKm,
 			&c.StartOdoKm, &c.EndOdoKm,

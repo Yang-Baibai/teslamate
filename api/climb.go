@@ -54,7 +54,25 @@ import (
 // 段级对齐残差 se=42 Wh/段（远大于爬升信号），所以**不**用段级回归。
 //
 // 回归式：`Wh/km ~ 1 + kph + 爬升(m/km) + 时长(h)`
-// （时长项用来控制空调负载 —— 短途开空调更费电。）
+//
+// ⚠️ **v0.36.0（第 21 轮口径审计 P1-7）：「时长项用来控制空调负载」这个解释是**错的**，订正。**
+//
+// 恒功率空调的每公里贡献 = `P_hvac × h / km = P_hvac / kph` ——
+// 应该在 `1/kph` 上，**不是** `h`。
+// 而且实测**不支持**那个改写：标定法口径下换 `1/kph` 后 R² 从 0.8198 掉到 0.8014，
+// 系数 t = 0.83（不显著）。
+//
+// `h` 项真正在做的是**摊销每趟的固定开销**（空调、怠速、掉电…）：
+// 它在 `kph` 之上只带来 ΔR² = +0.0086；去掉 `kph` 后只剩 +0.0016。
+//
+// ⚠️ **还有一个必须说清的限制**：模型里同时有 `kph` 与 `h`，而 `km = kph × h` ——
+// **两者不独立**。这意味着模型在「固定里程、改变速度」的外推上没有物理意义：
+// 实测固定 50 km 时 60 km/h → 162.4 Wh/km、120 km/h → 134.3 Wh/km（−17.4%），
+// 与空气阻力方向相反。所以这套系数**只能当经验标定值**用，
+// 且**不用于外推**（只用于「本车实测样本的范围内」的分档修正）。
+//
+// ⚠️ 另注：本文件头早期版本写「R² 仅 0.22、分裂半 2.72~4.37（±23%）」——
+// 那是**过期数字**（当前是 R² = 0.694、分裂半 2.94~3.36）。
 
 // MassKg 本车质量（kg）。只用于**物理自洽性校验**：
 // m·g = 1850 × 9.81 / 3600 = 5.042 Wh/m。
@@ -166,7 +184,14 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 	// ── 拟合 ──────────────────────────────────────────────
 	// 回归式：Wh/km ~ 1 + kph + 坡度(m/km) + 时长(h)
 	//   系数[2] 就是「每米坡度多耗/多回多少 Wh/km」。
-	fitGross := func(sub []driveRow) ([]float64, float64) {
+	//
+	// ⚠️ **v0.36.0（第 21 轮口径审计 P1-6）：同时算**标准误与 95% 置信区间**。**
+	//
+	// 原来只上报**分裂半**（两半样本各拟合一次）——
+	// 但分裂半只是**一次**实现（两半样本构成差），**不是估计量方差**：
+	// c_up 的分裂半是 ±2.3%，而真实抽���不确定度是 **±14.5%**（SE 0.4762）。
+	// 只报分裂半会让读者以为精度好 6 倍。
+	fitGross := func(sub []driveRow) ([]float64, []float64, float64, bool) {
 		var xs [][]float64
 		var ys []float64
 		for _, d := range sub {
@@ -177,13 +202,9 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 			xs = append(xs, []float64{1, kph, d.ascentM / d.km, d.minutes / 60.0})
 			ys = append(ys, d.grossKwh/d.km*1000.0)
 		}
-		b, r2, ok := olsFit(xs, ys)
-		if !ok {
-			return nil, 0
-		}
-		return b, r2
+		return olsFitFull(xs, ys)
 	}
-	fitRegen := func(sub []driveRow) ([]float64, float64) {
+	fitRegen := func(sub []driveRow) ([]float64, []float64, float64, bool) {
 		var xs [][]float64
 		var ys []float64
 		for _, d := range sub {
@@ -194,16 +215,12 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 			xs = append(xs, []float64{1, kph, d.descentM / d.km, d.minutes / 60.0})
 			ys = append(ys, d.regenKwh/d.km*1000.0)
 		}
-		b, r2, ok := olsFit(xs, ys)
-		if !ok {
-			return nil, 0
-		}
-		return b, r2
+		return olsFitFull(xs, ys)
 	}
 
-	bUp, r2Up := fitGross(list)
-	bDn, r2Dn := fitRegen(list)
-	if bUp == nil || bDn == nil {
+	bUp, seUp, r2Up, okUp := fitGross(list)
+	bDn, seDn, r2Dn, okDn := fitRegen(list)
+	if !okUp || !okDn {
 		return ClimbModel{}, errors.New("爬升系数拟合失败（样本共线或不足）")
 	}
 	cUp := bUp[2]    // Wh/m（正数 = 上坡每米多耗）
@@ -244,12 +261,12 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 	}
 	var splitUp, splitRegen []float64
 	for _, h := range [][]driveRow{halfA, halfB} {
-		bu, _ := fitGross(h)
-		bd, _ := fitRegen(h)
-		if bu != nil {
+		bu, _, _, ok := fitGross(h)
+		bd, _, _, ok2 := fitRegen(h)
+		if ok {
 			splitUp = append(splitUp, bu[2])
 		}
-		if bd != nil {
+		if ok2 {
 			splitRegen = append(splitRegen, bd[2])
 		}
 	}
@@ -284,10 +301,16 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 		MinKm:                minKm,
 		CUpTrustworthy:       upTrustworthy,
 		CRegenTrustworthy:    regenTrustworthy,
-		Method:               "口径 calib_net：y = (Δ标定续航) × cars.efficiency × 1000 / 里程（与客户端能耗底档同源）；回归式 wh_per_km ~ 1 + 车速 + 上坡坡度(m/km) + 下坡坡度(m/km) + 时长(h)；修正用 delta-grade（相对该车速档的典型坡度）。另有车轮功率毛耗电口径（positions.power 积分）作物理交叉核对。",
+		Method:               "口径 calib_net：y = (Δ标定续航) × cars.efficiency × 1000 / 里程（与客户端能耗底档同源）；回归式 wh_per_km ~ 1 + 车速 + 上坡坡度(m/km) + 下坡坡度(m/km) + 时长(h)；修正用 delta-grade（相对该车速档的典型坡度）。⚠️ 车速项与时长项不独立（km = kph × h），模型不可外推；时长项做的是摊销每趟固定开销，不是空调。另有车轮功率毛耗电口径（positions.power 积分）作物理交叉核对。",
 		Caveat:               climbCaveat(upTrustworthy, regenTrustworthy, pureDown),
 		ConservativeCRegen:   round2(conservativeRegen(splitRegen, cRegen, regenTrustworthy)),
 		ImpliedEtaNote:       "⚠️ 隐含效率**不可信**：drives.ascent 不是物理高差（能量自洽性实测 142% > 100%），系数只能当经验标定值看，不要解读成传动效率。",
+		// ⚠️ **v0.36.0（第 21 轮口径审计 P1-6）：补上标准误与 95% 置信区间。**
+		// 原来只上报分裂半（±2.3%），而真实抽样不确定度是 ±14.5% —— 差 6 倍。
+		CUpSE:       round3(seUp[2]),
+		CRegenSE:    round3(seDn[2]),
+		CUpCI95:     ci95Of(bUp[2], seUp[2], len(list)-len(bUp)),
+		CRegenCI95:  ci95Of(bDn[2], seDn[2], len(list)-len(bDn)),
 		// ── v0.34.0：标定法口径（客户端唯一该用的那套） ──
 		Basis:              calib.Basis,
 		CUpCalibNet:        calib.CUpCalibNet,
@@ -301,6 +324,15 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 		TypicalGrade:       calib.TypicalGrade,
 	}
 	return out, nil
+}
+
+// ci95Of 系数的 95% 置信区间（[下界, 上界]）。
+func ci95Of(beta, se float64, df int) []float64 {
+	if df < 1 {
+		return nil
+	}
+	tc := tCrit975(df)
+	return []float64{round3(beta - tc*se), round3(beta + tc*se)}
 }
 
 // conservativeRegen 回充系数的**保守取值**。

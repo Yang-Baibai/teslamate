@@ -361,14 +361,14 @@ internal fun DriveItem(
                     InlineMetric(
                         "电量",
                         "${d.start_soc}%→${d.end_soc}%",
-                        valueColor = if (d.end_soc <= 15) accents.warnAmber else MaterialTheme.colorScheme.onSurface,
+                        valueColor = if (d.end_soc <= 15) accents.warnAmberText else MaterialTheme.colorScheme.onSurface,
                     )
                 } else {
                     d.end_soc?.let { soc ->
                         InlineMetric(
                             "到达",
                             "$soc%",
-                            valueColor = if (soc <= 15) accents.warnAmber else MaterialTheme.colorScheme.onSurface,
+                            valueColor = if (soc <= 15) accents.warnAmberText else MaterialTheme.colorScheme.onSurface,
                         )
                     }
                 }
