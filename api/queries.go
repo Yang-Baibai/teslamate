@@ -591,3 +591,133 @@ FROM leg_info li
 JOIN buckets b ON b.drive_id = li.drive_id
 CROSS JOIN origin o
 ORDER BY li.ord, b.abs_km`
+
+// ⚠️ v0.27.0：**驾驶风格画像**（最近 N 趟行程的评分 + 汇总）。
+//
+// ## 口径（三步，缺一不可）
+//
+// ① **1 Hz 重采样**：`floor(EXTRACT(EPOCH FROM p.date))` 分桶，桶内取**最后一个**速度值。
+//    ⚠️ 绝对不要直接微分 `positions.speed`：它是 smallint（整 km/h），
+//    相邻点间隔中位 **0.251 秒** —— 逐点微分会造出 **117 万个恰好 ±8.00 km/h/s** 的
+//    纯量化伪信号（实测），那不是驾驶风格，那是采样精度。
+//    先降到 1 Hz 再比，噪声底 dv2 的 p01 = −12.0，阈值 20 才有约 8σ 余量。
+//
+// ② **2 秒窗口速度落差** dv2 = v(t) − v(t−2)：用 `LAG(v,2)` 拿 t−2 秒那个桶的值。
+//
+// ③ **事件判定**：硬刹车 dv2 ≤ −20，硬加速 dv2 ≥ +20（≈ ±2.8 m/s²）。
+//
+// ## 为什么窗口跨度要卡在 12 秒
+//
+// `LAG(v,2)` 拿的是「序列里往前数第二个桶」，它**不保证**真的隔了 2 秒：
+// 采样有断洞时，两个桶可能隔了 13 秒 —— 那时候 dv2 量的根本不是 2 秒的落差，
+// 而是十几秒的平均速率，判出来的「急加速」是假的。
+// 实测（2026-10-25，drive_id=273）：断洞那一下算出 dv2 = +20，恰好踩在阈值上，
+// 把一趟夜间市区行程的急加速从 3 次虚报成 4 次，分数从 21.1 掉到 20.0。
+//
+// 所以窗口必须**真的**在 2 秒附近：**跨度 2~12 秒**（名义 2 秒 + 最多 10 秒数据断点，
+// 与下面能耗积分「丢弃 Δt > 10 秒的数据断点」是同一条容忍线）。
+// 12 秒这条线是实测标出来的：容忍度放宽到 13 秒，drive_id=273 立刻多出 1 次假急加速；
+// 收紧到 11 秒，drive_id=491 会漏掉 2 次真急刹车（它的采样断洞是 12 秒）。
+//
+// ## 能耗（车轮功率交叉验证）
+//
+// 梯形积分：`(power + prev_power)/2 × Δt/3600` = kWh，丢弃 Δt > 10 秒的断点。
+// 它同时用来**佐证事件方向**：功率掉下去的时刻应该和 dv2 掉下去的时刻对得上。
+//
+// ## 时区陷阱
+//
+// `positions.date` / `drives.start_date` 存的是 **UTC naive**。
+// ❌ `AT TIME ZONE 'Asia/Shanghai'` 直接作用在 naive 列上 → 偏 8 小时。
+// ✅ 正确形式：`col AT TIME ZONE 'UTC' AT TIME ZONE $2`（与 sqlStatsDrives 同一写法）。
+//
+// ## 夜间占比为什么用另一套窗口（exact2）
+//
+// 事件（急刹/急加速）和超速占比用的是「序列里往前数第二个桶」（能容忍采样断洞）。
+// 但夜间占比问的是**时间归属**：「这一刻算夜里吗」。
+// 跨了数据断洞的窗口说不清该按哪一秒算，所以只统计**完整的 2 秒观测**
+// （t 和 t−2 秒那一刻都真的有采样桶）。
+// 实测 drive_id=273：完整窗口 1086 个，其中夜间 1085 个 → **99.91%**
+// （这趟 21:59:52 起夜，开头那几秒采样是断的，不算进分母）。
+//
+// ## 性能（实测 2026-10-25，positions 162 万点 / 20551 页）
+//
+// `p.drive_id = ANY(ARRAY(SELECT drive_id FROM recent))` 命中 BRIN：
+// Bitmap Index Scan + Index Searches = 段数，**没有一次 Seq Scan on positions**。
+// handler 里必须配 `SET LOCAL work_mem='128MB'` + `SET LOCAL plan_cache_mode=force_custom_plan`
+// （理由见 handleRouteProfile：通用计划会让 Index Searches 从 200 涨到 40000）。
+//
+// $1 = car_id，$2 = 时区名，$3 = 最小行程里程(km)，$4 = 取最近多少趟，
+// $5 = 2 秒窗口允许的最大跨度（秒）
+const sqlDrivingProfile = `
+WITH recent AS (
+  SELECT d.id AS drive_id, d.start_date, d.distance::float8 AS distance_km,
+         d.duration_min, d.ascent, d.descent
+  FROM drives d
+  WHERE d.car_id = $1 AND d.distance >= $3
+  ORDER BY d.start_date DESC
+  LIMIT $4
+), hz AS (
+  -- ① 1 Hz 重采样：桶内取最后一个速度值
+  SELECT p.drive_id,
+         floor(EXTRACT(EPOCH FROM p.date))::bigint AS sec,
+         (array_agg(p.speed ORDER BY p.date DESC))[1] AS v,
+         max(p.date) AS t
+  FROM positions p
+  WHERE p.drive_id = ANY(ARRAY(SELECT drive_id FROM recent))
+    AND p.speed IS NOT NULL
+  GROUP BY 1, 2
+), win AS (
+  -- ② 2 秒窗口：v2 是「序列里往前数第二个桶」，span 是这两个桶的真实时间跨度。
+  --    s1 是紧挨着的上一个桶 —— 用来判断「t−2 秒那一刻到底有没有采样」。
+  SELECT hz.drive_id, hz.sec, hz.v, hz.t,
+         LAG(hz.v,2) OVER w AS v2,
+         LAG(hz.sec,2) OVER w AS s2,
+         LAG(hz.sec,1) OVER w AS s1
+  FROM hz
+  WINDOW w AS (PARTITION BY hz.drive_id ORDER BY hz.sec)
+), win2 AS (
+  SELECT drive_id, v, v2,
+         (sec - s2) AS span,
+         -- 「完整的 2 秒观测」：t 和 t−2 秒那一刻**都**有采样桶。
+         -- （t−2 时刻的桶要么是 s1，要么是 s2 —— 只可能是这两个之一。）
+         (s1 = sec - 2 OR s2 = sec - 2) AS exact2,
+         (EXTRACT(HOUR FROM ((t AT TIME ZONE 'UTC') AT TIME ZONE $2))::int >= 22
+          OR EXTRACT(HOUR FROM ((t AT TIME ZONE 'UTC') AT TIME ZONE $2))::int < 6) AS night
+  FROM win
+), ev AS (
+  SELECT drive_id,
+         count(*) FILTER (WHERE span BETWEEN 2 AND $5 AND v - v2 <= -20)::int AS hard_brake,
+         count(*) FILTER (WHERE span BETWEEN 2 AND $5 AND v - v2 >=  20)::int AS hard_accel,
+         count(*) FILTER (WHERE span BETWEEN 2 AND $5 AND v > 120)::int AS over_n,
+         count(*) FILTER (WHERE span BETWEEN 2 AND $5)::int AS n_valid,
+         count(*) FILTER (WHERE exact2)::int AS n_clean,
+         count(*) FILTER (WHERE exact2 AND night)::int AS night_n
+  FROM win2
+  GROUP BY drive_id
+), pw AS (
+  -- 能耗：车轮功率梯形积分，丢弃 Δt > 10 秒的数据断点
+  SELECT drive_id, SUM((power + ppower) / 2.0 * dt / 3600.0) AS kwh
+  FROM (
+    SELECT p.drive_id, p.power,
+           LAG(p.power) OVER (PARTITION BY p.drive_id ORDER BY p.date) AS ppower,
+           EXTRACT(EPOCH FROM (p.date - LAG(p.date) OVER (PARTITION BY p.drive_id ORDER BY p.date))) AS dt
+    FROM positions p
+    WHERE p.drive_id = ANY(ARRAY(SELECT drive_id FROM recent))
+      AND p.power IS NOT NULL
+  ) t
+  WHERE ppower IS NOT NULL AND dt > 0 AND dt <= 10
+  GROUP BY drive_id
+)
+SELECT r.drive_id, r.start_date, r.distance_km,
+       -- ⚠️ duration_min / ascent / descent 在表里是**可空**的，
+       -- 直接扫进 Go 的 int 遇到 NULL 会报 "can't scan into dest[N]"（整个端点 500）。
+       -- 这里 COALESCE 成 0：宁可少一个字段，也不能让一次数据缺失打挂整个请求。
+       COALESCE(r.duration_min, 0), COALESCE(r.ascent, 0), COALESCE(r.descent, 0),
+       COALESCE(e.hard_brake, 0), COALESCE(e.hard_accel, 0),
+       COALESCE(e.over_n, 0), COALESCE(e.n_valid, 0),
+       COALESCE(e.n_clean, 0), COALESCE(e.night_n, 0),
+       COALESCE(p.kwh, 0)
+FROM recent r
+LEFT JOIN ev e ON e.drive_id = r.drive_id
+LEFT JOIN pw p ON p.drive_id = r.drive_id
+ORDER BY r.start_date DESC`

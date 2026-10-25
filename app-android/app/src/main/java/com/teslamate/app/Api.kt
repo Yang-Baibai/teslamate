@@ -532,6 +532,80 @@ data class RouteProfilePoint(
     val soc: Double = 0.0,
 )
 
+/**
+ * ⚠️ **v0.27.0（第 17 轮官方 App 对标评审 A-1）：驾驶行为画像。**
+ *
+ * **官方 Tesla App 没有这个**（只有第三方 TeslaFi / ABetterDrive 有），
+ * 而 TeslaMate 的逐点 `speed` + `power` 正是官方拿不到的数据。
+ *
+ * 口径全部在服务端算（`positions` 的 162 万个采样点），
+ * 客户端只负责**画**与**说清限制**。
+ */
+@Serializable
+data class DrivingProfile(
+    val drives: List<DriveScore> = emptyList(),
+    val summary: DriveScoreSummary = DriveScoreSummary(),
+    val params: DriveScoreParams = DriveScoreParams(),
+)
+
+/** 一趟行程的驾驶评分。 */
+@Serializable
+data class DriveScore(
+    val drive_id: Int = 0,
+    @Serializable(with = InstantSer::class) val start_date: Instant? = null,
+    val distance_km: Double = 0.0,
+    val duration_min: Int = 0,
+    /** 综合驾驶评分（0~100） */
+    val score: Double = 0.0,
+    /** 硬刹车次数（2 秒窗口速度落差 ≤ −20 km/h） */
+    val hard_brake: Int = 0,
+    /** 硬加速次数（2 秒窗口速度落差 ≥ +20 km/h） */
+    val hard_accel: Int = 0,
+    val brake_per_100km: Double = 0.0,
+    val accel_per_100km: Double = 0.0,
+    /** 夜间（本地 22:00–06:00）行驶时间占比 */
+    val night_pct: Double = 0.0,
+    /** ≥120 km/h 的时间占比 */
+    val over_speed_pct: Double = 0.0,
+    /** 车轮功率积分出的能耗 */
+    val wh_per_km: Double = 0.0,
+    val descent_m: Int = 0,
+    val ascent_m: Int = 0,
+)
+
+/** 一批行程的汇总。 */
+@Serializable
+data class DriveScoreSummary(
+    val drive_count: Int = 0,
+    val total_km: Double = 0.0,
+    val avg_score: Double = 0.0,
+    val median_score: Double = 0.0,
+    val hard_brake_total: Int = 0,
+    val hard_accel_total: Int = 0,
+    val night_pct_avg: Double = 0.0,
+    val over_speed_pct_avg: Double = 0.0,
+    val wh_per_km_median: Double = 0.0,
+)
+
+/**
+ * ⚠️ 评分用到的**全部阈值**。
+ *
+ * 这些值是**行业惯例**，不是从这辆车的数据拟合出来的 ——
+ * 所以必须随结果一起下发，界面上要**说清它们是拍的**。
+ */
+@Serializable
+data class DriveScoreParams(
+    /** 判定硬加/硬刹的 2 秒窗口速度落差阈值（km/h） */
+    val hard_event_threshold_kmh_per_2s: Int = 20,
+    /** 判定「超速」的阈值（km/h） */
+    val over_speed_kph: Int = 120,
+    val night_start_hour: Int = 22,
+    val night_end_hour: Int = 6,
+    /** 只统计 ≥ 这个距离的行程（km） */
+    val min_distance_km: Int = 5,
+    val note: String = "",
+)
+
 @Serializable
 data class CostSummary(
     /** 公共桩（直流）网侧度数 —— 桩是按它送出去的度数收费的 */
@@ -783,6 +857,18 @@ class Api private constructor(private val base: String, private val token: Strin
             "/api/v1/cars/$carId/route_profile" +
                 "?drive_ids=${driveIds.joinToString(",")}&step_km=$stepKm"
         )
+
+    /**
+     * ⚠️ **v0.27.0：驾驶行为画像**（官方 Tesla App 没有的能力）。
+     *
+     * 服务端从 `positions` 的 162 万个采样点算出：
+     * 急刹车 / 急加速事件、夜间行驶占比、超速时间占比、车轮功率积分能耗。
+     *
+     * 阈值（2 秒窗口 20 km/h、120 km/h、夜间 22:00–06:00）是**行业惯例**，
+     * 随响应一起下发 —— 界面必须说清它们是拍的，不是拟合出来的。
+     */
+    fun drivingProfile(carId: Int, limit: Int = 20): DrivingProfile =
+        get("/api/v1/cars/$carId/driving_profile?limit=$limit")
 
     /**
      * ⚠️ v0.25.0：一个时间窗口内的**充电成本构成**（度数 / 场次 / 时长）。

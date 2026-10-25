@@ -1404,6 +1404,297 @@ func summarize(buckets []*StatsBucket) *StatsBucket {
 	return s
 }
 
+// ---------- 驾驶风格画像（v0.27.0） ----------
+
+// 驾驶风格画像的固定口径（v0.27.0）。
+//
+// ⚠️ 这些数是**行业惯例值，不是拟合出来的** —— 这一点会随 params 一起下发给 App，
+// 用户能自己核对服务端怎么算的，不必相信一个玄学分数。
+const (
+	// drivingHardEventKmhPer2s 判定急刹车/急加速的 2 秒速度落差阈值（km/h）。
+	//
+	// 20 km/h / 2s ≈ 2.8 m/s²，实测 1 Hz 重采样后 dv2 的噪声底 p01 = −12.0，
+	// 留了约 8σ 余量 —— 阈值再往低压，量化噪声会开始冒头。
+	drivingHardEventKmhPer2s = 20
+	// drivingOverSpeedKph 超速判定线（km/h）。高速限速 120，路面限速更高。
+	drivingOverSpeedKph = 120
+	// drivingNightStartHour / drivingNightEndHour 夜间时段（服务器时区的本地小时）。
+	drivingNightStartHour = 22
+	drivingNightEndHour   = 6
+	// drivingMinDistanceKm 参与统计的最小行程里程（km）。
+	//
+	// ⚠️ 为什么不统计短途：
+	//   一趟 1 公里的行程，里程表本身就有 ±0.1 公里的噪声，
+	//   算出来的「每公里能耗」和「每百公里急刹车次数」会离谱到没法看。
+	drivingMinDistanceKm = 5.0
+	// drivingMaxWindowSpanSec 2 秒窗口允许的最大跨度（秒）。
+	//
+	// ⚠️ 为什么不是「严格 2 秒」也不是「不设限」：
+	//   LAG(v,2) 拿的是「序列里往前数第二个桶」，它**不保证**真的隔了 2 秒。
+	//   采样有断洞时两个桶可能隔 13 秒，那算出来的是十几秒的平均速率，不是 2 秒落差。
+	//   名义窗口 2 秒 + 最多 10 秒数据断点（与能耗积分「丢弃 Δt>10 秒断点」同一条线）。
+	//   实测标定：放宽到 13 秒 → drive_id=273 多 1 次假急加速（分数 21.1→20.0）；
+	//   收紧到 11 秒 → drive_id=491 漏 2 次真急刹车。
+	drivingMaxWindowSpanSec = 12
+	// drivingDefaultLimit / drivingMaxLimit limit 参数的默认值与上限
+	drivingDefaultLimit = 20
+	drivingMaxLimit     = 60
+)
+
+// drivingProfileRaw 一趟行程的**原始计数**（SQL 直接算出来的那些）。
+type drivingProfileRaw struct {
+	DistanceKm float64
+	HardBrake  int
+	HardAccel  int
+	OverN      int
+	NValid     int // 有效 2 秒窗口数（超速占比的分母）
+	NClean     int // 有完整 2 秒观测的窗口数（夜间占比的分母）
+	NightN     int
+	Kwh        float64
+}
+
+// drivingProfileDerived 派生指标 + 评分（纯函数，可单测）。
+type drivingProfileDerived struct {
+	Score         float64
+	BrakePer100Km float64
+	AccelPer100Km float64
+	NightPct      float64
+	OverSpeedPct  float64
+	WhPerKm       float64
+}
+
+// deriveDrivingProfile 由原始计数算出派生指标与评分（**纯函数**）。
+//
+// ⚠️ 为什么把「原始计数 → 派生指标」这一步留在 Go 侧：
+//   这样评分公式能被单元测试直接覆盖（sql 里写死了就只能在库里验），
+//   而且口径改了只要改这一处，SQL 只负责取数。
+func deriveDrivingProfile(r drivingProfileRaw) drivingProfileDerived {
+	var d drivingProfileDerived
+	if r.DistanceKm > 0 {
+		d.BrakePer100Km = 100.0 * float64(r.HardBrake) / r.DistanceKm
+		d.AccelPer100Km = 100.0 * float64(r.HardAccel) / r.DistanceKm
+		d.WhPerKm = r.Kwh * 1000.0 / r.DistanceKm
+	}
+	// 夜间占比只统计**有完整 2 秒观测**的窗口（t 和 t−2 秒那一刻都有采样）：
+	// 夜间问的是「这一刻算夜里吗」，跨了数据断洞的窗口说不清该按哪一秒算，
+	// 把它们算进去只会让夜间比例失真。
+	if r.NClean > 0 {
+		d.NightPct = 100.0 * float64(r.NightN) / float64(r.NClean)
+	}
+	// 超速占比统计所有**有效**窗口（2~12 秒跨度），
+	// 因为「这一刻速度超过 120」这件事本身不需要窗口是干净的。
+	if r.NValid > 0 {
+		d.OverSpeedPct = 100.0 * float64(r.OverN) / float64(r.NValid)
+	}
+	d.Score = drivingScore(d)
+	return d
+}
+
+// drivingScore 驾驶风格评分公式（**纯函数**，0~100 分，越高越好）。
+//
+// ⚠️ 扣分制，每一项都有**封顶**，所以分数永远落在 0~100：
+//
+//	100
+//	  - LEAST(30, brake_per_100km * 1.5)          急刹车
+//	  - LEAST(20, accel_per_100km)                急加速
+//	  - LEAST(20, GREATEST(0, over120_pct - 3))   超速
+//	  - LEAST(15, GREATEST(0, wh_km - 150) / 5)   能耗
+//	  - LEAST(15, night_pct * 0.2)                夜驾
+//
+// 封顶的意义：一趟「全是急刹车」的行程不能把分数压成负数，
+// 也不能因为某一项爆表就抹掉其它项的信息。
+func drivingScore(d drivingProfileDerived) float64 {
+	s := 100.0
+	s -= math.Min(30, d.BrakePer100Km*1.5)
+	s -= math.Min(20, d.AccelPer100Km)
+	s -= math.Min(20, math.Max(0, d.OverSpeedPct-3))
+	s -= math.Min(15, math.Max(0, d.WhPerKm-150)/5)
+	s -= math.Min(15, d.NightPct*0.2)
+	// ⚠️ 上下都夹住：负的中间量（理论上不会出现，但别让它变成 370 分）不能撑破上限。
+	return math.Max(0, math.Min(100, s))
+}
+
+// parseDrivingProfileLimit 解析 limit 参数：默认 20，范围 [1, 60]。
+//
+// ⚠️ 为什么越界要报错而不是默默夹到边界：
+//   默默夹断会让 App 以为「就这么多趟了」，
+//   而真实原因只是被砍掉了 —— 那种错比直接报错危险得多。
+func parseDrivingProfileLimit(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return drivingDefaultLimit, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, errors.New("limit 必须是整数")
+	}
+	if n < 1 || n > drivingMaxLimit {
+		return 0, fmt.Errorf("limit 必须在 1..%d 之间，实际 %d", drivingMaxLimit, n)
+	}
+	return n, nil
+}
+
+// handleDrivingProfile 返回**最近 N 趟行程**的驾驶风格画像 + 汇总。
+//
+// ⚠️ v0.27.0。
+//
+// 入参：limit = 最近多少趟行程（默认 20，范围 [1,60]，越界 400）。
+//
+// 口径与阈值全部随 params 下发（行业惯例值，不是拟合出来的）。
+//
+// 性能：这条查询必须放在**事务**里跑（要临时调大 work_mem + 强制自定义计划），
+// 理由与 handleRouteProfile 完全一样：
+//   - 默认 work_mem=4MB 时大聚合会溢写到磁盘；
+//   - PostgreSQL 对同一个 prepared statement 执行 5 次后会切「通用计划」，
+//     通用计划里优化器不知道 drive_id 数组里有哪些值，
+//     于是每行再 AND 一次数组 → Index Searches 从 N 涨到 N×200 → 慢一个数量级。
+func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
+	carID, err := strconv.Atoi(r.PathValue("car_id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "car id 无效")
+		return
+	}
+	limit, err := parseDrivingProfileLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// 时区用**服务端配置**的 TZ_NAME（默认 Asia/Shanghai），
+	// 与 sqlStatsDrives 分日用的是同一个来源 —— 不硬编码。
+	tz := getenv("TZ_NAME", "Asia/Shanghai")
+
+	ctx := context.Background()
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 只读事务，回滚即可
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SET LOCAL work_mem = '128MB'"); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL plan_cache_mode = force_custom_plan"); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rows, err := tx.Query(ctx, sqlDrivingProfile, carID, tz, drivingMinDistanceKm, limit, drivingMaxWindowSpanSec)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+
+	out := DrivingProfile{
+		Drives: []DrivingProfileDrive{},
+		Params: DrivingProfileParams{
+			HardEventThresholdKmhPer2s: drivingHardEventKmhPer2s,
+			OverSpeedKph:               drivingOverSpeedKph,
+			NightStartHour:             drivingNightStartHour,
+			NightEndHour:               drivingNightEndHour,
+			MinDistanceKm:              drivingMinDistanceKm,
+			Note:                       "阈值是行业惯例值，不是拟合出来的",
+		},
+	}
+	var (
+		scores    []float64
+		whPerKms  []float64
+		nightPcts []float64
+		overPcts  []float64
+	)
+	for rows.Next() {
+		var (
+			driveID     int
+			startDate   time.Time
+			distanceKm  float64
+			durationMin int
+			ascent      int
+			descent     int
+			hardBrake   int
+			hardAccel   int
+			overN       int
+			nValid      int
+			nClean      int
+			nightN      int
+			kwh         float64
+		)
+		// ⚠️ Scan 的顺序必须和 SELECT 的列顺序**严格一致**：
+		//   drive_id, start_date, distance_km, duration_min, ascent, descent,
+		//   hard_brake, hard_accel, over_n, n_valid, n_clean, night_n, kwh
+		if err := rows.Scan(&driveID, &startDate, &distanceKm, &durationMin, &ascent, &descent,
+			&hardBrake, &hardAccel, &overN, &nValid, &nClean, &nightN, &kwh); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		raw := drivingProfileRaw{
+			DistanceKm: distanceKm,
+			HardBrake:  hardBrake,
+			HardAccel:  hardAccel,
+			OverN:      overN,
+			NValid:     nValid,
+			NClean:     nClean,
+			NightN:     nightN,
+			Kwh:        kwh,
+		}
+		d := deriveDrivingProfile(raw)
+		out.Drives = append(out.Drives, DrivingProfileDrive{
+			DriveID:      driveID,
+			StartDate:    startDate,
+			// 里程保留 2 位小数（与 route_profile 同一口径），
+			// 其余（分数、各比率）保留 1 位 —— 小数点后面拖 8 位只会让人怀疑服务端在乱算。
+			DistanceKm:   round2(distanceKm),
+			DurationMin:  durationMin,
+			Score:        round1(d.Score),
+			HardBrake:    hardBrake,
+			HardAccel:    hardAccel,
+			BrakePer100Km: round1(d.BrakePer100Km),
+			AccelPer100Km: round1(d.AccelPer100Km),
+			NightPct:     round1(d.NightPct),
+			OverSpeedPct: round1(d.OverSpeedPct),
+			WhPerKm:      round1(d.WhPerKm),
+			DescentM:     descent,
+			AscentM:      ascent,
+		})
+		scores = append(scores, d.Score)
+		whPerKms = append(whPerKms, d.WhPerKm)
+		nightPcts = append(nightPcts, d.NightPct)
+		overPcts = append(overPcts, d.OverSpeedPct)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	sum := DrivingProfileSummary{DriveCount: len(out.Drives)}
+	for i := range out.Drives {
+		sum.TotalKm += out.Drives[i].DistanceKm
+		sum.HardBrakeTotal += out.Drives[i].HardBrake
+		sum.HardAccelTotal += out.Drives[i].HardAccel
+		sum.AvgScore += out.Drives[i].Score
+		sum.NightPctAvg += out.Drives[i].NightPct
+		sum.OverSpeedPctAvg += out.Drives[i].OverSpeedPct
+	}
+	if n := len(out.Drives); n > 0 {
+		sum.AvgScore = round1(sum.AvgScore / float64(n))
+		sum.NightPctAvg = round1(sum.NightPctAvg / float64(n))
+		sum.OverSpeedPctAvg = round1(sum.OverSpeedPctAvg / float64(n))
+		sum.MedianScore = round1(medianOfFloats(scores))
+		sum.WhPerKmMedian = round1(medianOfFloats(whPerKms))
+	}
+	sum.TotalKm = round1(sum.TotalKm)
+	out.Summary = sum
+	writeJSON(w, out)
+}
+
+// round1 保留一位小数。
+//
+// ⚠️ v0.27.0。驾驶风格画像里的比率都要给人看，
+// 拖 8 位小数只会让人怀疑服务端在乱算（也确实是浮点噪声）。
+func round1(v float64) float64 {
+	return math.Round(v*10) / 10
+}
+
 // carExists 这台车在 cars 表里存不存在。
 //
 // 用于区分「车存在但还没有任何位置数据」（正常状态）与「根本没有这台车」

@@ -102,6 +102,9 @@ func main() {
 	// ⚠️ v0.26.0：整条路线（多趟行程拼成一条）的逐公里 SOC 剖面。
 	// 一次长途旅程被充电切成很多段，App 要的是**一条连续曲线**而不是一堆碎片。
 	mux.HandleFunc("GET /api/v1/cars/{car_id}/route_profile", auth(handleRouteProfile))
+	// ⚠️ v0.27.0：驾驶风格画像（最近 N 趟行程的评分 + 汇总）。
+	// /drives 只说「开了多远」，从不说「开得急不急、是不是夜里开、能耗高不高」。
+	mux.HandleFunc("GET /api/v1/cars/{car_id}/driving_profile", auth(handleDrivingProfile))
 	// ⚠️ v0.25.0：充电成本构成（每公里成本用）。
 	mux.HandleFunc("GET /api/v1/cars/{id}/cost_summary", auth(handleCostSummary))
 	mux.HandleFunc("GET /api/v1/cars/{id}/charges", auth(handleCharges))

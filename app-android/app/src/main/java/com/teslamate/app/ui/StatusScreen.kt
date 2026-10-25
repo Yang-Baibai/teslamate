@@ -147,6 +147,19 @@ fun StatusScreen(
             }
         }
     }
+    // ⚠️ **v0.27.0：驾驶画像**（官方 Tesla App 没有的能力）。
+    //
+    // 服务端要从 `positions` 的 162 万个采样点算（实测 30 趟几百毫秒），
+    // 所以**每辆车只算一次**，结果放 App 级 store —— 切 Tab 回来不重算。
+    LaunchedEffect(api, settings.carId) {
+        if (api == null) return@LaunchedEffect
+        if (store.driveProfileLoadedFor == settings.carId) return@LaunchedEffect
+        store.startDriveProfile()
+        runCatching {
+            withContext(Dispatchers.IO) { api.drivingProfile(settings.carId, 30) }
+        }.onSuccess { store.updateDriveProfile(it, settings.carId) }
+            .onFailure { store.failDriveProfile() }
+    }
     val drives = store.drives
     // ⚠️ v0.9.0：能耗模型改从 store 取（App 级 + **已落盘**），
     // 不用页面里的 `remember(drives) { ConsumptionModel.from(drives) }` ——
@@ -625,6 +638,15 @@ fun StatusScreen(
                                 onOpenSettings = onOpenMaintenance,
                             )
                         }
+
+                        // ⚠️ **v0.27.0：驾驶画像卡片**。
+                        //
+                        // 放在胎压/保养**之后** —— 它是「回顾」，
+                        // 不该跟「现在能不能开」「胎压正不正常」这些**当下**的答案抢首屏。
+                        DriveScoreCard(
+                            profile = store.driveProfile,
+                            loading = store.driveProfileLoading,
+                        )
                     }
                 }
             }

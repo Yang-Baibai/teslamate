@@ -13,8 +13,8 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 43
-        versionName = "0.26.0"
+        versionCode = 44
+        versionName = "0.27.0"
     }
 
     buildTypes {

@@ -82,6 +82,27 @@ class StatusStore(private val cache: StatusCache? = null) {
     var recentAscentM by mutableStateOf<Int?>(null)
         private set
 
+    /**
+     * ⚠️ **v0.27.0：驾驶画像**（官方 Tesla App 没有的能力）。
+     *
+     * 服务端从 `positions` 的 162 万个采样点算 —— 实测 30 趟要 **几百毫秒**，
+     * 所以它放在 **App 级 store** 而不是页面里：
+     * 否则每次切到「车况」Tab 都要重算一次（而这正是 App 的首屏）。
+     *
+     * [driveProfileLoadedFor] 记录算过的是哪辆车 —— 切车要重算，
+     * 但同一辆车切 Tab 回来不重算。
+     */
+    var driveProfile by mutableStateOf<com.teslamate.app.DrivingProfile?>(null)
+        private set
+
+    /** 驾驶画像正在算（首屏显示「正在算…」而不是空白卡）。 */
+    var driveProfileLoading by mutableStateOf(false)
+        private set
+
+    /** 已经算过驾驶画像的车 id。 */
+    var driveProfileLoadedFor by mutableStateOf<Int?>(null)
+        private set
+
     /** 已有可用数据时为 true —— UI 据此决定是显示骨架屏还是直接显示旧数据。 */
     val hasData: Boolean get() = status != null
 
@@ -124,6 +145,10 @@ class StatusStore(private val cache: StatusCache? = null) {
         recentAscentM = null
         drives = emptyList()
         error = null
+        // ⚠️ v0.27.0：驾驶画像是**按车**的，换车必须作废（否则 B 车标题下显示 A 车的驾驶习惯）。
+        driveProfile = null
+        driveProfileLoadedFor = null
+        driveProfileLoading = false
         hydrate(carId)
     }
 
@@ -140,6 +165,10 @@ class StatusStore(private val cache: StatusCache? = null) {
         recentAscentM = null
         drives = emptyList()
         error = null
+        // ⚠️ v0.27.0：换服务器 = 全部重来，驾驶画像也要清。
+        driveProfile = null
+        driveProfileLoadedFor = null
+        driveProfileLoading = false
         cache?.clearAll()
     }
 
@@ -193,5 +222,30 @@ class StatusStore(private val cache: StatusCache? = null) {
         model?.let {
             cache?.saveRangeContext(carId, CachedRangeContext(it, recentAscentM))
         }
+    }
+
+    /**
+     * ⚠️ **v0.27.0：驾驶画像算完了。**
+     *
+     * 失败时**保留旧值**（和 [fail] 同一个原则）：
+     * 服务器临时算不动不该让卡片变成空白 —— 但要标出「这是旧的」。
+     */
+    internal fun updateDriveProfile(
+        profile: com.teslamate.app.DrivingProfile,
+        carId: Int,
+    ) {
+        driveProfile = profile
+        driveProfileLoadedFor = carId
+        driveProfileLoading = false
+    }
+
+    /** 驾驶画像算失败了（保留旧值，只停掉 loading）。 */
+    internal fun failDriveProfile() {
+        driveProfileLoading = false
+    }
+
+    /** 开始算驾驶画像（显示「正在算…」）。 */
+    internal fun startDriveProfile() {
+        driveProfileLoading = true
     }
 }

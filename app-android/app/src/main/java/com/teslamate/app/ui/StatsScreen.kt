@@ -303,6 +303,35 @@ fun StatsScreen(
                 }
             }
 
+            // ⚠️ **v0.27.0（第 17 轮通勤车主 P0-3）：「1 年」其实只覆盖 23%。**
+            //
+            // 本机数据只有 2026-07-30 ~ 10-24（87 天），而「1 年」这个分段
+            // 会给出「8756 公里 / 1593 度 / 每公里成本」——
+            // 数字看起来是**一整年**的量，实际上只有 **4 个月**有数据。
+            //
+            // 评审原话：「用户看到『1 年』，会以为这是年均值；
+            // 而它其实是 4 个月的数据 —— 那不是年，是 1/3。」」
+            //
+            // 现在**自曝覆盖度**：桶里有数据的比例 < 90% 时明确说清楚，
+            // 并把「每公里成本」两行限定到「这 4 个月」。
+            val totalBuckets = s.buckets.size
+            val filledBuckets = s.buckets.count { it.km > 0.0 || it.charge_kwh > 0.0 }
+            val coverageRatio = if (totalBuckets > 0) filledBuckets.toFloat() / totalBuckets else 1f
+            val coverageLow = totalBuckets > 0 && coverageRatio < 0.9f
+            val bucketUnit = if (s.granularity == "month") "个月" else "天"
+            if (coverageLow) {
+                item {
+                    Text(
+                        "数据只覆盖 $filledBuckets/$totalBuckets $bucketUnit" +
+                            "（${(coverageRatio * 100).roundToInt()}%）" +
+                            if (apiPeriod == "year") " —— 不是完整的一年" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp),
+                    )
+                }
+            }
+
             // ⚠️ v0.8.5：服务端的 summary 是**整个窗口**的汇总，切段后不适用。
             // 现在统一用切片后的 buckets 自己汇总 —— 这样「今天」段显示的
             // 确实是今天的数，而不是「把今天塞进 30 天窗口里算的平均」。
@@ -406,13 +435,24 @@ fun StatsScreen(
                             val perKm = costPerKm(cost, sum.km)
                             KV("充电费用", "≈ ${cost.totalYuan.fmtYuan()}")
                             perKm.allPerKm?.let {
-                                KV("每公里成本", "≈ ${it.fmtYuan()} /公里")
+                                // ⚠️ v0.27.0：覆盖度不足时必须限定口径 ——
+                                // 「每公里成本」的分母是**这段时间的里程**，
+                                // 而「1 年」实际只有 4 个月有数据 → 这个数不是年成本。
+                                KV(
+                                    "每公里成本",
+                                    "≈ ${it.fmtYuan()} /公里" +
+                                        if (coverageLow) "（按这 $filledBuckets $bucketUnit 算）" else "",
+                                )
                             }
                             // ⚠️ P0-3：**直流桩边际成本**必须单独给 ——
                             // 实测本车交流慢充只占 3%，混算会给人「我享受了家充电价」的错觉，
                             // 而真实情况是这车几乎全按公共桩价买的电。
                             perKm.dcPerKm?.let {
-                                KV("直流桩边际成本", "≈ ${it.fmtYuan()} /公里")
+                                KV(
+                                    "直流桩边际成本",
+                                    "≈ ${it.fmtYuan()} /公里" +
+                                        if (coverageLow) "（按这 $filledBuckets $bucketUnit 算）" else "",
+                                )
                             }
                             cost.yuanPerKwh?.let {
                                 KV("实际每度电", "≈ ${it.fmtYuan()}")
@@ -462,7 +502,12 @@ fun StatsScreen(
                         // 「每公里成本 / 暂无电费数据」——
                         // 两行「没有」说的是同一件事，比一行更让人烦。
                         // 「充电费用」那一行已经说明了怎么才能有数据。
-                        sum.wh_per_km?.let { KV("平均能耗", "${it.fmtKwh100()} kWh/100km") }
+                        // ⚠️ **v0.27.0：标清口径。**
+                        // 这个数是**标定续航差法**（Δ标定续航 × cars.efficiency），
+                        // 而车况页「驾驶画像」里的能耗是**车轮功率积分**（真实耗电）——
+                        // 实测两者相差约 9%（标定法系统性高估）。
+                        // 两个页面各写一个能耗数，不标口径用户会以为有一个是错的。
+                        sum.wh_per_km?.let { KV("平均能耗（标定法）", "${it.fmtKwh100()} kWh/100km") }
                         KV("行程 / 充电次数", "${sum.drive_count} 次 / ${sum.charge_count} 次")
                     } else {
                         // ⚠️ v0.9.2（iOS 交互 P0-5）：原来 sum == null 时渲染一张**只有标题的空白卡**，

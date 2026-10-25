@@ -265,6 +265,86 @@ type RouteProfilePoint struct {
 	Soc float64 `json:"soc"`
 }
 
+// ⚠️ v0.27.0：**驾驶风格画像**（最近 N 趟行程的评分 + 汇总）。
+//
+// 端点：`GET /api/v1/cars/{car_id}/driving_profile?limit=30`。
+//
+// 为什么要有这个端点：`/drives` 给的是「这趟开了多远、多久」，
+// 但**开得急不急、是不是夜里开、能耗高不高**这些「驾驶风格」信息
+// 一次都没给过 —— 而这恰恰是用户最想知道的（「我这车到底费不费油」）。
+//
+// 所有阈值都随 params 一起下发：分数是**有口径的**，
+// 用户可以自己核对服务端是怎么算的，不必相信一个神秘数字。
+type DrivingProfile struct {
+	Drives  []DrivingProfileDrive  `json:"drives"`
+	Summary DrivingProfileSummary  `json:"summary"`
+	Params  DrivingProfileParams   `json:"params"`
+}
+
+// DrivingProfileDrive 一趟行程的驾驶风格画像。
+//
+// ⚠️ 所有比率都保留 1 位小数：这些数是要给人看的，
+// 小数点后面拖 8 位只会让人怀疑服务端在乱算。
+type DrivingProfileDrive struct {
+	DriveID     int       `json:"drive_id"`
+	StartDate   time.Time `json:"start_date"`
+	DistanceKm  float64   `json:"distance_km"`
+	DurationMin int       `json:"duration_min"`
+	// Score 驾驶风格分（0~100，越高越好）。
+	//
+	// ⚠️ 它是**扣分制**：100 分满分，按「急刹车 / 急加速 / 超速 / 能耗 / 夜驾」五项扣。
+	// 扣分上限写死（30/20/20/15/15 = 最多扣 100 分），所以分数永远不会跑出 0~100。
+	Score float64 `json:"score"`
+	// HardBrake / HardAccel 2 秒窗口内速度落差达到 ±20 km/h 的次数
+	HardBrake int `json:"hard_brake"`
+	HardAccel int `json:"hard_accel"`
+	// BrakePer100Km / AccelPer100Km 每 100 公里的急刹车 / 急加速次数
+	BrakePer100Km float64 `json:"brake_per_100km"`
+	AccelPer100Km float64 `json:"accel_per_100km"`
+	// NightPct 这趟行程里在夜间（22:00~06:00）的比例（%）
+	NightPct float64 `json:"night_pct"`
+	// OverSpeedPct 这趟行程里速度超过 120 km/h 的时间比例（%）
+	OverSpeedPct float64 `json:"over_speed_pct"`
+	// WhPerKm 每公里耗电（Wh/km），由车轮功率梯形积分算出来
+	WhPerKm float64 `json:"wh_per_km"`
+	DescentM int `json:"descent_m"`
+	AscentM  int `json:"ascent_m"`
+}
+
+// DrivingProfileSummary 最近 N 趟行程的汇总。
+//
+// ⚠️ 中位数和均值都给：均值会被一趟「狂踩刹车」拉飞，
+// 中位数才代表「我平时到底开成什么样」。
+type DrivingProfileSummary struct {
+	DriveCount      int     `json:"drive_count"`
+	TotalKm         float64 `json:"total_km"`
+	AvgScore        float64 `json:"avg_score"`
+	MedianScore     float64 `json:"median_score"`
+	HardBrakeTotal  int     `json:"hard_brake_total"`
+	HardAccelTotal  int     `json:"hard_accel_total"`
+	NightPctAvg     float64 `json:"night_pct_avg"`
+	OverSpeedPctAvg float64 `json:"over_speed_pct_avg"`
+	WhPerKmMedian   float64 `json:"wh_per_km_median"`
+}
+
+// DrivingProfileParams 服务端这次用的**全部**阈值。
+//
+// ⚠️ 为什么必须下发：分数本身是「有口径的」，
+// 用户要能看见「20 km/h/2s 算急刹车」这条线，否则这个分数就是个玄学数字。
+type DrivingProfileParams struct {
+	// HardEventThresholdKmhPer2s 判定急刹车/急加速的速度落差阈值（km/h / 2 秒）
+	HardEventThresholdKmhPer2s int `json:"hard_event_threshold_kmh_per_2s"`
+	// OverSpeedKph 超速判定线（km/h）
+	OverSpeedKph int `json:"over_speed_kph"`
+	// NightStartHour / NightEndHour 夜间时段（服务器时区的本地小时）
+	NightStartHour int `json:"night_start_hour"`
+	NightEndHour   int `json:"night_end_hour"`
+	// MinDistanceKm 参与统计的最小行程里程（km），短途不计入
+	MinDistanceKm float64 `json:"min_distance_km"`
+	// Note 阈值来源的说明 —— 免得用户以为这些数是「拟合出来的精准模型」
+	Note string `json:"note"`
+}
+
 type TrackPoint struct {
 	Date      time.Time `json:"date"`
 	Lat       float64   `json:"lat"`

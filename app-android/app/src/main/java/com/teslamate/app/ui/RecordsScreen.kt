@@ -373,6 +373,7 @@ fun RecordsScreen(
                             }
                             else -> RecordTimeline(
                                 records, stationStats, routePlan, routeHistoryMap,
+                                charges = charges,
                                 routeTemplates = routeTemplates,
                                 selectedRouteKey = selectedRouteKey,
                                 onSelectRouteKey = { selectedRouteKey = it },
@@ -424,10 +425,20 @@ private fun RecordTimeline(
     /** ⚠️ v0.25.0：电价（按车隔离）—— 充电行用它算估算费用。 */
     rates: com.teslamate.app.ChargeRates? = null,
     onSelect: (RecordItem) -> Unit,
+    /**
+     * ⚠️ v0.27.0：实测满电续航卡片要用充电记录（充前/充后电量 + 里程表）。
+     *
+     * ⚠️ 必须放在**最后** —— 这个函数的调用点是**位置参数**调用
+     * （`RecordTimeline(records, stationStats, routePlan, routeHistoryMap, …���`），
+     * 插在中间会让后面所有位置参数**整体错位**。
+     */
+    charges: List<Charge> = emptyList(),
 ) {
     TimelineList(
         records = records,
         stationStats = stationStats,
+        // ⚠️ v0.27.0：实测满电续航卡片要用充电记录。
+        charges = charges,
         routePlan = routePlan,
         routeHistory = routeHistory,
         routeTemplates = routeTemplates,
@@ -447,6 +458,8 @@ private fun RecordTimeline(
 private fun TimelineList(
     records: List<RecordItem>,
     stationStats: Map<String, StationStat>,
+    /** ⚠️ v0.27.0：实测满电续航卡片要用充电记录（充前/充后电量 + 里程表）。 */
+    charges: List<Charge> = emptyList(),
     routePlan: RoutePlan? = null,
     routeHistory: Map<RouteKey, List<Drive>> = emptyMap(),
     routeTemplates: List<RouteTemplate> = emptyList(),
@@ -458,6 +471,12 @@ private fun TimelineList(
 ) {
     // 按月份分组，但保持整体的时间倒序
     val groups = remember(records) { records.groupBy { it.at.fmtMonth() } }
+    // ⚠️ v0.27.0：行程表（给「实测满电续航」核对用）。
+    // 记录本身就是行程 + 充电的合并列表，这里把行程挑出来，
+    // 不额外拉一次接口 —— 同一份数据、同一套口径。
+    val driveList = remember(records) {
+        records.filterIsInstance<RecordItem.DriveItem>().map { it.drive }
+    }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -495,6 +514,25 @@ private fun TimelineList(
                         onSelectKey = onSelectRouteKey,
                     )
                 }
+            }
+        }
+        // ⚠️ **v0.27.0（第 17 轮官方 App 对标评审 A-4）：实测满电续航。**
+        //
+        // 放在「线路余量表」**之后** —— 那张卡回答「这条线怎么走」，
+        // 这张卡回答「这台车满电到底能跑多远」，是它的**前提**。
+        //
+        // 数据全部来自 `charging_processes` 的充前/充后电量 + `positions` 的里程表，
+        // **纯客户端可算**，不需要新端点。
+        if (charges.size >= 3) {
+            item(key = "range-segments") {
+                RangeSegmentsCard(
+                    charges = charges,
+                    // ⚠️ v0.27.0：行程表用来核对「这一段是不是真的全程有记录」——
+                    // 实测有一段 366 公里**没有行程记录**（里程表与行程表之间有空洞），
+                    // 折算出来是 1744 公里/满电（物理上不可能），必须剔除。
+                    drives = driveList,
+                    modifier = Modifier.animateItem(),
+                )
             }
         }
         groups.forEach { (month, itemsInMonth) ->
