@@ -134,6 +134,13 @@ data class CarStatus(
     val map_lat: Double? = null,
     val map_lng: Double? = null,
     val location_name: String? = null,
+    /**
+     * ⚠️ **v0.29.0：服务端时区**（如 "Asia/Shanghai"）。
+     *
+     * 服务端按这个时区分日/月桶；App 拿到它之后**统一以它为准**
+     * （记录页的按月分组、用量页的图表刻度、服务端的聚合口径全部一致）。
+     */
+    val server_timezone: String? = null,
     val tpms_fl: Double? = null,
     val tpms_fr: Double? = null,
     val tpms_rl: Double? = null,

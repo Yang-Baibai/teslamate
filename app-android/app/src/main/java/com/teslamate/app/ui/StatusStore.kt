@@ -137,6 +137,10 @@ class StatusStore(private val cache: StatusCache? = null) {
         cache?.load(carId)?.let { hit ->
             status = hit.status
             cachedAt = hit.savedAt
+            // ⚠️ v0.29.0：冷启动时也先把**服务端时区**设上 ——
+            // 否则在网络响应之前，记录页的按月分组会用手机时区，
+            // 与服务端的聚合桶对不上（而且刷新后会突然换一批月份）。
+            com.teslamate.app.ServerZone.set(hit.status.server_timezone)
         }
         cache?.loadRangeContext(carId)?.let { ctx ->
             consumption = ctx.consumption
@@ -198,6 +202,12 @@ class StatusStore(private val cache: StatusCache? = null) {
         status = s
         cachedAt = null
         error = null
+        // ⚠️ **v0.29.0：把服务端时区设为全 App 的显示时区。**
+        //
+        // 服务端按 `TZ_NAME` 分日/月桶，App 原来按**手机时区**显示与分组 ——
+        // 跨时区时同一件事在时间轴属于 10-06、在图表里却落到 10-07。
+        // 现在统一以服务端为准（`Fmt.ServerZone`）。
+        com.teslamate.app.ServerZone.set(s.server_timezone)
         cache?.save(s)
     }
 

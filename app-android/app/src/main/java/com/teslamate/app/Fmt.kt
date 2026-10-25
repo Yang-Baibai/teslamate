@@ -6,6 +6,57 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
+ * ⚠️ **v0.29.0：服务端时区（全局）。**
+ *
+ * ## 为什么需要它
+ *
+ * 服务端按 `TZ_NAME`（默认 Asia/Shanghai）分日/月桶，
+ * 而 App 原来按**手机时区**显示与分组。
+ * 跨时区时同一件事在时间轴属于 10-06、在图表里却落到 10-07 ——
+ * 「跨页跨日错位」，用户对不上账。
+ *
+ * 项目自己的方向早就写在这里了：
+ * > 「要彻底修需要服务端下发 `server_timezone` 并让 App **统一以服务端为准**。」
+ *
+ * 现在服务端已经在 `/status` 里下发了它，App 收到后就切到这个时区。
+ *
+ * ## 为什么是全局而不是逐页传
+ *
+ * 时间格式化发生在**几十个地方**（`fmtFull` / `fmtShort` / `fmtDate` / `fmtMonth` …），
+ * 逐个传参既啰嗦又容易漏。
+ * 而且口径必须**全 App 统一** —— 一半用手机时区、一半用服务端时区，
+ * 比全用手机时区更糟。
+ *
+ * 所以放在这里：进程级单例，收到服务端时区后**一次性**切换。
+ * 切换时 ZoneFormatter 会自己重建 formatter（它本来就按 zone 缓存）。
+ */
+object ServerZone {
+    @Volatile
+    private var zone: ZoneId? = null
+
+    /** 服务端下发的时区（非法值会被忽略，保留手机时区）。 */
+    fun set(tz: String?) {
+        val z = tz?.takeIf { it.isNotBlank() }?.let {
+            try {
+                ZoneId.of(it)
+            } catch (_: Exception) {
+                null
+            }
+        }
+        zone = z
+    }
+
+    /** 当前用于显示的时区：服务端优先，否则手机时区。 */
+    fun current(): ZoneId = zone ?: ZoneId.systemDefault()
+
+    /** 服务端时区与手机时区**不一样**吗（用于在界面上提示）。 */
+    fun differsFromDevice(): Boolean {
+        val z = zone ?: return false
+        return z != ZoneId.systemDefault()
+    }
+}
+
+/**
  * 时区**动态**取。
  *
  * ⚠️ v0.9.0：原来 `Fmt.kt` 顶部是
@@ -17,21 +68,18 @@ import java.util.Locale
  * 自动换区、跨时区出差回来）之后，App 仍然按**旧时区**显示所有绝对时间，
  * 直到进程被杀。这在「经常出国的车主」身上是实打实的显示错误。
  *
- * 现在：每次格式化时重新读 `ZoneId.systemDefault()`，
+ * 现在：每次格式化时重新读时区，
  * 只在时区**真的变了**时才重建 formatter（重建本身有开销，不能每次都做）。
  *
- * ⚠️ 另一个**已知未修**的差异：服务端的日/月聚合用 `TZ_NAME=Asia/Shanghai`，
- * 而 App 的「按月分组」用**手机**时区。跨时区时两者可能对不上
- * （例如手机在纽约时差出 12 小时，月初/月末会被分到不同月份）。
- * 要彻底修需要服务端下发 `server_timezone` 并让 App 统一以服务端为准 ——
- * 那是比这一条更大的改动，本轮先记在这里，不静默留下。
+ * ⚠️ **v0.29.0**：时区的来源优先是**服务端**（[ServerZone]），
+ * 服务端没给才用手机时区 —— 口径与服务端的聚合桶保持一致。
  */
 private class ZoneFormatter(private val pattern: String) {
     private var lastZone: ZoneId? = null
     private var fmt: DateTimeFormatter? = null
 
     fun format(instant: Instant): String {
-        val z = ZoneId.systemDefault()
+        val z = ServerZone.current()
         var f = fmt
         if (f == null || lastZone != z) {
             f = DateTimeFormatter.ofPattern(pattern, Locale.CHINA).withZone(z)

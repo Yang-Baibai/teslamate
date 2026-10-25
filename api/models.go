@@ -52,6 +52,16 @@ type CarStatus struct {
 	Locked   *bool      `json:"locked"`
 	LockedAt *time.Time `json:"locked_at"` // 本次状态采集时刻（App 用它判断新鲜度）
 
+	// ⚠️ **v0.29.0：服务端时区**（如 "Asia/Shanghai"）。
+	//
+	// 服务端按这个时区分日/月桶，而 App 的时间戳按**手机时区**显示 ——
+	// 跨时区时同一件事在时间轴属于 10-06、在图表里却落到 10-07，
+	// 「跨页跨日错位」，用户对不上账。
+	//
+	// 现在 App 拿到它之后**统一以服务端时区为准**
+	// （项目自己的方向：见 `Fmt.kt` 里那段「已知未修」的说明）。
+	ServerTimezone string `json:"server_timezone"`
+
 	// ⚠️ v0.21.0：**车端里程表**（km），来源 Fleet API 的 vehicle_state.odometer。
 	//
 	// 与 `odometer`（TeslaMate 按 GPS 点累计）的区别：

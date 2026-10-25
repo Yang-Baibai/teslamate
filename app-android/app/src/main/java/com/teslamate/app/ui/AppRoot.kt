@@ -496,6 +496,11 @@ private fun MainScaffold(
                         // ⚠️ v0.16.0：顶栏车切换芯片
                         cars = cars,
                         onCarChange = onCarChange,
+                        // ⚠️ v0.28.0：各趟行程的驾驶平顺分（车况页算好的那份）。
+                        // 这里只是查表，不额外请求。
+                        driveScores = statusStore.driveProfile?.drives
+                            ?.associate { it.drive_id to it.score }
+                            ?: emptyMap(),
                         // ⚠️ v0.24.0：App 级数据仓库（性能评审 P0-2）。
                         store = recordsStore,
                         // ⚠️ v0.25.0：「到下一站剩多少电」要用本车实测能耗模型

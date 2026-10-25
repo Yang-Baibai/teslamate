@@ -169,6 +169,13 @@ fun RecordsScreen(
     /** ⚠️ v0.16.0：切换当前车辆。 */
     onCarChange: (Int) -> Unit = {},
     /**
+     * ⚠️ **v0.28.0：各趟行程的驾驶平顺分**（drive id -> 分数）。
+     *
+     * 来自车况页算好的「驾驶画像」（服务端一次算 30 趟，App 级 store 缓存）。
+     * 这里只是**查表**，不再请求。
+     */
+    driveScores: Map<Int, Double> = emptyMap(),
+    /**
      * ⚠️ v0.24.0：**App 级数据仓库**（性能评审 P0-2 / P1-1）。
      *
      * 数据原本放在页面级 `remember` 里 —— 而 `AnimatedContent` 切走的页面会被 dispose，
@@ -394,6 +401,8 @@ fun RecordsScreen(
                     settings,
                     // ⚠️ v0.17.0：同线路的历史行程（对比用）
                     routeHistory = routeKeyOf(sel.drive)?.let { routeHistoryMap[it] }.orEmpty(),
+                    // ⚠️ v0.28.0：这一趟的驾驶平顺分（车况页算好的，按 drive id 索引）。
+                    driveScore = driveScores[sel.drive.id],
                 ) { onSelectionChange(null) }
                 is RecordSelection.Ch -> ChargeDetail(sel.charge, api, stationStats) { onSelectionChange(null) }
                 // ⚠️ v0.22.0：**充电记录列表页** ——

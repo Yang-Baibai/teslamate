@@ -82,9 +82,22 @@ fun StatsScreen(
             // 大字号下 4 段等分槽放不下「近 12 个月」（实测 2 倍时折成两行，
             // 而且与相邻段的选中胶囊贴死）。页面副标题已经写明「里程 · 能耗 · 费用」，
             // 标签不需要再带「近」字。
-            "今天" to ("week" to 1),
+            //
+            // ⚠️ **v0.29.0：第 1 段从「今天」换成「本月」（自然月）。**
+            //
+            // 理由：
+            // ① 「30 天」是**滚动**窗口（实测比自然月多算 25.9%：5262.6 vs 4180.0 km），
+            //    而车主脑子里的「这个月花了多少钱」是**自然月** ——
+            //    两个数都在界面上却不加区分，用户对不上账（通勤车主 P0-3）。
+            // ② **不能加成第 5 段**：200% 字号下每段只有 70dp，
+            //    「30 天」在 labelLarge（28sp）下约 63dp —— 会被截成「30…」。
+            //    截断的标签比缺一个分段更糟（HIG 的先例：v0.9.2 就把「近 12 个月」改成「1 年」）。
+            // ③ 「今天」的数据没丢：「7 天」段的**第一根柱子**就是今天。
             "7 天" to ("week" to 7),
             "30 天" to ("month" to 30),
+            // 「本月」= 自然月（当月 1 号 → 今天），服务端按 TZ_NAME 分日桶。
+            // 桶数给 31 是为了「取最后 N 个」能取到全部（服务端只返回到今天）。
+            "本月" to ("calendar_month" to 31),
             // ⚠️ v0.9.2：「12 个月」在 2 倍字号下会被省略号截断（实测「12 个…」）。
             // 改成「1 年」—— 更短、同样准确，中文语境下也更好读。
             "1 年" to ("year" to 12),
@@ -92,7 +105,7 @@ fun StatsScreen(
     }
     // ⚠️ v0.8.5（效率车主复核）：默认从「近 30 天」改「近 7 天」。
     // 30 根柱子密到看不出形状；7 根能看出工作日/周末的节奏。
-    var periodIndex by remember { mutableIntStateOf(1) }
+    var periodIndex by remember { mutableIntStateOf(0) }
     val apiPeriod = periods[periodIndex].second.first
     val bucketCount = periods[periodIndex].second.second
     // ⚠️ v0.9.1：平均值的口径名要跟桶的粒度一致 ——
@@ -312,13 +325,13 @@ fun StatsScreen(
             // 同一个事件在时间轴属于 10-06、在图表里却落到 10-07 ——
             // 「跨页跨日错位」，用户对不上账。
             //
-            // 客户端没法自己猜服务端用哪个时区，所以服务端显式下发，
-            // 这里如实告诉用户（与手机时区一致时就不说了 —— 说了是噪音）。
+            // ⚠️ **v0.29.0**：现在 App 已经**统一以服务端时区**显示
+            // （`Fmt.ServerZone`），所以这句话要改成说明「全 App 的时间口径」。
             val serverTz = s.server_timezone
             if (!serverTz.isNullOrBlank() && serverTz != java.time.ZoneId.systemDefault().id) {
                 item {
                     Text(
-                        "按服务端时区 $serverTz 分日",
+                        "全 App 的时间与分日都按服务端时区 $serverTz",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 4.dp),

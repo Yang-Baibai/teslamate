@@ -123,6 +123,9 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		driveStart   *time.Time
 	)
 	s.CarID = id
+	// ⚠️ v0.29.0：把**服务端时区**一并下发 ——
+	// App 要用它统一分日/分月的口径（与服务端的聚合桶一致）。
+	s.ServerTimezone = getenv("TZ_NAME", "Asia/Shanghai")
 	err = db.QueryRow(context.Background(), sqlStatus, id).Scan(
 		&s.UpdatedAt, &s.BatteryLevel, &s.UsableLevel, &s.IdealRangeKm, &s.EstRangeKm, &s.RatedRangeKm,
 		&s.Odometer, &s.Speed, &s.Power, &s.OutsideTemp, &s.InsideTemp, &s.IsClimateOn, &s.Elevation,
@@ -292,17 +295,25 @@ func handleCostSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	// 窗口与 /stats 保持一致（同样的 period → 同样的起点）
 	var buckets int
+	// ⚠️ v0.29.0：新增「本月」（自然月）—— 与 /stats 的 calendar_month 同口径。
+	isCalendarMonth := false
 	switch r.URL.Query().Get("period") {
 	case "week":
 		buckets = 7
 	case "year":
 		buckets = 12
+	case "calendar_month":
+		buckets = 0
+		isCalendarMonth = true
 	default:
 		buckets = 30
 	}
 	now := time.Now().In(loc)
 	var windowStart time.Time
-	if r.URL.Query().Get("period") == "year" {
+	if isCalendarMonth {
+		y, m, _ := now.Date()
+		windowStart = time.Date(y, m, 1, 0, 0, 0, 0, loc)
+	} else if r.URL.Query().Get("period") == "year" {
 		windowStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, -(buckets - 1), 0)
 	} else {
 		windowStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, -(buckets - 1))
@@ -1103,11 +1114,21 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	var granularity string
 	var buckets int
+	// ⚠️ **v0.29.0：新增「本月」= 自然月**（当月 1 号 → 今天）。
+	//
+	// 为什么需要它（通勤车主 P0-3）：
+	// 「30 天」是**滚动窗口**，实测比自然月多算 25.9%（5262.6 vs 4180.0 公里），
+	// 而车主脑子里的「这个月花了多少钱」是**自然月**。
+	// 两个数都在界面上却不加区分，用户对不上账。
+	isCalendarMonth := false
 	switch r.URL.Query().Get("period") {
 	case "week":
 		granularity, buckets = "day", 7
 	case "year":
 		granularity, buckets = "month", 12
+	case "calendar_month":
+		granularity, buckets = "day", 0
+		isCalendarMonth = true
 	default:
 		granularity, buckets = "day", 30
 	}
@@ -1119,7 +1140,12 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().In(loc)
 	var windowStart time.Time
-	if granularity == "day" {
+	if isCalendarMonth {
+		// 当月 1 号 00:00 → 今天（桶数 = 今天是几号）
+		y, m, _ := now.Date()
+		windowStart = time.Date(y, m, 1, 0, 0, 0, 0, loc)
+		buckets = now.Day()
+	} else if granularity == "day" {
 		y, m, d := now.Date()
 		windowStart = time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, -(buckets - 1))
 	} else {
