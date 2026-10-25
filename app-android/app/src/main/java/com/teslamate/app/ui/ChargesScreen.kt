@@ -72,6 +72,7 @@ import com.teslamate.app.minutesFmt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 @Composable
 fun ChargesScreen(
@@ -696,7 +697,16 @@ internal fun ChargeDetail(
                                     // **两个「实测」**。代码比的是**同站同起点中位**，
                                     // 文案却说「实测」→ 读者不知道在跟哪个比。
                                     "约 $m80 分钟" +
-                                        (bias?.let { "（比同站同起点中位 $measuredMed 分钟多 $it 分钟）" } ?: ""),
+                                        (bias?.let {
+                                            "（比同站同起点中位 $measuredMed 分钟多 $it 分钟" +
+                                                // ⚠️ **v0.60.0（第 30 轮 P1-4 附带发现）**：补**百分比** ——
+                                                // 分钟差要读者自己换算，而这一行的偏差**方向**正是
+                                                // 第 30 轮查出来「反了」的那一个 ⇒ 用百分比把方向钉死。
+                                                (foldBiasPercent(m80, measuredMed)?.let { b ->
+                                                    if (b > 0) "，折算偏大 $b%" else "，折算偏小 ${-b}%"
+                                                } ?: "") +
+                                                "）"
+                                        } ?: ""),
                                 )
                             }
                             if (m90 != null) {
@@ -950,6 +960,31 @@ internal fun ChargeDetail(
             }
         }
     }
+}
+
+/**
+ * ⚠️ **v0.60.0（第 30 轮 P1-4 附带发现）**：折算值与实测值的**相对偏差**（%）。
+ *
+ * ## 为什么抽成纯函数
+ *
+ * 这个数是**长途党在服务区最该盯住的数**（「我要等多久」），
+ * 而第 30 轮审计发现它**从来没有被单测盯过** ——
+ * 而那轮审计偏偏发现这个数的**方向在脚注里是反的**。
+ *
+ * 正负约定（**必须钉死**）：
+ * - **正** = 折算 **偏大** = 你以为要等更久，实际更快到
+ *   （直流桩 80% 以上降功率，所以这通常是常态）；
+ * - **负** = 折算 **偏小** = 你以为很快到，实际等很久 ⇒ **最危险的方向**。
+ *
+ * ⚠️ 真实数据里两个方向都存在：
+ * 本屏口径（折算「起→80%」vs 实测）中位 **+34.5%**（偏大），
+ * 但梧硕高速那一场是 **−32.3%**（偏小，最坏）。
+ */
+fun foldBiasPercent(foldMinutes: Int?, measuredMinutes: Int?): Int? {
+    val f = foldMinutes ?: return null
+    val m = measuredMinutes ?: return null
+    if (m <= 0) return null
+    return ((f - m) * 100.0 / m).roundToInt()
 }
 
 internal fun rangeDelta(start: Double?, end: Double?): String {
