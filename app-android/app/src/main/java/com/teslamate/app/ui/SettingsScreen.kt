@@ -67,6 +67,7 @@ import com.teslamate.app.AppSettings
 import com.teslamate.app.BuildConfig
 import com.teslamate.app.Car
 import com.teslamate.app.Haptics
+import com.teslamate.app.HapticKind
 import com.teslamate.app.fmtThousands
 import com.teslamate.app.saveSettings
 import kotlinx.coroutines.Dispatchers
@@ -637,7 +638,14 @@ private fun SettingsServerPage(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onToggleToken() }
+                            // ⚠️ **v0.47.0（第 28 轮 HIG 评审 P0-3）**：换 `pressable` ——
+                            // 原来这里是裸 `.clickable`：**零触感**，而且带 Material 涟漪
+                            // （与同页 `SettingRow` 的 iOS 式变暗+缩放**手感分裂**）。
+                            // 同一行的两个入口（点行 / 点开关）现在给**同一种**触感。
+                            .pressable(
+                                onClick = { onToggleToken() },
+                                haptic = HapticKind.Selection,
+                            )
                             // ⚠️ v0.20.0（a11y 评审 P0-2）：**合并子节点语义** ——
                             // 否则 uiautomator 里这一行是「可点击但没有名字」的 View，
                             // TalkBack 聚焦上去读不出这是「显示令牌」。
@@ -787,7 +795,13 @@ private fun SettingsVehiclesPage(
                                 verticalAlignment = Alignment.CenterVertically,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { onSelect(c.id) }
+                                    // ⚠️ **v0.47.0（第 28 轮 HIG 评审 P0-3）**：换 `pressable` ——
+                                    // 原来这里是裸 `.clickable`：**零触感** + Material 涟漪。
+                                    // 这是「选哪台车」，属于**选择**类动作 ⇒ `Selection`。
+                                    .pressable(
+                                        onClick = { onSelect(c.id) },
+                                        haptic = HapticKind.Selection,
+                                    )
                                     // ⚠️ v0.20.0（a11y 评审 P0-2）：合并子节点语义 ——
                                     // 原来这一行在无障碍树里是「可点击但没有名字」。
                                     .semantics(mergeDescendants = true) {
@@ -1499,9 +1513,13 @@ fun IosSwitch(
             // 外层 merging 节点会把内层的 role/checked/onClick 一并收进来，
             // 于是这一个节点同时有：名字 + 角色 + 开/关状态 + 可激活。
             //
-            // ⚠️ 之前这里写了 `.clearAndSetSemantics { }` ——
-            // 那会把 toggleable 的语义**全清掉**（开关变成完全无名的节点）。
-            // 空 clearAndSetSemantics 同样无效（不设任何属性）。
+            // ⚠️ 之前这里写了 `.clearAndSetSemantics { }` —— 那会把 toggleable 的语义
+            // **全清掉**（开关变成完全无名的节点），所以不能那么写。
+            //
+            // ⚠️ **v0.47.0（第 28 轮 a11y P2-2）更正**：
+            // 原注释里「空 clearAndSetSemantics 同样无效」这句**是错的** ——
+            // 空 `clearAndSetSemantics { }` **是有效的**（它会清掉所有继承语义）。
+            // 这里不用它的原因不是「无效」，而是「**用了会把 toggleable 的语义也清掉**」。
             .semantics(mergeDescendants = true) {
                 contentDescription = label
             }

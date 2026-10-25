@@ -237,18 +237,48 @@ fun isDarkTheme(): Boolean {
     error("HazeState 未初始化")
 }
 
-/** 当前主题对应的毛玻璃样式（tint + 模糊半径）。 */
+/**
+ * 当前主题对应的毛玻璃样式（tint + 模糊半径）。
+ *
+ * ⚠️ **v0.47.0（第 28 轮 HIG 评审 P0-1）**：`fallbackTint` 改成**不透明**。
+ *
+ * ## 为什么要改
+ *
+ * 第 28 轮 HIG 评审用**字节码**核实了 haze-android 1.0.0：
+ * - `HazeTint` 只有 `(color, blendMode)`，**没有 alpha 参数**；
+ * - `HazeChildNode` 的绘制链是
+ *   `drawContent → drawEffectWithGraphicsLayer(模糊) → drawEffectWithScrim(drawRect(tint))`
+ *   ⇒ **tint 是画在模糊层之上的 scrim**。
+ *
+ * 所以本仓传入的 `tint`（纯黑/纯白，alpha = 1.0）会让 scrim **完全不透明**
+ * ⇒ API 31+ 上毛玻璃被 100% 盖住；而 API < 31 走 `fallbackTint`（alpha 0.72）
+ * 是半透明的 ⇒ **同一个底栏在 Android 12 上是实色、在 Android 11 上是半透明**。
+ *
+ * ## 这次只做「一致」，不做「重构」
+ *
+ * 真正的修法是结构性的：底栏背后**没有可模糊的内容**
+ * （haze 源被 `.padding(padding)` 裁在底栏之上），
+ * 要做真毛玻璃必须把底栏从 `Scaffold.bottomBar` 改成浮层、
+ * 把 haze 源移出 padding 覆盖全屏 —— 那是**大改**，且本机无设备可验证。
+ *
+ * 这次只把 API < 31 的 fallback 对齐到 API 31+ 的**实际观感**（不透明）：
+ * - 用户自己的机器（小米 15S Pro / Android 15）**观感完全不变**；
+ * - 老设备从「半透明」变成与新设备一致；
+ * - 深色下不透明黑底与 App 既定的「**深色纯黑分层**」（#000000/#1C1C1E/#2C2C2E）一致。
+ *
+ * ⚠️ 结构性重构已记入 `docs/backlog-r21-r24.md` 的下一轮清单。
+ */
 @Composable
 fun rememberHazeStyle(
     blurDp: Int,
-    alpha: Float,
     tint: Color,
 ): HazeStyle = HazeStyle(
     backgroundColor = Color.Transparent,
     tints = listOf(HazeTint(tint)),
     blurRadius = blurDp.dp,
     noiseFactor = 0f,
-    fallbackTint = HazeTint(tint.copy(alpha = alpha)),
+    // ⚠️ v0.47.0：与 `tints` 保持**同样**的不透明度 —— 两档 API 观感一致。
+    fallbackTint = HazeTint(tint),
 )
 
 // ── 配色 ─────────────────────────────────────────────────────────

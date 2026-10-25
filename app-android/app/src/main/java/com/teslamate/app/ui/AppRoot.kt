@@ -394,9 +394,16 @@ private fun MainScaffold(
                                 // （文字落在不可聚焦的子 TextView 上），
                                 // TalkBack 聚焦到底栏读不出是哪个 Tab —— 导航直接不可用。
                                 //
-                                // ⚠️ 注意：**空 lambda 的 `semantics(mergeDescendants = true)` 无效** ——
-                                // 不设置任何属性就不会创建语义节点，合并无处发生。
-                                // 必须真的设 contentDescription。
+                                // ⚠️ **v0.47.0（第 28 轮 a11y P2-2）更正**：
+                                // 原注释里「空 lambda 的 `semantics(mergeDescendants = true)` 无效」
+                                // 这句**是错的** —— 空 lambda **也是有效的**
+                                // （Compose 官方 `LayoutNode.calculateSemanticsConfiguration()`
+                                //  已证实：它仍会创建 merging 节点并合并子节点语义）。
+                                //
+                                // 这里显式写 `contentDescription` 的真正原因是：
+                                // **父节点的 contentDescription 是 `MergePolicy.ParentFirst`、
+                                // 会覆盖子节点的 Text** —— 目的是「用一份念得顺的名字
+                                // 替换子节点文字」，不是因为「空 lambda 不建节点」。
                                 modifier = Modifier.semantics(mergeDescendants = true) {
                                     contentDescription = t.label
                                 },

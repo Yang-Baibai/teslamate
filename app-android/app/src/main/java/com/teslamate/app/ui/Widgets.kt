@@ -86,6 +86,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.invisibleToUser
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -99,6 +100,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.teslamate.app.ApiErrorKind
 import com.teslamate.app.Haptics
+import com.teslamate.app.HapticKind
 import com.teslamate.app.UserFacingException
 import dev.chrisbanes.haze.hazeChild
 import kotlin.math.roundToInt
@@ -152,7 +154,6 @@ fun Modifier.glassSurface(
     if (!realBlur) return base
     val style = rememberHazeStyle(
         blurDp = level.blurDp,
-        alpha = alpha,
         tint = tint,
     )
     return base.hazeChild(state = LocalHazeState.current, shape = shape, style = style)
@@ -484,6 +485,14 @@ fun Modifier.pressable(
      * 想做「按下轻微前倾、抬手回 0」就做不了。
      */
     onPressed: (Boolean) -> Unit = {},
+    /**
+     * ⚠️ **v0.47.0（第 28 轮 HIG 评审 P0-3）**：触感**种类**。
+     *
+     * 原来这里写死 `Haptics.tick(ctx)` —— 所有按压反馈都是同一种轻点，
+     * 而「切换一个开关」和「展开一块内容」在 iOS 上是**两种**手感。
+     * 现在可以按动作类型选：`Selection` 用于开关/单选，`Tick` 用于展开/收起。
+     */
+    haptic: HapticKind = HapticKind.Tick,
 ): Modifier {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -521,7 +530,11 @@ fun Modifier.pressable(
             indication = null,
             enabled = enabled,
             onClick = {
-                Haptics.tick(ctx)
+                // ⚠️ **v0.47.0（第 28 轮 HIG 评审 P0-3）**：按**动作类型**给触感。
+                when (haptic) {
+                    HapticKind.Tick -> Haptics.tick(ctx)
+                    HapticKind.Selection -> Haptics.selection(ctx)
+                }
                 onClick()
             },
         )
@@ -893,7 +906,7 @@ fun CollapsibleSection(
     var expanded by remember { mutableStateOf(false) }
     // ⚠️ v0.9.2：LocalContext.current 只能在 @Composable 作用域里取，
     // 所以要先取出来，不能写在 .clickable 的 lambda 里（那不是 composable 上下文）。
-    val ctx = LocalContext.current
+
     Column(modifier) {
         // ⚠️ v0.17.0（iOS 动效专项评审 P1-5）：
         // **箭头改成图标 + 旋转**，不再是 ▸/▾ 字符替换。
@@ -912,7 +925,10 @@ fun CollapsibleSection(
                 .fillMaxWidth()
                 .pressable(
                     onClick = {
-                        Haptics.tick(ctx)
+                        // ⚠️ **v0.47.0（第 28 轮 HIG 评审 P0-3）**：去掉这次**重复**的触感 ——
+                        // `pressable` 内部已经 `Haptics.tick(ctx)`（`Widgets.kt:524`），
+                        // 这里又调一次 ⇒ **每次展开折叠区都震两次**
+                        // （8ms × 2，amplitude 30）。
                         expanded = !expanded
                     },
                     scaleDown = 0.96f,
@@ -1051,13 +1067,16 @@ fun SettingRow(
             .fillMaxWidth()
             // ⚠️ v0.20.0（a11y 评审 P0-2）：**合并子节点语义并显式给名称**。
             //
-            // ⚠️ **踩过的坑**：`semantics(mergeDescendants = true) { }` 配**空 lambda**
-            // 是**无效的** —— 空 lambda 不设置任何语义属性，
-            // Compose 根本不会创建语义节点，合并也就无处发生。
-            // uiautomator dump 里这一行仍然是「可点击但没有名字」。
+            // ⚠️ **v0.47.0（第 28 轮 a11y P2-2）更正**：下面那段「空 lambda 无效」的说法
+            // **是错的** —— `semantics(mergeDescendants = true) { }` 即使不设任何属性，
+            // 也会创建一个 merging 节点并把子节点语义合并进来
+            // （Compose 官方 `LayoutNode.calculateSemanticsConfiguration()` 已证实）。
             //
-            // 所以这里必须**真的设一个属性**（contentDescription），
-            // 语义节点才会被创建、合并才会生效。
+            // 本行之所以还要显式写 `contentDescription`，是因为**父节点的
+            // contentDescription 是 `MergePolicy.ParentFirst`、会覆盖子节点的 Text** ——
+            // 目的是「用一份念得顺的名字替换子节点文字」，
+            // **不是**因为「空 lambda 不建节点」。
+            //
             // 名称由「标题 + 当前值」拼成 —— 与 iOS 设置页读屏的行为一致。
             .semantics(mergeDescendants = true) {
                 contentDescription = listOfNotNull(
@@ -1100,7 +1119,20 @@ fun SettingRow(
                 // 箭头是纯装饰：行本身有标题，TalkBack 念标题即可，
                 // 念「箭头」只会制造噪音（WCAG 2.5.3 标签一致性）。
                 contentDescription = null,
-                tint = accents.cardStrokeEnd.copy(alpha = 0.9f),
+                // ⚠️ **v0.47.0（第 28 轮 a11y P1-7）**：箭头**不是纯装饰** ——
+                // 它是「这一行会 push 出新页面」的**唯一视觉线索**
+                // （`DrivesScreen.kt:293-295` 的注释自己写着：
+                // 「可推入的卡片要有 disclosure indicator」）。
+                // ⇒ 它属于「有意义的非文字图形」，WCAG 1.4.11 要求 **≥3:1**。
+                //
+                // 原来用 `cardStrokeEnd`（浅色 #08000000 = 3% 黑）→ 实测 **1.06:1**，
+                // 深色 1.10:1 —— 箭头**等于不存在**。
+                //
+                // 改用 `onSurfaceVariant @ 80%`：浅色 **3.82:1** / 深色 **4.70:1**
+                // （本轮用 WCAG 相对亮度公式逐档算过：0.65 起浅色就掉到 2.80:1，
+                //  0.70 是 3.10:1 刚好过线但没有余量 ⇒ 取 0.80 留余量）。
+                // 视觉上仍然很淡（比原来的 60% 只重一点点），但**看得见了**。
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                 modifier = Modifier.size(18.dp),
             )
         }
@@ -1548,6 +1580,20 @@ fun SocRing(
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Visible,
+                // ⚠️ **v0.47.0（第 28 轮 a11y P0-1）**：这个数字是**纯视觉冗余** ——
+                // 外层 Box 的 contentDescription 已经念了同一个数（「电量 68%」）。
+                // 不把它从无障碍树里摘掉，TalkBack 会念两遍：
+                //   焦点 1 → Box 节点  →「电量 68%」
+                //   焦点 2 → 内层 Text →「68%」
+                // 用户会以为电量在跳变。
+                //
+                // ⚠️ 为什么**不**给外层开 `mergeDescendants`：
+                // 父节点的 `contentDescription` 是 `MergePolicy.ParentFirst`，
+                // 会**吞掉**子节点的 `Text` —— 那样 `LowBatteryPill` 的
+                // 「低电量」三个字也一并消失，状态就只剩颜色了（WCAG 1.4.1）。
+                // 所以用 `invisibleToUser()`：只摘掉这个数字，
+                // 低电量胶囊仍然**独立可读**。
+                modifier = Modifier.semantics { invisibleToUser() },
             )
             // ⚠️ v0.26.0（HIG P0-6）：低电量 = **图标 + 文字**，不是只有颜色。
             if (lowBattery) {

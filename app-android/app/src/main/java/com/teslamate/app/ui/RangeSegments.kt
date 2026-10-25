@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -408,7 +409,14 @@ fun RangeSegmentsCard(
                                 s.startDate.fmtDate(),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.width(78.dp),
+                                // ⚠️ **v0.47.0（第 28 轮 a11y P1-4）**：**不要固定宽** ——
+                                // `fmtDate()` 是 "yyyy-MM-dd"（10 字符 ≈ 5.11em），
+                                // labelSmall 12sp 在 fs=2.0 时 24sp → 122.7dp > 78dp
+                                // ⇒ 日期在连字符处断成「2026-09-」/「12」两行，
+                                // 第二行只剩一个数字，读起来像另一个字段。
+                                // 临界 fontScale = 78 / (5.114 × 12) = **1.27**。
+                                // ⚠️ v0.29.0 那一轮把**后面两列**改成了两行式，**漏了日期这一列**。
+                                modifier = Modifier.widthIn(min = 78.dp),
                             )
                             Text(
                                 "${s.fromSoc}% → ${s.toSoc}%",
@@ -417,7 +425,9 @@ fun RangeSegmentsCard(
                             )
                         }
                         Text(
-                            "${s.km.roundToInt()} 公里 · ≈ ${s.fullChargeKm.roundToInt()} 公里/满电",
+                            // ⚠️ **v0.47.0（第 28 轮 a11y P1-3）**：「 · 」换成「，」——
+                            // TTS 会把「点」逐字念出来；「≈」也会被念成「约等于」或跳过。
+                            "${s.km.roundToInt()} 公里，约 ${s.fullChargeKm.roundToInt()} 公里/满电",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

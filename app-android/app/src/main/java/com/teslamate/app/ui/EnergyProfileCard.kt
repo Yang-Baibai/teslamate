@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -256,7 +257,10 @@ fun EnergyProfileCard(
                 Text(
                     "${b.label} km/h",
                     style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.width(88.dp),
+                    // ⚠️ **v0.47.0（第 28 轮 a11y P1-5）**：固定宽在 200% 字号下全部溢出 ——
+                    // 「40-50 km/h」≈ 5.19em，fs=2.0 时 134.9dp > 88dp ⇒ 断行；
+                    // 临界 fontScale = 88 / (5.19 × 13) = **1.30**。
+                    modifier = Modifier.widthIn(min = 88.dp),
                 )
                 Text(
                     // ⚠️ v0.30.0（P1-A）：明细行改用**毛耗电** ——
@@ -265,19 +269,25 @@ fun EnergyProfileCard(
                     "${b.wh_per_km_gross.fmtKwh100()} kWh/100km",
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = if (isBest(b)) FontWeight.SemiBold else FontWeight.Normal,
-                    modifier = Modifier.width(118.dp),
+                    // 「198 kWh/100km」≈ 6.87em ⇒ fs=2.0 时 178.6dp > 118dp；
+                    // 临界 fontScale = 118 / (6.87 × 13) = **1.32**。
+                    modifier = Modifier.widthIn(min = 118.dp),
                 )
                 Text(
                     // ⚠️ v0.30.0：净耗电（扣回充抵扣）—— 明确标成「净」
                     "净 ${b.wh_per_km.fmtKwh100()}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(74.dp),
+                    modifier = Modifier.widthIn(min = 74.dp),
                 )
                 Text(
                     "${b.km.roundToInt()} 公里",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // ⚠️ **v0.47.0（第 28 轮 a11y P1-5）**：末列吃掉剩余空间 ——
+                    // 原来前三列固定占 88+118+74 = 280dp，
+                    // 卡片可用宽只剩 49dp，而「1234 公里」在 fs=2.0 时要 107.6dp ⇒ 折成 2~3 行。
+                    modifier = Modifier.weight(1f),
                 )
             }
         }

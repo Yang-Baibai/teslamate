@@ -587,6 +587,21 @@ fun StatusScreen(
                         // 红色告警在第一（该动手的事最靠前），中性信息让位给主角。
                         fleetNotice?.let { NoticeBanner(it) }
 
+                        // ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-1）**：「今天 / 本周」这一行。
+                        //
+                        // 车况页原来**只有静态车况**（电量 / 续航 / 锁车 / 空调 / 胎压），
+                        // 没有任何「今天 / 本周」的信息 ——
+                        // 而通勤者每天早上的第二个问题永远是
+                        // 「这车今天开没开、这周怎么用的」。
+                        //
+                        // **零新增网络请求**：`drives` 已经在内存里（`store.drives`），
+                        // 今天 / 本周的公里数、分钟数、行驶天数**纯客户端现算**。
+                        //
+                        // 放在主角正下方、`LocationCard` 之前 ——
+                        // 主角回答「电够不够到公司」，这一行回答「今天开没开」。
+                        val usageSummary = remember(drives) { computeUsageSummary(drives) }
+                        TodayWeekRow(usageSummary)
+
                         // ═══ 首屏重排 ═══
                         // ⚠️ v0.8.1：原来顺序是「电量 → 能量条 → 充电卡 → 位置 → 6 个信息块」，
                         // 按 393×873dp 的机型算，**胎压和第三行信息块都在折叠线以下**，
@@ -671,7 +686,14 @@ fun StatusScreen(
                         // 胎压与保养是「**当下**的车况」，
                         // 「最近 30 天」是「**回顾**」，驾驶画像/常驻点也是回顾。
                         // 回顾里最有用的那张排最前。
-                        RecentSummaryCard(settings = settings, fallback = { })
+                        RecentSummaryCard(
+                            settings = settings,
+                            fallback = { },
+                            // ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-3）**：
+                            // 「行程次数 214 次」对通勤者读不懂（一天 9.7 段），
+                            // 换成「行驶天数 22 天」。详见 [driveDaysInWindow]。
+                            driveDays = remember(drives) { driveDaysInWindow(drives) },
+                        )
 
                         // ⚠️ **v0.27.0：驾驶画像卡片**。
                         //
@@ -1346,7 +1368,14 @@ private fun MaintenanceCard(
                 if (r.overdue) {
                     Icon(
                         Icons.Filled.WarningAmber,
-                        contentDescription = "已超期",
+                        // ⚠️ **v0.47.0（第 28 轮 a11y P1-1）**：`null` ——
+                        // 文字（`r.describe()` = 「已超期 2455 公里」）已经说了同一件事，
+                        // 图标再念一遍就是**重复朗读**；
+                        // 而且这一行**不是** clickable、也没开 mergeDescendants ⇒
+                        // 图标 / 标签 / 描述是**三个独立焦点停靠点**，
+                        // 线性滑动会听到「已超期」→「保养」→「已超期 2455 公里」。
+                        // 状态由文字承担（WCAG 1.3.1 已满足），图标退化为纯装饰。
+                        contentDescription = null,
                         tint = color,
                         modifier = Modifier.size(16.dp),
                     )
@@ -1356,7 +1385,13 @@ private fun MaintenanceCard(
                     r.label,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(44.dp),
+                    // ⚠️ **v0.47.0（第 28 轮 a11y P1-2）**：**不要固定宽** ——
+                    // 「保养」两个汉字在 fs=2.0 时是 52dp > 44dp
+                    // ⇒ Compose 在汉字间断行，折成「保」/「养」两行，整行高度突变。
+                    // 临界 fontScale = 44 / (2 × 13) = **1.69**。
+                    // 同文件 `TpmsValue` 早就为同一个理由改成了 `widthIn(min = 34.dp)`，
+                    // 这里照抄那个写法。
+                    modifier = Modifier.widthIn(min = 44.dp),
                 )
                 Text(
                     r.describe(),
@@ -1501,7 +1536,9 @@ private fun ChargeNowCard(c: ActiveCharge) {
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "充电中${if (c.fast_charger_present == true) " · 直流快充" else ""}",
+                    // ⚠️ **v0.47.0（第 28 轮 a11y P1-3）**：「 · 」换成「，」——
+                    // TTS 会把「点」逐字念出来。
+                    "充电中${if (c.fast_charger_present == true) "，直流快充" else ""}",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )

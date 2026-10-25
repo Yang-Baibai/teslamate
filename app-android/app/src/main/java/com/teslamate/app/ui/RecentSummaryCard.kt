@@ -76,6 +76,12 @@ private fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
 fun RecentSummaryCard(
     settings: AppSettings,
     fallback: @Composable () -> Unit,
+    /**
+     * ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-3）**：最近 30 天里有行程的**天数**。
+     *
+     * 为 null 时退回「行程次数」那一格（拿不到行程列表就不给数）。
+     */
+    driveDays: Int? = null,
 ) {
     var stats by remember { mutableStateOf<Stats?>(null) }
     var failed by remember { mutableStateOf(false) }
@@ -94,12 +100,12 @@ fun RecentSummaryCard(
     when {
         s == null && !failed -> SummarySkeleton()
         s == null -> fallback()
-        else -> SummaryContent(s)
+        else -> SummaryContent(s, driveDays)
     }
 }
 
 @Composable
-private fun SummaryContent(s: StatsBucket) {
+private fun SummaryContent(s: StatsBucket, driveDays: Int?) {
     SectionCard("最近 30 天") {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             // ⚠️ v0.14.0（单位审校 P1-3）：
@@ -111,7 +117,21 @@ private fun SummaryContent(s: StatsBucket) {
         Spacer(Modifier.padding(top = 10.dp))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
             Stat("充电次数", "${s.charge_count} 次", Modifier.weight(1f))
-            Stat("行程次数", "${s.drive_count} 次", Modifier.weight(1f))
+            // ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-3）**：
+            // 「行程次数 214 次」换成「**行驶天数 22 天**」。
+            //
+            // TeslaMate 的「一趟」= 一次连续移动；真实数据里
+            // 2026-10-06 跑 **1,002.5 公里只有 10 趟**（≈100 公里/趟），
+            // 214 趟 ÷ 22 天 = **9.7 段/天** ⇒ 通勤者读到只会困惑。
+            // 换成天数后长途用户的信息不丢（趟数在「用量」页仍能看到）。
+            //
+            // ⚠️ `driveDays` 为 null（拿不到行程列表时）⇒ 退回原来的「行程次数」，
+            // **不给数**总比给一个编的数好。
+            if (driveDays != null) {
+                Stat("行驶天数", "$driveDays 天", Modifier.weight(1f))
+            } else {
+                Stat("行程次数", "${s.drive_count} 次", Modifier.weight(1f))
+            }
         }
         if ((s.wh_per_km ?: 0.0) > 0.1) {
             Spacer(Modifier.padding(top = 10.dp))
@@ -126,7 +146,17 @@ private fun SummaryContent(s: StatsBucket) {
                 val dcPct =
                     if (s.charge_kwh > 0) (s.dc_kwh / s.charge_kwh * 100).toInt() else 0
                 Text(
-                    "快充占比 $dcPct%",
+                    // ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-3）**：补**分母**。
+                    //
+                    // 原来写「快充占比 94%」—— 不说是按**电量**还是按**次数**算的，
+                    // 而这两个口径可以差很远。
+                    // 补上「按充入电量」后，读者能自己判断这个数指的是什么。
+                    //
+                    // ⚠️ 刻意**不**写「这车天天在外面快充」之类的解读 ——
+                    // 本机 `geofence_name` 全为 null（没配充电围栏），
+                    // **家充占比根本算不出来**，而「自动识别家」是明确不做的范围。
+                    // 没有数据支撑的解读一律不给。
+                    "直流快充 $dcPct%（按充入电量）",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

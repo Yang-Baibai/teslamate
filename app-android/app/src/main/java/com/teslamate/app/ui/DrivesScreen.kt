@@ -308,7 +308,7 @@ internal fun DriveItem(
                         Icon(
                             Icons.AutoMirrored.Filled.KeyboardArrowRight,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                             modifier = Modifier.size(18.dp),
                         )
                     }
@@ -333,7 +333,7 @@ internal fun DriveItem(
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowRight,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
                         modifier = Modifier.size(18.dp),
                     )
                 }
@@ -577,7 +577,13 @@ internal fun DriveDetail(
                         ) {
                             Icon(
                                 Icons.Filled.Place,
-                                contentDescription = "在地图里打开",
+                                // ⚠️ **v0.47.0（第 28 轮 a11y P2-3）**：`null` ——
+                                // 旁边的文字就写着「在地图里打开」，图标再给一份**完全同名**的
+                                // contentDescription 是纯冗余。
+                                // （复核结论：这一行是 clickable、会合并子节点，
+                                //  Android 优先念 contentDescription，所以**目前并没有念两遍**；
+                                //  这里只是把重复的一份删掉，更干净。）
+                                contentDescription = null,
                                 tint = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.size(20.dp),
                             )
@@ -715,12 +721,14 @@ internal fun DriveDetail(
                                 "最深回收 ${kotlin.math.abs(peakDown).roundToInt()} 千瓦",
                         )
                         Text(
-                            "正值 = 耗电（蓝）· 负值 = 刹车回收（绿）" +
-                                (drive.wh_per_km?.let { " · 本趟 ${it.fmtKwh100()} kWh/100km" } ?: "") +
+                            // ⚠️ **v0.47.0（第 28 轮 a11y P1-3）**：「 · 」换成「，」——
+                            // TTS 会把「点」逐字念出来，在两个并列短语之间插噪声。
+                            "正值 = 耗电（蓝），负值 = 刹车回收（绿）" +
+                                (drive.wh_per_km?.let { "，本趟 ${it.fmtKwh100()} kWh/100km" } ?: "") +
                                 // ⚠️ v0.14.0：把「瞬时峰值」和「分箱平均」的差别**写在明面上**，
                                 // 免得同屏两个功率数打架时读者以为数据坏了。
                                 (drive.power_max_kw?.let {
-                                    " · 瞬时峰值 $it kW，图中为每 1 公里平均"
+                                    "，瞬时峰值 $it kW，图中为每 1 公里平均"
                                 } ?: ""),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,

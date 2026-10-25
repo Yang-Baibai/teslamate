@@ -106,12 +106,17 @@ fun DriveScoreCard(
         )
         Spacer(Modifier.height(2.dp))
         Text(
+            // ⚠️ **v0.47.0（第 28 轮 a11y P1-3）**：这里的「 · 」换成「，」——
+            // 同一串里连用 3 个「 · 」，TTS 会逐字念成「点」，
+            // 在四个并列短语之间插噪声（WCAG 1.3.1 / 4.1.2）。
+            // 这三段本来就是并列短语，念成「，」比念成「点」清楚。
+            // （仓库里本来就大量用「，」，如 `joinToString("，")` —— 风格一致。）
             "按 ≥${profile.params.min_distance_km} 公里的 ${s.drive_count} 趟算" +
-                " · 共 ${s.total_km.roundToInt()} 公里" +
-                " · 平均 ${s.avg_score.roundToInt()} 分" +
+                "，共 ${s.total_km.roundToInt()} 公里" +
+                "，平均 ${s.avg_score.roundToInt()} 分" +
                 // ⚠️ v0.44.0：这 100 分里**只有 60 分**是急刹/急加/超速，
                 // 另外 40 分是**能耗与夜驾** —— 名字叫「平顺」，实际不是。
-                " · 其中 40 分来自能耗与夜驾，不只是平顺",
+                "，其中 40 分来自能耗与夜驾，不只是平顺",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

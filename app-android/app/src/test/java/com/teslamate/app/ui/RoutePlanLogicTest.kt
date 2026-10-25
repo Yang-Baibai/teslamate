@@ -296,6 +296,123 @@ class RoutePlanLogicTest {
         assertEquals(p.stops.size, p.visibleStopIndices(1, true).size)
     }
 
+    // ── ⚠️ v0.47.0（第 28 轮自查）：v0.46.0 修 P0-2 时**顺手弄丢**了选中站自己 ──
+
+    @Test
+    fun `选中的那一站自己必须留在站区里`() {
+        // ⚠️ **第 28 轮自查 P0**：v0.46.0 把起点行改成「只在 startIdx == 0 时出现」是对的，
+        // 但 `visibleStopIndices` 收的是「下一跳**需要注意**」的站 ——
+        // 用户选中的那一站**恰恰可能什么都不需要注意**，
+        // 于是它自己从站区里消失了。
+        //
+        // 实测（真实数据）：川藏滇线 37 站里 **24 站**在选中后会消失。
+        // 用户点了「印象雅緻酒店」，列表里没有这一行 ——
+        // 而那一行正是「出发时 X% · 下一站 Y · N 公里」，
+        // 也就是他选完之后最想读的那句话。看起来像 App 把选择弄丢了。
+        val p = plan3Stations()
+        // B → C 是 120 公里、required 50、估 45 ⇒ **不需要注意**
+        assertFalse("B 本身不该是需要注意的站: ${p.actionableStopIndices(1)}",
+            1 in p.actionableStopIndices(1))
+        // 但选中了 B ⇒ B 自己必须在可见站区里
+        assertTrue("选中的站自己必须在: ${p.visibleStopIndices(1, false)}",
+            1 in p.visibleStopIndices(1, false))
+        // 每一站都一样：选谁谁就在
+        for (i in p.stops.indices) {
+            assertTrue("选第 $i 站时它自己必须在可见站区里",
+                i in p.visibleStopIndices(i, false))
+        }
+    }
+
+    @Test
+    fun `可见站区里不会出现重复行`() {
+        // 选中的站**同时**是需要注意的站时，不能出现两行
+        val p = plan3Stations()
+        for (i in p.stops.indices) {
+            for (showAll in listOf(false, true)) {
+                val v = p.visibleStopIndices(i, showAll)
+                assertEquals("选第 $i 站 showAll=$showAll 时不应有重复: $v",
+                    v.size, v.distinct().size)
+            }
+        }
+    }
+
+    // ── ⚠️ v0.47.0（第 28 轮对抗性审计）：三个 P0 的回归锁 ──────────
+
+    @Test
+    fun `档位行的爬升修正不能再多除 10 倍`() {
+        // ⚠️ **第 28 轮审计 P0-1**：原来内联写的是 `(c / 10.0).fmtKwh100()`，
+        // 而 `fmtKwh100()` **本身就已经 ÷10** ⇒ 同屏两个数差 **10 倍**。
+        // 实测：6227 公里那条线 34 个渲染档位行的站里 **25 个**与详情行冲突、
+        // **17 个**显示成 `0.0 / -0.0`；虎跳峡栈道那跳详情行 `+4.9`、档位行 `0.5`。
+        //
+        // ⚠️ 这里的真值是 **Wh/km**（内部口径），显示层才换算成 kWh/100km。
+        // 49 Wh/km ⇒ 4.9 kWh/100km。
+        assertEquals(" · 爬升修正 4.9 kWh/100km", climbBucketSuffix(49.0))
+        // 6 Wh/km ⇒ 0.6 kWh/100km（旧代码会打成 0.1）
+        assertEquals(" · 爬升修正 0.6 kWh/100km", climbBucketSuffix(6.0))
+        // 负值也要正确换算
+        assertEquals(" · 爬升修正 -3.0 kWh/100km", climbBucketSuffix(-29.887))
+    }
+
+    @Test
+    fun `爬升修正小于门槛就不给片段`() {
+        // ⚠️ **第 28 轮审计 P2-1**：档位行必须与详情行**同门槛**（`abs >= 5.0`），
+        // 否则会打「爬升修正 0.0 / -0.0」（实测 17 个站），而详情行那块不显示。
+        assertEquals("", climbBucketSuffix(4.9))
+        assertEquals("", climbBucketSuffix(-4.9))
+        assertEquals("", climbBucketSuffix(0.0))
+        assertEquals("", climbBucketSuffix(null))
+    }
+
+    @Test
+    fun `负的爬升修正不能说多耗`() {
+        // ⚠️ **第 28 轮审计 P0-2**：负修正 = 这一段比该档的典型坡度**更平** = **省电**。
+        // 原来写死「多耗 X 度」，负值打出来就是「多耗 -2.9 度」—— 自相矛盾。
+        // 真实数据：6227 公里那条线有 **10 个站**触发。
+        val neg = climbDetailSuffix(-29.887, -2.9, -4.0)
+        assertTrue("负修正不该说「多耗」: $neg", !neg.contains("多耗"))
+        assertTrue("负修正该说「少耗」: $neg", neg.contains("少耗"))
+        assertTrue("负修正的数要取绝对值: $neg", neg.contains("2.9"))
+        assertTrue("负修正的百分点要取绝对值: $neg", neg.contains("4 个百分点"))
+
+        val pos = climbDetailSuffix(49.0, 12.3, 19.0)
+        assertTrue("正修正该说「多耗」: $pos", pos.contains("多耗"))
+        assertTrue("正修正不该说「少耗」: $pos", !pos.contains("少耗"))
+    }
+
+    @Test
+    fun `能一次开到那一句说的是上次实测不是预计`() {
+        // ⚠️ **第 28 轮审计 P1-2**：`low` 来自 profile（上次那趟的真实到站电量），
+        // 不是模型预测值。写「预计到达」是口径不符 ——
+        // 同一张卡的模型口径是 47%，界面写 34%，差 13 个点。
+        val t = singleHopArrivalText(34)
+        assertFalse("不该说「预计」: $t", t.contains("预计"))
+        assertTrue("该说「上次」: $t", t.contains("上次到达 34%"))
+    }
+
+    @Test
+    fun `起点 chip 的可访问名把间隔号换成逗号`() {
+        // ⚠️ **第 28 轮 a11y P1-3**：TTS 会把「 · 」念成「点」。
+        // WCAG 2.5.3：可访问名仍要包含可见标签（站名原样保留）。
+        assertEquals("中国石化，2173 公里", startChipAccessibleName("中国石化 · 2173 公里"))
+        assertEquals("起点（永丰社区）", startChipAccessibleName("起点（永丰社区）"))
+    }
+
+    @Test
+    fun `还有 N 跳的方向词是身前不是身后`() {
+        // ⚠️ **第 28 轮审计 P0-3**：v0.46.0 把计数改成了「从选中站起算」（正确），
+        // 但方向词写反了 —— `belowReserveHopCountFrom` 数的是 `from..lastIndex`，
+        // 那是**身前**（还没开过去的那些）。
+        // 真实数据：6227 公里那条线选「乐驿」（km 276.3），
+        // 界面说「你身后还有 1 跳」，而那 1 跳在**身前 3985.5 公里**。
+        val p = plan3Stations()
+        // A→B 是全线唯一一跳「到不了保底」；C→D 是估算低于保底。
+        // 从 B 起算 ⇒ 身后的 A→B 不该被算进来
+        assertEquals(0, p.belowReserveHopCountFrom(1))
+        // 从 A 起算 ⇒ 只有 A→B（required=108 > 100）
+        assertEquals(1, p.belowReserveHopCountFrom(0))
+    }
+
     @Test
     fun `细节行给全程最低点的落点`() {
         val p = plan(
