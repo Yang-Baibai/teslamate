@@ -506,4 +506,42 @@ class RoutePlanLogicTest {
         assertTrue("应说明 80% 以上: $t", t.contains("80%"))
         assertTrue("不能是放弃的口吻: $t", !t.contains("别管") && !t.contains("放弃"))
     }
+
+    // ── ⚠️ v0.59.0（第 30 轮长途自驾党评审 P1-2）───────────────────────
+
+    @Test
+    fun `处方的误差带要上到 L1`() {
+        // ⚠️ **第 30 轮 P1-2**：处方是**执行指令**（「充到 100%」），
+        // 它带的余量看起来**正好是 20% 保底**，
+        // 而模型自己的残差是 ±10 个点 —— 用户照做仍可能以 **10%** 到站。
+        //
+        // 实测（川藏滇线 #4 蔚来换电站，280 公里那一跳）：
+        // 处方「充到 100%」，模型残差 ±10 点 ⇒ 实际到站可能 **10%~30%**。
+        val t = prescriptionErrorText(requiredSoc = 100, errorPoints = 10)
+        assertNotNull("必须有误差带: $t", t)
+        assertTrue("应给出残差点数: $t", t!!.contains("±10 个点"))
+        assertTrue("应给出到站区间: $t", t.contains("10%~30%"))
+    }
+
+    @Test
+    fun `没有误差带时不显示`() {
+        // 样本不足 ⇒ 没有误差带 ⇒ **不给数**（不给一个编的范围）。
+        assertNull("误差点为 null 时不给", prescriptionErrorText(100, null))
+        assertNull("误差点为 0 时不给", prescriptionErrorText(100, 0))
+    }
+
+    @Test
+    fun `连充满也守不住保底的那一支不叠加误差带`() {
+        // req > 100 的文案已经是「充满也只剩 X%，低于 20% 保底」，
+        // 语义不同，再叠一段误差带会读不通。
+        assertNull("req > 100 时不给", prescriptionErrorText(108, 10))
+    }
+
+    @Test
+    fun `误差带的下界不能是负数`() {
+        // 残差比保底还大时，下界不能出现负百分比。
+        val t = prescriptionErrorText(60, 35)!!
+        assertTrue("下界不能为负: $t", t.contains("0%"))
+        assertFalse("不该出现负号: $t", t.contains("-"))
+    }
 }

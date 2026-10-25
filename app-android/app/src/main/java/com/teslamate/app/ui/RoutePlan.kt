@@ -1313,6 +1313,37 @@ fun RoutePlan.hopsArrivingBelowReserve(startIdx: Int): List<RouteHop> {
 }
 
 /**
+ * ⚠️ **v0.59.0（第 30 轮长途自驾党评审 P1-2）**：处方的**不确定度**。
+ *
+ * ## 为什么需要它
+ *
+ * 逐站 L1 的处方是**执行指令**（「充到 100%」）——
+ * 它带的余量看起来**正好是 20% 保底**，
+ * 而模型自己的**残差**是 ±10 个点。
+ * 用户照做仍可能以 **10%** 到站。
+ *
+ * 实测（川藏滇线 #4 蔚来换电站，280 公里那一跳）：
+ * 处方「充到 100%」，模型残差 ±10 点 ⇒ 实际到站可能 **10%~30%**。
+ *
+ * ⚠️ 误差带**已经在算**（`s.gapErrorPoints`），只是**没显示在这一行**。
+ *
+ * ## 口径
+ *
+ * `req = need + RESERVE_SOC` ⇒ 充到 `req%` 时**名义上**到站剩 20%；
+ * 残差 ±pts ⇒ 到站可能 `(20 − pts)%` ~ `(20 + pts)%`。
+ *
+ * `req > 100`（连充满也守不住保底）那一支**不给**这段 ——
+ * 那里的文案已经是「充满也只剩 X%，低于 20% 保底」，语义不同，不叠加。
+ */
+fun prescriptionErrorText(requiredSoc: Int, errorPoints: Int?): String? {
+    if (requiredSoc > 100) return null
+    val pts = errorPoints?.takeIf { it > 0 } ?: return null
+    val lo = (RESERVE_SOC - pts).coerceAtLeast(0)
+    val hi = RESERVE_SOC + pts
+    return "（模型残差 ±$pts 个点，到站可能 $lo%~$hi%）"
+}
+
+/**
  * ⚠️ **v0.58.0（第 30 轮长途自驾党评审 P1-3）**：处方接近**电池上限**时的提示。
  *
  * ## 为什么需要它
@@ -3235,6 +3266,11 @@ fun RoutePlanCard(
                                                 // 处方接近**电池上限**时补一句事实性提示 ——
                                                 // 「充到 100%」是**上限**，不是「可以充到的目标」。
                                                 chargeTargetHint(req)?.let { append(it) }
+                                                // ⚠️ **v0.59.0（第 30 轮长途自驾党评审 P1-2）**：
+                                                // 处方是**执行指令**，它的余量看起来正好是 20% 保底，
+                                                // 而模型自己的残差是 ±N 点 —— 用户照做仍可能以更低的电量到站。
+                                                // 误差带**已经在算**，这里只是把它**上到 L1**。
+                                                prescriptionErrorText(req, s.gapErrorPoints)?.let { append(it) }
                                             }
                                         }
                                     }
