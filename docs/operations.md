@@ -239,7 +239,7 @@ docker compose up -d        # 让 teslamate/grafana/api 拿到新密码
 手机在运营商 NAT 后（10.22.51.x），双方都不暴露端口 → 打洞失败 → 退化成 DERP → 而 DERP 在
 洛杉矶且那条也超时。
 
-**修复**：小米路由���后台开启 UPnP 状态 → Tailscale 自动注册映射
+**修复**：小米路由器后台开启 UPnP 状态 → Tailscale 自动注册映射
 （`41641/UDP` → `<局域网IP>`）。
 
 **修复前后实测对比**：

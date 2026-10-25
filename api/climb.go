@@ -189,7 +189,7 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 	//
 	// 原来只上报**分裂半**（两半样本各拟合一次）——
 	// 但分裂半只是**一次**实现（两半样本构成差），**不是估计量方差**：
-	// c_up 的分裂半是 ±2.3%，而真实抽���不确定度是 **±14.5%**（SE 0.4762）。
+	// c_up 的分裂半是 ±2.3%，而真实抽样不确定度是 **±14.5%**（SE 0.4762）。
 	// 只报分裂半会让读者以为精度好 6 倍。
 	fitGross := func(sub []driveRow) ([]float64, []float64, float64, bool) {
 		var xs [][]float64

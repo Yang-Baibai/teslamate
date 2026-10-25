@@ -469,7 +469,7 @@ private fun RecordTimeline(
      * ⚠️ v0.27.0：实测满电续航卡片要用充电记录（充前/充后电量 + 里程表）。
      *
      * ⚠️ 必须放在**最后** —— 这个函数的调用点是**位置参数**调用
-     * （`RecordTimeline(records, stationStats, routePlan, routeHistoryMap, …���`），
+     * （`RecordTimeline(records, stationStats, routePlan, routeHistoryMap, …`），
      * 插在中间会让后面所有位置参数**整体错位**。
      */
     charges: List<Charge> = emptyList(),

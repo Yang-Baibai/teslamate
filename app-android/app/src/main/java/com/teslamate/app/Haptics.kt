@@ -15,7 +15,7 @@ import androidx.compose.runtime.Composable
  *
  * ⚠️ 为什么不用 `HapticFeedbackType`：Compose UI 1.7.6 的 `HapticFeedbackType` 只有
  * `LongPress` 和 `TextHandleMove` 两个常量（Confirm/Reject/SegmentTick 是 1.8.0 才加的）。
- * 所以这里直��调平台常量（路线 A），并用 `VibrationEffect` 精确控制振幅（路线 C）。
+ * 所以这里直接调平台常量（路线 A），并用 `VibrationEffect` 精确控制振幅（路线 C）。
  *
  * 设计原则（不要每个交互都震）：
  *   • 开关/分段这类高频微交互 → 极轻 tick（amplitude 25~45）

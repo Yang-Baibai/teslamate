@@ -406,7 +406,7 @@ internal fun DriveItem(
             // ⚠️ v0.17.0（车队运营评审 P0-1）：**同线路对比的摘要**（列表里的一行灰字）。
             //
             // ⚠️ 必须放在**卡片内部**：原来放在卡片外面（TimelineRow 的 Column 里），
-            // 而那�� Row 用 `IntrinsicSize.Min` + 左侧 `fillMaxHeight()`，
+            // 而那个 Row 用 `IntrinsicSize.Min` + 左侧 `fillMaxHeight()`，
             // 右边被裁掉 —— 摘要行**根本渲染不出来**。
             // 放进卡片内部就没有这个问题，而且视觉上更完整（是卡的一部分，不是浮在外面）。
             footnote?.let {

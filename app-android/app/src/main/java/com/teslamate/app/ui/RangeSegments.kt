@@ -216,6 +216,36 @@ fun officialFullChargeRangeKm(charges: List<Charge>): Double? {
 }
 
 /**
+ * ⚠️ **v0.40.0（第 24 轮对抗性审计 ①）：「实测满电续航 vs 官方标称」的百分比差。**
+ *
+ * ## 这个函数为什么存在
+ *
+ * 原来的百分比**方向反了**，而且错得极其隐蔽：
+ * ```kotlin
+ * val diff = (median / it * 100).roundToInt()          // 比值×100，恒 ≥ 0
+ * append(if (diff >= 0) "，实测高 $diff%" else "，实测低 ${-diff}%")
+ * ```
+ * ① `median / it * 100` 是**比值×100**（恒 ≥ 0）⇒ `else` 分支是**永远走不到的死代码**；
+ * ② 它被当成「超出 100 的百分比」用 ⇒ 语义整体错位。
+ *
+ * 实测本车：中位 **346.62** 公里 / 官方标称 **448.01** 公里
+ *   ⇒ 比值 77.4% ⇒ 旧代码打印「官方标称 448 公里，实测**高 77%**」
+ *   ⇒ 真相是「实测**低 23%**」（100 − 77.4 = 22.6）。
+ *
+ * 一个让 App 看起来比官方**强 77%**、而实际**弱 23%** 的假恭维。
+ * 这个 bug 从 v0.27.0 活到 v0.39.0（12 个版本、23 轮评审全漏）——
+ * 因为历次审计核的是**手算值**，不是**屏幕输出**。
+ *
+ * ## 返回值
+ *
+ * 正数 = 实测**高**出百分之几；负数 = 实测**低**百分之几。
+ */
+fun fullChargeVsOfficialPercent(medianKm: Double, officialKm: Double): Int? {
+    if (officialKm <= 0.0 || medianKm <= 0.0) return null
+    return ((medianKm / officialKm * 100.0) - 100.0).roundToInt()
+}
+
+/**
  * 「实测满电续航」卡片。
  *
  * ⚠️ 默认**折叠** —— 它是「参考知识」而不是「现在能开多少」，
@@ -247,7 +277,12 @@ fun RangeSegmentsCard(
         // 这张卡在它下面，34sp 会形成**层级倒置**（下面的数字比上面的还大）。
         BigStat(
             "${median.roundToInt()}",
-            "实测满电续航（公里，中位）",
+            // ⚠️ **v0.40.0（第 24 轮对抗性审计 ①）：标题必须带「折算值」。**
+            //
+            // 这个数是「从 X% 开到 Y% 跑了多少公里」按掉电比例**折算**到满电的，
+            // 用的是**净掉电** —— 所以**下坡回充被抵扣了**，系统性偏乐观。
+            // 不标出来，读者会把它当成「跑满一箱能跑多远」的实测。
+            "实测满电续航（公里，中位 · 折算值）",
             mid = true,
         )
         Spacer(Modifier.height(2.dp))
@@ -255,9 +290,15 @@ fun RangeSegmentsCard(
             buildString {
                 append("基于 ${segments.size} 段实测（每次充完到下次充上）")
                 official?.let {
-                    val diff = (median / it * 100).roundToInt()
+                    // ⚠️ **v0.40.0（第 24 轮对抗性审计 ①）：百分比方向曾经反了。**
+                    // 详见 [fullChargeVsOfficialPercent] 的说明 ——
+                    // 旧算法 `round(median/official*100)` 恒 ≥ 0，
+                    // 于是「实测高 77%」这个**假恭维**活了 12 个版本。
+                    val diff = fullChargeVsOfficialPercent(median, it)
                     append(" · 官方标称 ${it.roundToInt()} 公里")
-                    append(if (diff >= 0) "，实测高 $diff%" else "，实测低 ${-diff}%")
+                    if (diff != null) {
+                        append(if (diff >= 0) "，实测高 $diff%" else "，实测低 ${-diff}%")
+                    }
                 }
             },
             style = MaterialTheme.typography.labelMedium,
@@ -285,11 +326,20 @@ fun RangeSegmentsCard(
                 // ⚠️ **v0.29.0（HIG P0-4）：官方标称不能写死。**
                 // 原来这里硬编码「官方标称 448 公里」，而上面那行是**动态算**出来的 ——
                 // 车端标称一变，两处自相矛盾。
+                // ⚠️ **v0.40.0（第 24 轮对抗性审计 ①/⑨）：这段话原来**自相矛盾**。**
+                //
+                // 原来写「两者是『折算 vs 实测』的关系」—— 但「官方标称」**也是实测**
+                // （车机满电时自己报的那个数），**折算值**才是那个折算出来的。
+                // 而且原来**只字未提**「回充被抵扣」这件对结论有决定性影响的事。
+                //
+                // 现在说清三件事：① 这是折算值、怎么折的；
+                // ② 它**含下坡回充**（偏乐观）；③ 规划要用哪个数。
                 Text(
                     "这是折算值：把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电，" +
                         "所以含没充满就走的段（比如 50%→29%）。" +
+                        "折算用的是净掉电 —— 下坡回充会被抵扣，所以这个数偏乐观。" +
                         (official?.let { "官方标称 ${it.roundToInt()} 公里是车机满电时报的数，" } ?: "") +
-                        "两者是「折算 vs 实测」的关系。",
+                        "两个都是实测，只是口径不同：规划请用上面的线路余量表（那里不含回充抵扣）。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

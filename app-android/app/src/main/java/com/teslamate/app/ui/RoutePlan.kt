@@ -280,17 +280,24 @@ data class RouteStop(
      */
     val gapNeedPct: Int? = null,
     /**
-     * ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-3）：留 [RESERVE_SOC]% 保底，本站至少要充到多少。**
+     * ⚠️ **v0.40.0（第 24 轮客户复审 C1）：`> 100` 的含义被纠正了。**
      *
-     * `= gapNeedPct + RESERVE_SOC`。
+     * `= gapNeedPct + RESERVE_SOC`（本站至少要充到多少）。
      *
-     * ⚠️ **> 100 就表示「这一跳无解」** ——
-     * 复审实测：修文县 → G210那 351 公里要 **88 个点**，
-     * 而 App 当时写的是「这段必须再充一次」。
-     * 用户照做（充到 100%）**还是到不了**（只剩 −2%）——
-     * **这是一个会让人白等 20 分钟、然后仍然趴窝的错误建议。**
+     * ## 它**不代表**「到不了」
      *
-     * 现在 >100 时改口成「这一跳充满也到不了，得在前面加一站」。
+     * `> 100` 只说明「**充满也到不了 20% 保底**」——
+     * 也就是「这一跳要 88 个点 + 20 保底 = 108 > 100，
+     * 就算充到 100% 也只剩 12%，低于保底」。
+     *
+     * ⚠️ **它绝不代表「车到不了那儿」** ——
+     * 复审实测：修文县 → G210 车河镇（351 公里，要 88 个点），
+     * **上次实际到站剩 13%**；建设南路 → 合江荔乡服务区（328 公里，要 83 个点），
+     * **上次实际到站剩 8%**。两跳都**到得了**，只是低于保底。
+     *
+     * 原来界面写「充满也到不了 —— 得在前面加一站」——
+     * 那是**假事实**，会让人在云南多跑几十公里去找一个这趟根本没去过的桩。
+     * 现在统一改成「到不了 20% 保底」。
      */
     val requiredSocHere: Int? = null,
     /**
@@ -404,12 +411,27 @@ data class RouteStop(
     val gapClimbPct: Double? = null,
 ) {
     /**
-     * ⚠️ **v0.34.0（第 21 轮一线车主复审 P0-2）：这一跳**没有解**吗。**
+     * ⚠️ **v0.40.0（第 24 轮客户复审 C1）：「充满剩多少」的推导。**
      *
-     * 充满也只有 100 个点，而这一跳要 `need + 保底` 个点 ——
-     * `> 100` 就意味着**在本站怎么充都到不了**。
+     * `= 100 − gapNeedPct` —— 充满（100%）时走完这一跳还剩多少。
+     *
+     * ⚠️ 这个数**只用于「到不了保底」那一支** ——
+     * 它是**最好情况**（充满 + 不掉任何额外电）。
+     * 实际按上次充到的水平算会**更低**
+     * （例：修文县那跳上次充到 96%，按 96% 算到站剩 8%，充满则剩 12%）。
      */
-    val gapImpossible: Boolean get() = (requiredSocHere ?: 0) > 100
+    val fullArrivalSoc: Int? get() = gapNeedPct?.let { 100 - it }
+
+    /**
+     * ⚠️ **v0.40.0（第 24 轮客户复审 C1）：这一跳**到不了 20% 保底**。**
+     *
+     * ⚠️ 旧名 [gapImpossible] 是**假事实**（「到不了」）——
+     * 保留它只是为了不破坏既有调用点，语义以本属性为准。
+     */
+    val gapBelowReserve: Boolean get() = (requiredSocHere ?: 0) > 100
+
+    /** @deprecated 旧名 —— 「无解」是假事实，改用 [gapBelowReserve]。 */
+    val gapImpossible: Boolean get() = gapBelowReserve
 }
 
 /** 余量剖面上的一个点。 */
@@ -442,9 +464,16 @@ data class RouteHop(
     val estSoc: Int?,
     /** 这一跳要消耗多少个电量点 */
     val needPct: Int?,
-    /** 留 20% 保底，本站至少要充到多少（> 100 = **这一跳无解**） */
+    /** 留 20% 保底，本站至少要充到多少（> 100 = **到不了保底**，不是「到不了」） */
     val requiredSoc: Int?,
-)
+) {
+    /**
+     * ⚠️ **v0.40.0（第 24 轮客户复审 C1）：充满时到站剩多少（%）。**
+     *
+     * `= 100 − needPct`。只在「到不了保底」那一支用 —— 它是**最好情况**。
+     */
+    val fullArrivalSoc: Int? get() = needPct?.let { 100 - it }
+}
 
 /** 整条线路的余量表。 */
 data class RoutePlan(
@@ -531,12 +560,18 @@ data class RoutePlan(
     }
 
     /**
-     * ⚠️ **v0.39.0（第 23 轮车主复审 P2-2）：这条线上有**几跳无解**。**
+     * ⚠️ **v0.39.0（第 23 轮车主复审 P2-2）：这条线上有**几跳到不了保底**。**
      *
-     * 折叠态只显示**最长那一跳**的无解提示，而实测那条线有 **2 跳**无解
-     * （建设南路 req 103、修文县 req 108）—— 另一跳被藏起来了。
+     * 折叠态只显示**最长那一跳**的提示，而实测那条线有 **2 跳**（建设南路 req 103、
+     * 修文县 req 108）—— 另一跳被藏起来了。
+     *
+     * ⚠️ **v0.40.0（第 24 轮客户复审 C1）：名字从「无解」改成「到不了保底」。**
+     * 「无解 / 充满也到不了」是**假事实**（实测那两跳都到得了，只是低于 20% 保底）。
      */
-    val impossibleHopCount: Int get() = stops.count { (it.requiredSocHere ?: 0) > 100 }
+    val belowReserveHopCount: Int get() = stops.count { (it.requiredSocHere ?: 0) > 100 }
+
+    /** @deprecated 旧名 —— 「无解」是假事实，改用 [belowReserveHopCount]。 */
+    val impossibleHopCount: Int get() = belowReserveHopCount
 
     /**
      * ⚠️ **v0.39.0（第 23 轮车主复审 P2-3）：**需要处理**的那几跳。**
@@ -546,11 +581,13 @@ data class RoutePlan(
      * > 出发前 5 分钟要在 15 屏里找「下一站」，和 v0.34 的问题性质相同。」
      *
      * 全量列表不能删（数据一点没丢是原则），但**要处理的那几跳必须能一眼找到**：
-     * ① 这一跳**充满也到不了**（必须提前加一站）；
+     * ① 这一跳**充满也到不了 20% 保底**（不是「到不了」）；
      * ② 估算到站**低于保底**；
      * ③ 估算说够、但**上次实测低于保底**（模型偏乐观的跳）。
      *
-     * 实测那条线有 36 跳，其中**只有 4 跳**需要处理 —— 摘要就是这 4 跳。
+     * ⚠️ **v0.40.0（第 24 轮客户复审 N2）：「4 跳」这个数字是**单测里的 4 个合成站**，
+     * 不是真实线路的数字。** 真线复算是 **13 跳**（36 站里）。
+     * 教训：发布说明里的数字必须来自**真实数据复算**，不能来自单测夹具。
      */
     val actionableHops: List<RouteHop>
         get() {
@@ -561,10 +598,10 @@ data class RoutePlan(
                 if (gap < 2.0) continue
                 val est = s.socAtNextStop
                 val real = s.nextStopRealSoc
-                val impossible = (s.requiredSocHere ?: 0) > 100
+                val belowReserve = s.gapBelowReserve
                 val estLow = est != null && est < RESERVE_SOC
                 val realLowHidden = real != null && real < RESERVE_SOC && (est ?: 0) >= RESERVE_SOC
-                if (!impossible && !estLow && !realLowHidden) continue
+                if (!belowReserve && !estLow && !realLowHidden) continue
                 out += RouteHop(
                     fromName = s.name,
                     toName = stops.getOrNull(i + 1)?.name ?: "终点",
@@ -723,14 +760,25 @@ data class RoutePlan(
         if (hop != null) {
             val sb = StringBuilder()
             hop.realSoc?.let { sb.append("上次到站剩 ").append(it).append("%") }
-            // ⚠️ **v0.36.0（第 21 轮一线车主复审 C3）：这一跳**无解**时不报估算。**
+            // ⚠️ **v0.40.0（第 24 轮客户复审 C1）：「充满也到不了」是**假事实**。**
             //
-            // 「估算剩 8%」会被读成「到了那儿剩 8%，紧但能到」——
-            // 而真相是「**充满也到不了**」（这一跳要 88 个点 + 20 保底 = 108 > 100）。
-            // 复审原话：「我会读成'到了那儿剩 8%，有点紧但能到'。」
+            // 原来这一支（`req > 100`）**不报估算**，只留「上次到站剩 13%」——
+            // 于是读者以为「估算剩 8%」只是个可有可无的补充，其实它才是关键信息。
+            //
+            // 真相：`req > 100` 只说明「**充满也到不了 20% 保底**」。
+            // 复审实测那两跳上次**都到得了**（修文县 13%、建设南路 8%），
+            // 只是低于保底 —— 原来那句「得在前面加一站」会让人白跑几十公里。
+            //
+            // 现在给「充满能剩多少」+「上次到站剩多少」，两个数并排 ——
+            // 读者能自己判断「到得了，但会低于保底」。
             val req = hop.requiredSoc
-            val impossible = req != null && req > 100
-            if (!impossible) {
+            val belowReserve = req != null && req > 100
+            if (belowReserve) {
+                if (sb.isNotEmpty()) sb.append(" · ")
+                sb.append("充满也只剩 ")
+                hop.fullArrivalSoc?.let { sb.append(it).append("%") } ?: sb.append("不到 20%")
+                sb.append("，低于 ").append(RESERVE_SOC).append("% 保底")
+            } else {
                 hop.estSoc?.let { soc ->
                     if (sb.isNotEmpty()) sb.append(" · ")
                     if (soc >= 0) {
@@ -1145,8 +1193,9 @@ fun buildRoutePlan(
             null
         }
         // ⚠️ **v0.34.0（P0-3）：处方 —— 留 20% 保底，本站至少要充到多少。**
-        // >100 就说明**这一跳没有解**（充满也到不了保底），
-        // 那就不能说「再充一次」，得说「得在前面加一站」。
+        // >100 只说明「**充满也到不了 20% 保底**」（不是「到不了」——
+        // 实测那两跳上次都到得了，只是低于保底），
+        // 所以界面上不能说「充到 108%」，得说「充满也只剩 X%」。
         val requiredHere = needPct?.let { it + RESERVE_SOC }
         // ⚠️ **v0.36.0（第 21 轮一线车主复审 C1）：真值改用**到站电量**。**
         //
@@ -1609,27 +1658,43 @@ fun RoutePlanSummaryRow(
                         color = accents.energyBlue,
                         fontWeight = FontWeight.Bold,
                     )
-                    // ⚠️ **v0.36.0（第 21 轮一线车主复审 C3）：折叠态也要给「这一跳无解」。**
+                    // ⚠️ **v0.36.0（第 21 轮一线车主复审 C3）：折叠态也要给「这一跳到不了保底」。**
                     //
-                    // 复审实测：折叠态的 44sp 主角**恰好就是**「充满也到不了」的那一跳
+                    // 复审实测：折叠态的 44sp 主角**恰好就是**那一跳
                     //（修文县 → G210，351 公里，要 88 个点 + 20 保底 = 108 > 100），
                     // 而折叠态只说「估算剩 8%」——
                     // 用户会读成「到了那儿剩 8%，有点紧但能到」。
                     //
                     // 而这句只在展开态第 28 行的处方行里 —— **点开之前根本看不到**。
+                    //
+                    // ⚠️ **v0.40.0（第 24 轮客户复审 C1）：措辞从「充满也到不了」改成
+                    // 「充满也只剩 X%，低于 20% 保底」** —— 前者是假事实。
                     plan.longestHop?.let { hop ->
                         val req = hop.requiredSoc
                         if (req != null && req > 100) {
                             Text(
                                 buildString {
                                     append("这一跳要 ").append(hop.needPct).append(" 个点")
-                                    append(" · 充满也到不了 —— 得在前面加一站")
-                                    // ⚠️ **v0.39.0（第 23 轮车主复审 P2-2）：还有几跳无解要说清。**
-                                    // 折叠态只显示**最长那一跳**的无解提示，
-                                    // 而实测那条线有 **2 跳**无解 —— 另一跳被藏起来了。
-                                    val others = plan.impossibleHopCount - 1
+                                    // ⚠️ **v0.40.0（第 24 轮客户复审 C1）：改口。**
+                                    //
+                                    // 原来写「充满也到不了 —— 得在前面加一站」——
+                                    // 那是**假事实**：复审实测这两跳上次**都到得了**
+                                    // （修文县 13%、建设南路 8%），只是低于 20% 保底。
+                                    // 「得在前面加一站」会让人在云南多跑几十公里
+                                    // 去找一个这趟根本没去过的桩。
+                                    //
+                                    // 现在说清三件事：① 要几个点；
+                                    // ② **充满**也只能剩多少；③ 上次实际到站剩多少。
+                                    append(" · 充满也只剩 ")
+                                    hop.fullArrivalSoc?.let { append(it).append("%") } ?: append("不到 20%")
+                                    append("，低于 ").append(RESERVE_SOC).append("% 保底")
+                                    hop.realSoc?.let { append(" · 上次到站剩 ").append(it).append("%") }
+                                    // ⚠️ **v0.39.0（第 23 轮车主复审 P2-2）：还有几跳要说清。**
+                                    // 折叠态只显示**最长那一跳**的提示，
+                                    // 而实测那条线有 **2 跳** —— 另一跳被藏起来了。
+                                    val others = plan.belowReserveHopCount - 1
                                     if (others > 0) {
-                                        append(" · 这条线上还有 ").append(others).append(" 跳无解")
+                                        append(" · 这条线上还有 ").append(others).append(" 跳到不了保底")
                                     }
                                 },
                                 style = MaterialTheme.typography.labelSmall,
@@ -1814,7 +1879,21 @@ fun RoutePlanCard(
                 //
                 // 所以只说「模型残差」，不说「实测误差」——
                 // 否则就变成了**低报**风险。
-                (plan.modelErrorPoints?.let { "；余量估计的模型残差约 ±$it 个点" } ?: ""),
+                (plan.modelErrorPoints?.let { "；余量估计的模型残差约 ±$it 个点" } ?: "") +
+                // ⚠️ **v0.40.0（第 24 轮客户复审 C 部分 / 对抗性审计 ⑦）：**
+                // 「上次到站剩」这一栏的**定性**必须写进前提行。
+                //
+                // 复审的批评：这个 App 全篇把「实测」用作「**这车自己测出来的、可信的**」，
+                // 而逐站那行原来写「实测 17%」—— 读者会理解成**真值**，
+                // 于是把「估 21% vs 实测 17%」读成「模型错了 4 个点」。
+                //
+                // 真相：那是**一次**观测（上次跑这条线时的实测到站电量），
+                // 而且 App 自己的黑盒审计记录：那条线的端到端到站误差
+                // **中位 +4.5 点、最大 +26 点**（估偏乐观）——
+                // 「估比上次高 4 个点」恰恰是模型的**典型偏差**，不是这一跳的异常。
+                //
+                // 所以这里明说：它是**一次**观测，不是规律。
+                "；「上次到站剩」= 上一次跑这条线时的实测到站电量（一次观测，不是规律）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1910,14 +1989,32 @@ fun RoutePlanCard(
                             buildString {
                                 append(h.fromName).append(" → ").append(h.toName)
                                 append(" · ").append(h.km.roundToInt()).append(" 公里")
+                                // ⚠️ **v0.40.0（第 24 轮客户复审 C3）：估算与实测**两个都渲染**。**
+                                //
+                                // 原来是 `when` **首个匹配即用**：
+                                //   est < 20 → 「到站估 X%」（**实测值根本不出现**）
+                                //   req > 100 → 「充满也到不了（要 N 个点）」（**两个都不出现**）
+                                //
+                                // 结果 13 跳里 **11 跳**只显示**乐观的估算**，
+                                // 把**更狠的真值**藏起来了 ——
+                                // 例：乐驿 → 梧州大酒店写「到站估 18%」，
+                                //      而上次实际到站只剩 **12%**。
+                                //
+                                // 现在：估算低于保底就显示估算，上次实际低于保底就显示实测，
+                                // **两个都显示** —— 读者能看见「模型说的」和「实际发生的」的差。
                                 val req = h.requiredSoc
-                                when {
-                                    req != null && req > 100 ->
-                                        append(" · 充满也到不了（要 ").append(h.needPct).append(" 个点）")
-                                    h.estSoc != null && h.estSoc < RESERVE_SOC ->
-                                        append(" · 到站估 ").append(h.estSoc).append("%")
-                                    h.realSoc != null && h.realSoc < RESERVE_SOC ->
-                                        append(" · 上次实测只剩 ").append(h.realSoc).append("%")
+                                if (req != null && req > 100) {
+                                    append(" · 到不了 ").append(RESERVE_SOC).append("% 保底")
+                                    h.fullArrivalSoc?.let {
+                                        append("（充满剩 ").append(it).append("%）")
+                                    }
+                                } else if (h.estSoc != null && h.estSoc < RESERVE_SOC) {
+                                    append(" · 到站估 ").append(h.estSoc).append("%")
+                                }
+                                h.realSoc?.let { real ->
+                                    if (real < RESERVE_SOC) {
+                                        append(" · 上次到站剩 ").append(real).append("%")
+                                    }
                                 }
                             },
                             style = MaterialTheme.typography.labelSmall,
@@ -2028,15 +2125,22 @@ fun RoutePlanCard(
                                 // 处方并进 L1 ⇒ 每站都看得见，版面还少了一半。
                                 val need = s.gapNeedPct
                                 val req = s.requiredSocHere
-                                val impossible = req != null && req > 100
+                                // ⚠️ **v0.40.0（第 24 轮客户复审 C1）：「无解」改成「到不了保底」。**
+                                val belowReserve = s.gapBelowReserve
                                 val l1 = buildString {
                                     append("下一站 ")
                                     s.nextStopName?.let { append(it).append(" · ") }
                                     append(gap.roundToInt()).append(" 公里")
                                     if (need != null && req != null) {
                                         append(" · ")
-                                        if (impossible) {
-                                            append("充满也到不了 · 得在前面加一站")
+                                        if (belowReserve) {
+                                            // ⚠️ 原来写「充满也到不了 · 得在前面加一站」——
+                                            // 那是**假事实**（实测那两跳上次都到得了，只是低于保底）。
+                                            // 而且「充到 108%」本身是**不可能执行的指令**。
+                                            //
+                                            // 现在给**可执行的**说法：充满也只能剩多少。
+                                            append("充满也只剩 ").append(s.fullArrivalSoc).append("%，低于 ")
+                                                .append(RESERVE_SOC).append("% 保底")
                                         } else {
                                             append("充到 ").append(req).append("%")
                                         }
@@ -2046,7 +2150,7 @@ fun RoutePlanCard(
                                     l1,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Medium,
-                                    color = if (impossible) {
+                                    color = if (belowReserve) {
                                         accents.warnAmberText
                                     } else {
                                         MaterialTheme.colorScheme.onSurface
@@ -2066,7 +2170,22 @@ fun RoutePlanCard(
                                     }
                                     s.nextStopRealSoc?.let { real ->
                                         if (isNotEmpty()) append(" · ")
-                                        append("实测 ").append(real).append("%")
+                                        // ⚠️ **v0.40.0（第 24 轮客户复审 C 部分）：「实测」改口。**
+                                        //
+                                        // 这个 App 全篇把「实测」用作「**这车自己测出来的、可信的**」——
+                                        // 「实测满电续航」「实测充到 80%」「实测 183 Wh/km」。
+                                        // 而这里这个数其实是「**上一次跑这条线时**的**一次**观测」，
+                                        // 读者看到「实测 17%」会理解成**真值**，
+                                        // 于是把「估 21% vs 实测 17%」读成「模型错了 4 个点」。
+                                        //
+                                        // 实际上 App 自己的审计记录：那条线的端到端到站误差
+                                        // **中位 +4.5 点、最大 +26 点**（估偏乐观）——
+                                        // 「估比上次高 4 个点」恰恰是模型的**典型偏差**，
+                                        // 不是这一跳的异常。
+                                        //
+                                        // 现在改成与摘要行一致的「上次到站剩」——
+                                        // 明确它是**一次观测**，不是规律。
+                                        append("上次到站剩 ").append(real).append("%")
                                         // ⚠️ **v0.38.0（第 23 轮车主复审 P1-1）：危险方向的提示。**
                                         //
                                         // 原来那句「比上次实测低 N 个点」的判据是 `估 − 真 ≤ −3`，
@@ -2078,7 +2197,7 @@ fun RoutePlanCard(
                                         // 这条判据已被本机验证：11 个「低于 20% 保底」告警 **11/11 成立**、
                                         // 误报 **0** —— 所以它比「差值门槛」可信得多。
                                         if (real < RESERVE_SOC && (rawSoc ?: 0) >= RESERVE_SOC) {
-                                            append(" ⚠ 实测也低于保底")
+                                            append(" ⚠ 上次到站也低于保底")
                                         }
                                     }
                                 }
@@ -2219,7 +2338,13 @@ fun RoutePlanCard(
                                 s.gapNeedPct?.let { need ->
                                     val req = s.requiredSocHere ?: (need + RESERVE_SOC)
                                     val txt = if (req > 100) {
-                                        "这一跳要 $need 个点 · 充满也到不了 —— 得在前面加一站"
+                                        // ⚠️ **v0.40.0（第 24 轮客户复审 C1）：改口。**
+                                        // 原来写「这一跳要 $need 个点 · 充满也到不了 —— 得在前面加一站」。
+                                        // 「充满也到不了」是**假事实**（实测这两跳上次都到得了，只是低于保底），
+                                        // 「得在前面加一站」会让人白跑几十公里去找一个没用过的桩。
+                                        // 现在给：① 要几个点 ② 充满也只剩多少 ③ 上次到站剩多少。
+                                        "这一跳要 $need 个点 · 充满也只剩 ${s.fullArrivalSoc}%，低于 $RESERVE_SOC% 保底" +
+                                            (s.nextStopRealSoc?.let { " · 上次到站剩 $it%" } ?: "")
                                     } else {
                                         // ⚠️ v0.36.0（视觉评审 P2-5）：加逗号 ——
                                         // 「留 20% 保底至少充到 108%」读起来是两个动作黏在一起。

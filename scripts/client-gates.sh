@@ -100,6 +100,50 @@ PYEOF
 if [ $? -eq 0 ]; then ok "电量环几何金标准（环直径 + 主角不裁切）"; else fail "电量环几何金标准"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 3：源码里不许有 U+FFFD 替换字符 ────────────────────────
+#
+# ⚠️ **v0.40.0：踩到了才补上。**
+# 编辑中文源码时（尤其是含全角标点、破折号的注释），
+# 个别字符会被写成 **U+FFFD（U+FFFD）** —— 它是「无法解码的字节」的替身。
+#
+# 危害：① 编译**照样通过**（在注释里），② 但界面上/文档里会出现「[U+FFFD]」；
+# ③ 更糟的是**字符串字面量**里出现它 ⇒ 界面直接印出「[U+FFFD]」。
+#
+# 已实测抓到 6 处历史损坏（api/battery_decay.go、api/climb.go、
+# Haptics.kt、DrivesScreen.kt、RecordsScreen.kt、docs/operations.md）——
+# 全在注释里，但都是**人读**的东西。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import io, os, pathlib, sys
+root = pathlib.Path('.')
+exts = {'.kt', '.kts', '.go', '.sh', '.md', '.yaml', '.yml', '.json', '.xml', '.sql'}
+skip = {'.git', 'build', '.gradle', 'node_modules', '.mimosa', '.zcode', 'apk'}
+bad = []
+n = 0
+for dirpath, dirnames, filenames in os.walk(root):
+    dirnames[:] = [d for d in dirnames if d not in skip]
+    for fn in filenames:
+        if os.path.splitext(fn)[1].lower() not in exts:
+            continue
+        try:
+            s = io.open(os.path.join(dirpath, fn), encoding='utf-8').read()
+        except Exception:
+            continue
+        n += 1
+        if '\ufffd' in s:
+            i = s.index('\ufffd')
+            ln = s.count('\n', 0, i) + 1
+            bad.append('%s:%d' % (os.path.relpath(os.path.join(dirpath, fn), root), ln))
+if bad:
+    print('源码里出现 U+FFFD 替换字符（编辑中文时字符损坏）：')
+    for b in bad[:10]:
+        print('   ', b)
+    sys.exit(1)
+print('scanned %d files' % n)
+PYEOF
+if [ $? -eq 0 ]; then ok "源码无 U+FFFD 损坏字符"; else fail "源码出现 U+FFFD 损坏字符"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
