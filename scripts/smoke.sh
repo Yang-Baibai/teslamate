@@ -300,8 +300,13 @@ for c in d:
     m.setdefault(c['place_key'], set()).add(c['place'])
 bad = {k: v for k, v in m.items() if len(v) > 1}
 assert not bad, 'place_key maps to multiple names: %s' % list(bad.items())[:3]
+# v0.40.0：place_label 不得含**连续空格**
+# ⚠️ display_name 的格式是「G210 , 车河镇」—— 第二段自带前导空格，
+#    拼接时忘了 btrim ⇒ 「G210␣␣车河镇」两个空格。
+dbl = [c['place_label'] for c in d if c.get('place_label') and '  ' in c['place_label']]
+assert not dbl, 'place_label has double space: %s' % dbl[:5]
 " 2>/dev/null \
-  && ok "charges place_key 地点归一（一地一名）" || fail "charges place_key 地点归一"
+  && ok "charges place_key 地点归一（一地一名 + 无双空格）" || fail "charges place_key 地点归一"
 
 # 14. 充电实测口径（v0.31.0）：折算高估 +33%~185%，必须给实测值
 echo "$CH" | python -c "
@@ -366,6 +371,20 @@ if bash scripts/unit-tests.sh > /tmp/unit-tests.log 2>&1; then
 else
   fail "客户端 JVM 单元测试"
   cat /tmp/unit-tests.log | sed 's/^/    /'
+fi
+# 18c. ⚠️ v0.40.0：服务端闸门（Go 语法 + 密钥扫描）
+#
+# ⚠️ 这个项目的前 23 轮**服务端从没有过任何自动闸门** ——
+# 改完 api/ 只有「跑一次冒烟」，而冒烟查的是运行时行为。
+# 结果 2026-10-25 这一轮连续踩了 5 次「Go raw string 里出现反引号」，
+# 每次都要等容器构建失败才暴露（构建在流程末尾）。
+# 现在 `gofmt -e` 秒级解析，raw string 被截断必然报错。
+if bash scripts/server-gates.sh > /tmp/server-gates.log 2>&1; then
+  ok "服务端闸门（Go 语法 + 密钥扫描）"
+  grep -E '✓' /tmp/server-gates.log | sed 's/^/    /'
+else
+  fail "服务端闸门"
+  cat /tmp/server-gates.log | sed 's/^/    /'
 fi
 # 19. 爬升能耗系数（v0.33.0）：系数的物理自洽性是硬指标
 CM2=$(curl -s -m 180 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/climb_model?min_km=20")

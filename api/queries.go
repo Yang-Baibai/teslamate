@@ -180,8 +180,13 @@ charge_dc AS (
 // - 坐标四舍五入到 2 位小数（≈1.1 km）会被**舍入边界**劈开：
 //   22.5749 → 「22.57」而 22.5771 → 「22.58」—— 300 米的两个点分到两边。
 //
-// 所以：**按真实球面距离聚类**，半径 500 m，取**被引用次数最多**的那个
-// display_name 作为该地点的统一名字。
+// 所以：**按真实球面距离聚类**，半径 500 m。
+//
+// ⚠️ **v0.40.0：身份键与显示名**分开**（见 [cteAddrNorm] 里的实现说明）。**
+// 简言之：
+// - **身份键**（`place_key`）= 连通分量里**最小 id** ⇒ **永远不会变**
+//   （新增记录不会让同一个地方的 key 翻转）；
+// - **显示名**（`display_name`）= 分量里**被引用最多**的那个 ⇒ 可以变（换的是名字，不是身份）。
 //
 // ⚠️ 半径 500 m 的依据（实测）：
 // - 「永丰社区 ↔ 新湖路」**300 m** → 必须合并
@@ -189,9 +194,6 @@ charge_dc AS (
 // - 「荷坳立交 ↔ 荷坳路, 大园新村」**≈230 m** → 合并（同一片园区）
 // - 常驻点集合里也有一对 **243.3 m**（石化大道西 ↔ 龙山九路）——
 //   与 stay_points 的 250 m 合并阈值**同量级**，两个口径不冲突。
-//
-// ⚠️ 不用**传递闭包**：500 m 是「同一个地方」的物理尺度，
-// A-B 400 m、B-C 400 m 但 A-C 800 m 的情况在实测数据里不存在。
 const cteAddrNorm = `
 all_refs AS (
   SELECT start_address_id AS address_id FROM drives
@@ -205,18 +207,83 @@ addr_use AS (
          (SELECT count(*) FROM all_refs r WHERE r.address_id = a.id) AS uses
   FROM addresses a
 ),
-addr_norm AS (
-  SELECT u.id AS id,
-         (SELECT v.id FROM addr_use v
-          WHERE 6371000.0 * acos(least(1.0, greatest(-1.0,
-              cos(radians(u.latitude)) * cos(radians(v.latitude))
-            + sin(radians(u.latitude)) * sin(radians(v.latitude))
-            * cos(radians(u.longitude - v.longitude))
-          ))) <= 500
-          ORDER BY v.uses DESC, v.id ASC
-          LIMIT 1) AS canonical_id
+-- 500 m 邻接（球面距离）
+addr_adj AS (
+  SELECT u.id AS src, v.id AS dst
   FROM addr_use u
+  JOIN addr_use v ON u.id <> v.id
+  WHERE 6371000.0 * acos(least(1.0, greatest(-1.0,
+      cos(radians(u.latitude)) * cos(radians(v.latitude))
+    + sin(radians(u.latitude)) * sin(radians(v.latitude))
+    * cos(radians(u.longitude - v.longitude))
+  ))) <= 500
+),
+-- 传递闭包：从每个点出发能到达的所有点
+addr_reach AS (
+  SELECT id AS root, id AS member FROM addr_use
+  UNION
+  SELECT r.root, a.dst FROM addr_reach r JOIN addr_adj a ON a.src = r.member
+),
+comp_meta AS (
+  SELECT rc.root,
+         min(rc.member) AS comp_min,
+         (SELECT rc2.member FROM addr_reach rc2
+          JOIN addr_use u2 ON u2.id = rc2.member
+          WHERE rc2.root = rc.root
+          ORDER BY u2.uses DESC, rc2.member ASC
+          LIMIT 1) AS canonical_id
+  FROM addr_reach rc
+  GROUP BY rc.root
+),
+addr_norm AS (
+  -- ⚠️ **v0.40.0（第 21 轮口径审计 P1-2/P1-3）：改成真正的**传递闭包聚类**，
+  -- 并且把「身份键」与「显示名」**分开**。
+  --
+  -- ## 原来的做法（不是聚类）
+  --
+  -- 原来每个地址各自认「500 m 内被引用最多」的那个邻居 ——
+  -- **不传递、不对称**，所以同一个地方会被拆成**两个身份**。
+  --
+  -- ## 现在的做法
+  --
+  --   · addr_reach —— 递归 CTE 求**连通分量**（500 m 邻接的传递闭包）；
+  --   · comp_min —— 分量内**最小 id** ⇒ **稳定**的身份键。
+  --     ⚠️ 关键：身份键**不能**依赖 uses（引用次数）——
+  --        新增记录会让「被引用最多的那个」翻转 ⇒ 同一个地址的 key 变了
+  --        ⇒ 客户端「首尾 key 相等 ⇒ 回到同一地」的判断**无声失效**。
+  --     最小 id 只依赖地址本身，**永远不会变**。
+  --   · canonical_id —— 分量内**被引用最多**的那个（并列取 id 最小）⇒ 显示名。
+  --     ⚠️ 这个**会**随新数据变（换的是**名字**，不是**身份**）——
+  --        这是有意的：名字选更好看的那个，身份用稳定的那个。
+  --
+  -- ## 实测（独立复算，可重跑）
+  --
+  --   · 地址 **267** 个 → 分量 **196** 个（旧算法是 **202** 个不同 canonical）；
+  --   · 500 m 内相邻对 **93** 对；
+  --     - 旧算法：**10 对**拿到**不同**的 key ⇒ 同一个地方被拆成两个身份；
+  --     - 新算法：**0 对** ⇒ 不再拆。
+  --   · 身份键发生变化的地址：**51** 个（= 被纠正的那部分）；
+  --   · **往返**判定（首尾 key 相等）被纠正的行程：**5 趟**
+  --     （#84 / #96 / #112 / #130 / #344），往返行程总数 160 → **165**。
+  --
+  --   被纠正的 10 对（距离 / 旧 key / 新 key）：
+  --     72  ↔ 94   481.0 m   69|73  → 68|68   （前进一路 / 建安一路，同属文汇社区）
+  --     73  ↔ 259  449.2 m   73|258 → 68|68   （沃尔玛 / 前进二路）
+  --     79  ↔ 80   280.7 m   79|9   → 9|9     （龙岗大道 / 荷坳路）
+  --     79  ↔ 81   285.9 m   79|9   → 9|9
+  --     80  ↔ 298  407.2 m   9|79   → 9|9
+  --     81  ↔ 298  411.1 m   9|79   → 9|9
+  --     87  ↔ 88   222.0 m   85|88  → 85|85   （青春路，两个同名地址）
+  --     94  ↔ 259  421.5 m   73|258 → 68|68
+  --     147 ↔ 148  151.0 m   146|147→ 146|146 （康定：新华书店 / 炉城街道）
+  --     264 ↔ 276  206.4 m   264|5  → 5|5     （宝安大道）
+  SELECT u.id AS id,
+         cm.canonical_id AS canonical_id,
+         cm.comp_min AS comp_min
+  FROM addr_use u
+  JOIN comp_meta cm ON cm.root = u.id
 )`
+
 
 // ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：逐趟的毛耗电 / 回充 / 爬升。**
 //
@@ -310,7 +377,7 @@ ORDER BY d.start_date DESC
 LIMIT 500`
 
 const sqlDrives = `
-WITH` + cteChargeDC + `,
+WITH RECURSIVE` + cteChargeDC + `,
 ` + cteAddrNorm + `,
 charge_link AS (
   -- 每个充电会话的「起始里程」+ 是否直流快充。
@@ -361,8 +428,8 @@ SELECT d.id, d.start_date, d.end_date, d.duration_min, d.distance,
        -- 客户端据此判断「起止是不是同一个地方」——
        -- 实测 6227 公里那条的起点与终点相距 **300 米**，
        -- 是**往返**，原来却显示成「永丰社区 → 新湖路」的单程。
-       COALESCE('g' || sg.id::text, 'a' || an_s.canonical_id::text) AS start_place_key,
-       COALESCE('g' || eg.id::text, 'a' || an_e.canonical_id::text) AS end_place_key,
+       COALESCE('g' || sg.id::text, 'a' || an_s.comp_min::text) AS start_place_key,
+       COALESCE('g' || eg.id::text, 'a' || an_e.comp_min::text) AS end_place_key,
        sp.battery_level, ep.battery_level,
        -- ⚠️ v0.21.0：**负能耗护栏**。
        --
@@ -528,7 +595,7 @@ WHERE p.drive_id = $1
 ORDER BY p.date`
 
 const sqlCharges = `
-WITH ch_agg AS (
+WITH RECURSIVE ch_agg AS (
   SELECT charging_process_id,
          max(charger_power) AS peak_power_kw,
          round(avg(charger_power) FILTER (WHERE charger_power > 0))::int AS avg_power_kw,
@@ -658,7 +725,7 @@ SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
        -- ⚠️ v0.31.0：**归一后的地点标识**（围栏优先，否则用归一后的地址 id）。
        -- 客户端的 placeKey 用它 —— 原来用「名字 + 坐标四舍五入到 2 位小数」，
        -- 而 300 米的两个点会被**舍入边界**劈成两个键（22.57 / 22.58）。
-       COALESCE('g' || g.id::text, 'a' || an.canonical_id::text) AS place_key,
+       COALESCE('g' || g.id::text, 'a' || an.comp_min::text) AS place_key,
        -- ⚠️ v0.24.0（长途充电规划专家 P1-4）：**真实 POI 名**。
        --
        -- 原来显示的是**反向地理编码的长串**（「汕昆高速公路, 北庄, 宜州区, 河池市…」），
@@ -719,11 +786,16 @@ SELECT cp.id, cp.start_date, cp.end_date, cp.duration_min,
          END,
          -- ③ 「路名 + 地点」—— **只在第一段像高速时**
          --    （「三联大道」「城西大道」「长征大道」是城市道路，不是高速，不加）
+         -- ⚠️ **v0.40.0（第 24 轮客户复审 C6）：第二段自带**前导空格**。**
+         --    display_name 的格式是「G210 , 车河镇」——
+         --    split_part 切出来是「G210」（无尾空格）+「 车河镇」（**有前导空格**）。
+         --    原来直接拼「第一段 + 空格 + 第二段」⇒ 「G210␣␣车河镇」**两个空格**。
+         --    现在 btrim 掉第二段的前导空格 ⇒ 「G210 车河镇」一个空格。
          CASE
            WHEN split_part(ao.display_name, ',', 1) ~ '(^G[0-9]|高速$|公路$|国道$|省道$|线$)'
                 AND split_part(ao.display_name, ',', 2) <> ''
                 AND split_part(ao.display_name, ',', 2) !~ '街道$'
-             THEN split_part(ao.display_name, ',', 1) || ' ' || split_part(ao.display_name, ',', 2)
+             THEN split_part(ao.display_name, ',', 1) || ' ' || btrim(split_part(ao.display_name, ',', 2))
          END,
          -- ④ 原地址第一段
          NULLIF(split_part(ao.display_name, ',', 1), ''),
