@@ -151,10 +151,10 @@ TeslaMate 的采样可能是几小时前的旧值 —— 用旧值判告警会�
 
 | 表/字段 | 状态 | 影响 |
 |---|---|---|
-| `geofences` | 0 行 | 「起点/终点围栏名」不命中（「超充经过」已改里程关联，不依赖 geofence） |
-| `tou_rates` | 0 行 | 分时电价统计不可用；充电费用全 NULL（App 已隐藏该字段） |
+| `geofences` | **1 行**（「家」，2026-10-25 建，radius 200 m） | 「起点/终点围栏名」现在能命中**当前**位置（`location_name`）；但它是在**全部 78 场充电之后**才建的，所以**历史行程与充电的 `geofence_id` 全是 NULL**，不能拿它做历史统计 |
+| `tou_rates` | 0 行 | 分时电价统计不可用。⚠️ **v0.32.0 订正**：库里那套 TOU 引擎把结果写进**旁路表 `charging_processes_tou_cost.cost_tou`**，**从不写** `charging_processes.cost` —— 所以「配了 tou_rates 就能显示费用」是**错的**，API 目前也**零引用**这套引擎 |
 | `positions.elevation` | 原始列常为 null（TeslaMate 只在上报里带海拔时才写这一列） | **v0.7.0 起服务端会回填**：在最近 500 条 positions 里取最后一个非空值（`rx` CTE + `COALESCE`），只有这 500 条全为空时才返回空，App 显示「—」属正常 |
-| `charging_processes.cost` | 65 条全 NULL | 配置 tou_rates 后可恢复显示 |
+| `charging_processes.cost` | **78 条全 NULL** | ⚠️ **v0.32.0 订正**：「配置 tou_rates 后可恢复显示」**是错的** —— 见上一行。App 现在的费用**不取这个字段**，而是用车主填的电价在客户端估算（`/cost_summary`） |
 
 ## 6. 变更流程
 

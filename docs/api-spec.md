@@ -16,7 +16,13 @@
 | GET | /api/v1/drives/{id}/track | 单次行程轨迹（自动降采样 ≤1500 点） |
 | GET | /api/v1/cars/{id}/charges?limit=&offset= | 充电记录（默认 20，最大 200） |
 | GET | /api/v1/charges/{id}/curve | 单次充电分钟级曲线 |
-| GET | /api/v1/cars/{id}/stats?period=week\|month\|year | 桶聚合统计（周=含今天的近 7 个自然日 / 月=近 30 个自然日 / 年=近 12 个自然月，当月为进行中数据） |
+| GET | /api/v1/cars/{id}/stats?period=today\|week\|month\|calendar_month\|year | 桶聚合统计（今天 / 近 7 个自然日 / 近 30 个自然日 / 自然月 / 近 12 个自然月，当月为进行中数据）。⚠️ v0.32.0：**period 走白名单**，未知值返回 **400**（不默默夹到 30 天） |
+| GET | /api/v1/cars/{id}/cost_summary?period=today\|week\|month\|calendar_month\|year | **充电成本构成**（度数 / 场次 / 时长 / 行驶里程双分母）。同一套 period 白名单，未知值 **400**。⚠️ v0.31.0：同时返回 `km_drives` 与 `km_odometer`（长窗口下遥测断档会让两者差 16.71%，每公里成本要按区间显示） |
+| GET | /api/v1/cars/{id}/route_profile?drive_ids=&step_km= | **整条线路**的逐公里 SOC 剖面（多趟行程拼成一条）。v0.31.0 起带每段 `ascent_m` / `descent_m` |
+| GET | /api/v1/cars/{id}/driving_profile?limit=&min_km= | 驾驶风格画像（急刹/急加/夜间/超速/能耗 + 平顺分） |
+| GET | /api/v1/cars/{id}/stay_points?min_hours= | 常驻点（按距离合并，250 m） |
+| GET | /api/v1/cars/{id}/energy_profile | 能耗-车速曲线（车轮功率积分；含 `covered_km` 使平均能耗的分子分母同源） |
+| GET | /api/v1/drives/{id}/soc_profile?step_km= | 单次行程的逐公里 SOC 剖面 |
 | GET | /api/v1/cars/{id}/battery | 电池容量趋势与健康度 |
 | GET | /api/v1/app/latest | App 自更新用的版本元数据（版本号 / APK 地址 / 更新说明） |
 
@@ -143,6 +149,38 @@
 `current_capacity_kwh`（最近一次估算）`max_capacity_kwh`（历史最佳）`health_percent`（当前/最佳）
 `series[]`：每次「充到 ≥90%」会话的 `{date, capacity_kwh, end_soc}`。
 
+### ⚠️ v0.31.0：`/cars/{id}/cost_summary`
+`dc_used_kwh` `ac_used_kwh`（网侧度数）`dc_sessions` `ac_sessions` `dc_minutes` `ac_minutes`
+`home_used_kwh` `home_sessions` `home_minutes`（**围栏命中的真家充**，是 `ac_used_kwh` 的**子集**）
+`km_drives`（App 记录到的行驶里程）`km_odometer`（里程表在窗口内的跨度）
+
+| 字段 | 说明 |
+|---|---|
+| `home_*` | 交流 ∧ `charging_processes.geofence_id IS NOT NULL`。⚠️ 本机 78 场充电的 `geofence_id` **全为 NULL**（「家」围栏是 2026-10-25 才建的），所以这三个数现在恒为 0 —— 这是**事实**，不是缺陷 |
+| `km_drives` / `km_odometer` | ⚠️ **两个都要给**：两者差的是**遥测断档**里车真开过但没记行程的公里（实测全库 12 次断档合计 1459.62 km = 16.71%，全部发生在 2026-10-01 之前）。长窗口的「每公里成本」因此是个**区间**（下界 ÷ 里程表、上界 ÷ 行驶里程） |
+
+### ⚠️ v0.31.0：`/cars/{id}/charges` 的实测字段
+`measured_minutes_to_80` `measured_from_soc` `measured_unavailable_reason`
+
+| 字段 | 说明 |
+|---|---|
+| `measured_minutes_to_80` | **实测**从起始 SOC 充到 80% 的分钟数（`charges` 表逐点直读，**不是**折算）。`floor((t80 − t0)/60s)` **截断**取整。不可用时为 `null`（字段**始终**出现，不加 `omitempty`） |
+| `measured_from_soc` | 口径起点 = **曲线第一个采样点**的电量（不是 `cp.start_battery_level` —— 曲线可能中途才接上监控）。必须与上面一起显示 |
+| `measured_unavailable_reason` | `start_soc_ge_80` / `never_reached_80` / `too_few_points` / `soc_regressed` / `too_fast` / `too_long`。实测 78 场里有效仅 **30 场（38.5%）** |
+
+> 为什么必须有它：原来的「充到 80% 约 N 分钟」是按**整场平均功率**线性折算的，
+> 而直流桩在高 SOC 段会**降功率** → 整场平均被拖尾砍掉近一半 →
+> 实测 30 组可比场次**中位高估 +33%、最大 +185%**。
+
+### ⚠️ v0.31.0：`/cars/{id}/route_profile` 的爬升
+`ascent_m` `descent_m`（整条线路）· 每段 `ascent_m` / `descent_m`
+
+口径 = `drives.ascent` / `drives.descent`（原样，不去噪）。
+实测 `drives.ascent` 与「相邻点正高差之和」**逐条精确相等**（439/439，最大差 0 米）；
+但含 GPS 量化噪声 —— **长途大段偏差 0.8%~2.3%**（够准），**短途中位虚高 17.1%**。
+⚠️ **净爬升（毛爬升 − 毛下降）可以是负的**（实测那条 6227 公里线的净爬升只有 +3278 米），
+所以做能耗修正必须「上坡按毛爬升算、下坡按毛下降抵扣」，不能用净值。
+
 ## curl 示例（真实数据验证于 2026-10-12）
 
 ```bash
@@ -215,4 +253,14 @@ curl -s -H "Authorization: Bearer $TOKEN" http://localhost:8090/api/v1/cars/1/st
 
 ## 已移除的展示
 
-充电费用相关字段（`cost`、电费单价）已从 App 界面移除：`charging_processes.cost` 全库 65 条均为 NULL（未配置分时电价），展示价值为零。字段仍在 API 响应中保留，将来配置 `tou_rates` 后可再启用。
+⚠️ **v0.32.0 订正**：这一段是 v0.5.0~v0.24.0 期间的状态，已经**过时**。
+
+- **费用已在 v0.25.0 加回来了** —— 不用服务端的 `cost`（全库 78 条均为 NULL），
+  改用**车主自己在 App 设置页填的电价**在客户端估算（`/cost_summary?period=…`）。
+  现在的口径与限制见下方「充电成本构成」一节。
+- 「配置 `tou_rates` 后可再启用」这个说法**是错的**（第 20 轮费用复审查出）：
+  库里的 TOU 引擎（`compute_tou_cost` / `lookup_tou_rate` / `trigger_compute_tou`）
+  把结果写进**旁路表 `charging_processes_tou_cost.cost_tou`**，
+  **从不写** `charging_processes.cost` —— 所以配了 `tou_rates` 之后，
+  `charging_processes.cost` 仍然是 NULL，本字段仍然是空的。
+  要用上那套引擎，必须由 API **主动读 `charging_processes_tou_cost`**（尚未接线）。

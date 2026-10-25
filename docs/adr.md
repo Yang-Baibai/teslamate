@@ -16,7 +16,7 @@
 | 9 | 远程访问 | Tailscale 组网 | 路由器端口映射 / frp | 无公网 IPv4；端口映射暴露面大 | CHANGELOG 2026-10-12 |
 | 10 | 字体缩放 | App 内封顶 fontScale 1.15 | 全布局响应式重写 | 小米官方文档证实大字号档会布局错乱；封顶是微信/抖音通行做法 | CHANGELOG v0.2.2 |
 | 11 | 健康度分母 | 铭牌容量（NOMINAL_BATTERY_KWH 环境变量） | 历史实测最大值 / 满电续航反推 | 两者都随衰减漂移，健康度虚高且不可比（98% vs 85.2%） | CHANGELOG v0.5.0；data-dictionary.md §2 |
-| 12 | 充电费用 | 界面移除 | 显示"未记录" | cost 全库 NULL，展示价值为零；配 tou_rates 后可恢复 | CHANGELOG v0.5.0 |
+| 12 | 充电费用 | 界面移除 | 显示"未记录" | cost 全库 NULL，展示价值为零 | CHANGELOG v0.5.0 |
 | 13 | 图表实现 | Compose Canvas 自绘 | Vico/MPAndroidChart | 4 种图够了；少一个依赖；完全掌控中文样式 | CHANGELOG v0.2.0 |
 | 14 | 顶栏 | 普通 TopAppBar（64dp 固定） | Large/MediumTopAppBar | 折叠式在 density 2.5 屏上折叠区高达 270px+，用户感知为"异常空白" | CHANGELOG v0.4.0 |
 | 15 | V/A 占位值 | 服务端归 null，客户端显示"—" | 原样展示 | 2V/0A 是特斯拉 API 握手占位，展示会动摇用户对 App 的信任 | CHANGELOG v0.1.3 |
