@@ -519,28 +519,37 @@ fun RoutePlan.belowReserveNotice(): String? = belowReserveNoticeFrom(0)
  * ⚠️ **v0.44.0**：从第 [startIdx] 站起算的告警行。
  */
 fun RoutePlan.belowReserveNoticeFrom(startIdx: Int): String? {
-    val hop = longestHopFrom(startIdx) ?: return null
-    val req = hop.requiredSoc ?: return null
-    if (req <= 100) return null
+    val hop = longestHopFrom(startIdx)
+    val req = hop?.requiredSoc
+    val longestBelow = req != null && req > 100
+    // ⚠️ **v0.55.0（第 30 轮长途自驾党评审 P0-1）**：**不能只看最长那一跳**。
+    //
+    // 真实数据（616 公里那条默认线）：最长跳 191 公里、到站剩 30%（**不告警**），
+    // 但**另外 3 跳**到站低于 20% 保底（最险那跳只有 13~15%）。
+    // 折叠态是出发前 5 分钟真正会看到的那一屏 ⇒ 它必须报出来。
+    val arrivingBelow = hopsArrivingBelowReserve(startIdx)
+    if (!longestBelow && arrivingBelow.isEmpty()) return null
     return buildString {
-        append("这一跳要 ").append(hop.needPct).append(" 个点")
-        // ⚠️ **v0.40.0（第 24 轮客户复审 C1）：改口。**
-        //
-        // 原来写「充满也到不了 —— 得在前面加一站」——
-        // 那是**假事实**：复审实测这两跳上次**都到得了**
-        // （修文县 13%、建设南路 8%），只是低于 20% 保底。
-        // 「得在前面加一站」会让人在云南多跑几十公里
-        // 去找一个这趟根本没去过的桩。
-        append(" · 充满也只剩 ")
-        hop.fullArrivalSoc?.let { append(it).append("%") } ?: append("不到 20%")
-        append("，低于 ").append(RESERVE_SOC).append("% 保底")
-        // ⚠️ **v0.41.0（第 25 轮车主复审 P3）：动作。**
-        //
-        // 这一跳要 `need` 个点 + `RESERVE_SOC` 保底 > 100，
-        // 所以**在这站充到 100% 也不可能留住 20% 保底**
-        // ⇒ 想留住保底就**只能**提前一站补电。
-        // 这是**算出来的**，不是猜的 —— 也正因如此它不是「得在前面加一站」那种空建议。
-        append(" · 想留住就得提前一站补电")
+        if (longestBelow) {
+            append("这一跳要 ").append(hop!!.needPct).append(" 个点")
+            // ⚠️ **v0.40.0（第 24 轮客户复审 C1）：改口。**
+            //
+            // 原来写「充满也到不了 —— 得在前面加一站」——
+            // 那是**假事实**：复审实测这两跳上次**都到得了**
+            // （修文县 13%、建设南路 8%），只是低于 20% 保底。
+            // 「得在前面加一站」会让人在云南多跑几十公里
+            // 去找一个这趟根本没去过的桩。
+            append(" · 充满也只剩 ")
+            hop.fullArrivalSoc?.let { append(it).append("%") } ?: append("不到 20%")
+            append("，低于 ").append(RESERVE_SOC).append("% 保底")
+            // ⚠️ **v0.41.0（第 25 轮车主复审 P3）：动作。**
+            //
+            // 这一跳要 `need` 个点 + `RESERVE_SOC` 保底 > 100，
+            // 所以**在这站充到 100% 也不可能留住 20% 保底**
+            // ⇒ 想留住保底就**只能**提前一站补电。
+            // 这是**算出来的**，不是猜的 —— 也正因如此它不是「得在前面加一站」那种空建议。
+            append(" · 想留住就得提前一站补电")
+        }
         // ⚠️ **v0.39.0（第 23 轮车主复审 P2-2）：还有几跳要说清。**
         // 折叠态只显示**最长那一跳**的提示，
         // 而实测那条线有 **2 跳** —— 另一跳被藏起来了。
@@ -565,10 +574,27 @@ fun RoutePlan.belowReserveNoticeFrom(startIdx: Int): String? {
             // 身后 0 跳 —— 用户看到的**真险段一个都没提示**。
             // startIdx 1~25 共 **25 个站**全触发。
             append(if (startIdx > 0) {
-                " · 你身前还有 " + others + " 跳同样低于 " + RESERVE_SOC + "% 保底"
+                " · 你身前还有 " + others + " 跳充满也守不住 " + RESERVE_SOC + "% 保底"
             } else {
-                " · 还有 " + others + " 跳同样低于 " + RESERVE_SOC + "% 保底"
+                " · 还有 " + others + " 跳充满也守不住 " + RESERVE_SOC + "% 保底"
             })
+        }
+        // ⚠️ **v0.55.0（第 30 轮长途自驾党评审 P0-2）**：**另起一个计数**。
+        //
+        // 「到站低于 20% 保底」（按上次那样充，到站就低于保底）是**另一个口径**，
+        // 真实数据那条 6227 公里线有 **12 跳**（对照：充满也守不住的只有 2 跳、
+        // 展开态「需要注意」14 跳）——
+        // 三个口径差 13 倍，而原来**一句话**只说了第一个。
+        //
+        // 现在**分开说**，并点名最险的那一跳。
+        if (arrivingBelow.isNotEmpty()) {
+            if (isNotEmpty()) append(" · ")
+            append("另有 ").append(arrivingBelow.size).append(" 跳到站低于 ").append(RESERVE_SOC).append("% 保底")
+            arrivingBelow.minByOrNull { it.estSoc ?: 100 }?.let { worst ->
+                append("（最险：").append(worst.fromName).append(" → ").append(worst.toName)
+                    .append(" · ").append(worst.km.roundToInt()).append(" 公里 · 估 ")
+                    .append(worst.estSoc).append("%）")
+            }
         }
     }
 }
@@ -1204,6 +1230,51 @@ data class RoutePlan(
             "${minGap.roundToInt()}～${maxGap.roundToInt()} 公里，" +
             "中位 ${medGap.roundToInt()}"
     }
+}
+
+/**
+ * ⚠️ **v0.55.0（第 30 轮长途自驾党评审 P0-1）**：从 [startIdx] 起，**估算到站低于 20% 保底**的跳。
+ *
+ * ## 为什么要有它
+ *
+ * 折叠态的告警原来只看「**最长那一跳**」——
+ * 而真实数据（616 公里那条默认线）里，最长跳 191 公里、到站剩 30%（**不告警**），
+ * **另外 3 跳**到站低于 20% 保底（最险那跳只有 13~15%）。
+ *
+ * 折叠态是**出发前 5 分钟真正会看到的那一屏**，
+ * 它把「风险」等同于「最长跳到不了保底」⇒ 真正的险跳**完全不存在**。
+ *
+ * ## 与 [belowReserveHopCountFrom] 的区别（**两个口径，别混**）
+ *
+ * | | 判据 | 含义 |
+ * |---|---|---|
+ * | `belowReserveHopCountFrom` | `requiredSocHere > 100` | **充满也守不住** 20% 保底 |
+ * | `hopsArrivingBelowReserve` | `estSoc < 20` | **按上次那样充**，到站就低于 20% 保底 |
+ *
+ * 实测那条 6227 公里线：前者 2 跳、后者 12 跳、展开态「需要注意」14 跳 ——
+ * 三个口径差 13 倍，而原来**一句话**只说了第一个。
+ */
+fun RoutePlan.hopsArrivingBelowReserve(startIdx: Int): List<RouteHop> {
+    val from = if (startIdx in stops.indices) startIdx else 0
+    val out = mutableListOf<RouteHop>()
+    for (i in from..stops.lastIndex) {
+        val st = stops[i]
+        val gap = st.gapToNextKm ?: continue
+        if (gap < 2.0) continue
+        val est = st.socAtNextStop ?: continue
+        if (est >= RESERVE_SOC) continue
+        val nxt = if (i + 1 < stops.size) stops[i + 1] else null
+        out += RouteHop(
+            fromName = st.name,
+            toName = nxt?.name ?: "终点",
+            km = gap,
+            realSoc = st.nextStopRealSoc,
+            estSoc = est,
+            needPct = st.gapNeedPct,
+            requiredSoc = st.requiredSocHere,
+        )
+    }
+    return out
 }
 
 /**

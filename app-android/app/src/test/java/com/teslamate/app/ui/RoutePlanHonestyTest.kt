@@ -3,6 +3,7 @@ package com.teslamate.app.ui
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -360,5 +361,85 @@ class RoutePlanHonestyTest {
         assertEquals("主角行的最长一段含末站→终点", 169.0, hero.km, 0.001)
         // 站间距行**绝不能**再说「最长一段」——否则同一张卡上两个值打架
         assertFalse("站间距行不得重复「最长一段」: $rhythm", rhythm.contains("最长一段"))
+    }
+
+    // ── ⚠️ v0.55.0（第 30 轮长途自驾党评审 P0-1 / P0-2）───────────────
+
+    /**
+     * ⚠️ **第 30 轮长途自驾党评审 P0-1 的真实案例**（616 公里那条默认线）：
+     * 最长跳 191 公里、到站剩 30%（**够得着保底**），
+     * 但**另外 3 跳**到站低于 20% 保底（最险那跳只有 13~15%）。
+     *
+     * 折叠态是出发前 5 分钟真正会看到的那一屏 ⇒ 它**必须**报出来。
+     */
+    private fun planLongestOkButOthersLow() = RoutePlan(
+        RouteTemplate(
+            key = "j1", fromLabel = "A", toLabel = "B",
+            distanceKm = 400.0, startSoc = 100, endSoc = 30,
+            legCount = 4, stopCount = 2,
+            lastDrivenAt = java.time.Instant.parse("2026-10-18T00:00:00Z"),
+            startOdoKm = 100000.0,
+        ),
+        emptyList(),
+        listOf(
+            // 最长跳：191 公里，到站剩 30% ⇒ **够得着保底**
+            stop("中国石化", 191.0, gapKm = 191.0, need = 47, required = 67, realSoc = 30, estSoc = 30),
+            // 险跳：88 公里，到站只剩 13%
+            stop("红花园社区", 279.0, gapKm = 88.0, need = 23, required = 43, realSoc = 15, estSoc = 13),
+        ),
+    )
+
+    @Test
+    fun `最长跳够得着保底但别的跳到站低于保底时 折叠态必须告警`() {
+        // ⚠️ **第 30 轮 P0-1**：原来这里返回 null ⇒ 折叠态**一个字都不说**，
+        // 而展开态同时在说「需要注意的 N 跳」⇒ 同一张卡两个答案。
+        val n = planLongestOkButOthersLow().belowReserveNotice()
+        assertNotNull("折叠态必须报出那 3 跳（这里是 1 跳）", n)
+        assertTrue("应说明到站低于保底: $n", n!!.contains("到站低于 20% 保底"))
+        assertTrue("应点名最险的那一跳: $n", n.contains("最险："))
+        assertTrue("应给出最险那跳的估算: $n", n.contains("估 13%"))
+    }
+
+    @Test
+    fun `两种风险要用两种措辞分开说`() {
+        // ⚠️ **第 30 轮 P0-2**：原来一句话里只有一个数，
+        // 读者按字面理解「低于 20% 保底的跳」⇒ 与展开态差 13 倍。
+        val n = planWithBelowReserve().belowReserveNotice()!!
+        // 「充满也守不住」= `requiredSocHere > 100` 那一类
+        assertTrue("应说清「充满也守不住」那一类: $n", n.contains("充满也守不住"))
+        // 「到站低于」= 估算到站 < 20% 那一类
+        assertTrue("应说清「到站低于」那一类: $n", n.contains("到站低于 20% 保底"))
+        // ⚠️ **不能**用 v0.40.0 明令禁止的「充满也到不了」——
+        // 实测那两跳上次**都到得了**，只是低于保底。
+        assertTrue("不得出现被禁的「充满也到不了」: $n", !n.contains("充满也到不了"))
+    }
+
+    @Test
+    fun `到站低于保底的跳数与逐站口径一致`() {
+        // 真实数据那条 6227 公里线：充满也守不住 2 跳、到站低于 12 跳、展开态「需要注意」14 跳
+        // —— 三个口径，必须**分开报**，不能混成一个数。
+        val p = planWithBelowReserve()
+        val below = p.hopsArrivingBelowReserve(0)
+        // 夹具里：修文县 est=8、建设南路 est=17 ⇒ 2 跳到站低于保底
+        assertEquals("到站低于保底的跳数", 2, below.size)
+        assertEquals("G210 车河镇 est=30 ⇒ 不算", listOf("修文县", "建设南路"),
+            below.map { it.fromName })
+    }
+
+    @Test
+    fun `全部都够得着保底时仍然没有告警`() {
+        // 回归：v0.41.0 的既有不变量不能被破坏。
+        val p = RoutePlan(
+            RouteTemplate(
+                key = "j1", fromLabel = "A", toLabel = "B",
+                distanceKm = 120.0, startSoc = 100, endSoc = 50,
+                legCount = 2, stopCount = 1,
+                lastDrivenAt = java.time.Instant.parse("2026-10-07T00:00:00Z"),
+                startOdoKm = 100000.0,
+            ),
+            emptyList(),
+            listOf(stop("A", 0.0, gapKm = 120.0, need = 45, required = 65, realSoc = 22, estSoc = 30)),
+        )
+        assertNull("够得着保底就不该有告警行", p.belowReserveNotice())
     }
 }
