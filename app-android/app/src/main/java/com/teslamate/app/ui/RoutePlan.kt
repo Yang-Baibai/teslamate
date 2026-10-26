@@ -2915,12 +2915,12 @@ fun RoutePlanCard(
                 )
             }
         }
-        Text(
-            // ⚠️ Compose 的 Text 不解析 Markdown —— 之前写了 **粗体**，
-            // 结果界面上直接出现两个星号。
-            "按这条线路上真实发生过的充电推算（最近一次 ${t.lastDrivenAt?.fmtDate() ?: "—"}）",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：口径说明折进 ⓘ。
+        //
+        // 「按这条线路上真实发生过的充电推算」是**口径**不是数据 ⇒ 折。
+        InfoNote(
+            text = "按这条线路上真实发生过的充电推算（最近一次 ${t.lastDrivenAt?.fmtDate() ?: "—"}）",
+            a11yLabel = "补电点怎么推算的",
         )
         // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-4）：展开后总爬升不能消失。**
         //

@@ -588,13 +588,12 @@ internal fun ChargeDetail(
                                 lossKwh?.let { l -> append("（${l.fmt(2)} 度）") }
                                 append("（${if (charge.is_dc) "直流" else "交流"}）")
                             },
-                        )
-                    }
-                    if (charge.loss_percent != null) {
-                        Text(
-                            "交流约 10%、直流约 5%，属正常范围",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：正常范围的口径折进 ⓘ。
+                            //
+                            // 「交流约 10%、直流约 5%，属正常范围」是**指标注释**
+                            // （这个损耗百分比算不算异常）⇒ 折；
+                            // 正文只留损耗数本身，判定标准点 ⓘ 才看。
+                            note = "交流约 10%、直流约 5%，属正常范围",
                         )
                     }
                 }
@@ -657,7 +656,14 @@ internal fun ChargeDetail(
                             }
                             KV(
                                 "该站同起点最慢一次",
-                                "$measuredSlow 分钟$disclose",
+                                "$measuredSlow 分钟",
+                                // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：样本口径折进 ⓘ。
+                                //
+                                // 「（只统计充到 80% 成功的场次；另有 N 场没充到 80%…）」
+                                // 是**算法口径/披露**（这个「最慢」出自哪个总体）
+                                // ⇒ 折；正文只留「N 分钟」这个数。
+                                // 一字未改，只是从平铺改成点开才看。
+                                note = if (excluded > 0) disclose else null,
                             )
                         }
                         stat.compareTo(charge.effectiveAvgPowerKw()?.toDouble())?.let {
@@ -688,6 +694,22 @@ internal fun ChargeDetail(
                             val m90 = stat.minutesTo(fromSoc, 90, power)
                             if (m80 != null) {
                                 val bias = measuredMed?.let { m80 - it }
+                                // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：偏差脚注折进 ⓘ。
+                                //
+                                // 「（比同站同起点中位 N 分钟多 M 分钟，折算偏大 X%）」是
+                                // **解释性脚注**（车主第 32 轮点名要折的那类）
+                                // ⇒ 折进该指标的 ⓘ；正文只留「约 N 分钟」。
+                                // 括号里的字**一个没改**，只是不再默认铺开。
+                                val biasNote = bias?.let {
+                                    "（比同站同起点中位 $measuredMed 分钟多 $it 分钟" +
+                                        // ⚠️ **v0.60.0（第 30 轮 P1-4 附带发现）**：补**百分比** ——
+                                        // 分钟差要读者自己换算，而这一行的偏差**方向**正是
+                                        // 第 30 轮查出来「反了」的那一个 ⇒ 用百分比把方向钉死。
+                                        (foldBiasPercent(m80, measuredMed)?.let { b ->
+                                            if (b > 0) "，折算偏大 $b%" else "，折算偏小 ${-b}%"
+                                        } ?: "") +
+                                        "）"
+                                }
                                 KV(
                                     "从 $fromSoc% 充到 80%（折算）",
                                     // ⚠️ **v0.34.0（第 21 轮视觉评审 P2-5）：基准必须写清楚。**
@@ -696,17 +718,9 @@ internal fun ChargeDetail(
                                     // 「本次实测 36 分钟」和「该站同起点实测中位 37 分钟」，
                                     // **两个「实测」**。代码比的是**同站同起点中位**，
                                     // 文案却说「实测」→ 读者不知道在跟哪个比。
-                                    "约 $m80 分钟" +
-                                        (bias?.let {
-                                            "（比同站同起点中位 $measuredMed 分钟多 $it 分钟" +
-                                                // ⚠️ **v0.60.0（第 30 轮 P1-4 附带发现）**：补**百分比** ——
-                                                // 分钟差要读者自己换算，而这一行的偏差**方向**正是
-                                                // 第 30 轮查出来「反了」的那一个 ⇒ 用百分比把方向钉死。
-                                                (foldBiasPercent(m80, measuredMed)?.let { b ->
-                                                    if (b > 0) "，折算偏大 $b%" else "，折算偏小 ${-b}%"
-                                                } ?: "") +
-                                                "）"
-                                        } ?: ""),
+                                    // （v0.65.0：这句话挪进了本行的 ⓘ，基准仍然写清楚。）
+                                    "约 $m80 分钟",
+                                    note = biasNote,
                                 )
                             }
                             if (m90 != null) {
@@ -714,7 +728,13 @@ internal fun ChargeDetail(
                                 KV("从 $fromSoc% 充到 90%（折算）", "约 $m90 分钟$extra")
                             }
                             if (measuredMed != null || m80 != null) {
-                                Text(
+                                // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：折算口径折进 ⓘ。
+                                //
+                                // 「折算 = 用该站典型功率线性外推…」「实测」读自充电曲线的真实时间戳」
+                                // —— 这是**算法口径 + 操作指引**（这个数怎么来的、
+                                // 想按最坏情况该看哪一行）⇒ 折；
+                                // 正文只留数值，口径点 ⓘ 才看。
+                                InfoNote(
                                     // ⚠️ **v0.34.0（第 21 轮视觉评审 P0-3）：脚注原来与 App 自己的实测**矛盾**。**
                                     //
                                     // 原来写「直流桩在 80% 附近会降功率，所以折算通常**偏大**」——
@@ -741,7 +761,7 @@ internal fun ChargeDetail(
                                     // 那是「另一个屏幕的另一个折算」的数，而且会随数据变化**过期**
                                     // （本仓库最忌讳「改一处漏一处」）。
                                     // 改成**自指**：本屏的折算与**本站**实测中位的差，**上面已经给了**。
-                                    "折算 = 用该站典型功率线性外推「从 " + fromSoc +
+                                    text = "折算 = 用该站典型功率线性外推「从 " + fromSoc +
                                         "% 充到 80%」；它与本站同起点实测中位的差，上面已给出。" +
                                         "直流桩在 80% 附近降功率，所以折算可能偏大也可能偏小。" +
                                         // ⚠️ **v0.57.0（P1-5）**：只有**这个站真的有**
@@ -758,8 +778,7 @@ internal fun ChargeDetail(
                                                 "折算偏差只能靠上面与本站实测中位的对比来判断。"
                                         }) +
                                         "「实测」读自充电曲线的真实时间戳。",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    a11yLabel = "折算口径",
                                 )
                             }
                         }
@@ -775,15 +794,17 @@ internal fun ChargeDetail(
                     KV(
                         "平均功率",
                         charge.effectiveAvgPowerKw()?.let { "$it kW" } ?: "—",
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：口径折进 ⓘ。
+                        //
+                        // 「平均功率按采样时长加权（不是按采样点数）…」是**指标注释**
+                        // （这个数怎么算的）⇒ 折；
+                        // 正文只留 kW 数值，算法口径点 ⓘ 才看。
+                        note = if (charge.effectiveAvgPowerKw() != null) {
+                            "平均功率按采样时长加权（不是按采样点数），这是「还要等多久」的依据。"
+                        } else {
+                            null
+                        },
                     )
-                    // 说明口径：不然「平均功率」又是黑箱。
-                    if (charge.effectiveAvgPowerKw() != null) {
-                        Text(
-                            "平均功率按采样时长加权（不是按采样点数），这是「还要等多久」的依据。",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                     val cableCn = when (charge.cable_type) {
                         "GB_AC" -> "国标交流桩"
                         "GB_DC" -> "国标直流桩"

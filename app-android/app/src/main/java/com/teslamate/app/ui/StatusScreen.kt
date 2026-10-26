@@ -768,6 +768,12 @@ private fun RangeAndOdometer(
         // 而模型其实**只做热的修正**（>22°C），10°C 以下只有 1 条样本。
         // 也就是说：**冬天那个数是编的，而界面一个字都没说。**
         val tempCaveat = consumption?.tempCaveat(st.outside_temp)
+        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：样本**温度区间**折进 ⓘ，来源行只留「实测」。
+        //
+        // 「按 X~Y 的 N 条实测」这半句必须**常驻**（v0.26.0 第 17 轮新手车主 P0-2）：
+        // 新手分不清「实测」和「标称」，他不会去点角标 —— 折了就等于没说清这个数是实测来的。
+        // 而后面那半句温度口径（样本区间 + ≤10°C 有几条）是**算法口径说明**，
+        // 对只想知道「现在能开多远」的人是干扰 ⇒ 折到 ⓘ 里（点开仍在原位展开）。
         val scopeLine = consumption?.let { m ->
             buildString {
                 append("按 ")
@@ -775,9 +781,13 @@ private fun RangeAndOdometer(
                 append("~")
                 append(m.lastDrivenAt ?: "—")
                 append(" 的 ${m.sampleCount} 条实测")
-                val tmin = m.tempMinC
-                val tmax = m.tempMaxC
-                if (tmin != null && tmax != null) {
+            }
+        }
+        val scopeNote = consumption?.let { m ->
+            val tmin = m.tempMinC
+            val tmax = m.tempMaxC
+            if (tmin != null && tmax != null) {
+                buildString {
                     append("（${tmin.roundToInt()}~${tmax.roundToInt()}°C")
                     // ⚠️ v0.28.0（复审 P1-9）：不要写「无冬季样本」——
                     // 实测样本区间下界是 **8.3°C**，本身就是一条冬季样本。
@@ -790,6 +800,8 @@ private fun RangeAndOdometer(
                     }
                     append("）")
                 }
+            } else {
+                null
             }
         }
         val trueRange = consumption?.trueRangeKm(
@@ -868,17 +880,22 @@ private fun RangeAndOdometer(
                 speedKph = refSpeed,
                 outsideTempC = st.outside_temp,
             )
+            // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：残差口径折进 ⓘ，区间数字常驻。
+            //
+            // 「约 197 ~ 257 公里」是**答案**，必须一眼看得见；
+            // 括号里那句「模型残差 90 分位，样本为 N 条 ≥100 公里行程」是
+            // **算法口径说明**（车主点名要折的那一类）⇒ 折到行尾 ⓘ 里。
             val bandTxt = band?.let { (lo, hi) ->
-                "约 $lo ~ $hi 公里" +
+                "约 $lo ~ $hi 公里" to
                     (consumption?.residualSamples?.takeIf { it > 0 }?.let {
                         "（模型残差 90 分位，样本为 $it 条 ≥100 公里行程）"
                     } ?: "（模型残差 90 分位）")
             }
-            bandTxt?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            bandTxt?.let { (txt, note) ->
+                TextWithNote(
+                    text = txt,
+                    note = note,
+                    a11yLabel = "续航区间的残差说明",
                 )
             }
         }
@@ -898,11 +915,22 @@ private fun RangeAndOdometer(
         }
         // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：来源与温度可信度常驻显示。**
         if (scopeLine != null) {
-            Text(
-                scopeLine,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (scopeNote != null) {
+                // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：温度口径折进 ⓘ，
+                // 「N 条实测」这半句仍然常驻（来源自曝是 v0.26.0 P0-2 的硬要求）。
+                TextWithNote(
+                    text = scopeLine,
+                    note = scopeNote,
+                    style = MaterialTheme.typography.labelSmall,
+                    a11yLabel = "续航实测样本的说明",
+                )
+            } else {
+                Text(
+                    scopeLine,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         if (tempCaveat != null) {
             Text(

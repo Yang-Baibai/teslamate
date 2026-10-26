@@ -308,8 +308,17 @@ fun EnergyProfileCard(
         }
 
         Spacer(Modifier.height(6.dp))
-        Text(
-            buildString {
+        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：整段口径说明折进 ⓘ。
+        //
+        // 这一段是**卡级**的算法口径（毛耗电怎么积分、1 km 分箱、每一档到底什么意思），
+        // 对想深究的人很有价值，但默认铺开会把整张卡压成一块字 ——
+        // 车主原话：「细节上的文字直接展示出来的太多了…需要我点击一个小角标才会展示。
+        // 类似于每个指标的注释那种感觉。」
+        //
+        // 这里没有可挂的「指标行」⇒ 用 [InfoNote]（ⓘ + 短标签 + 点开就地展开），
+        // **位置不变**（仍在卡片末尾），展开后正文与原来逐字相同（含 ⚠️ 标记）。
+        InfoNote(
+            text = buildString {
                 append("口径：车轮功率毛耗电（`max(P,0)×Δt`，不含下坡回充抵扣；")
                 append("净值是梯形积分，两者在明细行分开标），")
                 append("1 km 分箱、按箱内里程表跨度算距离。")
@@ -327,8 +336,8 @@ fun EnergyProfileCard(
                     append("（最费电那档 $it kWh/100km 与最省电那档太近，柱上只标了一个）")
                 }
             },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            label = "口径说明",
+            a11yLabel = "能耗车速曲线的口径说明",
         )
     }
 }

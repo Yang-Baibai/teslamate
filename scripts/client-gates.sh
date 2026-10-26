@@ -226,6 +226,74 @@ PYEOF
 if [ $? -eq 0 ]; then ok "动效一致性（三处展开同规格 + iOS 曲线 + 无硬编码时长 + 无闲置 token）"; else fail "动效一致性"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 5：可见长说明块（棘轮）──────────────────────────────────
+#
+# ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**。
+#
+# 车主原话：「界面美观性上没什么问题，但**太啰嗦了**，细节上的文字直接展示出来的太多了，
+# 比如驾驶画像的平顺分的解释，应该隐藏起来，需要我点击一个小角标才会展示。
+# 类似于每个指标的注释那种感觉。」
+#
+# 排查结论：App 里当时有 **36 块**「直接可见的长说明」（≥22 汉字的 Text 块），
+# 合计 2211 字，分布在 10 个文件。本轮把它们折进 `InfoNote` / `TextWithNote` /
+# `KeyValueWithNote`（ⓘ 角标 + 点开就地展开）⇒ 降到 **11 块 / 513 字**。
+#
+# 这条闸门是**棘轮**：把「可见长说明块数」钉在预算上。
+# 以后再往界面上平铺一段解释，这道闸门立刻红 ——
+# 逼着作者先想清楚「这是补充说明（该折）还是用户要马上知道的事（该留）」。
+#
+# ⚠️ 确实需要常驻长文时（如新的告警），**有意**调高 BUDGET 并在 CHANGELOG 写明理由。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import re, pathlib, sys
+CJK = re.compile(r'[\u4e00-\u9fff]')
+LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+# 预算 = 本轮迁移后的实测值 + 0 冗余（改之前先想清楚）
+BUDGET = 11
+root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+
+def visible_long_blocks(src):
+    lines = src.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().startswith('Text('):
+            depth = 0
+            lits = []
+            j = i
+            while j < len(lines):
+                ln = lines[j]
+                if not ln.strip().startswith('//'):
+                    lits += LIT.findall(ln)
+                depth += ln.count('(') - ln.count(')')
+                if j > i and depth <= 0:
+                    break
+                j += 1
+            plain = ''.join(re.sub(r'\$\{[^}]*\}', '…', x) for x in lits)
+            if len(CJK.findall(plain)) >= 22:
+                out.append((i + 1, plain[:50]))
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+bad = []
+for p in sorted(root.rglob('*.kt')):
+    for ln, txt in visible_long_blocks(p.read_text(encoding='utf-8', errors='replace')):
+        bad.append('%s:%d  %s' % (p.name, ln, txt))
+
+if len(bad) > BUDGET:
+    print('可见长说明块 %d 个，超过预算 %d —— 又把解释铺回界面了：' % (len(bad), BUDGET))
+    for b in bad[:14]:
+        print('   ', b)
+    print('   ⇒ 口径说明请折进 InfoNote / TextWithNote / KeyValueWithNote（ⓘ 角标）')
+    print('   ⇒ 确实该常驻时，有意调高本闸门的 BUDGET，并在 CHANGELOG 写明理由')
+    sys.exit(1)
+print('可见长说明块 %d 个（预算 %d）' % (len(bad), BUDGET))
+PYEOF
+if [ $? -eq 0 ]; then ok "啰嗦棘轮（可见长说明块 ≤ 预算）"; else fail "啰嗦棘轮（可见长说明块超预算）"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

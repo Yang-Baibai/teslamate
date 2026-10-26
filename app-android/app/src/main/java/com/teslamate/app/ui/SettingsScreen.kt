@@ -832,10 +832,10 @@ private fun SettingsVehiclesPage(
                         }
                     }
                     // ⚠️ v0.16.0：基准按车隔离，得让用户知道。
-                    Text(
-                        "保养与轮胎基准按车分别保存。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：口径说明折进 ⓘ。
+                    InfoNote(
+                        text = "保养与轮胎基准按车分别保存。",
+                        a11yLabel = "保养设置的保存方式",
                     )
                 }
             }
@@ -881,11 +881,11 @@ private fun SettingsMaintenancePage(
                     "保养与轮胎提醒" + (carName?.let { " · $it" } ?: ""),
                     Modifier.animateItem(),
                 ) {
-                    Text(
-                        "填「上次做的时候里程表是多少」和一个间隔，" +
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：操作指引折进 ⓘ。
+                    InfoNote(
+                        text = "填「上次做的时候里程表是多少」和一个间隔，" +
                             "App 用现在的里程表算出还剩多少公里。留空 = 不提醒。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        a11yLabel = "保养怎么填",
                     )
                     IosField(
                         label = "上次保养时的里程（公里）",
@@ -976,26 +976,19 @@ private fun SettingsHelpPage(onBack: () -> Unit, modifier: Modifier = Modifier) 
                     //
                     // 现在每条一行 Row：项目符号占固定宽度，文字在右边自己换行 ——
                     // 续行自然与文字起始处对齐（真正的悬挂缩进）。
-                    listOf(
-                        "家里 WiFi：地址填 http://<电脑局域网IP>:8090（电脑上 ipconfig 可查 IP）",
-                        "外出使用：电脑和手机都装 Tailscale 并登录同一账号后，地址改填 http://<电脑的Tailscale名称或IP>:8090",
-                        "令牌在电脑项目目录的 .env 文件中 API_TOKEN= 一行",
-                    ).forEach { line ->
-                        Row(Modifier.padding(bottom = 6.dp)) {
-                            Text(
-                                "•",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.width(14.dp),
-                            )
-                            Text(
-                                line,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：地址怎么填（3 条）折成 ⓘ。
+                    //
+                    // 车主第 32 轮拍板：「操作指引也折」⇒ 这段最典型的操作指引折起来。
+                    // 保留悬挂缩进的三条结构（展开后仍是一份清单，不是三段各说各话）。
+                    InfoNote(
+                        text = listOf(
+                            "家里 WiFi：地址填 http://<电脑局域网IP>:8090（电脑上 ipconfig 可查 IP）",
+                            "外出使用：电脑和手机都装 Tailscale 并登录同一账号后，地址改填 http://<电脑的Tailscale名称或IP>:8090",
+                            "令牌在电脑项目目录的 .env 文件中 API_TOKEN= 一行",
+                        ).joinToString("\n"),
+                        label = "怎么填地址？",
+                        a11yLabel = "地址怎么填",
+                    )
                 }
             }
         }
@@ -1147,10 +1140,10 @@ private fun SettingsServerStatusPage(
                 SectionCard("服务器信息", Modifier.animateItem()) {
                     KV("App 版本", "v${BuildConfig.VERSION_NAME}")
                     health?.server_timezone?.let { KV("服务端时区", it) }
-                    Text(
-                        "车况数据按服务端时区分日；时间轴上的时间按手机时区显示。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：时区口径折进 ⓘ。
+                    InfoNote(
+                        text = "车况数据按服务端时区分日；时间轴上的时间按手机时区显示。",
+                        a11yLabel = "时区口径",
                     )
                 }
             }
@@ -1193,12 +1186,12 @@ private fun SettingsRatesPage(
         ) {
             item {
                 SectionCard("电价" + (carName?.let { " · $it" } ?: ""), Modifier.animateItem()) {
-                    Text(
-                        "填上你的电价，App 就能给出「每公里成本」的估算" +
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：操作指引折进 ⓘ。
+                    InfoNote(
+                        text = "填上你的电价，App 就能给出「每公里成本」的估算" +
                             "（分母是 App 记录的行驶里程，可能漏记）—— " +
                             "这个数官方 Tesla App 给不了。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        a11yLabel = "每公里成本怎么来的",
                     )
                     // ⚠️ **v0.30.0（第 19 轮财务评审 P0-3 / P2-1）：口径改了。**
                     //
@@ -1211,12 +1204,12 @@ private fun SettingsRatesPage(
                     //
                     // 现在：**家充有真凭据**（TeslaMate 的充电围栏），
                     // 没有归属的交流由下面的开关决定按哪个价算。
-                    Text(
-                        "家充按 TeslaMate 的充电围栏判定（命中围栏的才算家充）。" +
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：围栏判定口径折进 ⓘ。
+                    InfoNote(
+                        text = "家充按 TeslaMate 的充电围栏判定（命中围栏的才算家充）。" +
                             "没有围栏归属的交流慢充，App 不知道它是在家还是在酒店/路边 —— " +
                             "用下面的开关决定按哪个价算。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        a11yLabel = "家充怎么判定",
                     )
                     // ⚠️ v0.30.0：**新开关** —— 没有围栏归属的交流慢充按哪个价算。
                     Row(
@@ -1241,11 +1234,11 @@ private fun SettingsRatesPage(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
-                    Text(
-                        "默认按公共桩价算 —— 因为实测本机 5 场交流慢充全部在 286 公里以外，" +
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：默认值的理由折进 ⓘ。
+                    InfoNote(
+                        text = "默认按公共桩价算 —— 因为实测本机 5 场交流慢充全部在 286 公里以外，" +
                             "「交流 = 家充」这个假设 5/5 是错的。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        a11yLabel = "为什么默认按公共桩价",
                     )
                     IosField(
                         label = "家充电价（元/度）",
@@ -1316,14 +1309,16 @@ private fun SettingsRatesPage(
                             style = MaterialTheme.typography.bodyMedium,
                         )
                     }
-                    Text(
-                        "服务区快充普遍按分钟收服务费（占位时间也要钱）。" +
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：服务费口径折进 ⓘ。
+                    //
+                    // 「按分钟还是按度」是**口径**，实测数字是它的证据 ⇒ 一起折。
+                    InfoNote(
+                        text = "服务区快充普遍按分钟收服务费（占位时间也要钱）。" +
                             "本机实测：按分钟 ≈ ¥1,094.50、按度 ≈ ¥902.76 —— " +
                             "这两个服务费金额之间差 21.2%；" +
                             "换成总费用看是 ¥3,295.67 vs ¥3,103.93（差 5.8%）。" +
                             "不填服务费会低估约 33%。家用交流桩反过来必须按度算。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        a11yLabel = "服务费怎么算",
                     )
                 }
             }
@@ -1352,10 +1347,10 @@ private fun SettingsRatesPage(
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
-                    Text(
-                        "电价按车分别保存。保存后用量页会显示「每公里成本」。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：口径说明折进 ⓘ。
+                    InfoNote(
+                        text = "电价按车分别保存。保存后用量页会显示「每公里成本」。",
+                        a11yLabel = "电价的保存方式",
                     )
                 }
             }
@@ -1385,10 +1380,12 @@ private fun SettingsAboutPage(onBack: () -> Unit, modifier: Modifier = Modifier)
             item {
                 SectionCard("关于", Modifier.animateItem()) {
                     KV("当前版本", "v${BuildConfig.VERSION_NAME}")
-                    Text(
-                        "启动时自动检查更新；有新版本会弹窗提示，点「立即更新」即可在线升级。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：操作指引折进 ⓘ。
+                    //
+                    // 车主第 32 轮拍板：「操作指引也折」⇒ 这条折。
+                    InfoNote(
+                        text = "启动时自动检查更新；有新版本会弹窗提示，点「立即更新」即可在线升级。",
+                        a11yLabel = "自动更新怎么用",
                     )
                 }
             }

@@ -850,37 +850,72 @@ fun CarChip(
  * 值不再需要靠右对齐，续行也就自然对齐，不会悬空。
  */
 @Composable
-fun KV(k: String, v: String) {
+fun KV(k: String, v: String, note: String? = null) {
     val fontScale = LocalDensity.current.fontScale
-    if (fontScale > 1.15f) {
-        Column(Modifier.fillMaxWidth()) {
-            Text(
-                k,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                v,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
+    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：可选的**指标注释**。
+    //
+    // 车主诉求：「细节上的文字直接展示出来的太多了…需要我点击一个小角标才会展示，
+    // 类似于每个指标的注释那种感觉。」
+    //
+    // 标签右侧一个 ⓘ 徽标，点开在**整行下面**就地展开说明（`NoteBody`）。
+    // 折叠范围见 `InfoNote.kt` 的约定表：
+    // 指标注释/口径说明/操作指引折叠，**告警与错误保持直接可见**。
+    var expanded by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        if (fontScale > 1.15f) {
+            Column(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        k,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (note != null) {
+                        Spacer(Modifier.width(4.dp))
+                        InfoBadge(
+                            expanded = expanded,
+                            onToggle = { expanded = !expanded },
+                            a11yLabel = "$k 的说明",
+                        )
+                    }
+                }
+                Text(
+                    v,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        } else {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(k, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    v,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.End,
+                    // ⚠️ v0.8.1：2 行在大字号下会截断数值（WCAG 1.4.4 要求放大后不丢内容），
+                    // 放宽到 3 行 —— 长数值如「412.35 km（+128 km）」在 1.3 倍字号下需要第三行。
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (note != null) {
+                    // ⚠️ 徽标放**行尾**（值之后）—— 与 iOS 设置项的「ⓘ 披露按钮」同位，
+                    // 视线终点固定，也不会与标签/数值抢空间。
+                    Spacer(Modifier.width(4.dp))
+                    InfoBadge(
+                        expanded = expanded,
+                        onToggle = { expanded = !expanded },
+                        a11yLabel = "$k 的说明",
+                    )
+                }
+            }
         }
-        return
-    }
-    Row(Modifier.fillMaxWidth()) {
-        Text(k, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.weight(1f))
-        Text(
-            v,
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.End,
-            // ⚠️ v0.8.1：2 行在大字号下会截断数值（WCAG 1.4.4 要求放大后不丢内容），
-            // 放宽到 3 行 —— 长数值如「412.35 km（+128 km）」在 1.3 倍字号下需要第三行。
-            maxLines = 3,
-            overflow = TextOverflow.Ellipsis,
-        )
+        if (note != null) {
+            NoteBody(text = note, visible = expanded)
+        }
     }
 }
 

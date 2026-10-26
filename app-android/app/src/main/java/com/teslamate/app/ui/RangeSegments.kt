@@ -362,14 +362,17 @@ fun RangeSegmentsCard(
                 // 现在压到 ~100 em，且把「两个都是实测」改成
                 // 「**一个折算、一个直读**」（P9：卡名就叫「实测满电续航」，
                 // 再说「两个都是实测」读者会以为是同一类东西）。
-                Text(
-                    "这是折算值：把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电，" +
+                // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：这一段是**折算口径**
+                // （怎么折到满电、为什么偏乐观、规划该用哪个数）——
+                // 属于**补充说明**而不是数据 ⇒ 折进 ⓘ，默认态只留主角与明细。
+                InfoNote(
+                    text = "这是折算值：把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电，" +
                         "含没充满就走的段。折算用净掉电，下坡回充被抵扣，所以偏乐观。" +
                         (official?.let { "车机满电时自己报的是 ${it.roundToInt()} 公里；" } ?: "") +
                         "这两个数都是这车跑出来的，区别是一个折算、一个直读：" +
                         "规划请用上面的线路余量表。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    label = "这个数怎么算的",
+                    a11yLabel = "实测满电续航的折算口径",
                 )
                 best?.let {
                     Text(
@@ -390,11 +393,14 @@ fun RangeSegmentsCard(
                 // ⚠️ v0.28.0（复审 P2-13）：「最好」那个数必须打折看。
                 // 实测最好那趟是**山地下坡**的产物（海拔 1389~4327 m），
                 // 回充让等效能耗降到 110 Wh/km —— **平路跑不出这个数**。
-                Text(
-                    "「最好」多半含下坡回充（长下坡几乎不耗电），别拿它当平路规划依据；" +
+                // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：这段是**读法说明**
+                // （为什么「最好」不能当平路依据、哪个更接近市区工况）——
+                // 补充说明 ⇒ 折进 ⓘ；上面的「最好 / 最差」两个数仍是直接可见的。
+                InfoNote(
+                    text = "「最好」多半含下坡回充（长下坡几乎不耗电），别拿它当平路规划依据；" +
                         "「最差」才是市区工况更接近的那个数。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    label = "最好/最差怎么读",
+                    a11yLabel = "最好最差的读法说明",
                 )
                 Spacer(Modifier.height(6.dp))
                 // ⚠️ **v0.29.0（HIG P1-6）：明细改成两行式。**
@@ -434,12 +440,15 @@ fun RangeSegmentsCard(
                     }
                 }
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    "口径：一次充电结束到下一次充电开始，按掉电百分比折算到满电。" +
+                // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：这一段是**口径**
+                // （一段续航怎么定义、为什么是折算值、中位数代表什么）——
+                // 补充说明 ⇒ 折进 ⓘ。
+                InfoNote(
+                    text = "口径：一次充电结束到下一次充电开始，按掉电百分比折算到满电。" +
                         "这是折算值，不是某一次满电实跑；" +
                         "市区与高速差 1.7 倍，中位数不代表任何一次具体出行。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    label = "口径",
+                    a11yLabel = "续航口径说明",
                 )
             }
         }

@@ -15,6 +15,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -105,42 +109,32 @@ fun DriveScoreCard(
             mid = true,
         )
         Spacer(Modifier.height(2.dp))
-        Text(
-            // ⚠️ **v0.47.0（第 28 轮 a11y P1-3）**：这里的「 · 」换成「，」——
-            // 同一串里连用 3 个「 · 」，TTS 会逐字念成「点」，
-            // 在四个并列短语之间插噪声（WCAG 1.3.1 / 4.1.2）。
-            // 这三段本来就是并列短语，念成「，」比念成「点」清楚。
-            // （仓库里本来就大量用「，」，如 `joinToString("，")` —— 风格一致。）
-            "按 ≥${profile.params.min_distance_km} 公里的 ${s.drive_count} 趟算" +
-                "，共 ${s.total_km.roundToInt()} 公里" +
-                "，平均 ${s.avg_score.roundToInt()} 分" +
-                // ⚠️ v0.44.0：这 100 分里**只有 60 分**是急刹/急加/超速，
-                // 另外 40 分是**能耗与夜驾** —— 名字叫「平顺」，实际不是。
-                "，其中 40 分来自能耗与夜驾，不只是平顺",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        // ⚠️ **v0.50.0（第 28 轮通勤车主评审 P1-4）：把**门槛**这件事说清楚。**
+        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）：副标题只留**数据**，口径说明折进 ⓘ。**
         //
-        // 真实数据（全车 364 趟）：
-        // · 单趟中位 **5.6 公里**
-        // · **72.8%** 的趟**不到 20 公里**（被门槛排除在外）
-        // · 够得着门槛的 20 趟，**平均 91.0 公里/趟**
+        // 车主原话：「驾驶画像的平顺分的解释，应该隐藏起来，
+        // 需要我点击一个小角标才会展示。类似于每个指标的注释那种感觉。」
         //
-        // ⇒ 对一个每天开 5~30 公里的通勤者，这张卡「永远够不着评分」，
-        // 而界面上只写「按 ≥20 公里的 20 趟算」—— 读者不知道
-        // **自己七成的行程被这个门槛筛掉了**，也不知道这 20 趟有多长。
+        // 原来这里平铺着两句口径：
+        // ①「其中 40 分来自能耗与夜驾，不只是平顺」（v0.44.0 加的）
+        // ②「门槛 20 公里：这 20 趟平均 91 公里/趟，更短的行程不在里面」（v0.50.0 加的）
+        // 两条都是**口径**不是数据 ⇒ 折到副标题后面的 ⓘ 里。
         //
-        // 现在把门槛的后果与这批行程的**量级**都摆出来（纯事实，不做解读）。
+        // ⚠️ **v0.47.0（第 28 轮 a11y P1-3）** 的「 · 换成 ，」仍然成立（读屏别念「点」）。
         val avgKmPerTrip = driveProfileAvgKmPerTrip(s.total_km, s.drive_count)
-        if (avgKmPerTrip != null) {
-            Text(
-                "门槛 ${profile.params.min_distance_km} 公里：这 " +
-                    "${s.drive_count} 趟平均 ${avgKmPerTrip} 公里/趟，更短的行程不在里面",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        TextWithNote(
+            text = "按 ≥${profile.params.min_distance_km} 公里的 ${s.drive_count} 趟算" +
+                "，共 ${s.total_km.roundToInt()} 公里" +
+                "，平均 ${s.avg_score.roundToInt()} 分",
+            note = buildString {
+                append("这 100 分里只有 60 分是急刹/急加/速度，另外 40 分来自能耗与夜驾 —— ")
+                append("名字叫「平顺」，实际不是。")
+                if (avgKmPerTrip != null) {
+                    append("门槛 ${profile.params.min_distance_km} 公里：这 ${s.drive_count} 趟平均 ")
+                    append("$avgKmPerTrip 公里/趟，更短的行程不在里面。")
+                }
+            },
+            a11yLabel = "驾驶平顺分的算法",
+        )
         Spacer(Modifier.height(10.dp))
 
         // ── 分项 ──
@@ -279,8 +273,12 @@ fun DriveScoreCard(
         //    即「**超过 3 个百分点**的部分每 1 个百分点扣 1 分」，
         //    不是「最快的 3% 样本豁免」。实测 20 趟的超速占比中位 **19.1%**，
         //    「前 3% 免赔」在实践中几乎从不生效。
-        Text(
-            "分数 = 100 − 急刹车(≤30) − 急加速(≤20) − ≥${profile.params.over_speed_kph}km/h(≤20)" +
+        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：整段评分公式（106 字）折进 ⓘ。
+        //
+        // 车主要的是「小角标」⇒ **本轮新加的折叠一律用 ⓘ**（InfoNote 带短标签），
+        // 不再混用「怎么算的 ⌄」箭头折叠（那是电池卡里既有的老模式，不动它）。
+        InfoNote(
+            text =             "分数 = 100 − 急刹车(≤30) − 急加速(≤20) − ≥${profile.params.over_speed_kph}km/h(≤20)" +
                 " − 能耗(≤15) − 夜驾(≤15)。" +
                 "两条免赔线：≥${profile.params.over_speed_kph} km/h 的占比超过 3 个百分点的部分" +
                 "每 1 个百分点扣 1 分；能耗 150 Wh/km（即 15 kWh/100km）以下不扣。" +
@@ -290,8 +288,8 @@ fun DriveScoreCard(
                 "≥${profile.params.over_speed_kph} km/h —— " +
                 "都是行业惯例值，不是从这辆车拟合出来的。" +
                 "⚠️ 120 km/h 是国内高速的合法限速，这一项扣的是「开得比限速快」，不是「违法」。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            label = "怎么算的",
+            a11yLabel = "驾驶平顺分的算法",
         )
     }
 }
@@ -335,13 +333,21 @@ private fun scoreColor(score: Double): Color {
     return if (score >= 85) a.energyBlue else a.warnAmber
 }
 
-/** 一个分项行：标题 + 数值 + 一句解释。 */
+/** 一个分项行：标题 + 数值 + （点 ⓘ 才展开的）一句解释。 */
 @Composable
 private fun ScoreRow(
     label: String,
     value: String,
     hint: String,
 ) {
+    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：解释从「平铺」改成 **ⓘ 角标 + 就地展开**。
+    //
+    // 车主点名的那一处：「驾驶画像的平顺分的解释，应该隐藏起来，
+    // 需要我点击一个小角标才会展示。类似于每个指标的注释那种感觉。」
+    //
+    // 原来这 5 个分项下面各挂一句解释，卡片高度被撑掉近一半；
+    // 现在收成 5 个 ⓘ，展开才占地方。
+    var expanded by remember { mutableStateOf(false) }
     Column(Modifier.padding(vertical = 3.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -364,11 +370,14 @@ private fun ScoreRow(
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
+            // ⚠️ 徽标放**行尾**（值之后）—— 与 iOS 设置项的「ⓘ 披露按钮」同位。
+            Spacer(Modifier.width(4.dp))
+            InfoBadge(
+                expanded = expanded,
+                onToggle = { expanded = !expanded },
+                a11yLabel = "$label 的说明",
+            )
         }
-        Text(
-            hint,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        NoteBody(text = hint, visible = expanded)
     }
 }

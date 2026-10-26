@@ -168,12 +168,17 @@ fun StayPointsCard(
             }
         }
         Spacer(Modifier.height(4.dp))
-        Text(
-            "停留时长由相邻行程的时间间隙推断 —— 车睡着后 TeslaMate 不再记位置，" +
+        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：这一段是**算法口径说明**
+        // （停留时长怎么推出来的、车睡着后不记位置 ⇒ 不是实时停车时长、
+        //   分不出「家」和「公司」）—— 是**补充说明**而不是数据，
+        // 默认铺开会把卡片下半部压成一块字 ⇒ 折进 ⓘ，点开才看。
+        // 折叠范围见 `InfoNote.kt` 的约定表：指标注释/口径说明折，告警与错误保持可见。
+        InfoNote(
+            text = "停留时长由相邻行程的时间间隙推断 —— 车睡着后 TeslaMate 不再记位置，" +
                 "所以这不是实时停车时长。App 也分不出哪个是「家」、哪个是「公司」，" +
                 "这里只按停过几次排。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            label = "怎么算的",
+            a11yLabel = "停留时长的说明",
         )
     }
 }

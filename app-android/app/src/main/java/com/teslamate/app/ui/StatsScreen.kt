@@ -350,12 +350,13 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
             val serverTz = s.server_timezone
             if (!serverTz.isNullOrBlank() && serverTz != java.time.ZoneId.systemDefault().id) {
                 item {
-                    Text(
-                        "全 App 的时间与分日都按服务端时区 $serverTz",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 4.dp),
-                    )
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：时区口径折进 ⓘ。
+                        //
+                        // 「全 App 的时间与分日都按服务端时区」是**口径**⇒ 折。
+                        InfoNote(
+                            text = "全 App 的时间与分日都按服务端时区 $serverTz",
+                            a11yLabel = "时区口径",
+                        )
                 }
             }
 
@@ -535,12 +536,13 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                 // 电价是在**本 App 的设置页**填的（v0.25.0 起），
                                 // TeslaMate 那边的 `tou_rates` 是另一套东西（且至今 0 行）。
                                 KV("充电费用", "未记录")
-                                Text(
-                                    "在「设置 → 电价与成本」填上电价后，这里就能估算",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(bottom = 4.dp),
-                                )
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：操作指引折进 ⓘ。
+                        //
+                        // 车主第 32 轮拍板：「**操作指引也折**」⇒ 这条「去设置填电价」折。
+                        InfoNote(
+                            text = "在「设置 → 电价与成本」填上电价后，这里就能估算",
+                            a11yLabel = "每公里成本怎么来的",
+                        )
                             }
                         }
                         // ⚠️ v0.9.0（新手车主复核）：补「每公里花多少钱」。
@@ -601,24 +603,26 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // 而它其实是个上界（真值低 3.4%~11.9%）。
                             perKm.denominatorGapPercent?.let { gap ->
                                 if (gap >= 1) {
-                                    Text(
-                                        "分母说明：这 $filledBuckets $bucketUnit 里 App 记录到 " +
-                                            "${kmDrives.roundToInt()} 公里行驶，" +
-                                            "而里程表走了 ${kmOdo.roundToInt()} 公里 —— " +
-                                            "差的 $gap% 是 TeslaMate 没在记录的遥测断档" +
-                                            "（那些路车真开了，但没记行程），所以每公里成本是区间。" +
-                                            // ⚠️ **v0.44.0（第 24 轮对抗性审计 ⑫）：还要说清**窗口边界**。**
-                                            //
-                                            // 分子 = 窗口内**充入的电**，分母 = 窗口内**跑的公里** ——
-                                            // 这两者**不是同一段能量**：窗口起点的存量电量、
-                                            // 窗口终点尚未消耗的电量，都被算进去了。
-                                            // 长窗口（1 年）这个偏差可以到百分之十几。
-                                            "另外分子是窗口内充入的电、分母是窗口内跑的公里，" +
-                                                "窗口两端还剩多少电的差没有扣，所以这个数是近似值。",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(bottom = 4.dp),
-                                    )
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：分母/窗口边界的口径说明折进 ⓘ。
+                        //
+                        // 这段是**整卡最啰嗦的一段**（185 字）：分母为什么不是里程表、
+                        // 断档是什么、窗口两端的存量电没扣 ⇒ 全部折起来。
+                        InfoNote(
+                            text = "分母说明：这 $filledBuckets $bucketUnit 里 App 记录到 " +
+                                "${kmDrives.roundToInt()} 公里行驶，" +
+                                "而里程表走了 ${kmOdo.roundToInt()} 公里 —— " +
+                                "差的 $gap% 是 TeslaMate 没在记录的遥测断档" +
+                                "（那些路车真开了，但没记行程），所以每公里成本是区间。" +
+                                // ⚠️ **v0.44.0（第 24 轮对抗性审计 ⑫）：还要说清**窗口边界**。**
+                                //
+                                // 分子 = 窗口内**充入的电**，分母 = 窗口内**跑的公里** ——
+                                // 这两者**不是同一段能量**：窗口起点的存量电量、
+                                // 窗口终点尚未消耗的电量，都被算进去了。
+                                // 长窗口（1 年）这个偏差可以到百分之十几。
+                                "另外分子是窗口内充入的电、分母是窗口内跑的公里，" +
+                                    "窗口两端还剩多少电的差没有扣，所以这个数是近似值。",
+                            a11yLabel = "每公里成本的分母",
+                        )
                                 }
                             }
                             // ⚠️ P0-3：**直流桩边际成本**必须单独给 ——
@@ -646,27 +650,28 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             cost.serviceYuanPerKwh?.let {
                                 KV("服务费每度", "≈ ${it.fmtYuan()}")
                             }
-                            Text(
-                                buildString {
-                                    append("按你填的电价估算（家充（有围栏归属）")
-                                    append(cost.homeKwh.fmt(0))
-                                    append(" 度 / 其它交流慢充 ")
-                                    append(cost.acOtherKwh.fmt(0))
-                                    append(" 度 / 直流快充 ")
-                                    append(cost.dcKwh.fmt(0))
-                                    append(" 度）")
-                                    perKm.acSharePercent?.let { append(" · 交流慢充占 $it%") }
-                                    perKm.homeSharePercent?.let {
-                                        append(" · 其中真正在家充的占 $it%")
-                                    }
-                                    append("。分母是行驶里程 ")
-                                    append(sum.km.fmt(0))
-                                    append(" 公里。")
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(bottom = 4.dp),
-                            )
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：成本口径说明折进 ⓘ。
+                        //
+                        // 「分子分母分别是什么、占比多少」是**口径**⇒ 折。
+                        InfoNote(
+                            text = buildString {
+                                append("按你填的电价估算（家充（有围栏归属）")
+                                append(cost.homeKwh.fmt(0))
+                                append(" 度 / 其它交流慢充 ")
+                                append(cost.acOtherKwh.fmt(0))
+                                append(" 度 / 直流快充 ")
+                                append(cost.dcKwh.fmt(0))
+                                append(" 度）")
+                                perKm.acSharePercent?.let { append(" · 交流慢充占 $it%") }
+                                perKm.homeSharePercent?.let {
+                                    append(" · 其中真正在家充的占 $it%")
+                                }
+                                append("。分母是行驶里程 ")
+                                append(sum.km.fmt(0))
+                                append(" 公里。")
+                            },
+                            a11yLabel = "每公里成本的口径",
+                        )
                             // ⚠️ **v0.30.0（P0-2）：服务费没填时必须说「估算偏低」。**
                             //
                             // 实测：不填服务费 → ¥2,201.17；按分钟 0.50 → ¥3,295.67，
@@ -703,19 +708,21 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // 现在家充由 **TeslaMate 的充电围栏**判定，
                             // 剩下的交流（没有围栏归属）就是「不知道在哪」，
                             // 按你填的「其它交流慢充单价」计。
-                            Text(
-                                if (cost.homeKwh > 0.01) {
-                                    "家充按 TeslaMate 的充电围栏判定（这段窗口里有 ${cost.homeKwh.fmt(0)} 度命中围栏）"
-                                } else {
-                                    "这段窗口里没有任何一场充电命中充电围栏 —— App 分不出交流慢充是在家还是在酒店/路边" +
-                                        "（「家」围栏是 2026-10-25 才建的，之前的充电都没有归属）。" +
-                                        "没有归属的交流慢充现在按「${if (rates.acUsesHomePrice) "家充电价" else "公共桩价"}」计" +
-                                        "（设置里可改）"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(bottom = 4.dp),
-                            )
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：围栏判定的口径说明折进 ⓘ。
+                        //
+                        // 「家充按充电围栏判定」「没有归属的交流慢充按公共桩价计」——
+                        // 两条都是**口径**⇒ 折（两态都进 note，正文只留 ⓘ）。
+                        InfoNote(
+                            text = if (cost.homeKwh > 0.01) {
+                                "家充按 TeslaMate 的充电围栏判定（这段窗口里有 ${cost.homeKwh.fmt(0)} 度命中围栏）"
+                            } else {
+                                "这段窗口里没有任何一场充电命中充电围栏 —— App 分不出交流慢充是在家还是在酒店/路边" +
+                                    "（「家」围栏是 2026-10-25 才建的，之前的充电都没有归属）。" +
+                                    "没有归属的交流慢充现在按「${if (rates.acUsesHomePrice) "家充电价" else "公共桩价"}」计" +
+                                    "（设置里可改）"
+                            },
+                            a11yLabel = "家充判定的口径",
+                        )
                         } else if (sum.cost > 0 && sum.km > 0.1) {
                             // ⚠️ 服务端有 cost（用户配了 TeslaMate 的 tou_rates）时的老路径。
                             KV(
@@ -839,11 +846,14 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         contentDescription = statsChartDescription("行驶耗电", buckets.map { it.start to it.kwh_used }),
                     )
                     ChartHint(buckets.map { it.kwh_used to it.start }, "度", avgLabel, avgUnit)
-                    Text(
-                        "行驶耗电 = 行车用掉的电，不含充电时充进去的",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：指标注释折进 ⓘ。
+                        //
+                        // 「行驶耗电 = 行车用掉的电，不含充电时充进去的」——
+                        // 这是**指标注释**（车主点名要折的那类）⇒ 折。
+                        InfoNote(
+                            text = "行驶耗电 = 行车用掉的电，不含充电时充进去的",
+                            a11yLabel = "行驶耗电的口径",
+                        )
                 }
             }
 
@@ -977,25 +987,32 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // 满充读数本身有 445~455 km 的温度波动，同一份数据可能算出 73~82 km。
                             // 所以改成「约 80 km」，并把日期与波动区间一起说清楚。
                             val gapKm = b.factory_rated_range_km!! - nowRatedKm
-                            Text(
-                                buildString {
-                                    append("「满电标定续航」= 车机在满电时自己报的读数")
-                                    latestFullPoint?.date?.let { append("（${it.fmtDate()} 那次满充）") }
-                                    append("。")
-                                    append("按出厂容量折算，同一把尺子下新电池应是 ")
-                                    append(b.factory_rated_range_km!!.toInt())
-                                    append(" km —— 大约少 ")
-                                    append((gapKm / 5.0 * 5.0).toInt())
-                                    append(" km。")
-                                    append("满充读数本身有 445~455 km 的温度波动，所以这个差是一个区间，不是一个精确值。")
-                                    append("官方标称续航是新车认证值，不是这台车这把尺子上的读数，两者不能直接相除。")
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：口径说明折进 ⓘ。
+                        //
+                        // 「同一把尺子」「读数有温度波动」「官方标称不能直接相除」——
+                        // 三条都是**口径**⇒ 折。
+                        InfoNote(
+                            text = buildString {
+                                append("「满电标定续航」= 车机在满电时自己报的读数")
+                                latestFullPoint?.date?.let { append("（${it.fmtDate()} 那次满充）") }
+                                append("。")
+                                append("按出厂容量折算，同一把尺子下新电池应是 ")
+                                append(b.factory_rated_range_km!!.toInt())
+                                append(" km —— 大约少 ")
+                                append((gapKm / 5.0 * 5.0).toInt())
+                                append(" km。")
+                                append("满充读数本身有 445~455 km 的温度波动，所以这个差是一个区间，不是一个精确值。")
+                                append("官方标称续航是新车认证值，不是这台车这把尺子上的读数，两者不能直接相除。")
+                            },
+                            a11yLabel = "满电标定续航的算法",
+                        )
                         }
-                        Text(
-                            buildString {
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：公式与口径说明折进 ⓘ。
+                        //
+                        // 「电池健康度 = 现在还能装的度 ÷ 新电池标称的度」是**口径**，
+                        // 「效率常数可在服务端改」是**依赖披露** ⇒ 两条都折。
+                        InfoNote(
+                            text = buildString {
                                 append("「电池健康度」= 现在还能装的度 ÷ 新电池标称的度 —— ")
                                 append("两边都是「可用容量」，同一口径，")
                                 append("所以这个比值就是相对出厂衰减了多少。")
@@ -1016,24 +1033,26 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     append("%。")
                                 }
                             },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            a11yLabel = "电池健康度的算法",
                         )
                         if (b.health_percent_of_baseline != null) {
-                            Text(
-                                buildString {
-                                    append("「近期趋势」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
-                                    append("不受行驶能耗常数影响。")
-                                    append("它只衡量这段时间里的变化，和上面的「相对出厂」不是同一段时间 —— ")
-                                    append("要回答「相对出厂衰减了多少」，看的是上面那个健康度。")
-                                    if (baselineDate != null) {
-                                        append("注意：首测（$baselineDate）不是新车容量 —— ")
-                                        append("它只回答「比 $baselineDate 那次测的低了多少」。")
-                                    }
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：口径说明折进 ⓘ。
+                        //
+                        // 「近期趋势 = 当前容量 ÷ 首测容量…和『相对出厂』不是同一段时间」——
+                        // 这是**口径**不是数据 ⇒ 折。
+                        InfoNote(
+                            text = buildString {
+                                append("「近期趋势」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
+                                append("不受行驶能耗常数影响。")
+                                append("它只衡量这段时间里的变化，和上面的「相对出厂」不是同一段时间 —— ")
+                                append("要回答「相对出厂衰减了多少」，看的是上面那个健康度。")
+                                if (baselineDate != null) {
+                                    append("注意：首测（$baselineDate）不是新车容量 —— ")
+                                    append("它只回答「比 $baselineDate 那次测的低了多少」。")
+                                }
+                            },
+                            a11yLabel = "近期趋势的算法",
+                        )
                         }
                         val series = b.series.orEmpty().map { it.capacity_kwh?.toFloat() }
                         if (series.count { it != null } >= 2) {
@@ -1209,18 +1228,13 @@ private fun ChartHint(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Text(
-            // ⚠️ v0.9.2（口径审计 S4-1）：**分母只算有数据的桶**，
-            // 所以「日均 80 km」其实是「有记录的 3 天」的平均，不是 7 天日均（34 km）。
-            // 不写清楚就是个误导 —— 现在把天数自曝出来。
-            //
-            // ⚠️ v0.20.0（车主 P1-6）：**补一句「没开车不产生记录」** ——
-            // 光说「有记录 3 天」而不解释，主人会以为自己天天通勤、
-            // App 漏了 4 天的数据（车主原话：「我怀疑 App 漏了 4 天的数据」）。
-            // 补了这半句，「3 天」就从「缺了 4 天」变成「本来就这么填」。
-            "$avgLabel ${avg.fmt(0)} $unit（有记录 ${nonZero.size} $avgUnit，没开车不产生记录）",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+                        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：图表脚注折进 ⓘ。
+                        //
+                        // 车主原话：「细节上的文字直接展示出来的太多了…需要我点击一个小角标才会展示。」
+                        // 「有记录 3 天，没开车不产生记录」是**口径**，不是数据 ⇒ 折。
+                        InfoNote(
+                            text = "$avgLabel ${avg.fmt(0)} $unit（有记录 ${nonZero.size} $avgUnit，没开车不产生记录）",
+                            a11yLabel = "日均值的算法",
+                        )
     }
 }

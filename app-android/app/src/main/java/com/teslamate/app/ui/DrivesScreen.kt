@@ -763,11 +763,16 @@ internal fun DriveDetail(
                         val socDrop = if (socValues.size >= 2) socValues.first() - socValues.last() else 0
                         val tooShortForSoc = (drive.distance_km ?: 0.0) < 30.0 || socDrop < 5
                         if (socValues.size >= 2 && tooShortForSoc) {
-                            Text(
-                                "本趟仅掉 ${socDrop} 个百分点（${drive.distance_km?.fmt(1) ?: "—"} 公里），" +
-                                    "短途不适用长途规划",
+                            // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：
+                            // 「短途不适用长途规划」是**为什么这里没有电量条**的说明
+                            // ⇒ 折进 ⓘ；前半句（掉了几个百分点 / 多少公里）是**数据**，
+                            // 留在明面上。原文只拆成两段，两段措辞一字未改
+                            // （原句中间的「，」是连接符，拆开时随说明一起进 note）。
+                            TextWithNote(
+                                text = "本趟仅掉 ${socDrop} 个百分点（${drive.distance_km?.fmt(1) ?: "—"} 公里）",
+                                note = "短途不适用长途规划",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                a11yLabel = "为什么没有电量条",
                             )
                         } else if (socValues.size >= 2) {
                             Spacer(Modifier.height(10.dp))
@@ -794,8 +799,14 @@ internal fun DriveDetail(
                             // 加上 1 km 分箱的箱中心量化，真实不确定度约 ±2 km。
                             // 写成精确的「第 243 公里」是把 ±2 km 当成整数公里显示。
                             val lowestSoc = socValues.min()
-                            Text(
-                                buildString {
+                            // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：
+                            // 行尾「每 1 公里取平均，精度约 ±2 公里」是**算法口径**
+                            // （这条线的精度边界），属于补充说明 ⇒ 折进 ⓘ；
+                            // 前半句（降到 20% / 10% 的公里数）是**数据**，留在明面上。
+                            // 原文只拆成两段，两段措辞一字未改
+                            // （原句中间的「 · 」是分隔符，拆开时随说明一起进 note）。
+                            TextWithNote(
+                                text = buildString {
                                     append("电量 (%) · 同一横轴 = 同一公里")
                                     milestones.kmAt20?.let {
                                         append(" · 约第 ${it.roundToInt()} 公里降到 20%")
@@ -805,10 +816,10 @@ internal fun DriveDetail(
                                     milestones.kmAt10?.let {
                                         append(" · 约第 ${it.roundToInt()} 公里降到 10%")
                                     }
-                                    append(" · 每 1 公里取平均，精度约 ±2 公里")
                                 },
+                                note = "每 1 公里取平均，精度约 ±2 公里",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                a11yLabel = "电量曲线的精度说明",
                             )
                         }
                     }
@@ -842,7 +853,6 @@ internal fun DriveDetail(
                     // ⚠️ v0.14.0（单位审校 P1-3）：1 位小数（`energy_kwh` 的
                     // 真实分辨率是 0.146 度，2 位是假精度）。
                     KV("行驶耗电", drive.energy_kwh?.fmt(1, " 度") ?: "—")
-                    KV("百公里能耗", drive.wh_per_km?.let { "${it.fmtKwh100()} kWh/100km" } ?: "—")
                     // ⚠️ v0.14.0（口径审计 P2-1）：删掉「按里程算能耗」这一行。
                     //
                     // 服务端的 `wh_per_km` **已经**用 `d.distance`（里程表差）做分母
@@ -857,14 +867,20 @@ internal fun DriveDetail(
                     // 停车时开空调的耗电也摊在这 1.8 km 上。
                     // 不说清楚，提车半年的车主会以为「App 算错了 / 车有问题」。
                     val dKm = drive.distance_km ?: 0.0
-                    if (dKm < 30.0) {
-                        Text(
+                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：这段脚注改成
+                    // **这一行自己的指标注释** —— ⓘ 就挂在「百公里能耗」的数字旁边，
+                    // 点开在行下展开；不再另起一段灰字。
+                    // 这正是车主说的「每个指标的注释那种感觉」：
+                    // 补充说明折起来，而**数字本身仍然直接可见**。
+                    // 文案一字未改，出现条件不变（仍然只有短途才挂这个 ⓘ）。
+                    KV(
+                        "百公里能耗",
+                        drive.wh_per_km?.let { "${it.fmtKwh100()} kWh/100km" } ?: "—",
+                        note = if (dKm < 30.0) {
                             "短途（不足 30 公里）的能耗偏高：停车时开空调等耗电也摊在了行驶里程上，" +
-                                "这个数字不能和长途比",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                                "这个数字不能和长途比"
+                        } else null,
+                    )
                     // ⚠️ v0.17.0（车队运营评审 P0-1）：**同线路历史对比**。
                     //
                     // 「这趟比上趟好吗」是每周复盘的第一问，
