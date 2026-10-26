@@ -5,6 +5,75 @@
 
 ---
 
+## 2026-10-26（v0.70.0：车控运维能力归位 —— partner account 管理脚本 + 接入路径文档）
+
+> 本轮版本：`0.70.0`（**项目版本**）。
+> ⚠️ **不含 App 改动** —— App 仍是 `0.69.0` / code 86，**不推送新版 APK**。
+
+### 一、背景
+
+v0.67.0 把车辆能力整体下沉到本项目后，Householder 侧的
+`scripts/tesla_oauth.py` 与 `scripts/tesla_command_keys.py` 被删掉了 ——
+但**密钥运维能力**（partner account 注册 / 查状态 / 与本地私钥比对）没有落点。
+
+这个能力**平时用不到**，但**缺了会出大事**：换域名（Tailscale 机器名变了）
+或轮换密钥后，如果公钥没重新注册，
+sidecar 签出来的命令 Tesla **验不过**，而错误现场极难定位。
+
+### 二、新增 `scripts/tesla-partner.ps1`
+
+两个子命令：
+
+| 命令 | 作用 |
+|---|---|
+| `status -Domain <域名>` | 查注册状态，**并把「Tesla 侧公钥」与「本地私钥推导的公钥」逐字节比对** |
+| `register -Domain <域名>` | 注册 / 换域名（提交的是**公钥**，私钥永远不发出去） |
+
+实现要点：
+
+- **partner 令牌**：`client_credentials` + `audience` + scope
+  （scope 与 Householder 实测通过的那份**逐字一致**）；
+- **公钥推导用 .NET 自带的 `ECDsa`**（`ImportFromPem` → `ExportSubjectPublicKeyInfo`）
+  —— 不依赖 openssl。⚠️ 实测发现 `alpine/openssl` 这类镜像**本机拉不到**
+  （镜像源 DNS 不通），`golang:alpine` 里也**没有 openssl CLI**；
+- **比对的是「未压缩 EC 点」**（`04` ‖ X ‖ Y，65 字节的 hex）——
+  Tesla 返回的就是这个格式；
+- ⚠️ **中国区响应包在 `{"response":{"public_key":…}}` 里**，不是顶层字段 ——
+  直接读顶层会拿到 `$null`（旧实现就踩过这个）。
+
+**实测**（本机，2026-10-26）：
+
+```
+✅ 已注册（HTTP 200）
+   Tesla 返回的公钥点: 04a1a2b7f763baabf6f28ae886e45be7b6c3c4a845ea4f616a0f28ec8359fac75d01dcc921a99f160743436ce7c52a9d7bb3f93baf5654db532b458458f6761d46
+   本地签名私钥的点 : 04a1a2b7f763baabf6f28ae886e45be7b6c3c4a845ea4f616a0f28ec8359fac75d01dcc921a99f160743436ce7c52a9d7bb3f93baf5654db532b458458f6761d46
+✅ 与本地签名私钥**同一把** ⇒ 签名能验过
+```
+
+负向（查一个后台没放行的域名）⇒ 403，并给出人话指引
+（「在 developer.tesla.cn 后台『允许的源 URL』补上**完整主机名**」）。
+
+### 三、新增 `docs/Tesla车控接入路径.md`
+
+本项目自己的实现文档：能力边界表、命令怎么发出去的链路图、
+搭起来要做的四件事、启动与验证、**换域名怎么办**、常见坑表、下游怎么用。
+
+### 四、Householder 侧同步
+
+- `docs/26-Tesla车控接入路径.md` —— **平台知识保留**（域名方案、中国区的坑、官方流程
+  仍然有效），但「现在该跑哪条命令」全部改成 teslamate 那边的；
+- 同文件 §B1「后续能改吗？」**更正了一条被实测证伪的结论**：
+  partner account 是**原地更新**，**可以换域名**，不需要新建 3P 应用
+  （`created_at` 不变、`updated_at` 刷新）；
+- `docs/01-架构决策.md` 的 **ADR-029** 补上运维脚本的落点。
+
+### 五、验收
+
+- 单测 110/110、客户端闸门 6/6、冒烟 37/37、密钥扫描 CLEAN。
+- 回滚：`git revert` 本次提交。
+
+---
+
 ## 2026-10-26（v0.69.0：堵住「减啰嗦」的审计盲点 —— 电池卡三段说明折进 ⓘ）
 
 > 本轮版本：`0.69.0`，versionCode 86。
