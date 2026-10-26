@@ -5,6 +5,90 @@
 
 ---
 
+## 2026-10-25（v0.67.0：车辆能力彻底解耦 —— Housekeeper 改调本项目）
+
+> 本轮版本：`0.67.0`，versionCode 84。
+> 用户诉求：「彻底完美的解决 Housekeeper 解耦。车辆相关的信息、控制等等一切与车辆相关的，
+> 都集成在此项目当中。如果 Housekeeper 需要，则调用此项目。」
+
+### 一、边界：车辆的一切归 teslamate
+
+============================  ==========================
+能力                          归属
+============================  ==========================
+OAuth / 令牌轮换              **teslamate**（已持有）
+车辆私钥 / partner account    **teslamate**（`teslamate_command_keys` 卷）
+签名命令（车控）              **teslamate**（command-proxy sidecar）
+实时 ``vehicle_data``         **teslamate**（**原样转发**）
+车辆元数据（display_name…）   **teslamate**（原样转发）
+动作目录 / 参数范围 / 风险等级  **teslamate**（唯一事实源）
+字段归一化语义                Housekeeper（自己的域模型）
+日命令预算 / 高危 TOTP        Housekeeper（自己的安全模型）
+============================  ==========================
+
+### 二、teslamate 侧新增（给下游用）
+
+| 端点 | 作用 |
+|---|---|
+| `GET /api/v1/cars/{id}/vehicle_data` | **原样转发** Tesla 的 `vehicle_data`（连信封 `{"response":{…}}` 都一样）⇒ 下游的归一化逻辑**一行不改** |
+| `GET /api/v1/cars/{id}/vehicles` | 车辆元数据（`display_name` / `state` / `vin`） |
+| `GET /api/v1/cars/{id}/vehicle_snapshot` | teslamate 自己归一化的快照（给不想碰原始结构的调用方） |
+| `POST /api/v1/cars/{id}/commands/{action}?dry_run=1` | **只校验参数、不下发** —— 下游的流程是「校验 → 预算 → 幂等 → 高危确认 → 下发」，校验必须在最前面 |
+
+### 三、护栏抓到一个**真的风险误分类**
+
+Housekeeper 的 `core/security.py` 里有一份**风险名单**（TOTP 的依据），
+而 teslamate 的动作目录里也有一份 `risk`（App/MCP 确认的依据）。
+
+Householder 的那条护栏（`test_catalog_risk_levels_match_core`）立刻报出三处不一致：
+
+| 动作 | 我原来写的 | 权威（Householder core） | 判定 |
+|---|---|---|---|
+| `door_lock`（锁车） | low | **medium** | ❌ 锁车是动车动作 |
+| `set_climate_off`（关空调） | low | **medium** | ❌ |
+| `set_sentry_mode`（哨兵模式） | low | **medium** | ❌ |
+
+⇒ **teslamate 的目录是对齐的一端**（它是目录的唯一事实源），已把三个动作改成 medium。
+⚠️ 这次的错正是「两处各有一份、谁都没看谁」造成的 ——
+解耦之后只有一份，这类漂移就**不可能再发生**。
+
+### 四、Householder 侧改动
+
+| 改动 | 说明 |
+|---|---|
+| **删** `app/integrations/tesla/`（client / transport / commands / connector，5 个文件 71KB） | Tesla 直连彻底移除 |
+| **新增** `app/integrations/teslamate_vehicle/`（client / catalog / connector） | 只调 teslamate 的 HTTP API |
+| `normalize_vehicle_data()` | **保留在 Householder**（它是自己域模型的翻译层），**一行未改** |
+| 动作目录与参数校验 | 改为**从 teslamate 拉**（`catalog.py`，60 秒 TTL 缓存） |
+| 高危 TOTP / 日命令预算 | **保留在 Housekeeper**（安全模型不变） |
+| compose / .env | 删掉 command-proxy 服务、密钥卷、8 个 Tesla 直连凭据 |
+| 运维脚本 | `tesla_oauth.py` / `tesla_command_keys.py` 移到本项目 |
+
+### 五、一个**真实缺口**（没有藏起来）
+
+车一直睡着 ⇒ teslamate 从头到尾**没拿到过一次** `vehicle_data`
+⇒ 下游拿到的是 503，**附带人话**：
+「还没有拿到过车辆实时数据（车一直在休眠）—— 开一次车或用官方 App 唤一下就会有」。
+
+拿到过一次之后，`vehicle_data` 端点会返回**上一次**的原始数据，
+并带 `stale`（超过 10 分钟）与 `age_sec` ——
+**下游必须能区分「刚拿到的」和「可能是几小时前的」**，
+否则会把旧值当实时值（这正是 Householder 那边「锁车状态」的教训）。
+
+### 六、影响 / 回滚 / 校验
+
+- 影响：**teslamate 的 API 只增不改**（新端点 + 目录风险级别修正），旧客户端不受影响；
+  Housekeeper 的车控路径改成经由本项目。
+- 回滚：Householder 侧可从 `~\AppData\Local\Temp\hk_backup_20261026` 恢复
+  （⚠️ **Housekeeper 没有 git**，所以做了完整备份）
+- 校验：teslamate Go vet + test 通过（含 7 组车控单测）、客户端 JVM 单测 **110/110**、
+  客户端闸门 **5/5**、冒烟 **37 项**、密钥扫描 CLEAN、
+  **Householder 后端 521 passed / 2 skipped**（基线 558 —— 少的 37 个是已移交本项目的
+  Tesla 直连用例）、**从 Housekeeper 容器里实测走通完整链路**
+  （health ok / command-proxy 就绪 / 1 台车 / 16 个动作 / vehicle_data 503 带人话）
+
+---
+
 ## 2026-10-25（v0.66.0：车辆控制下沉到 teslamate + Hermes 的 MCP 接口）
 
 > 本轮版本：`0.66.0`，versionCode 83。

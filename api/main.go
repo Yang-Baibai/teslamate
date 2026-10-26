@@ -128,6 +128,11 @@ func main() {
 	//   POST → 下发一条命令（/api/v1/cars/{id}/commands/{action}）
 	mux.HandleFunc("GET /api/v1/cars/{id}/commands", auth(handleTeslaCommandCatalog))
 	mux.HandleFunc("POST /api/v1/cars/{id}/commands/{action}", auth(handleTeslaCommand))
+	// ⚠️ **v0.67.0：给下游（Housekeeper）的车辆原始数据** ——
+	// **原样转发** Tesla 的响应（连信封一样），下游的归一化逻辑一行都不用改。
+	mux.HandleFunc("GET /api/v1/cars/{id}/vehicle_data", auth(handleTeslaVehicleData))
+	mux.HandleFunc("GET /api/v1/cars/{id}/vehicles", auth(handleTeslaVehiclesMeta))
+	mux.HandleFunc("GET /api/v1/cars/{id}/vehicle_snapshot", auth(handleTeslaVehicleSnapshot))
 	mux.HandleFunc("GET /api/v1/app/latest", auth(handleAppLatest))
 	mux.HandleFunc("GET /api/v1/app/staticmap", auth(handleStaticMap))
 	// APK 静态服务（不加 auth：DownloadManager 无法塞自定义 header；Tailscale 隧道已加密）
@@ -178,6 +183,7 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 // 为什么要错误码：App 需要区分
 //   - no_data：这台车还没数据 —— **正常状态**，该走空状态引导，不该是红色错误条
 //   - no_car ：根本没这台车 —— 配置错了，该提示去检查设置
+//
 // 光看 HTTP 状态码（都是 404）App 只能靠中文文案做字符串匹配 —— 那种做法
 // 脆得很（改一个字就失效），而且对非中文文案完全失效。
 func writeErrCode(w http.ResponseWriter, code int, msg, errCode string) {

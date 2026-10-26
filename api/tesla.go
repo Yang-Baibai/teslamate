@@ -104,6 +104,15 @@ type teslaClient struct {
 	refreshToken string
 	tokenExpiry  time.Time
 	vehicleID    string
+	// ⚠️ **v0.67.0**：**原始** vehicle_data（Tesla 的 response 段）与车辆元数据。
+	//
+	// 为什么缓存原始的：下游（Housekeeper）要把它喂给自己的
+	// `normalize_vehicle_data()` —— 我们再归一化一遍就得有两套字段名、两处口径，
+	// 迟早漂移。**原样转发**（连信封都一样）⇒ 下游归一化逻辑一行不改。
+	rawVehicleData map[string]any
+	rawFetchedAt   time.Time
+	vehicleMeta    map[string]any
+
 	// ⚠️ v0.66.0：车辆 **VIN**（17 位，如 <VIN>）。
 	//
 	// 为什么单独存：Fleet API 的 id 是**数字**（中国区实测 <fleet车辆ID>），
@@ -461,11 +470,11 @@ func (c *teslaClient) clearVehicleState() {
 //     而锁车与实时胎压会**静默停更**，唯一的告警通道（Hermes 推送）
 //     又不读这个状态 —— 于是「锁没锁」这个第一诉求可能一周没人发现。
 const (
-	FleetStateDisabled    = "disabled"
-	FleetStateAsleep      = "asleep"
+	FleetStateDisabled     = "disabled"
+	FleetStateAsleep       = "asleep"
 	FleetStateUnauthorized = "unauthorized"
-	FleetStateUnreachable = "unreachable"
-	FleetStateOK          = "ok"
+	FleetStateUnreachable  = "unreachable"
+	FleetStateOK           = "ok"
 )
 
 // shortFleetError 把内部错误压成一句**能直接给用户看**的话。
@@ -608,6 +617,10 @@ func (c *teslaClient) pollOnce(ctx context.Context) error {
 	// 一并缓存（里程表是单调递增的量，保留旧值比清空安全）。
 	if st.Odometer != nil {
 		c.setOdometer(st.Odometer)
+	}
+	// ⚠️ **v0.67.0**：缓存原始 vehicle_data（下游要原样拿）。
+	if st.Raw != nil {
+		c.setRawVehicleData(st.Raw)
 	}
 	return nil
 }
@@ -756,13 +769,21 @@ func (c *teslaClient) writeStateFile(token string) {
 func (c *teslaClient) resolveVehicleID(ctx context.Context) (string, error) {
 	c.mu.RLock()
 	vid := c.vehicleID
+	hasMeta := c.vehicleMeta != nil
 	c.mu.RUnlock()
-	if vid != "" {
+	// ⚠️ **v0.67.0**：元数据也要 ⇒ 两个都齐了才早退（否则下游拿不到 display_name）。
+	if vid != "" && hasMeta {
 		return vid, nil
 	}
 	body, code, err := c.get(ctx, c.fleetURL+"/api/1/vehicles")
 	if err != nil {
 		return "", err
+	}
+	// ⚠️ **v0.67.0**：车辆列表也会 408（车睡着时 Tesla 连列表都拿不到）——
+	// 那是**车不可用**，不是「列表接口坏了」。以前这里会报「车辆列表返回 408」，
+	// App 上分不出「车睡了」和「服务器坏了」⇒ 归到 errVehicleUnavailable。
+	if code == http.StatusRequestTimeout {
+		return "", errVehicleUnavailable
 	}
 	if code != http.StatusOK {
 		return "", fmt.Errorf("车辆列表返回 %d: %s", code, maskSecretText(truncate(string(body), 300)))
@@ -781,8 +802,25 @@ func (c *teslaClient) resolveVehicleID(ctx context.Context) (string, error) {
 		return "", errors.New("车辆列表为空")
 	}
 	vid = string(out.Response[0].ID)
+	// ⚠️ **v0.67.0**：顺手把**车辆元数据**缓存下来 ——
+	// `display_name`（"爱车"）、`state`（online/offline/asleep）、`vin` 只有 Tesla 知道，
+	// 下游要拿它做「车在不在家」之类的判断。
+	var env struct {
+		Response []map[string]any `json:"response"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	// ⚠️ UseNumber：否则中国区的 id（裸数字 <fleet车辆ID>）会变成 float64，
+	// 再转字符串就成了 "3.6682456284265e+14"。
+	dec.UseNumber()
+	meta := map[string]any(nil)
+	if err := dec.Decode(&env); err == nil && len(env.Response) > 0 {
+		meta = env.Response[0]
+	}
 	c.mu.Lock()
 	c.vehicleID = vid
+	if meta != nil {
+		c.vehicleMeta = meta
+	}
 	c.mu.Unlock()
 	log.Printf("ℹ️  Tesla Fleet API 自动选中车辆 %s", vid)
 	return vid, nil
@@ -818,6 +856,10 @@ type teslaVehicleState struct {
 	LockedAt *time.Time // 车端上报的采集时刻
 	Odometer *float64   // 里程表 km
 	TPMS     TeslaTPMS  // 四轮实时胎压
+
+	// ⚠️ **v0.67.0**：Tesla 的**原始** vehicle_data 段（`response` 里的全部状态组）。
+	// 原样转发给下游，下游自己的归一化逻辑就能直接吃。
+	Raw map[string]any
 }
 
 // vehicleStateJSON 中国区 vehicle_data 里的 vehicle_state 段。
@@ -923,6 +965,17 @@ func (c *teslaClient) fetchVehicleState(ctx context.Context, vehicleID string) (
 		return teslaVehicleState{}, errors.New("vehicle_data 响应里没有 response/data 字段")
 	}
 
+	// ⚠️ **v0.67.0**：把**原始** response 段解出来存着（原样转发给下游）。
+	rawMap := map[string]any(nil)
+	{
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.UseNumber()
+		var m map[string]any
+		if err := dec.Decode(&m); err == nil {
+			rawMap = m
+		}
+	}
+
 	// 中国区形态：状态平铺在 response 下，锁车与胎压都在 vehicle_state 里。
 	var flat struct {
 		VehicleState *vehicleStateJSON `json:"vehicle_state"`
@@ -932,6 +985,7 @@ func (c *teslaClient) fetchVehicleState(ctx context.Context, vehicleID string) (
 		if st.Locked == nil {
 			return teslaVehicleState{}, errors.New("vehicle_data 响应里没有 lock_state")
 		}
+		st.Raw = rawMap
 		return st, nil
 	}
 
@@ -945,7 +999,35 @@ func (c *teslaClient) fetchVehicleState(ctx context.Context, vehicleID string) (
 	if data.LockState == nil {
 		return teslaVehicleState{}, errors.New("vehicle_data 响应里没有 lock_state")
 	}
-	return teslaVehicleState{Locked: data.LockState}, nil
+	return teslaVehicleState{Locked: data.LockState, Raw: rawMap}, nil
+}
+
+// setRawVehicleData 缓存 Tesla 的原始 vehicle_data 与采集时刻。
+func (c *teslaClient) setRawVehicleData(raw map[string]any) {
+	c.stateMu.Lock()
+	c.rawVehicleData = raw
+	c.rawFetchedAt = time.Now().UTC()
+	c.stateMu.Unlock()
+}
+
+// RawVehicleData 取缓存的原始 vehicle_data 与采集时刻。
+func (c *teslaClient) RawVehicleData() (map[string]any, time.Time) {
+	if c == nil {
+		return nil, time.Time{}
+	}
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.rawVehicleData, c.rawFetchedAt
+}
+
+// VehicleMeta 取缓存的车辆元数据（display_name / state / vin …）。
+func (c *teslaClient) VehicleMeta() map[string]any {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.vehicleMeta
 }
 
 // LiveTpmsResult 实时胎压的判定结果。

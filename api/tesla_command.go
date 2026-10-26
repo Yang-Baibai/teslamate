@@ -52,7 +52,9 @@ package main
 //
 //	high   ：解锁 / 开合尾门 / 远程启动 —— 会动车、会开孔、会让人上车
 //	medium ：空调温度、充电上限、充电电流、开始/停止充电、代客模式、唤醒
-//	low    ：锁车、鸣笛、闪灯、关空调、哨兵模式
+//	low    ：鸣笛、闪灯
+//	medium ：锁车、关空调、哨兵模式（**都是动车动作** —— 与 Housekeeper 的
+//	         MEDIUM_RISK_ACTIONS 逐条对齐）
 //
 // ⚠️ **唤醒（wake_up）单独计价**（Tesla 把它当 10 个单位），且会把车叫醒 ——
 // 所以它虽然是 medium，但 UI 上要提示「会消耗电量、可能计费」。
@@ -119,7 +121,7 @@ var teslaCommandCatalog = []teslaCommandSpec{
 	{Action: "set_temperature", Endpoint: "set_temps", Description: "设定座舱温度（℃）", Risk: teslaCmdRiskMedium,
 		Params: []string{"driver_temp", "passenger_temp"}},
 	{Action: "set_climate_on", Endpoint: "set_climate_on", Description: "开启空调", Risk: teslaCmdRiskMedium},
-	{Action: "set_climate_off", Endpoint: "set_climate_off", Description: "关闭空调", Risk: teslaCmdRiskLow},
+	{Action: "set_climate_off", Endpoint: "set_climate_off", Description: "关闭空调", Risk: teslaCmdRiskMedium},
 	{Action: "set_charge_limit", Endpoint: "set_charge_limit", Description: "设置充电上限（%）", Risk: teslaCmdRiskMedium,
 		Params: []string{"percent"}},
 	{Action: "set_charging_amps", Endpoint: "set_charging_amps", Description: "设置充电电流（A）", Risk: teslaCmdRiskMedium,
@@ -128,10 +130,10 @@ var teslaCommandCatalog = []teslaCommandSpec{
 	{Action: "charge_stop", Endpoint: "charge_stop", Description: "停止充电", Risk: teslaCmdRiskMedium},
 	{Action: "wake_up", Endpoint: "wake_up", Description: "唤醒车辆（会耗电、可能计费）", Risk: teslaCmdRiskMedium,
 		WakesVehicle: true},
-	{Action: "door_lock", Endpoint: "door_lock", Description: "锁车", Risk: teslaCmdRiskLow},
+	{Action: "door_lock", Endpoint: "door_lock", Description: "锁车", Risk: teslaCmdRiskMedium},
 	{Action: "honk_horn", Endpoint: "honk_horn", Description: "鸣笛", Risk: teslaCmdRiskLow},
 	{Action: "flash_lights", Endpoint: "flash_lights", Description: "闪灯", Risk: teslaCmdRiskLow},
-	{Action: "set_sentry_mode", Endpoint: "set_sentry_mode", Description: "哨兵模式开关", Risk: teslaCmdRiskLow,
+	{Action: "set_sentry_mode", Endpoint: "set_sentry_mode", Description: "哨兵模式开关", Risk: teslaCmdRiskMedium,
 		Params: []string{"on"}},
 }
 
@@ -523,6 +525,33 @@ func handleTeslaCommand(w http.ResponseWriter, r *http.Request) {
 
 	if tesla == nil || !tesla.configured() {
 		writeErr(w, http.StatusServiceUnavailable, "Tesla 令牌未配置 —— 车控不可用")
+		return
+	}
+
+	// ⚠️ **v0.67.0：dry-run** —— 只校验参数，**不下发**。
+	//
+	// 为什么需要：下游（Housekeeper）的命令流程是
+	// 「校验参数 → 预算 → 幂等 → 高危二次确认 → 下发」，
+	// 参数校验必须在**最前面**，否则用户会先输 TOTP、再被告知「参数越界」。
+	//
+	// 而**参数范围是 teslamate 的唯一事实源**（下游不该再抄一份规则）——
+	// 于是给下游一个「只问不答」的入口。
+	if r.URL.Query().Get("dry_run") == "1" {
+		spec := teslaCommandByAction[action]
+		res := &teslaCommandResult{
+			Action:      action,
+			Risk:        spec.Risk,
+			Description: spec.Description,
+			At:          time.Now(),
+		}
+		writeJSON(w, map[string]any{
+			"action":      res.Action,
+			"risk":        res.Risk,
+			"description": res.Description,
+			"valid":       true,
+			"dry_run":     true,
+			"at":          res.At,
+		})
 		return
 	}
 

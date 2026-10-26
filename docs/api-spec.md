@@ -25,6 +25,10 @@
 | GET | /api/v1/drives/{id}/soc_profile?step_km= | 单次行程的逐公里 SOC 剖面 |
 | GET | /api/v1/cars/{id}/battery | 电池容量趋势与健康度 |
 | GET | /api/v1/cars/{id}/commands | 车控动作清单（action / description / risk / params） |
+| GET | /api/v1/cars/{id}/vehicle_data | **原样转发** Tesla 的 vehicle_data（下游归一化逻辑零改动） |
+| GET | /api/v1/cars/{id}/vehicles | 车辆元数据（display_name / state / vin） |
+| GET | /api/v1/cars/{id}/vehicle_snapshot | teslamate 归一化后的车辆快照 |
+| POST | /api/v1/cars/{id}/commands/{action}?dry_run=1 | 只校验参数、不下发 |
 | POST | /api/v1/cars/{id}/commands/{action} | 下发一条车控命令（body: `{"params":{…}}`） |
 | GET | /api/v1/app/latest | App 自更新用的版本元数据（版本号 / APK 地址 / 更新说明） |
 
