@@ -24,6 +24,8 @@
 | GET | /api/v1/cars/{id}/energy_profile | 能耗-车速曲线（车轮功率积分；含 `covered_km` 使平均能耗的分子分母同源） |
 | GET | /api/v1/drives/{id}/soc_profile?step_km= | 单次行程的逐公里 SOC 剖面 |
 | GET | /api/v1/cars/{id}/battery | 电池容量趋势与健康度 |
+| GET | /api/v1/cars/{id}/commands | 车控动作清单（action / description / risk / params） |
+| POST | /api/v1/cars/{id}/commands/{action} | 下发一条车控命令（body: `{"params":{…}}`） |
 | GET | /api/v1/app/latest | App 自更新用的版本元数据（版本号 / APK 地址 / 更新说明） |
 
 错误统一格式：`{"error":"人类可读原因"}`，配合 HTTP 401/404/500。

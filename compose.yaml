@@ -75,6 +75,13 @@ services:
       - TESLA_CLIENT_SECRET=${TESLA_CLIENT_SECRET}
       - TESLA_REFRESH_TOKEN=${TESLA_REFRESH_TOKEN}
       - TESLA_REGION=${TESLA_REGION}
+      # ── Tesla 车控（v0.66.0：车控下沉到本项目）────────────────────
+      # command-proxy 是 Tesla 官方的 vehicle-command sidecar（做签名命令）。
+      # ⚠️ 它在 `control` profile 里 —— 密钥卷没准备好时不让它拖垮整个栈：
+      #    docker compose --profile control up -d command-proxy
+      # 没起 proxy 时车控端点会明确回「代理没起来」，其余功能零影响。
+      - TESLA_COMMAND_PROXY_URL=${TESLA_COMMAND_PROXY_URL}
+      - TESLA_COMMAND_PROXY_CA=${TESLA_COMMAND_PROXY_CA}
     ports:
       - "8090:8090"
     volumes:
@@ -84,6 +91,41 @@ services:
       # 要重新走一遍浏览器授权。挂目录（而不是单文件）能让 rename 原子替换可用；
       # 挂单文件时 rename 会 EBUSY，服务端会自动退化成原地覆写（仍能工作，只是不原子）。
       - ./.env:/app/.env
+      # 车控代理的**自签证书**（公开证书，不含私钥）——
+      # api 容器要信它才能跟 proxy 说 HTTPS。
+      # ⚠️ 只挂证书，不挂私钥卷：api 容器不需要车辆私钥。
+      - command_ca:/command_ca:ro
+
+  # ⚠️ v0.66.0：Tesla 车控代理（官方 tesla/vehicle-command sidecar）。
+  #
+  # 为什么需要它：2021 年后的 Model 3/Y 发「签名命令」必须用
+  # **注册在 Tesla partner account 上的那把私钥**做 ECDSA 签名，
+  # 业务代码做不了 —— Tesla 官方把这套协议实现成了这个 sidecar。
+  #
+  # ⚠️ 镜像源用 Docker Hub（2026-10-24 实测）：
+  #    `ghcr.io/teslamotors/vehicle-command` 匿名拿 token 直接 403（镜像已私有/受限），
+  #    Docker Hub 上的 `tesla/vehicle-command` 是同一个官方镜像，参数一致。
+  command-proxy:
+    image: tesla/vehicle-command:latest
+    container_name: teslamate-command-proxy
+    profiles: ["control"]
+    restart: unless-stopped
+    command:
+      - -tls-key=/data/tls-key.pem
+      - -key-file=/data/private-key.pem
+      - -cert=/data/tls-cert.pem
+      - -port=4443
+      # ⚠️ **-host 必须显式给 0.0.0.0**：不传的话 sidecar 默认只听 **localhost**
+      # （日志实测 `Listening on localhost:4443`）→ api 容器连不上。
+      - -host=0.0.0.0
+      - -verbose
+    volumes:
+      # 车辆私钥 + TLS 证书（**只在这个卷里，不入库**）
+      - command_keys:/data
+    networks:
+      default:
+        aliases:
+          - command-proxy
 
   grafana:
     # 中文仪表盘版（https://github.com/wjsall/teslamate-chinese-dashboards）
@@ -108,3 +150,9 @@ services:
     volumes:
       # 中文仪表盘内置于镜像 /dashboards 与 /dashboards_internal，不要从宿主机挂载覆盖
       - ./grafana/data:/var/lib/grafana
+
+volumes:
+  # 车控密钥卷：车辆私钥 + TLS 证书（**只在这里，不入库**）
+  command_keys:
+  # 只给 api 容器看的**公开**自签证书
+  command_ca:

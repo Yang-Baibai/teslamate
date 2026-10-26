@@ -123,6 +123,11 @@ func main() {
 	mux.HandleFunc("GET /api/v1/charges/{id}/curve", auth(handleChargeCurve))
 	mux.HandleFunc("GET /api/v1/cars/{id}/stats", auth(handleStats))
 	mux.HandleFunc("GET /api/v1/cars/{id}/battery", auth(handleBattery))
+	// ⚠️ v0.66.0：车辆控制（车控下沉到本项目；Housekeeper 将来调这里）。
+	//   GET  → 支持哪些动作（App 与 MCP 用它渲染）
+	//   POST → 下发一条命令（/api/v1/cars/{id}/commands/{action}）
+	mux.HandleFunc("GET /api/v1/cars/{id}/commands", auth(handleTeslaCommandCatalog))
+	mux.HandleFunc("POST /api/v1/cars/{id}/commands/{action}", auth(handleTeslaCommand))
 	mux.HandleFunc("GET /api/v1/app/latest", auth(handleAppLatest))
 	mux.HandleFunc("GET /api/v1/app/staticmap", auth(handleStaticMap))
 	// APK 静态服务（不加 auth：DownloadManager 无法塞自定义 header；Tailscale 隧道已加密）

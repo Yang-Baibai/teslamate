@@ -9,8 +9,13 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -1336,4 +1341,109 @@ class Api private constructor(private val base: String, private val token: Strin
      */
     fun costSummary(carId: Int, period: String): CostSummary =
         get("/api/v1/cars/$carId/cost_summary?period=$period")
+
+    // ── 车控（v0.66.0：车控下沉到 teslamate）────────────────────────
+    //
+    // ⚠️ 车控是**不可逆**的（开门、启动），所以：
+    //   ① 动作清单由**服务端**下发（客户端不新增动作，只渲染）；
+    //   ② 参数由服务端再校验一遍（客户端只是转发）；
+    //   ③ 高危动作（解锁/尾门/远程启动）**必须**先确认。
+
+    /** 车控动作清单（含每个动作的风险等级与参数）。 */
+    fun commands(carId: Int): CommandCatalog = get("/api/v1/cars/$carId/commands")
+
+    /**
+     * 下发一条车控命令。
+     *
+     * ⚠️ 返回的 `sent=false` **不等于失败**：
+     * 车在休眠时 Tesla 会回 408，服务端会把它翻译成「车在休眠或离线，先唤醒再试」。
+     */
+    fun sendCommand(
+        carId: Int,
+        action: String,
+        params: Map<String, Any> = emptyMap(),
+    ): CommandResult {
+        // ⚠️ Map<String, Any> **不能**直接 encodeToString（没有序列化器）⇒ 显式建 JsonObject。
+        val payload = buildJsonObject {
+            put("params", buildJsonObject {
+                params.forEach { (k, v) ->
+                    when (v) {
+                        is Boolean -> put(k, v)
+                        is Int -> put(k, v)
+                        is Double -> put(k, v)
+                        is Long -> put(k, v)
+                        is String -> put(k, v)
+                        else -> put(k, v.toString())
+                    }
+                }
+            })
+        }.toString().toRequestBody("application/json".toMediaType())
+        val req = Request.Builder()
+            .url(base + "/api/v1/cars/$carId/commands/$action")
+            .header("Authorization", "Bearer $token")
+            .post(payload)
+            .build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    val parsed = runCatching { json.decodeFromString<ApiError>(body) }.getOrNull()
+                    val msg = parsed?.error?.takeIf { it.isNotBlank() }
+                        ?: "车控命令下发失败（HTTP ${resp.code}）"
+                    val kind = if (resp.code in 500..599) ApiErrorKind.SERVER else ApiErrorKind.OTHER
+                    throw UserFacingException(msg, kind)
+                }
+                return json.decodeFromString<CommandResult>(body)
+            }
+        } catch (e: UserFacingException) {
+            throw e
+        } catch (e: SerializationException) {
+            throw UserFacingException(
+                "服务器返回的数据格式不对，请确认服务端是最新的版本",
+                ApiErrorKind.PARSE,
+            )
+        } catch (e: IOException) {
+            throw UserFacingException("网络异常，请稍后重试", ApiErrorKind.NETWORK)
+        }
+    }
+
 }
+
+
+// ── 车控模型（v0.66.0）──────────────────────────────────────────
+
+/**
+ * 一个车控动作。
+ *
+ * ⚠️ `risk` 由**服务端**给（low / medium / high）——
+ * 客户端不自己判断高危，因为「哪些动作算高危」是安全策略，只该有一处。
+ */
+@Serializable
+data class VehicleCommand(
+    val action: String = "",
+    val description: String = "",
+    val risk: String = "low",
+    val params: List<String> = emptyList(),
+    val wakes_vehicle: Boolean = false,
+)
+
+/** 车控动作清单。`proxy=false` 表示 command-proxy 没起来 ⇒ 车控不可用。 */
+@Serializable
+data class CommandCatalog(
+    val actions: List<VehicleCommand> = emptyList(),
+    val proxy: Boolean = false,
+)
+
+/** 一次命令下发的结果。 */
+@Serializable
+data class CommandResult(
+    val action: String = "",
+    val risk: String = "",
+    val description: String = "",
+    val vin: String = "",
+    val sent: Boolean = false,
+    val error: String? = null,
+    val hint: String? = null,
+    val response: JsonObject? = null,
+    val at: String? = null,
+)

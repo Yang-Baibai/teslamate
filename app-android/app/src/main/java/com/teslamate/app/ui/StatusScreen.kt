@@ -660,6 +660,20 @@ fun StatusScreen(
                         // 省下 74dp，胎压卡就能完整露出首屏（现在要滑 170dp 才看得到四个胎压值）。
                         TpmsCard(st)
 
+                        // ⚠️ **v0.66.0（第 33 轮）：车辆控制**（车控下沉到本项目）。
+                        //
+                        // 位置：胎压之后 —— 胎压与车控都是「**当下**这辆车的状态与动作」，
+                        // 而保养/最近 30 天是「提醒与回顾」。
+                        //
+                        // ⚠️ 锁车状态**未知**时（车休眠或没连实时状态源）传 null ——
+                        // 卡上会写「锁车状态未知」，不会假装车没锁。
+                        VehicleControlCard(
+                            api = api,
+                            carId = settings.carId,
+                            locked = st.locked,
+                            carAsleep = st.fleet_state == "asleep",
+                        )
+
                         // 保养 / 轮胎卡片（配过基准才出现）
                         if (reminders.isNotEmpty()) {
                             MaintenanceCard(

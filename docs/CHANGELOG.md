@@ -5,6 +5,114 @@
 
 ---
 
+## 2026-10-25（v0.66.0：车辆控制下沉到 teslamate + Hermes 的 MCP 接口）
+
+> 本轮版本：`0.66.0`，versionCode 83。
+> 用户诉求（三件事）：
+> ① 界面**太啰嗦**，细节文字直接铺出来了，应该藏进小角标，点开才看；
+> ② 给 App 加**车辆控制**；
+> ③ 在 PC 上提供标准的 **MCP** 服务，让电脑上的 **Hermes** 也能查数据、也能控车。
+>
+> 并且明确：「**Housekeeper 中的车辆控制解耦掉，正确的应该是车辆控制在此项目中。
+> Housekeeper 调用这个项目。**」
+
+### 一、减啰嗦（v0.65.0 的姊妹篇，见上一条）
+
+排查出 **36 块 / 2211 字**「直接可见的长说明」，折进指标右侧的 ⓘ 角标后降到 **11 块 / 513 字**（**−69%**），
+并新增客户端**闸门 5「啰嗦棘轮」**把可见长说明块数钉在 11 ——
+以后再往界面上铺解释，闸门立刻红。
+
+### 二、车辆控制下沉（车控能力归 teslamate）
+
+#### 通道怎么走
+
+Tesla 的「签名命令」（2021 年后的 Model 3 必须）要用**注册在 partner account 上的那把私钥**
+做 ECDSA 签名，再用车端下发的 domain session key 加密 payload ——
+业务代码做不了，Tesla 官方把它实现成了独立 sidecar：**`tesla/vehicle-command`**。
+
+```
+teslamate(Go API) ──①access_token──▶ Tesla token 端点
+      └──②Bearer + JSON──▶ command-proxy(:4443) ──③私钥签名──▶ Tesla signed_command
+```
+
+| 改动 | 在哪 |
+|---|---|
+| **新增**车控模块（16 个动作 + 参数校验 + 风险分级 + 审计日志） | `api/tesla_command.go` |
+| **新增**车控参数校验单测（7 组） | `api/tesla_command_test.go` |
+| **新增**车控容器（官方 sidecar）+ 密钥卷 + 只给 api 容器看的公开 CA 卷 | `compose.yaml` |
+| **新增**路由 `GET /api/v1/cars/{id}/commands` 与 `POST /api/v1/cars/{id}/commands/{action}` | `api/main.go` |
+| **新增**App 车辆控制卡（锁车/解锁为主角，其余按风险分区，全部二次确认） | `app-android/.../ui/VehicleControlCard.kt` |
+| **新增**客户端车控模型与调用 | `app-android/.../Api.kt` |
+
+#### 踩到的三个坑（都记在代码注释里）
+
+1. **proxy 要的是 VIN，不是 Fleet API 的数字 id** ——
+   传 `<fleet车辆ID>` 会被回 `expected 17-character VIN in path`。
+2. **令牌 scope 决定能不能发车控** ——
+   只读授权（`openid offline_access vehicle_device_data`）换来的令牌**没有 `vehicle_cmds`**；
+   实测 Housekeeper 的令牌 scope 是
+   `openid email offline_access vehicle_device_data **vehicle_cmds** vehicle_charging_cmds vehicle_location`。
+   ⚠️ 中国区的 `refresh_token` 是**一次性**的（刷新即轮换），两个系统不能各持一份 ——
+   车控令牌归 teslamate，Housekeeper 将来改调本项目。
+3. **proxy 是自签证书** —— 客户端要显式信自己的 CA（`TESLA_COMMAND_PROXY_CA`），
+   否则 TLS 直接 `x509: certificate signed by unknown authority`。
+
+#### 实测结论（2026-10-26 21:11）
+
+链路**逐段打通**：proxy 取到了 domain session key、用车辆私钥签出了 `routable_message`、
+发到 Tesla 的 `signed_command` 端点 —— Tesla 回的是 **408 `vehicle is offline`**，
+因为**车当时在休眠**（`fleet_state=asleep`），不是权限问题。
+⇒ 车醒着的时候命令就能发出去；车醒时需要 `wake_up` 起步（它本身会耗电、也可能计费）。
+
+#### 风险分级（自用单用户，**不做 TOTP** —— 那是 Housekeeper 的多用户设计）
+
+| 级别 | 动作 |
+|---|---|
+| high | 解锁 / 开合尾门 / 远程启动 |
+| medium | 代客模式 / 温度 / 开空调 / 充电上限 / 充电电流 / 开始·停止充电 / 唤醒 |
+| low | 锁车 / 鸣笛 / 闪灯 / 关空调 / 哨兵模式 |
+
+高危动作在 App 与 MCP 两侧都**必须先确认**；审计日志里**不落明文口令**。
+
+### 三、给 Hermes 的 MCP(stdio) 服务
+
+新增 `mcp/teslamate_mcp.py`（依赖只有 `mcp` 这一个包，不碰数据库）：
+
+| 工具 | 作用 |
+|---|---|
+| `teslamate_status` | 车况：电量、续航、锁车、位置、内外温、实时胎压、车机是否醒着 |
+| `teslamate_battery` | 电池健康度、衰减趋势、出厂折算续航 |
+| `teslamate_charges` / `teslamate_drives` | 最近充电 / 行程 |
+| `teslamate_stats` | 用量统计（today/week/month/year） |
+| `teslamate_driving_profile` | 驾驶画像（平顺分与各分项） |
+| `teslamate_stay_points` | 常驻点 |
+| `teslamate_command_catalog` | 车控动作清单（含风险等级与参数） |
+| `teslamate_vehicle_command` | **下发车控命令**（高危动作提示先确认） |
+
+接进 Hermes（`~/.local-app/hermes/config.yaml` 的 `mcp_servers:`）：
+
+```yaml
+mcp_servers:
+  teslamate:
+    command: python
+    args: ["C:/Users/<用户名>/OneDrive/文档/teslamate/mcp/teslamate_mcp.py"]
+    timeout: 120
+```
+
+⚠️ **令牌不写进 Hermes 的配置** —— MCP 服务自己去仓库的 `.env` 找 `API_TOKEN`，少一处密钥副本。
+⚠️ Hermes 需要**重启**才会加载新的 MCP 服务器。
+
+### 四、影响 / 回滚 / 校验
+
+- 影响：车况页新增「车辆控制」卡；车控**默认关闭**（command-proxy 在 `control` profile 里，
+  不主动起就零影响，App 会写明「车控还没启用」并给出一行启用命令）
+- 回滚：`git revert`；关车控只要 `docker compose --profile control stop command-proxy`
+- 校验：客户端 JVM 单测 **110/110**、Go vet + test 通过（含 7 组新单测）、
+  客户端闸门 **5/5**、冒烟 **37 项**、全仓密钥扫描 CLEAN、
+  MCP 自检（stdio 握手 + tools/list + tools/call）通过
+
+---
+
 ## 2026-10-25（v0.65.0：减啰嗦 —— 把解释折进指标右侧的 ⓘ 角标）
 
 > 本轮版本：`0.65.0`，versionCode 82。

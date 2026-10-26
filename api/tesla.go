@@ -104,6 +104,13 @@ type teslaClient struct {
 	refreshToken string
 	tokenExpiry  time.Time
 	vehicleID    string
+	// ⚠️ v0.66.0：车辆 **VIN**（17 位，如 <VIN>）。
+	//
+	// 为什么单独存：Fleet API 的 id 是**数字**（中国区实测 <fleet车辆ID>），
+	// 而 command-proxy 的命令端点要的是 **VIN**
+	// （实测传 id 会被回 `expected 17-character VIN in path`）。
+	// 两者不能互换。
+	vehicleVIN string
 
 	stateMu  sync.RWMutex
 	locked   *bool
