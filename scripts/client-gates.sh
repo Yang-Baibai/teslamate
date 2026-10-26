@@ -294,6 +294,87 @@ PYEOF
 if [ $? -eq 0 ]; then ok "啰嗦棘轮（可见长说明块 ≤ 预算）"; else fail "啰嗦棘轮（可见长说明块超预算）"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 6：孤儿长文字（堵住闸门 5 的盲点）────────────────────────
+#
+# ⚠️ **v0.69.0（真机 UI 树实测发现的审计盲点）**。
+#
+# 闸门 5 只统计 `Text(` 块**内部**的字面量。但 `BatteryDecayText.lines(d)`
+# 这种**辅助函数**产出的长文字，经 `Text(line)` 渲染后**一样直接铺在界面上**，
+# 闸门 5 却完全看不见 ——
+# 真机实测时，电池卡底部那三段灰字合计 **101 个汉字**，正是这样漏掉的。
+#
+# 本闸门补这一类：
+#   ① 一个 .kt 文件若**不含 `Text(` 调用** ⇒ 它不直接画界面，是「显示文本提供者」；
+#   ② 这样的文件里，≥22 汉字的字面量必须落在**折叠提供器**里
+#      （函数名以 note/caveat/hint/detail/desc/summary/explain 开头）；
+#   ③ 这样「这段文字是折的」从**靠自觉**变成**可静态检查的契约** ——
+#      把长文字挪回 `fun lines()` 就会被这条闸门抓出来。
+#
+# 豁免：注释行；**错误消息**（throw / raise）——
+#       按约定「错误 / 空态保持直接可见」，不受此闸门管。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import re, pathlib, sys
+CJK = re.compile(r'[\u4e00-\u9fff]')
+LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+FOLD_NAMES = ('note', 'caveat', 'hint', 'detail', 'desc', 'summary', 'explain')
+
+def throw_spans(lines):
+    """throw / raise 表达式覆盖到的行号集合（错误消息按约定直接可见）。"""
+    out = set()
+    for i, ln in enumerate(lines):
+        if 'throw ' in ln or 'raise ' in ln:
+            depth = ln.count('(') - ln.count(')')
+            j = i
+            while depth > 0 and j + 1 < len(lines):
+                j += 1
+                depth += lines[j].count('(') - lines[j].count(')')
+            out.update(range(i, j + 1))
+    return out
+
+def enclosing_func(lines, idx):
+    for i in range(idx, -1, -1):
+        m = re.match(r'\s*(?:private |public |internal |protected |suspend |inline |operator )*fun\s+([A-Za-z_][A-Za-z0-9_]*)\s*[(<]', lines[i])
+        if m:
+            return m.group(1)
+    return None
+
+bad = []
+for p in sorted(root.rglob('*.kt')):
+    src = p.read_text(encoding='utf-8', errors='replace')
+    if 'Text(' in src:
+        continue          # 直接画界面的文件 —— 归闸门 5 管
+    lines = src.splitlines()
+    exc = throw_spans(lines)
+    for idx, ln in enumerate(lines):
+        st = ln.strip()
+        if st.startswith('//') or st.startswith('*') or st.startswith('/*'):
+            continue
+        if idx in exc:
+            continue      # 错误消息：按约定保持直接可见
+        for lit in LIT.findall(ln):
+            n = len(CJK.findall(lit))
+            if n < 22:
+                continue
+            fn = enclosing_func(lines, idx)
+            if fn and fn.lower().startswith(FOLD_NAMES):
+                continue  # 折叠提供器
+            bad.append('%s:%d  %2d字  fun=%s  %s' % (p.name, idx + 1, n, fn or '(无)', lit[:48]))
+
+if bad:
+    print('孤儿长文字 %d 处 —— 这些字**直接铺在界面上**，闸门 5（Text( 块）看不见：' % len(bad))
+    for b in bad[:14]:
+        print('   ', b)
+    print('   ⇒ 折进 InfoNote / TextWithNote / KeyValueWithNote（ⓘ 角标）')
+    print('   ⇒ 或放进折叠提供器（函数名以 note/caveat/hint/detail/desc/summary/explain 开头）')
+    print('   ⇒ 错误消息（throw / raise）按约定保持直接可见，不受此闸门管')
+    sys.exit(1)
+print('孤儿长文字 0 处（显示文本提供者的长文字都在折叠提供器里）')
+PYEOF
+if [ $? -eq 0 ]; then ok "孤儿长文字（辅助函数渲染的可见长文也受管）"; else fail "孤儿长文字"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

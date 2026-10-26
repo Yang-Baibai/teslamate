@@ -41,16 +41,28 @@ import kotlin.math.roundToInt
 object BatteryDecayText {
 
     /**
-     * 结论行。
+     * **结论行** —— 这张卡唯一常驻的说明（主角）。
      *
      * ⚠️ **所有者审美：一屏一个主角，装饰宁删勿留** ——
-     * 所以这里只给「样本与覆盖」+「连续衰减速率」+「那次落差」三行，
+     * 样本量、那次落差、口径边界全是**补充说明** ⇒ 折进 ⓘ（v0.69.0）；
      * 其它推导（分裂半、R²、置信区间宽度）进「怎么算的」折叠区。
      */
-    fun lines(d: BatteryDecay): List<String> {
-        val out = mutableListOf<String>()
+    fun headline(d: BatteryDecay): String = rateLine(d)
 
-        // ── 第一行：样本与覆盖 ────────────────────────────────
+    /**
+     * **补充说明** —— 折进结论行的 ⓘ（v0.69.0）。
+     *
+     * ⚠️ **v0.69.0（真机 UI 树实测）**：这三段原先是**三段直接可见的灰字**，
+     * 合计 **101 个汉字** —— 真机滚到电池卡底部时它们占了半屏，
+     * 而它们全都是「结论的依据」，不是结论本身。
+     *
+     * 结论（衰减速率）留在外面；样本量 / 那次落差 / 口径边界折进来。
+     * 一段都没删，只是换了位置。
+     */
+    fun note(d: BatteryDecay): String {
+        val parts = mutableListOf<String>()
+
+        // ── 样本与覆盖 ────────────────────────────────────────
         val sample = StringBuilder()
         sample.append(d.n).append(" 个 100% 满充点")
         if (d.excluded_n > 0) {
@@ -63,12 +75,9 @@ object BatteryDecayText {
         if (d.dropped_empty > 0) {
             sample.append(" · 剔除 ").append(d.dropped_empty).append(" 场没实际充电的")
         }
-        out += sample.toString()
+        parts += sample.toString()
 
-        // ── 第二行：连续衰减速率（主角） ──────────────────────
-        out += rateLine(d)
-
-        // ── 第三行：那次落差（如果检测到） ───────────────────
+        // ── 那次落差（如果检测到） ───────────────────────────
         if (d.has_step) {
             val step = StringBuilder()
             step.append(d.step_date).append(" 前后有一次 ").append(d.step_kwh.fmt(2)).append(" 度的落差")
@@ -81,9 +90,14 @@ object BatteryDecayText {
                 step.append("；不扣它，表面速率会高估 ")
                     .append(d.naive_overstate.fmt(1)).append(" 倍")
             }
-            out += step.toString()
+            parts += step.toString()
         }
-        return out
+
+        // ── 容量口径与适用边界 ───────────────────────────────
+        parts += "容量口径是车机上报的续航估值换算的（不是物理测量）；" +
+            "结论只在这 ${d.span_km.roundToInt()} 公里 / ${d.span_days} 天内有效，不能外推"
+
+        return parts.joinToString("\n\n")
     }
 
     /**
@@ -145,13 +159,7 @@ object BatteryDecayText {
         return out
     }
 
-    /**
-     * 常驻的一行口径提示（很短）。
-     *
-     * ⚠️ **v0.41.0：只留最关键的一句** ——
-     * 完整推导进「怎么算的」折叠区，常驻行不再重复。
-     */
-    fun caveatLine(d: BatteryDecay): String =
-        "容量口径是车机上报的续航估值换算的（不是物理测量）；" +
-            "结论只在这 ${d.span_km.roundToInt()} 公里 / ${d.span_days} 天内有效，不能外推"
+    // ⚠️ **v0.69.0**：原 `caveatLine()` 已删除 —— 它的内容进了 `note()`。
+    // 「口径」属补充说明，不该常驻；结论只有 `headline()` 一条。
 }
+

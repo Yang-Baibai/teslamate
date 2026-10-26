@@ -1102,17 +1102,20 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // 而且混用了系统性偏高 0.56% 的 90~98% 满充点 ——
                             // 实测把衰减速率**高估了 2.3 倍**。
                             b.decay?.let { d ->
-                                BatteryDecayText.lines(d).forEach { line ->
-                                    Text(
-                                        line,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                                Text(
-                                    BatteryDecayText.caveatLine(d),
+                                // ⚠️ **v0.69.0（真机 UI 树实测）**：**结论常驻，其余折进 ⓘ**。
+                                //
+                                // 原先是**四段直接可见的灰字**：样本量 / 衰减结论 / 那次落差 / 容量口径，
+                                // 合计 **101 个汉字** —— 真机滚到电池卡底部时占了半屏，
+                                // 而其中三段都是「结论的依据」，不是结论本身。
+                                //
+                                // 现在只有结论（衰减速率）留在外面，
+                                // 依据（样本 / 落差 / 口径）折进 ⓘ，点开在下面就地展开。
+                                // 一段文字都没删，只是换了位置。
+                                TextWithNote(
+                                    text = BatteryDecayText.headline(d),
+                                    note = BatteryDecayText.note(d),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    a11yLabel = "电池衰减结论的依据",
                                 )
                                 // ⚠️ **v0.41.0（第 24 轮对抗性审计 ②③④）：完整推导进折叠区。**
                                 //
