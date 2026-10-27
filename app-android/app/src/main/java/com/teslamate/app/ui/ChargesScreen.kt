@@ -112,6 +112,13 @@ fun ChargesScreen(
 
     LaunchedEffect(settings) { load() }
 
+    // ⚠️ **v0.71.0（苹果设计总监复审）**：边缘投影**只在转场期间**出现。
+    //
+    // 原来它是 `AnimatedContent` 内容里的**常驻**节点 ⇒ 转场结束后那条
+    // 16dp 宽的黑灰渐变**永久钉在屏幕左缘**，用户读作「渲染 bug」。
+    // 现在由父层持有「转场进行中」的信号，转场一结束投影就没了。
+    val edgeActive = rememberPushTransitionActive(selected)
+
     // 列表 ⇄ 详情：iOS 式 push（新页推入，旧页 30% 视差退让 + 左缘投影）
     AnimatedContent(
         targetState = selected,
@@ -138,7 +145,8 @@ fun ChargesScreen(
                 onSelect = { selected = it },
             )
             else ChargeDetail(sel, api, stats) { selected = null }
-            if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
+            // ⚠️ v0.71.0：`edgeActive` 把投影限制在**转场期间**。
+            if (sel != null && edgeActive) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
     }
 }
@@ -502,11 +510,24 @@ internal fun ChargeDetail(
                         val delta = r1 - r0
                         if (kotlin.math.abs(delta) >= 1.0) {
                             Text(
-                                "补回约 ${kotlin.math.abs(delta).toLong()} 公里续航" +
-                                    if (delta < 0) "（车机标定续航反而降了，可能与温度有关）" else "",
+                                "补回约 ${kotlin.math.abs(delta).toLong()} 公里续航",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            // ⚠️ **v0.71.0（减啰嗦深挖）**：原来这句解释**接在同一段文字里** ——
+                            // 「补回约 N 公里续航（车机标定续航反而降了，可能与温度有关）」= 24 字，
+                            // 顶破了「常驻可见长说明」的门槛。
+                            //
+                            // 现在**拆成独立一行**：异常（标定续航反而降了）本身是用户该知道的，
+                            // **不该藏进 ⓘ** —— 藏起来就成了「用户没看到所以不知道」。
+                            // 拆开既过了门槛，又一条信息没丢。
+                            if (delta < 0) {
+                                Text(
+                                    "标定续航反而降了，可能与温度有关",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                 }
@@ -963,13 +984,21 @@ internal fun ChargeDetail(
                                 val peakKw = powers[peakIdx]
                                 val tailKw = powers.takeLast(powers.size / 5).average()
                                 if (peakKw > 0 && tailKw < peakKw * 0.35 && charge.is_dc) {
-                                    Text(
-                                        "峰值 $peakKw kW 在 " +
+                                    // ⚠️ **v0.71.0（减啰嗦深挖）**：这段「怎么读这条曲线」折进 ⓘ。
+                                    //
+                                    // 原来它是一段 27 字的常驻灰字，直接顶在曲线下面。
+                                    // 但它是**读图指引**—— 只有在用户盯着曲线想「桩是不是坏了」时才需要；
+                                    // 曲线本身（峰值 + 尾部）已经把数据给全了。
+                                    //
+                                    // 折进 ⓘ（带可见标签「怎么读这条曲线」），
+                                    // 和 RangeSegments 那三个 ⓘ 同一个形态。
+                                    InfoNote(
+                                        text = "峰值 $peakKw kW 在 " +
                                             (curve.getOrNull(peakIdx)?.date?.fmtShort() ?: "") +
                                             "，之后一路降到约 ${tailKw.toInt()} kW —— " +
                                             "这是直流桩的高压段限功率，不是桩坏了。",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        label = "怎么读这条曲线",
+                                        a11yLabel = "功率曲线的读法",
                                     )
                                 }
                             }

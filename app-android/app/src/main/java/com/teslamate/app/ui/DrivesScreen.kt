@@ -114,6 +114,13 @@ fun DrivesScreen(
 
     LaunchedEffect(settings) { load() }
 
+    // ⚠️ **v0.71.0（苹果设计总监复审）**：边缘投影**只在转场期间**出现。
+    //
+    // 原来它是 `AnimatedContent` 内容里的**常驻**节点 ⇒ 转场结束后那条
+    // 16dp 宽的黑灰渐变**永久钉在屏幕左缘**，用户读作「渲染 bug」。
+    // 现在由父层持有「转场进行中」的信号，转场一结束投影就没了。
+    val edgeActive = rememberPushTransitionActive(selected)
+
     AnimatedContent(
         targetState = selected,
         modifier = modifier,
@@ -138,7 +145,8 @@ fun DrivesScreen(
                 onSelect = { selected = it },
             )
             else DriveDetail(sel, api, settings) { selected = null }
-            if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
+            // ⚠️ v0.71.0：`edgeActive` 把投影限制在**转场期间**。
+            if (sel != null && edgeActive) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
     }
 }
@@ -734,19 +742,38 @@ internal fun DriveDetail(
                                 "最高耗电 ${peakUp.roundToInt()} 千瓦，" +
                                 "最深回收 ${kotlin.math.abs(peakDown).roundToInt()} 千瓦",
                         )
+                        // ⚠️ **v0.71.0（减啰嗦深挖）**：**图例与本趟数据拆成两行**。
+                        //
+                        // 原来挤在一句里（26 字）：「正值 = 耗电（蓝），负值 = 刹车回收（绿），
+                        // 本趟 X kWh/100km，瞬时峰值 Y kW，图中为每 1 公里平均」。
+                        //
+                        // 拆开是因为它们是**两类东西**：
+                        //   · **图例**（蓝=耗电、绿=回收）—— 看图的前提；
+                        //   · **本趟数据**（每百公里能耗 / 瞬时峰值 / 分箱平均）—— 这趟的数。
+                        // 混在一句里，读者要先在脑子里做一次分类才能读懂。
                         Text(
                             // ⚠️ **v0.47.0（第 28 轮 a11y P1-3）**：「 · 」换成「，」——
                             // TTS 会把「点」逐字念出来，在两个并列短语之间插噪声。
-                            "正值 = 耗电（蓝），负值 = 刹车回收（绿）" +
-                                (drive.wh_per_km?.let { "，本趟 ${it.fmtKwh100()} kWh/100km" } ?: "") +
-                                // ⚠️ v0.14.0：把「瞬时峰值」和「分箱平均」的差别**写在明面上**，
-                                // 免得同屏两个功率数打架时读者以为数据坏了。
-                                (drive.power_max_kw?.let {
-                                    "，瞬时峰值 $it kW，图中为每 1 公里平均"
-                                } ?: ""),
+                            "正值 = 耗电（蓝），负值 = 刹车回收（绿）",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        val drivePowerStats = buildString {
+                            drive.wh_per_km?.let { append("本趟 ${it.fmtKwh100()} kWh/100km") }
+                            // ⚠️ v0.14.0：把「瞬时峰值」和「分箱平均」的差别**写在明面上**，
+                            // 免得同屏两个功率数打架时读者以为数据坏了。
+                            drive.power_max_kw?.let {
+                                if (isNotEmpty()) append("，")
+                                append("瞬时峰值 $it kW，图中为每 1 公里平均")
+                            }
+                        }
+                        if (drivePowerStats.isNotEmpty()) {
+                            Text(
+                                drivePowerStats,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         // ⚠️ v0.9.0（长途自驾党复核）：加**电量下降条**。
                         // 他原话：「图上只有功率没有电量，我看不到还能撑到哪个服务区。
                         // 建议加一条电量曲线，或者在图上标出'到达 20% 时走了多少公里'。」

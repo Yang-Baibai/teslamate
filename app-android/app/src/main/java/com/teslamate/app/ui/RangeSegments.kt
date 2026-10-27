@@ -305,7 +305,15 @@ fun RangeSegmentsCard(
         val accents = LocalAccentColors.current
         Text(
             buildAnnotatedString {
-                append("基于 ${segments.size} 段实测（每次充完到下次充上）")
+                // ⚠️ **v0.71.0（减啰嗦深挖）**：删掉「（每次充完到下次充上）」。
+                //
+                // 原来这一行是 26 字（顶破「常驻可见长说明」门槛）：
+                // 「基于 N 段实测（每次充完到下次充上） · 官方标称 X 公里，实测低 Y%」。
+                //
+                // 括号里那句是**「段」的定义** —— 而下面紧跟着就有「看 N 段明细」的折叠区，
+                // 点开就能看到每一段是什么。**定义不必常驻**，
+                // 留在这一行反而把结论挤到边上（琥珀色的「实测低 23%」才是重点）。
+                append("基于 ${segments.size} 段实测")
                 official?.let {
                     // ⚠️ **v0.40.0（第 24 轮对抗性审计 ①）：百分比方向曾经反了。**
                     // 详见 [fullChargeVsOfficialPercent] 的说明 ——

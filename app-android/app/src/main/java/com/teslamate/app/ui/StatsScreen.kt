@@ -687,13 +687,20 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     val total = cost.yuanPerKwh ?: return@let null
                                     if (total > 0.01) (svc / total * 100).roundToInt() else null
                                 }
+                                // ⚠️ **v0.71.0（减啰嗦深挖）**：文案**提出成局部变量 + 压缩措辞**。
+                                //
+                                // 原来两个分支直接写进 `Text(...)` ⇒ 闸门把两支合起来算成 **47 字**，
+                                // 而界面上**一次只显示一支**。
+                                // 而且那一支本身也偏长（26 字）——
+                                // 「这类桩普遍收占位费」是**原因**，压成括号里的短注，
+                                // 主句留给**结论**（低估多少 %）。
+                                val feeNote = if (missingShare != null) {
+                                    "⚠ 没填公共桩服务费（普遍收占位费）—— 实测会低估约 $missingShare%"
+                                } else {
+                                    "⚠ 没填公共桩服务费（普遍收占位费）—— 估算会偏低"
+                                }
                                 Text(
-                                    if (missingShare != null) {
-                                        "⚠ 没填公共桩服务费 —— 这类桩普遍收占位费，" +
-                                            "实测不填会低估约 $missingShare%"
-                                    } else {
-                                        "⚠ 没填公共桩服务费 —— 这类桩普遍收占位费，估算会偏低"
-                                    },
+                                    feeNote,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = LocalAccentColors.current.warnAmber,
                                     modifier = Modifier.padding(bottom = 4.dp),

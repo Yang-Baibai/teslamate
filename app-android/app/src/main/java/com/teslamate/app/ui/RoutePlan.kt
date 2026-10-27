@@ -3077,12 +3077,20 @@ fun RoutePlanCard(
                 val collapsedCount = remember(plan, startIdx) {
                     plan.visibleStopIndices(startIdx, false).size
                 }
+                // ⚠️ **v0.71.0（减啰嗦深挖）**：文案**提出成局部变量**。
+                //
+                // 原来两个分支直接写进 `Text(...)` 的实参里 ⇒ 闸门按「一个 Text 块」
+                // 统计，把两支合起来算成 **33 字**；而界面上**一次只显示一支**（各 9~10 字）。
+                // ⇒ 度量与界面不一致，棘轮盯的是个假数字。
+                //
+                // 提出成 `label` 之后：Text 块里没有字面量 ⇒ 度量与界面一致。
+                val stationToggleLabel = if (showAllStations) {
+                    "只看需要注意的 $collapsedCount 站"
+                } else {
+                    "查看全部 ${plan.stops.size} 站"
+                }
                 Text(
-                    if (showAllStations) {
-                        "只看需要注意的 $collapsedCount 站"
-                    } else {
-                        "查看全部 ${plan.stops.size} 站"
-                    },
+                    stationToggleLabel,
                     style = MaterialTheme.typography.labelMedium,
                     color = accents.energyBlue,
                     modifier = Modifier

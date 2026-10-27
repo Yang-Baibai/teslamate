@@ -327,6 +327,13 @@ fun RecordsScreen(
         store.load(api, settings.carId)
     }
 
+    // ⚠️ **v0.71.0（苹果设计总监复审）**：边缘投影**只在转场期间**出现。
+    //
+    // 原来它是 `AnimatedContent` 内容里的**常驻**节点 ⇒ 转场结束后那条
+    // 16dp 宽的黑灰渐变**永久钉在屏幕左缘**，用户读作「渲染 bug」。
+    // 现在由父层持有「转场进行中」的信号，转场一结束投影就没了。
+    val edgeActive = rememberPushTransitionActive(selected)
+
     // 列表 ⇄ 详情：iOS 式 push（新页推入，旧页 30% 视差退让 + 左缘投影）
     //
     // ⚠️ 列表与详情在**同一个** AnimatedContent 里 ——
@@ -453,7 +460,8 @@ fun RecordsScreen(
                     rates = settings.currentRates,
                 )
             }
-            if (sel != null) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
+            // ⚠️ v0.71.0：`edgeActive` 把投影限制在**转场期间**。
+            if (sel != null && edgeActive) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
         }
     }
 }

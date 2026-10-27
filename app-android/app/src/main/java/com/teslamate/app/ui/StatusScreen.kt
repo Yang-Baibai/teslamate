@@ -1214,10 +1214,19 @@ private fun LocationCard(
         // 「少了位置」和「车在地下车库」看起来一样，用户无从判断。
         // 给一行灰字说明，比凭空消失诚实。
         SectionCard(title = "位置") {
+            // ⚠️ **v0.71.0（减啰嗦深挖）**：**主句常驻 + 解释折进 ⓘ**。
+            //
+            // 原来是一句 24 字的长句：「暂无位置数据。车辆位置需要 TeslaMate 采集到定位信息后才会出现。」
+            // —— 空态的**主句**用户要马上知道，**原因**是补充说明。
             Text(
-                "暂无位置数据。车辆位置需要 TeslaMate 采集到定位信息后才会出现。",
+                "暂无位置数据。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            InfoNote(
+                text = "车辆位置需要 TeslaMate 采集到定位信息后才会出现。",
+                label = "为什么没有？",
+                a11yLabel = "为什么没有位置数据",
             )
         }
         return
@@ -1323,11 +1332,20 @@ private fun TpmsCard(st: CarStatus) {
     // 还是本来就没数据。改成显示一行灰字说明，数据照常占位。
     if (fl == null && fr == null && rl == null && rr == null) {
         SectionCard(title = "轮胎胎压") {
+            // ⚠️ **v0.71.0（减啰嗦深挖）**：**主句常驻 + 解释折进 ⓘ**。
+            //
+            // 原来是一句 36 字的长句 —— 空态的**主句**用户要马上知道，
+            // 「实时胎压要配 Fleet API / 未配置时是稀疏采样」是**补充说明**。
             Text(
-                "暂无胎压数据。实时胎压需要配置 Tesla Fleet API；" +
-                    "未配置时显示的是 TeslaMate 的稀疏采样（车开动或充电时才记）。",
+                "暂无胎压数据。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            InfoNote(
+                text = "实时胎压需要配置 Tesla Fleet API；" +
+                    "未配置时显示的是 TeslaMate 的稀疏采样（车开动或充电时才记）。",
+                label = "为什么没有？",
+                a11yLabel = "为什么没有胎压数据",
             )
         }
         return

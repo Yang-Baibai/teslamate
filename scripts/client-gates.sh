@@ -248,12 +248,59 @@ TMP=$(mktemp)
 import re, pathlib, sys
 CJK = re.compile(r'[\u4e00-\u9fff]')
 LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
-# 预算 = 本轮迁移后的实测值 + 0 冗余（改之前先想清楚）
-BUDGET = 11
+# 预算 = 常驻可见的长说明块（**不含**折叠区里的）
+# ⚠️ **v0.71.0**：预算从 11 收到 **2**。
+#   11 是**旧口径**的数字（注释里的括号污染了配平 + 折叠区被算成可见），
+#   是假数字；修正口径后实测 **2 块 / 47 字**，
+#   与真机 UI 树实测的 **2 块 / 48 字**吻合 —— 剩下的两块都是该留的
+#   （线路无充电记录的空态 + 服务器连不上的错误提示）。
+BUDGET = 2
 root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+
+# ⚠️ **v0.71.0**：折叠组件 —— 里面的内容**默认看不见**，不算「常驻可见」。
+FOLDED_CALLS = ('InfoNote(', 'TextWithNote(', 'KeyValueWithNote(', 'NoteBody(',
+                'CollapsibleSection(')
+
+def is_comment(ln):
+    s = ln.strip()
+    return s.startswith('//') or s.startswith('*') or s.startswith('/*')
+
+def folded_spans(lines):
+    """折叠组件覆盖到的行号集合（含尾随 lambda 的内容体）。"""
+    covered = set()
+    i = 0
+    while i < len(lines):
+        st = lines[i].strip()
+        if any(st.startswith(s) for s in FOLDED_CALLS):
+            depth = 0
+            j = i
+            while j < len(lines):
+                if not is_comment(lines[j]):
+                    depth += lines[j].count('(') - lines[j].count(')')
+                if j > i and depth <= 0:
+                    break
+                j += 1
+            covered.update(range(i, j + 1))
+            # ⚠️ `CollapsibleSection("x") { … }` 的**内容体在括号之外**
+            tail = lines[j - 1].split(')')[-1] if j - 1 >= i else ''
+            if '{' in tail:
+                bd = 0
+                k = j - 1
+                while k < len(lines):
+                    if not is_comment(lines[k]):
+                        bd += lines[k].count('{') - lines[k].count('}')
+                    if k > j - 1 and bd <= 0:
+                        break
+                    k += 1
+                covered.update(range(j - 1, k + 1))
+            i = j + 1
+            continue
+        i += 1
+    return covered
 
 def visible_long_blocks(src):
     lines = src.splitlines()
+    folded = folded_spans(lines)
     out = []
     i = 0
     while i < len(lines):
@@ -263,15 +310,21 @@ def visible_long_blocks(src):
             j = i
             while j < len(lines):
                 ln = lines[j]
-                if not ln.strip().startswith('//'):
+                # ⚠️ **v0.71.0 修闸门计数 bug**：**注释行不参与括号配平**。
+                # 原来注释里的括号被当成代码括号 —— 例如 ChargesScreen.kt
+                # 的注释「`$` 后直接跟 `(` 不是合法的字符串模板」，
+                # 那个 `(` 让配平永远归不了零，
+                # 于是后面十几行被吞进同一个「块」，那一块被算成 64 字。
+                if not is_comment(ln):
                     lits += LIT.findall(ln)
-                depth += ln.count('(') - ln.count(')')
+                    depth += ln.count('(') - ln.count(')')
                 if j > i and depth <= 0:
                     break
                 j += 1
-            plain = ''.join(re.sub(r'\$\{[^}]*\}', '…', x) for x in lits)
-            if len(CJK.findall(plain)) >= 22:
-                out.append((i + 1, plain[:50]))
+            if i not in folded:
+                plain = ''.join(re.sub(r'\$\{[^}]*\}', '…', x) for x in lits)
+                if len(CJK.findall(plain)) >= 22:
+                    out.append((i + 1, plain[:50]))
             i = j + 1
             continue
         i += 1
@@ -283,7 +336,7 @@ for p in sorted(root.rglob('*.kt')):
         bad.append('%s:%d  %s' % (p.name, ln, txt))
 
 if len(bad) > BUDGET:
-    print('可见长说明块 %d 个，超过预算 %d —— 又把解释铺回界面了：' % (len(bad), BUDGET))
+    print('常驻可见长说明块 %d 个，超过预算 %d —— 又把解释铺回界面了：' % (len(bad), BUDGET))
     for b in bad[:14]:
         print('   ', b)
     print('   ⇒ 口径说明请折进 InfoNote / TextWithNote / KeyValueWithNote（ⓘ 角标）')
@@ -321,15 +374,23 @@ root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
 FOLD_NAMES = ('note', 'caveat', 'hint', 'detail', 'desc', 'summary', 'explain')
 
 def throw_spans(lines):
-    """throw / raise 表达式覆盖到的行号集合（错误消息按约定直接可见）。"""
+    """throw / raise 表达式覆盖到的行号集合（错误消息按约定直接可见）。
+
+    ⚠️ **v0.71.0**：注释行不参与括号配平 —— 否则注释里写着一段代码示例时，
+    它的括号会把后面几十行都算进「异常消息」里。
+    """
     out = set()
     for i, ln in enumerate(lines):
+        if ln.strip().startswith('//'):
+            continue
         if 'throw ' in ln or 'raise ' in ln:
             depth = ln.count('(') - ln.count(')')
             j = i
             while depth > 0 and j + 1 < len(lines):
                 j += 1
-                depth += lines[j].count('(') - lines[j].count(')')
+                nxt = lines[j]
+                if not nxt.strip().startswith('//'):
+                    depth += nxt.count('(') - nxt.count(')')
             out.update(range(i, j + 1))
     return out
 
