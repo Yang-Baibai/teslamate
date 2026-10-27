@@ -129,6 +129,13 @@ def _get(path: str) -> Any:
     return _request("GET", path)
 
 
+def _tpms_pressure(v: Any) -> Any:
+    """实时胎压：四个轮子的形状**都是对象**，统一取 pressure。"""
+    if isinstance(v, dict):
+        return v.get("pressure")
+    return v
+
+
 # --------------------------------------------------------------------------
 # 查数据
 # --------------------------------------------------------------------------
@@ -158,12 +165,14 @@ def teslamate_status() -> dict:
         "车内温℃": s.get("inside_temp"),
         "空调开着": s.get("is_climate_on"),
         "胎压bar": {
-            "左前": (s.get("tpms_live_fl") or {}).get("pressure")
-            if isinstance(s.get("tpms_live_fl"), dict) else s.get("tpms_live_fl"),
-            "右前": s.get("tpms_live_fr"),
-            "左后": s.get("tpms_live_rl"),
-            "右后": s.get("tpms_live_rr"),
+            # ⚠️ **v0.72.0 修过形状**：四个轮子**全是对象**（含 pressure / alert 等），
+            # 原来只对左前做了 `.get("pressure")`，另外三个直接把整个 dict 塞进去了。
+            "左前": _tpms_pressure(s.get("tpms_live_fl")),
+            "右前": _tpms_pressure(s.get("tpms_live_fr")),
+            "左后": _tpms_pressure(s.get("tpms_live_rl")),
+            "右后": _tpms_pressure(s.get("tpms_live_rr")),
         },
+        "胎压告警": s.get("tpms_live_alert_detail") or s.get("tpms_alert_detail"),
         "数据滞后小时": s.get("data_age_hours"),
         "最后采集于": s.get("updated_at"),
     }
@@ -200,7 +209,11 @@ def teslamate_battery() -> dict:
 
 @mcp.tool()
 def teslamate_charges(limit: int = 10) -> dict:
-    """查最近的充电记录（时间、地点、充入电量、起始/结束电量、费用）。"""
+    """查最近的充电记录（时间、地点、充入电量、起始/结束电量、费用、功率）。
+
+    ⚠️ **v0.72.0 修过字段映射**：原来这里取的是 `location_name` / `charge_kwh`，
+    而 API 真实字段叫 `place` / `energy_added_kwh` ⇒ 地点与电量**全是 null**。
+    """
     data = _get(f"/api/v1/cars/{CAR_ID}/charges")
     items = data.get("items") if isinstance(data, dict) else data
     if not isinstance(items, list):
@@ -208,34 +221,58 @@ def teslamate_charges(limit: int = 10) -> dict:
     rows = []
     for it in items[:max(1, int(limit))]:
         rows.append({
+            # ⚠️ id 要留着 —— 它是 teslamate_charge_curve 的入参，
+            #    两个工具必须能**接得上**（这才是「无缝」）。
+            "id": it.get("id"),
             "开始": it.get("start_date"),
-            "地点": it.get("location_name"),
-            "充入kWh": it.get("charge_kwh"),
-            "开始%": it.get("start_battery_level"),
-            "结束%": it.get("end_battery_level"),
+            "结束": it.get("end_date"),
+            "地点": it.get("place") or it.get("poi_name") or it.get("place_label"),
+            "桩型": it.get("cable_type"),
+            "是直流": it.get("is_dc"),
+            "充入kWh": it.get("energy_added_kwh"),
+            "开始%": it.get("start_soc"),
+            "结束%": it.get("end_soc"),
             "时长分钟": it.get("duration_min"),
+            "峰值kW": it.get("peak_power_kw"),
+            "平均kW": it.get("avg_power_kw_true") or it.get("avg_power_kw"),
             "费用": it.get("cost"),
+            "起点续航km": it.get("start_range_km"),
+            "结束续航km": it.get("end_range_km"),
         })
     return {"共": len(items), "最近": rows}
 
 
 @mcp.tool()
 def teslamate_drives(limit: int = 10) -> dict:
-    """查最近的行程记录（时间、起止、里程、时长、能耗、到达电量）。"""
+    """查最近的行程记录（时间、起止、里程、时长、能耗、到达电量）。
+
+    ⚠️ **v0.72.0 修过字段映射**：原来取的是 `start_location_name` / `kwh_per_100km`，
+    而 API 真实字段叫 `start_place` / `wh_per_km` ⇒ 起终点与能耗**全是 null**。
+    """
     data = _get(f"/api/v1/cars/{CAR_ID}/drives")
     items = data.get("items") if isinstance(data, dict) else data
     if not isinstance(items, list):
         return data if isinstance(data, dict) else {"error": "返回格式异常"}
     rows = []
     for it in items[:max(1, int(limit))]:
+        wh = it.get("wh_per_km")
         rows.append({
+            "id": it.get("id"),
             "开始": it.get("start_date"),
-            "起点": it.get("start_location_name"),
-            "终点": it.get("end_location_name"),
+            "结束": it.get("end_date"),
+            "起点": it.get("start_place"),
+            "终点": it.get("end_place"),
             "里程km": it.get("distance_km"),
             "时长分钟": it.get("duration_min"),
-            "能耗kWh/100km": it.get("kwh_per_100km"),
-            "到达电量%": it.get("end_battery_level"),
+            # ⚠️ API 给的是 **Wh/km**，不是 kWh/100km —— 换算要 ÷10。
+            "能耗kWh/100km": (round(wh / 10.0, 2) if isinstance(wh, (int, float)) else None),
+            "用电kWh": it.get("energy_kwh"),
+            "开始%": it.get("start_soc"),
+            "到达电量%": it.get("end_soc"),
+            "均速kph": it.get("avg_speed_kph"),
+            "最高kph": it.get("speed_max"),
+            "爬升m": it.get("ascent_m"),
+            "车外温℃": it.get("outside_temp_avg"),
         })
     return {"共": len(items), "最近": rows}
 
@@ -275,6 +312,7 @@ def teslamate_driving_profile() -> dict:
         "总里程km": s.get("total_km"),
         "急刹车次数": s.get("hard_brake_total"),
         "急加速次数": s.get("hard_accel_total"),
+        "超速档占比%": s.get("over_speed_pct_avg"),
         "能耗Wh/km": s.get("wh_per_km_median_gross"),
         "夜驾占比%": s.get("night_pct_avg"),
         "口径": "分 = 100 − 急刹(≤30) − 急加(≤20) − 速度(≤20) − 能耗(≤15) − 夜驾(≤15)；名字叫「平顺」但只有 60 分是平顺相关",
@@ -283,18 +321,163 @@ def teslamate_driving_profile() -> dict:
 
 @mcp.tool()
 def teslamate_stay_points(limit: int = 10) -> dict:
-    """查常驻点（停得最多/最久的地方）。"""
+    """查常驻点（停得最多/最久的地方）。
+
+    ⚠️ **v0.72.0 修过字段映射**：原来取的是 `items`，
+    而 API 真实字段叫 `points` ⇒ 整个工具以前**只返回「返回格式异常」**。
+    """
     d = _get(f"/api/v1/cars/{CAR_ID}/stay_points")
-    items = d.get("items") if isinstance(d, dict) else d
+    items = (d.get("points") if isinstance(d, dict) else d) or []
     if not isinstance(items, list):
         return d if isinstance(d, dict) else {"error": "返回格式异常"}
     rows = [{
-        "地点": it.get("name") or it.get("location_name"),
-        "停过次数": it.get("count") or it.get("stop_count"),
+        "地点": it.get("name"),
+        "停过次数": it.get("visits"),
         "累计小时": it.get("total_hours"),
+        "平均小时": it.get("avg_hours"),
         "最长一次小时": it.get("max_hours"),
+        "首次": it.get("first_seen"),
+        "最近": it.get("last_seen"),
     } for it in items[:max(1, int(limit))]]
-    return {"共": len(items), "地点": rows}
+    out = {"共": len(items), "地点": rows}
+    if isinstance(d, dict) and d.get("note"):
+        out["口径"] = d.get("note")
+    return out
+
+
+# --------------------------------------------------------------------------
+# v0.72.0：补齐「车主会问、但答不了」的那几问
+# --------------------------------------------------------------------------
+#
+# ⚠️ **v0.72.0（苹果设计总监复审）**：原来 9 个工具只能回答
+# 「车怎么样 / 电池怎么样 / 记了什么」——
+# 但下面这几个问题是车主（和替车主办事的 Hermes）**真的会问**的，而当时答不了：
+#
+#   「这个月电费花了多少？」          → teslamate_cost
+#   「我开多快最省电？」              → teslamate_energy_profile
+#   「这趟的电量是怎么一路掉下去的？」→ teslamate_route_profile
+#   「上次充电的功率曲线长什么样？」  → teslamate_charge_curve
+#
+# ⇒ 「无缝接入 Hermes」不是「把接口都包一层」，
+#   而是**把车主会说的话都变成能答**。
+
+
+@mcp.tool()
+def teslamate_cost(period: str = "week") -> dict:
+    """查充电成本：充了多少度、直流/交流/家充各占多少、行驶里程。
+
+    period 取 today / week / month / year。
+    ⚠️ 费用本身要**在 App 设置里填电价与服务费**才有 —— 没填的话这里只给用电量。
+    """
+    p = (period or "week").strip().lower()
+    if p not in ("today", "week", "month", "year"):
+        return {"error": f"period 只能是 today/week/month/year，收到 {period!r}"}
+    d = _get(f"/api/v1/cars/{CAR_ID}/cost_summary?period={p}")
+    if not isinstance(d, dict) or "error" in d:
+        return d
+    return {
+        "周期": p,
+        "直流(度)": d.get("dc_used_kwh"),
+        "直流次数": d.get("dc_sessions"),
+        "直流分钟": d.get("dc_minutes"),
+        "交流(度)": d.get("ac_used_kwh"),
+        "交流次数": d.get("ac_sessions"),
+        "家充(度)": d.get("home_used_kwh"),
+        "家充次数": d.get("home_sessions"),
+        "行驶里程km": d.get("km_drives"),
+        "里程表km": d.get("km_odometer"),
+        "口径": "费用金额要看 App「设置 → 电价与成本」；没填电价时这里只有电量",
+    }
+
+
+@mcp.tool()
+def teslamate_energy_profile() -> dict:
+    """查能耗-车速曲线：每个速度档的平均 Wh/km（车轮功率 / 毛耗电）与跑了多少公里。
+
+    回答「我开多快最省电」用 —— 找 wh_per_km_gross 最低的那个速度档。
+    """
+    d = _get(f"/api/v1/cars/{CAR_ID}/energy_profile")
+    if not isinstance(d, dict) or "error" in d:
+        return d
+    bands = d.get("bands") or []
+    rows = [{
+        "速度档kph": f"{b.get('min_kph')}-{b.get('max_kph')}",
+        "车轮Wh/km": b.get("wh_per_km"),
+        "毛耗电Wh/km": b.get("wh_per_km_gross"),
+        "里程km": b.get("km"),
+        "样本数": b.get("bins"),
+    } for b in bands]
+    best = None
+    if rows:
+        cand = [r for r in rows if isinstance(r.get("毛耗电Wh/km"), (int, float))]
+        if cand:
+            best = min(cand, key=lambda r: r["毛耗电Wh/km"])
+    out = {"速度档": rows, "最省电的速度档": best.get("速度档kph") if best else None}
+    if best:
+        out["最省电的毛耗电Wh/km"] = best.get("毛耗电Wh/km")
+    out["口径"] = "车轮 Wh/km 不含传动损耗与回充抵扣；毛耗电含回充抵扣，更接近真实电表"
+    return out
+
+
+@mcp.tool()
+def teslamate_route_profile(drive_ids: str, step_km: int = 0) -> dict:
+    """查一趟（或几趟连续行程）的**电量剖面**：每走多少公里，电量掉到多少。
+
+    drive_ids 用逗号分隔的行程 id（先用 teslamate_drives 拿到 id）。
+    回答「这趟电够不够、掉得顺不顺」用。
+    """
+    ids = (drive_ids or "").strip()
+    if not ids:
+        return {"error": "缺少 drive_ids（用 teslamate_drives 取 id 后逗号分隔）"}
+    parts = [p.strip() for p in ids.replace("，", ",").split(",") if p.strip()]
+    if any(not p.isdigit() for p in parts):
+        return {"error": f"drive_ids 只能是数字 id，收到 {drive_ids!r}"}
+    q = f"?drive_ids={','.join(parts)}"
+    if step_km and int(step_km) > 0:
+        q += f"&step_km={int(step_km)}"
+    d = _get(f"/api/v1/cars/{CAR_ID}/route_profile{q}")
+    if not isinstance(d, dict) or "error" in d:
+        return d
+    pts = d.get("points") or []
+    return {
+        "总里程km": d.get("total_km"),
+        "累计爬升m": d.get("ascent_m"),
+        "累计下降m": d.get("descent_m"),
+        "分段": d.get("legs"),
+        "电量剖面(km→%)": pts[:200],
+        "点数": len(pts),
+        "口径": "km 是相对起点（可负 = 起点之前），% 是该点的电量",
+    }
+
+
+@mcp.tool()
+def teslamate_charge_curve(charge_id: int) -> dict:
+    """查某一场充电的**功率曲线**：随时间变化的功率、SOC、电压、电流。
+
+    charge_id 用 `teslamate_charges` 返回的 `id` 字段（已带上，可直接接上）。
+    """
+    try:
+        cid = int(charge_id)
+    except (TypeError, ValueError):
+        return {"error": f"charge_id 必须是整数，收到 {charge_id!r}"}
+    d = _get(f"/api/v1/charges/{cid}/curve")
+    # ⚠️ **v0.72.0 修过形状**：这个端点返回的是**裸数组**（不是 {"points":…}），
+    # 字段名是 `battery_level` / `charger_power_kw` / `charger_voltage` / `charger_current`。
+    pts = d if isinstance(d, list) else (
+        (d.get("points") or d.get("items") or []) if isinstance(d, dict) else []
+    )
+    if not isinstance(pts, list):
+        return {"error": "返回格式异常", "raw": str(d)[:300]}
+    rows = [{
+        "时间": p.get("date"),
+        "SOC%": p.get("battery_level"),
+        "功率kW": p.get("charger_power_kw"),
+        "电压V": p.get("charger_voltage"),
+        "电流A": p.get("charger_current"),
+        "相数": p.get("charger_phases"),
+    } for p in pts[:240]]
+    return {"充电id": cid, "点数": len(pts), "曲线": rows}
+
 
 
 # --------------------------------------------------------------------------

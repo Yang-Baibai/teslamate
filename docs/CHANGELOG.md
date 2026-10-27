@@ -5,6 +5,92 @@
 
 ---
 
+## 2026-10-26（v0.72.0：「无缝接入 Hermes」的接缝上有三个洞 —— 全补上）
+
+> 本轮版本：`0.72.0`（**项目版本**）。
+> ⚠️ **不含 App 改动** —— App 仍是 `0.71.0` / code 87，不推送新版 APK。
+>
+> 这一轮只做一件事：**让 Hermes 真的能用**。
+> 结果挖出三个「不报错、但数据是空的」的洞 —— 全修完。
+
+### 一、洞 1：Hermes 配置里少了一整个 MCP（我 v0.66.0 引入的）
+
+`config.yaml` 里**有两个 `mcp_servers:` 顶层键**：
+
+```yaml
+mcp_servers:          # ← 第 1 个
+  housekeeper: {...}
+...
+mcp_servers:          # ← 第 2 个：把上面整段顶掉
+  teslamate: {...}
+```
+
+**YAML 里重复的顶层键是后者覆盖前者**，而 `yaml.safe_load` **不报错**（它默默用后一个值）：
+
+⇒ 实际生效的只有 `teslamate` ⇒ **Housekeeper 的 6 个工具
+（衣物检索 / 临期 / 车辆状态 / 相册地点 / 今日事件）全部消失**，
+而 teslamate 一切正常 —— **没人会发现**。
+
+**修**：两个 MCP 合并进**同一个** `mcp_servers:` 段，并留下警示注释。
+
+### 二、洞 2：三个工具返回的全是 null
+
+核验「工具取的字段名」与「API 真实字段名」：
+
+| 工具 | 原来取的 | API 真实字段 | 后果 |
+|---|---|---|---|
+| `teslamate_charges` | `location_name` / `charge_kwh` | `place` / `energy_added_kwh` | 地点、充入电量**全 null** |
+| `teslamate_drives` | `start_location_name` / `kwh_per_100km` | `start_place` / `wh_per_km` | 起终点、能耗**全 null** |
+| `teslamate_stay_points` | `items` | `points` | 整个工具**只回「返回格式异常」** |
+
+另外 `teslamate_status` 的四个胎压轮子里，只有左前做了取值，
+另外三个**把整个 dict 塞进了输出**。
+
+⚠️ 这类 bug 最毒的地方在于：**工具能调通、返回合法 JSON、不报错不崩** ——
+Hermes 拿到的是残缺数据，人根本看不出来。
+
+**修**：全部按真实字段名重写；能耗额外做 **Wh/km → kWh/100km（÷10）** 换算；
+`teslamate_charges` 补上 `id`（这样它能直接接 `teslamate_charge_curve`）。
+
+### 三、洞 3：车主会问、但 Hermes 答不了的那几问
+
+原来 9 个工具只能答「车怎么样 / 电池怎么样 / 记了什么」。
+但下面这些是车主（和替车主办事的 Hermes）**真的会问**的：
+
+| 问题 | 新工具 |
+|---|---|
+| 这个月电费花了多少？ | `teslamate_cost` |
+| 我开多快最省电？ | `teslamate_energy_profile` |
+| 这趟的电量是怎么一路掉下去的？ | `teslamate_route_profile` |
+| 上次充电的功率曲线长什么样？ | `teslamate_charge_curve` |
+
+⇒ 工具数 9 → **13**。
+
+⚠️ 「无缝接入 Hermes」**不是**「把接口都包一层」，
+   而是**把车主会说的话都变成能答**。
+
+### 四、加两道护栏（让这类洞不再复发）
+
+**`mcp/check_hermes_config.py`** —— 体检 Hermes 配置：
+用**会报错的 YAML loader**（重复顶层键直接抛）而不是 `safe_load`，
+再校验 teslamate 在列表里、它指向的脚本真实存在。
+⚠️ **负向验证已做**：把 teslamate 段重新拆成第二个顶层键 ⇒ 体检器**报错并指出「重复的顶层键」**。
+
+**`mcp/check_tool_fields.py`** —— 字段映射自检：
+22 条「关键字段必须非 null」的断言 + 一条 `charges → charge_curve` 的串联断言。
+⚠️ 断言里**不含**「费用」「锁车状态」这类**合法为 null** 的字段
+（没配电价时费用就是 null，车在休眠时锁车状态就是 null）。
+
+两道体检都并进了 `mcp/selftest_mcp.py`（③ 配置体检 / ④ 字段映射自检）。
+
+### 五、验收
+
+- MCP 自检：工具直调 + stdio 握手 + tools/list + tools/call + 配置体检 + 字段映射（22/22 通过）。
+- JVM 单测 110/110、客户端闸门 6/6、冒烟 37/37、密钥扫描 CLEAN。
+- 回滚：`git revert` 本次提交。
+
+---
+
 ## 2026-10-26（v0.71.0：苹果设计总监复审 —— 边缘投影不再常驻 + 车控卡重做 + 啰嗦度量修正）
 
 > 本轮版本：`0.71.0`，versionCode 87。

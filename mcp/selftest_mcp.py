@@ -87,5 +87,38 @@ if ts:
     txt2 = content[0].get('text', '') if content else json.dumps(ts, ensure_ascii=False)
 print('  ✓ tools/call teslamate_status -> %s' % txt2[:240])
 
+# ── ③ Hermes 配置体检 ──
+#
+# ⚠️ **v0.72.0**：这个检查是被一次真实事故逼出来的 ——
+# v0.66.0 加 teslamate MCP 时在 config.yaml 末尾**又写了一个 `mcp_servers:` 顶层键**，
+# YAML 里重复的顶层键**后者覆盖前者** ⇒ housekeeper 段的 6 个工具**全部消失**，
+# 而 `yaml.safe_load` **不报错**（静默失效）。
+# ⇒ 「无缝接入 Hermes」的前提是**配置本身没坏** —— 这一步把它变成可检查的。
+print('\n=== ③ Hermes 配置体检 ===')
+try:
+    import check_hermes_config as H  # noqa: E402
+
+    ok, lines = H.check()
+    for ln in lines:
+        print(ln)
+    print('  %s' % ('✓ 配置体检通过' if ok else '✗ 配置体检有问题（Hermes 里会少工具）'))
+except Exception as e:
+    print('  ⚠️ 体检跳过：%s' % e)
+
+# ── ④ 工具字段映射自检 ──
+#
+# ⚠️ **v0.72.0**：工具「能调通」不等于「数据对」。
+# 原来 3 个工具的关键字段全是 null（地点/电量/起终点/能耗），
+# 而它们**不报错、不崩** —— 人根本看不出来。
+# ⇒ 把「关键字段非 null」变成可断言的契约。
+print('\n=== ④ 工具字段映射自检 ===')
+try:
+    import check_tool_fields as F  # noqa: E402
+
+    rc = F.main()
+    print('  %s' % ('✓ 字段映射全过' if rc == 0 else '✗ 有字段映射对不上（Hermes 会拿到空数据）'))
+except Exception as e:
+    print('  ⚠️ 自检跳过：%s' % e)
+
 p.kill()
 print('\nDONE')
