@@ -144,9 +144,17 @@ fun EnergyProfileCard(
             val mostDriven = bands.maxByOrNull { it.km }?.takeIf { it.km > 0 }
             mostDriven?.let { mb ->
                 if (!isBest(mb)) {
+                    // ⚠️ **v0.74.0（模拟器实测）：从**句子**改成**数据行**。**
+                    //
+                    // 原来：「你跑得最多的一档是 130+ km/h（1156 公里），这一档 18.7 kWh/100km」
+                    // —— 一句话套一个括号，读者得读到句尾才知道那个数是多少。
+                    // 改成数据行的形状后，扫一眼就拿到三个数。
+                    //
+                    // ⚠️ 口径不变：这里的「跑得最多」按**里程**（km）算，不是按趟数 ——
+                    // 48.9% 的趟其实只有 0–5 公里，两者不是一回事（见下方 ⓘ 口径说明）。
                     Text(
-                        "你跑得最多的一档是 ${mb.label} km/h（${mb.km.roundToInt()} 公里），" +
-                            "这一档 ${mb.wh_per_km_gross.fmtKwh100()} kWh/100km",
+                        "跑得最多的档：${mb.label} km/h · ${mb.km.roundToInt()} 公里 · " +
+                            "${mb.wh_per_km_gross.fmtKwh100()} kWh/100km",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -238,9 +246,17 @@ fun EnergyProfileCard(
             }
         }
         Spacer(Modifier.height(4.dp))
+        // ⚠️ **v0.74.0（模拟器实测）：常驻的只留「方向」，「怎么读」折进 ⓘ 口径说明。**
+        //
+        // 原来图下常驻一句 36 字：
+        // 「左：0–10 km/h → 右：130+ km/h（蓝色是最省电那档；柱越矮越省电，柱下是数值）」
+        // —— 那半句是**读图说明书**，不是数据。
+        // 卡片底部本来就有「ⓘ 口径说明」，把读图法并进去即可。
+        //
+        // 留「左 X → 右 Y」是因为它**回答的是方向问题**（柱子从哪到哪），
+        // 扫一眼就知道，不需要点开。
         Text(
-            "左：${bands.first().label} km/h → 右：${bands.last().label} km/h" +
-                "（蓝色是最省电那档；柱越矮越省电，柱下是数值）",
+            "左：${bands.first().label} km/h → 右：${bands.last().label} km/h",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -328,6 +344,8 @@ fun EnergyProfileCard(
                 append("（全车 ${profile?.total_km?.roundToInt() ?: 0} 公里），")
                 append("毛耗电 ${profile?.overall_wh_per_km_gross?.fmtKwh100() ?: "—"} kWh/100km。")
                 append("官方 App 只有平均 Wh/km，这条曲线它给不了。")
+                // ⚠️ **v0.74.0**：读图法从图下常驻移到这里。
+                append("柱状图：蓝色是最省电那档；柱越矮越省电，柱下是数值。")
                 append("⚠️ 每一档是「平均速度落在该区间的 1 公里箱」，")
                 append("箱内含加速与减速（实测 40–50 那一档有 518/522 个箱越界），")
                 append("不是「以 45 km/h 匀速跑」的能耗。")

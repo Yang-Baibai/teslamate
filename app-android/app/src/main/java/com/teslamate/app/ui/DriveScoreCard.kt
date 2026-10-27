@@ -122,12 +122,22 @@ fun DriveScoreCard(
         // ⚠️ **v0.47.0（第 28 轮 a11y P1-3）** 的「 · 换成 ，」仍然成立（读屏别念「点」）。
         val avgKmPerTrip = driveProfileAvgKmPerTrip(s.total_km, s.drive_count)
         TextWithNote(
+            // ⚠️ **v0.74.0（模拟器实测）：副标题不再重复主角那个数。**
+            //
+            // 原来副标题结尾是「，平均 60 分」，而卡上的主角**也是 60** ——
+            // 但两者**不是同一个统计量**：主角是**中位数**（`median_score`），
+            // 副标题那个是**均值**（`avg_score`）。本机它们碰巧相等（都取整成 60），
+            // 于是读起来像同一个数说了两遍。
+            //
+            // ⇒ 副标题只留**样本口径**（基于多少趟、多少公里），
+            // 均值挪进 ⓘ，并**明说它是均值**，免得和主角的中位数混。
             text = "按 ≥${profile.params.min_distance_km} 公里的 ${s.drive_count} 趟算" +
-                "，共 ${s.total_km.roundToInt()} 公里" +
-                "，平均 ${s.avg_score.roundToInt()} 分",
+                "，共 ${s.total_km.roundToInt()} 公里",
             note = buildString {
                 append("这 100 分里只有 60 分是急刹/急加/速度，另外 40 分来自能耗与夜驾 —— ")
                 append("名字叫「平顺」，实际不是。")
+                append("卡上那个数是这 ${s.drive_count} 趟的中位数，")
+                append("平均分是 ${s.avg_score.roundToInt()} 分。")
                 if (avgKmPerTrip != null) {
                     append("门槛 ${profile.params.min_distance_km} 公里：这 ${s.drive_count} 趟平均 ")
                     append("$avgKmPerTrip 公里/趟，更短的行程不在里面。")

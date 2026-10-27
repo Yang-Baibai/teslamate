@@ -1,0 +1,19 @@
+# ⚠️ v0.74.0：常驻可见长说明块基线（每行一条，已审议过、允许常驻）。
+# 新增一条 = 一次有记录的决策：为什么它该常驻而不是折进 ⓘ。
+ChargesScreen.kt::实测从 …% 充到 80% 用了 … 分钟（从曲线直接读）
+ChargesScreen.kt::本次实测：从 …% 充到 80% 用了 … 分钟（读自充电曲线）
+EnergyProfileCard.kt::最省电速度档的能耗（kWh/100km，不含回充抵扣）
+EnergyProfileCard.kt::跑得最多的档：… km/h · … 公里 · … kWh/100km
+RangeSegments.kt::基于 … 段实测 · 官方标称 … 公里，实测高 …%，实测低 …%
+RoutePlan.kt::…（往返）· … 公里… → … · … 公里
+RoutePlan.kt::全程最低 …%（在第 … 公里，低于 20% 保底）全程最低 …%（在第 … 公里）
+RoutePlan.kt::距终点  公里 · 估到终点剩 % ⚠ 低于 % 保底 · 到终点还差  个点
+RoutePlan.kt::这条线路上没有你的充电记录 —— 没有可参考的补电点。
+RoutePlan.kt::这段均速 … · … 档… kWh/100km（含爬升修正后 …）（借用邻档）
+SettingsScreen.kt::请确认家里那台电脑开着、服务器在跑，以及手机上的 Tailscale 已连接。
+StatsScreen.kt::数据只覆盖 …/… …（…%）year —— 不是完整的一年
+StatsScreen.kt::暂无「电池健康度」（未配置出厂容量，服务端不给分母）
+StatusScreen.kt::正常 …–… bar（冷胎）· 超出这个范围需要检查
+StatusScreen.kt::留 20% 保底还能开 … 公里（约 … ~ … 公里）
+UpdateDialog.kt::此版本为强制更新，请升级后继续使用。\n\n更新内容：\n…
+VehicleControlCard.kt::这会「唤醒车辆」—— 会耗一点电，也可能被 Tesla 计费。

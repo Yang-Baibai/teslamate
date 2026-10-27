@@ -130,6 +130,11 @@ fun StatusScreen(
     val error = store.error
     var refreshing by remember { mutableStateOf(false) }
     var showMap by remember { mutableStateOf(false) }
+    // ⚠️ **v0.74.0**：车控清单的刷新信号。
+    // 只有**用户主动**刷新（↻ / 下拉刷新）才 +1；
+    // 15 秒自动刷新走的是 load()，不碰它 —— 动作清单不会自己变，
+    // 每 15 秒重读一次纯属浪费。
+    var controlRefresh by remember { mutableStateOf(0) }
 
     LaunchedEffect(api, settings.carId) {
         if (api != null) {
@@ -210,6 +215,10 @@ fun StatusScreen(
             refreshing = true
             load()
             refreshing = false
+            // ⚠️ v0.74.0：车况页的刷新必须刷新**屏幕上的一切**。
+            // 车控清单原来只在首次组合时读一次 ⇒ 清单读失败后，
+            // 用户点 ↻ 也换不来任何变化，错误状态一直赖着。
+            controlRefresh++
         }
     }
 
@@ -672,6 +681,7 @@ fun StatusScreen(
                             carId = settings.carId,
                             locked = st.locked,
                             carAsleep = st.fleet_state == "asleep",
+                            refreshSignal = controlRefresh,
                         )
 
                         // 保养 / 轮胎卡片（配过基准才出现）

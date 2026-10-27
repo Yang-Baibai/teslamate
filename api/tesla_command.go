@@ -108,6 +108,28 @@ type teslaCommandSpec struct {
 	WakesVehicle bool     `json:"wakes_vehicle"`
 }
 
+// MarshalJSON 保证「无参数」输出 **[]** 而不是 **null**。
+//
+// ⚠️ **v0.74.0（模拟器真机复核发现）**：
+// Go 的 nil slice 序列化成 `null`，而 App 端的 kotlinx.serialization
+// 遇到**显式 null**（不是「键缺失」）会**抛异常** —— 它只对**缺失**的键用默认值。
+// ⇒ 整个车控清单解析失败，卡上只剩一句「读不到车控能力清单」，
+// 而服务端、App 都不报错（App 把异常吃成了 `getOrNull()`）。
+//
+// 而 JSON API 的惯例是「无值的数组 = []」。
+//
+// ⚠️ **同一类坑的第二例**：MCP 那边踩过一次「字段名对不上 ⇒ 返回值全是 null」。
+// 两次的共同点：**消费方拿到残缺数据，却没有任何报错**。
+// ⇒ 判断一个 API 是否「能调通」，**不能只看它返回 200**。
+func (s teslaCommandSpec) MarshalJSON() ([]byte, error) {
+	type alias teslaCommandSpec
+	out := alias(s)
+	if out.Params == nil {
+		out.Params = []string{}
+	}
+	return json.Marshal(out)
+}
+
 // teslaCommandCatalog 全部 16 个动作。
 //
 // ⚠️ 顺序 = App 与 MCP 展示的顺序（按风险从高到低排）。

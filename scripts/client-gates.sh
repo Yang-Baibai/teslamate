@@ -245,16 +245,38 @@ rm -f "$TMP"
 # ⚠️ 确实需要常驻长文时（如新的告警），**有意**调高 BUDGET 并在 CHANGELOG 写明理由。
 TMP=$(mktemp)
 "$PY" - > "$TMP" <<'PYEOF'
-import re, pathlib, sys
+import re, pathlib, sys, os
 CJK = re.compile(r'[\u4e00-\u9fff]')
 LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
-# 预算 = 常驻可见的长说明块（**不含**折叠区里的）
-# ⚠️ **v0.71.0**：预算从 11 收到 **2**。
-#   11 是**旧口径**的数字（注释里的括号污染了配平 + 折叠区被算成可见），
-#   是假数字；修正口径后实测 **2 块 / 47 字**，
-#   与真机 UI 树实测的 **2 块 / 48 字**吻合 —— 剩下的两块都是该留的
-#   （线路无充电记录的空态 + 服务器连不上的错误提示）。
-BUDGET = 2
+# ⚠️ **v0.74.0**：模板占位符 —— `${…}` 与 `$var` 两种写法都要认。
+TPL = re.compile(r'\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*')
+# ⚠️ **v0.74.0（模拟器真机实测发现的盲点）：从「数字预算」改成「基线棘轮」。**
+#
+# ## 为什么旧口径是假的
+#
+# 旧口径只数**汉字**（`len(CJK.findall(plain)) >= 22`）——
+# 于是**数字很多**的句子它一概看不见，
+# 而恰恰是这类句子最容易在手机上折行断句。
+#
+# 实锤（模拟器 1440×3200 截图）：
+# 「停过 28 次 · 累计 1330 小时（最长一次 248 小时） · 上次 2026-10-25」
+# 只有 **15 个汉字**（旧口径：看不见），视觉宽度 **50**（新口径：抓住）——
+# 屏幕上的实际效果是「（最长一次 248 小 / 时）」，括号被折断。
+#
+# 改成**视觉宽度**（汉字/全角 = 2，半角 = 1，阈值 44 ≈ 22 个全角）后，
+# 实测常驻长说明块 **18 块** —— 真机 UI 树实测对应 **14 块**渲染长文，同一量级。
+# ⇒ 旧口径那个「2 块」是个**假数字**：闸门当时形同虚设。
+#
+# ## 新口径：基线棘轮
+#
+# 预算不再是魔法数字，而是**登记在册的基线**（`scripts/verbose-baseline.txt`）：
+# - 基线里有 ⇒ 放行（已知且审议过）；
+# - **基线里没有 ⇒ 闸门红**：必须先想清楚「这是补充说明（该折）还是用户要马上知道的事（该留）」，
+#   确实该留就**显式**往基线里加一行 —— 等于一次**有记录的**决策；
+# - 基线里有、代码里已经没了 ⇒ 提示可以删（收缩是好事）。
+#
+# 这样「不许再往界面上铺解释」这条约束**第一次真的成立**。
+BASE = pathlib.Path('scripts/verbose-baseline.txt')
 root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
 
 # ⚠️ **v0.71.0**：折叠组件 —— 里面的内容**默认看不见**，不算「常驻可见」。
@@ -298,6 +320,29 @@ def folded_spans(lines):
         i += 1
     return covered
 
+def vwidth(s):
+    """**视觉宽度**：汉字/全角算 2，半角（ASCII 数字、字母）算 1，空格不算。
+
+    ⚠️ **v0.74.0（模拟器真机实测发现的盲点）**：
+    原来这条闸门只数**汉字**（`len(CJK.findall(plain)) >= 22`），
+    于是**数字很多**的句子它一概看不见 ——
+    而恰恰是这类句子最容易在手机上折行断句。
+
+    实锤（模拟器 1440×3200 截图）：「停过 28 次 · 累计 1330 小时（最长一次 248 小时） · 上次 2026-10-25」
+    只有 **15 个汉字**（旧口径：看不见），
+    但视觉宽度 **50**（新口径：抓住）——
+    屏幕上的实际效果是「（最长一次 248 小 / 时）」，括号被折断。
+
+    ⇒ 度量改成**视觉宽度**，阈值 44（= 22 个全角，与旧口径等价）。
+    """
+    w = 0
+    for ch in s:
+        if ch.isspace():
+            continue
+        w += 2 if ('\u2e80' <= ch <= '\u9fff' or '\uff00' <= ch <= '\uffef') else 1
+    return w
+
+
 def visible_long_blocks(src):
     lines = src.splitlines()
     folded = folded_spans(lines)
@@ -316,35 +361,74 @@ def visible_long_blocks(src):
                 # 那个 `(` 让配平永远归不了零，
                 # 于是后面十几行被吞进同一个「块」，那一块被算成 64 字。
                 if not is_comment(ln):
-                    lits += LIT.findall(ln)
+                    # ⚠️ **v0.74.0**：先把模板占位符**整段替换掉**，再取字面量 ——
+                    # 否则 `${if (x) "国标直流" else ""}` 这种**表达式里**的字面量
+                    # 会被当成界面上真的显示出来的字（实测把「充电中」误判成超长块）。
+                    lits += LIT.findall(TPL.sub('x' * 5, ln))
                     depth += ln.count('(') - ln.count(')')
                 if j > i and depth <= 0:
                     break
                 j += 1
             if i not in folded:
-                plain = ''.join(re.sub(r'\$\{[^}]*\}', '…', x) for x in lits)
-                if len(CJK.findall(plain)) >= 22:
-                    out.append((i + 1, plain[:50]))
+                # ⚠️ **v0.74.0**：`${…}` 占位符按 **5 个单位**算，
+                # 而不是 1 个 —— 运行时它会渲染成「1661」「19.2%」「120–130」这种长度。
+                # 按 1 个算 ⇒ 「充电中${if (…)} else …}」这种**渲染后只有 3 个字**的块
+                # 会被误判成超长。
+                plain = ''.join(lits)
+                if vwidth(plain) >= 44:
+                    # ⚠️ 基线里存**可读形态**（占位符还原成 …），人能看懂、能手改。
+                    shown = plain.replace('x' * 5, '…')
+                    out.append((i + 1, shown, shown[:50]))
             i = j + 1
             continue
         i += 1
     return out
 
-bad = []
-for p in sorted(root.rglob('*.kt')):
-    for ln, txt in visible_long_blocks(p.read_text(encoding='utf-8', errors='replace')):
-        bad.append('%s:%d  %s' % (p.name, ln, txt))
 
-if len(bad) > BUDGET:
-    print('常驻可见长说明块 %d 个，超过预算 %d —— 又把解释铺回界面了：' % (len(bad), BUDGET))
-    for b in bad[:14]:
-        print('   ', b)
+# ── 当前实际存在的常驻长说明块 ──
+cur = {}          # key -> (file, line, 显示文本)
+for p in sorted(root.rglob('*.kt')):
+    for ln, shown, disp in visible_long_blocks(p.read_text(encoding='utf-8', errors='replace')):
+        cur['%s::%s' % (p.name, shown)] = (p.name, ln, disp)
+
+# ── 基线 ──
+base_lines = []
+if BASE.exists():
+    for ln in BASE.read_text(encoding='utf-8', errors='replace').splitlines():
+        s = ln.strip()
+        if s and not s.startswith('#'):
+            base_lines.append(s)
+base = set(base_lines)
+
+new_keys = [k for k in cur if k not in base]
+stale = [b for b in base_lines if b not in cur]
+
+# ⚠️ 维护用：TM_BASELINE_DUMP=1 时把当前清单导出到 .new（**不覆盖基线**），
+# 由人看过之后再决定要不要挪进 verbose-baseline.txt —— 不做「一键放行」。
+if os.environ.get('TM_BASELINE_DUMP') == '1':
+    with open(str(BASE) + '.new', 'w', encoding='utf-8') as f:
+        f.write('# ⚠️ v0.74.0：常驻可见长说明块基线（每行一条，已审议过、允许常驻）。\n')
+        f.write('# 新增一条 = 一次有记录的决策：为什么它该常驻而不是折进 ⓘ。\n')
+        for k in sorted(cur):
+            f.write(k + '\n')
+    print('已导出 %d 条到 %s.new（人工审阅后再挪进基线）' % (len(cur), BASE))
+    sys.exit(0)
+
+if new_keys:
+    print('新增未登记的常驻长说明块 %d 处 —— 要么折进 ⓘ，要么显式登记进基线：' % len(new_keys))
+    for k in new_keys[:14]:
+        f, ln, shown = cur[k]
+        print('   %s:%d  %s' % (f, ln, shown))
     print('   ⇒ 口径说明请折进 InfoNote / TextWithNote / KeyValueWithNote（ⓘ 角标）')
-    print('   ⇒ 确实该常驻时，有意调高本闸门的 BUDGET，并在 CHANGELOG 写明理由')
+    print('   ⇒ 确实该常驻，就把这一行**原样**加进 %s' % BASE)
+    print('     （加基线 = 一次有记录的决策，CHANGELOG 里要写明理由）')
     sys.exit(1)
-print('可见长说明块 %d 个（预算 %d）' % (len(bad), BUDGET))
+
+print('常驻长说明块 %d 块（基线 %d 条）—— 没有新增' % (len(cur), len(base)))
+if stale:
+    print('   ℹ 基线里有 %d 条代码里已经没有了 —— 可以从 %s 删掉（收缩是好事）' % (len(stale), BASE))
 PYEOF
-if [ $? -eq 0 ]; then ok "啰嗦棘轮（可见长说明块 ≤ 预算）"; else fail "啰嗦棘轮（可见长说明块超预算）"; cat "$TMP"; fi
+if [ $? -eq 0 ]; then ok "啰嗦棘轮（常驻长说明块必须登记在基线里）"; else fail "啰嗦棘轮（新增未登记的常驻长说明块）"; cat "$TMP"; fi
 rm -f "$TMP"
 
 # ── 闸门 6：孤儿长文字（堵住闸门 5 的盲点）────────────────────────

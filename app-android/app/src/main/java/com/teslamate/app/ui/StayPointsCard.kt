@@ -115,6 +115,14 @@ fun StayPointsCard(
                         fontWeight = if (idx == 0) FontWeight.SemiBold else FontWeight.Normal,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
+                    // ⚠️ **v0.74.0（模拟器实测）：副行拆成两行。**
+                    //
+                    // 原来一行写完「停过 28 次 · 累计 1330 小时（最长一次 248 小时） · 上次 2026-10-25」，
+                    // 手机上**折行正好把括号拆开** —— 屏幕上是
+                    // 「（最长一次 248 小 / 时）」，读起来像断句错乱（模拟器截图实锤）。
+                    //
+                    // 拆两行后：第一行 = 次数 + 累计（主），第二行 = 离群值 + 最近一次（次）。
+                    // **一个字都没删**，但任何一行都不会折到括号里。
                     Text(
                         buildString {
                             append("停过 ")
@@ -122,18 +130,29 @@ fun StayPointsCard(
                             append(" 次 · 累计 ")
                             append(p.total_hours.roundToInt())
                             append(" 小时")
-                            // ⚠️ 复审：**最长一次**要显式露出来 ——
-                            // 「一次停了 248 小时」是长假，不是「常驻」。
-                            if (p.max_hours >= 24) {
-                                append("（最长一次 ")
-                                append(p.max_hours.roundToInt())
-                                append(" 小时）")
-                            }
-                            p.last_seen?.let { append(" · 上次 ${it.fmtDate()}") }
                         },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // ⚠️ 复审：**最长一次**要显式露出来 ——
+                    // 「一次停了 248 小时」是长假，不是「常驻」。
+                    val tail = buildString {
+                        if (p.max_hours >= 24) {
+                            append("最长一次 ")
+                            append(p.max_hours.roundToInt())
+                            append(" 小时")
+                            if (p.last_seen != null) append(" · ")
+                        }
+                        p.last_seen?.let { append("上次 ${it.fmtDate()}") }
+                    }
+                    if (tail.isNotEmpty()) {
+                        Spacer(Modifier.height(1.dp))
+                        Text(
+                            tail,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 // 相对占用条：按**停过几次**占最多的那个点的比例。
                 // ⚠️ **v0.29.0（HIG 评审 P2-2）：不用 energyBlue。**

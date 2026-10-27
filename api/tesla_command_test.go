@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 // ⚠️ **v0.66.0（第 33 轮「车辆控制下沉」）**：车控参数校验的回归测试。
 //
@@ -175,4 +179,48 @@ func contains(hay, needle string) bool {
 		}
 		return false
 	})()
+}
+
+// ⚠️ **v0.74.0（模拟器真机复核发现）**：车控清单的 JSON 形状。
+//
+// 现象：App 的车控卡只显示「读不到车控能力清单」，而服务端返回 200、动作也是 16 个。
+// 原因：Go 的 nil slice 序列化成 `"params": null`，而 App 端的 kotlinx.serialization
+// 遇到**显式 null** 会抛异常（它只对「键缺失」用默认值）⇒ 整份清单解析失败。
+//
+// 这条测试把「无参数 ⇒ []」钉死，防止有人改回 nil。
+func TestTeslaCommandSpec_MarshalParamsNeverNull(t *testing.T) {
+	b, err := json.Marshal(teslaCommandSpec{Action: "honk_horn", Risk: "low"})
+	if err != nil {
+		t.Fatalf("序列化失败：%v", err)
+	}
+	if !strings.Contains(string(b), `"params":[]`) {
+		t.Errorf("无参数时 params 应输出 []，实际：%s", string(b))
+	}
+	if strings.Contains(string(b), "null") {
+		t.Errorf("输出里不该出现 null：%s", string(b))
+	}
+}
+
+func TestTeslaCommandSpec_MarshalKeepsParams(t *testing.T) {
+	b, err := json.Marshal(teslaCommandSpec{Action: "set_temperature", Params: []string{"driver_temp"}})
+	if err != nil {
+		t.Fatalf("序列化失败：%v", err)
+	}
+	if !strings.Contains(string(b), `"params":["driver_temp"]`) {
+		t.Errorf("有参数时 params 应原样输出，实际：%s", string(b))
+	}
+}
+
+// 整份清单里不允许出现 "params":null —— 消费方（App / MCP）会直接解析失败。
+func TestTeslaCommandCatalog_NoNullParams(t *testing.T) {
+	b, err := json.Marshal(map[string]any{
+		"actions": teslaCommandCatalog,
+		"proxy":   true,
+	})
+	if err != nil {
+		t.Fatalf("序列化失败：%v", err)
+	}
+	if strings.Contains(string(b), `"params":null`) {
+		t.Errorf("清单里出现了 \"params\":null ⇒ App 端会解析失败")
+	}
 }

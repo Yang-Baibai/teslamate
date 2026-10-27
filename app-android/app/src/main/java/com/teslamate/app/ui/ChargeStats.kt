@@ -336,15 +336,26 @@ private fun median(values: List<Double>): Double = medianOf(values) ?: 0.0
 fun StationStat.summary(fromSoc: Int? = null): String {
     val sb = StringBuilder()
     sb.append("该站历史 ").append(typicalPowerKw.roundToInt()).append(" kW")
-    val measured = measuredMedianNear(fromSoc)
-    if (measured != null) {
-        sb.append(" · 同起点实测充到 80% 中位 ").append(measured).append(" 分钟")
-    } else {
-        typicalMinutesTo80?.let {
-            sb.append(" · 充到 80% 约 ").append(it).append(" 分钟（按典型功率折算）")
+    sb.append("（").append(sessions).append(" 次）")
+    // ⚠️ **v0.74.0（模拟器实测）：拆两行**。
+    //
+    // 原来一行写完「该站历史 29 kW · 充到 80% 约 61 分钟（按典型功率折算）（3 次）」，
+    // 手机上折行正好把**末尾的括号拆开** —— 屏幕上是「…（按典型功率折算）（3 / 次）」，
+    // 两个括号各自悬空，读起来像坏掉的句子。
+    //
+    // 现在：第一行 = 这个站的典型功率 + 样本数；第二行 = 等待时间 + 它是怎么来的。
+    // **一个字都没删**，但括号不再被折断。
+    val wait = buildString {
+        val measured = measuredMedianNear(fromSoc)
+        if (measured != null) {
+            append("同起点实测充到 80% 中位 ").append(measured).append(" 分钟")
+        } else {
+            typicalMinutesTo80?.let {
+                append("充到 80% 约 ").append(it).append(" 分钟（按典型功率折算）")
+            }
         }
     }
-    sb.append("（").append(sessions).append(" 次）")
+    if (wait.isNotEmpty()) sb.append("\n").append(wait)
     return sb.toString()
 }
 

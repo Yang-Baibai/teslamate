@@ -1083,13 +1083,23 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                 xLabels = bucketAxisLabels(b.series.orEmpty().map { it.date.fmtDate() }),
                                 contentDescription = batteryChartDescription(b),
                             )
+                            // ⚠️ **v0.74.0（模拟器实测）：拆两行。**
+                            //
+                            // 原来一行「可用容量（度）· 纵轴已放大到数据范围 · 仅 83 天 / 9936 公里」
+                            // —— 单位、纵轴说明、覆盖范围全挤在一行，折行后读不出层次。
+                            // 现在：第 1 行说**画的是什么**，第 2 行说**怎么读 + 数据覆盖到哪**。
+                            Text(
+                                "可用容量（度）",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                             Text(
                                 // ⚠️ v0.22.0（P0-3）：**说清数据覆盖范围** ——
                                 // 电池曲线只覆盖车龄的一小段（实测本机 83 天 / 9,936 公里
                                 // = 车龄的 10%），不说清楚的话，
                                 // 车主会把那条下滑的线当成「电池的全部历史」。
                                 buildString {
-                                    append("可用容量（度）· 纵轴已放大到数据范围")
+                                    append("纵轴已放大到数据范围")
                                     if (b.series_span_days != null && b.odometer_span_km != null) {
                                         append(" · 仅 ")
                                         append(b.series_span_days)

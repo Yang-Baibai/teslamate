@@ -119,9 +119,18 @@ object BatteryDecayText {
             }
             "weak" -> {
                 // ⚠️ v0.41.0：**主语是「测到」**，不是「有」。
-                sb.append("连续衰减：测到 ").append(rate.fmt(3)).append(" 度/1000 公里")
-                sb.append("，但与 0 区分不开")
-                sb.append("（95% 区间 ").append(lo.fmt(3)).append(" ~ ").append(hi.fmt(3)).append("）")
+                //
+                // ⚠️ **v0.74.0（模拟器实测）：结论提到最前。**
+                //
+                // 原来：「连续衰减：测到 -0.054 度/1000 公里，但与 0 区分不开（95% 区间 …）」
+                // —— 数字在前、结论在后 ⇒ 眼睛先扫到「-0.054 度/1000 公里」，
+                // 读成「电池每千公里掉 0.054 度」，**直到句尾才知道这个数其实站不住**。
+                //
+                // 这与「百分比数字本身就是误读入口」是同一个病：
+                // **先给出结论，数字只当证据。**
+                sb.append("连续衰减：与 0 区分不开")
+                sb.append("（测到 ").append(rate.fmt(3)).append(" 度/1000 公里")
+                sb.append("，95% 区间 ").append(lo.fmt(3)).append(" ~ ").append(hi.fmt(3)).append("）")
             }
             "not_detectable" -> {
                 sb.append("连续衰减：检不出趋势")

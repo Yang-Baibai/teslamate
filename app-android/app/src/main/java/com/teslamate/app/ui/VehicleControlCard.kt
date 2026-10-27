@@ -83,6 +83,19 @@ fun VehicleControlCard(
     locked: Boolean?,
     /** 车是否在休眠 */
     carAsleep: Boolean,
+    /**
+     * ⚠️ **v0.74.0**：外部刷新信号。
+     *
+     * 车况页的「↻ / 下拉刷新」必须刷新**屏幕上的一切** ——
+     * 原来车控清单只在首次组合时读一次，于是：
+     * 用户看到「读不到车控能力清单」⇒ 点 ↻ ⇒ **什么也没变**，
+     * 那个错误状态会一直赖着，直到用户离开这一页再回来。
+     *
+     * 页面刷新时把计数器 +1 ⇒ 清单重新读一次。
+     * （只有用户**主动**刷新才传；15 秒自动刷新不传 —— 动作清单不会自己变，
+     *   每 15 秒重读一次纯属浪费。）
+     */
+    refreshSignal: Int = 0,
     modifier: Modifier = Modifier,
 ) {
     var catalog by remember { mutableStateOf<CommandCatalog?>(null) }
@@ -91,10 +104,15 @@ fun VehicleControlCard(
     var running by remember { mutableStateOf(false) }
     var resultMsg by remember { mutableStateOf<String?>(null) }
     var resultBad by remember { mutableStateOf(false) }
+    /** 卡片自己的「重试」按钮用：+1 就重新读一次清单。 */
+    var reloadKey by remember { mutableStateOf(0) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(api, carId) {
+    LaunchedEffect(api, carId, refreshSignal, reloadKey) {
         if (api == null) return@LaunchedEffect
+        // ⚠️ 重读前先清掉失败态 ⇒ 卡片回到「正在读车控能力…」，
+        // 而不是把上一轮的失败文字留在屏幕上。
+        loadFailed = null
         catalog = withContext(Dispatchers.IO) {
             runCatching { api.commands(carId) }.getOrNull()
         }
@@ -162,6 +180,19 @@ fun VehicleControlCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // ⚠️ **v0.74.0**：失败必须给一条**出路**。
+                //
+                // 原来这里只有一句死文字 —— 用户既不能重试、也不知道要去哪。
+                // 现在给一个明确的重试按钮（不是「知道了」那种没有用的确认）。
+                Spacer(Modifier.height(4.dp))
+                TextButton(
+                    onClick = { reloadKey++ },
+                    // ⚠️ 无障碍名**必须包含可见文字**（「重试」）——
+                    // WCAG 2.5.3 Label in Name：可见标签要出现在可访问名里。
+                    modifier = Modifier.semantics { contentDescription = "重试读取车控能力清单" },
+                ) {
+                    Text("重试", style = MaterialTheme.typography.labelLarge)
+                }
             }
             c == null -> {
                 Text(
