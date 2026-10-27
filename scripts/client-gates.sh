@@ -520,6 +520,61 @@ PYEOF
 if [ $? -eq 0 ]; then ok "孤儿长文字（辅助函数渲染的可见长文也受管）"; else fail "孤儿长文字"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 7：Kotlin 字符串模板里的「$对象.属性」──────────────────────
+#
+# ⚠️ **v0.74.0（模拟器 UI 树实测发现的真 bug）**
+#
+# Kotlin 的**简单模板** `$identifier` **只取标识符** ——
+# 后面那个 `.prop` 是**字面文本**，不是属性访问：
+#
+#     val s = RouteTemplate(...)            // data class
+#     "$s.stopCount 次沿途充电"
+#     ⇒ 渲染成「<RouteTemplate 的整个 toString()>.stopCount 次沿途充电」
+#
+# 而 `"${s.stopCount}"`（带花括号）才是属性访问。
+#
+# **实锤**：线路余量表的**决策句**那个 TextView 高 **1574px**，
+# 内容是「RouteTemplate(key=…, legs=[…], stops=[JourneyStop(charge=Charge(id=66, …)])）」
+# —— 3000+ 字符的**数据转储**被直接打进界面；TalkBack 会把这一整坨念出来。
+#
+# ⚠️ 这类写法**在任何情况下都是 bug**（想拿属性访问必须写 `${…}`），
+# 所以本闸门**零容忍**：出现即红。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import re, pathlib, sys
+LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+# 简单模板 `$标识符` 后面紧跟 `.属性名`
+PAT = re.compile(r'\$([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)')
+root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+
+bad = []
+for p in sorted(root.rglob('*.kt')):
+    for idx, ln in enumerate(p.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+        st = ln.strip()
+        if st.startswith('//') or st.startswith('*') or st.startswith('/*'):
+            continue
+        for lit in LIT.findall(ln):
+            # 跳过被转义的 \$（那是字面的美元符号）
+            for m in PAT.finditer(lit):
+                start = m.start()
+                if start > 0 and lit[start - 1] == '\\':
+                    continue
+                bad.append('%s:%d  $%s.%s  ⇒ 写成 ${%s.%s}' % (
+                    p.name, idx, m.group(1), m.group(2), m.group(1), m.group(2)))
+                break
+
+if bad:
+    print('字符串模板里的「$对象.属性」%d 处 —— Kotlin 只会替换 $对象，' % len(bad))
+    print('后面那段是**字面文本** ⇒ 整个 data class 的 toString() 会被打进界面：')
+    for b in bad[:14]:
+        print('   ', b)
+    print('   ⇒ 改用花括号："${对象.属性}"')
+    sys.exit(1)
+print('字符串模板 0 处「$对象.属性」（Kotlin 里那永远是字面文本，不是属性访问）')
+PYEOF
+if [ $? -eq 0 ]; then ok "字符串模板（没有 $对象.属性 这种字面文本写法）"; else fail "字符串模板「\$对象.属性」"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

@@ -80,7 +80,45 @@ v0.69.0 修过一次度量（注释括号污染 + 折叠区被算成可见）。
   （实测把「充电中」误判成超长块）⇒ 现在先把模板占位符整段替换再取字面量；
 - `$var`（无花括号）写法没被识别 ⇒ 现在 `${…}` 与 `$var` 两种都认。
 
-### 四、依据内容判准修的七处（真机 UI 树实测基线：14 块 / 384 字）
+### 四、洞 4：整个数据模型被**打印进界面**（Kotlin 字符串模板的一个坑）
+
+⚠️ 这是本轮**最阴的一个 bug** —— 它不崩、不报错，只是让界面变得很怪。
+
+**现象**（模拟器 1440×3200 的 UI 树实测）：
+线路余量表展开后，那条**决策句**的 TextView 高 **1574px**，内容是：
+
+> 永丰社区 → 石化大道西 · 616 公里 ·
+> **RouteTemplate(key=journey-456-472, fromLabel=永丰社区, …, legs=[JourneyLeg(driveId=456, …)],
+> stops=[JourneyStop(charge=Charge(id=66, …), …)])**
+
+—— **整个数据模型被 `toString()` 打印进了界面**，3000+ 字符。
+读屏用户会听到这一整坨。
+
+**根因**：Kotlin 的**简单模板** `$identifier` **只取标识符**，
+后面那个 `.prop` 是**字面文本**，不是属性访问：
+
+```kotlin
+val s = template                                  // RouteTemplate（data class）
+if (s.stopCount > 0) parts += "$s.stopCount 次沿途充电"
+//                    ↑ 渲染成「<RouteTemplate 的整个 toString()>.stopCount 次沿途充电」
+```
+
+正确写法必须带花括号：`"${s.stopCount} 次沿途充电"`。
+
+⚠️ 同一个坑在本项目的记忆里**已经记过一次**（`"$var中文"` 会被解析成变量名 ⇒ 必须 `${var}`）——
+但那次是「变量名被吞掉」，这次是「**变量后面多了一整坨**」，隐蔽得多。
+
+**修法**：`RoutePlan.kt` 的 `conclusion()` 改成 `"${s.stopCount} …"`。
+
+**新增闸门 7（零容忍）**：扫描所有 Kotlin 字符串模板里的 `$对象.属性` ——
+这种写法**在任何情况下都是 bug**（想要属性访问必须写 `${…}`），出现即红。
+
+⚠️ **负向验证已做**：把那处改回 `"$s.stopCount …"` ⇒ 闸门立刻红，
+并精确指到 `RoutePlan.kt:1034`、同时给出该写成什么。
+
+**顺带**：全项目扫过一遍，同类写法**只有这一处**。
+
+### 五、依据内容判准修的七处（真机 UI 树实测基线：14 块 / 384 字）
 
 判准不是字数，是「**这条是补充说明（该折）还是用户要马上知道的事（该留）**」。
 
@@ -99,18 +137,34 @@ v0.69.0 修过一次度量（注释括号污染 + 折叠区被算成可见）。
 「按 2026-07-31~2026-10-24 的 88 条实测」（v0.26.0 P0-2 硬要求：来源必须自曝，
 新手分不清「实测」与「标称」，他不会去点角标）、「正常 2.5–3.3 bar（冷胎）…」（判读依据）。
 
-### 五、模拟器：根因与用法（终于能在这台机器上验 UI 了）
+### 六、模拟器：根因与用法（终于能在这台机器上验 UI 了）
 
-- 主 SDK（`%LOCALAPPDATA%\Android\Sdk`）里的 **emulator 包文件损坏**：
-  同版本号 37.2.12，启动后 `qemu-system-x86_64` **静默消失**
-  （退出码 `0x40000015` = STATUS_FATAL_APP_EXIT），日志里**一行错误都没有**。
-  ⇒ 之前那次「全新安装」其实**根本没执行到**（`ANDROID_SDK_ROOT` 未设 ⇒ `invalid sdk root`）。
-- 重新安装到 `C:\tm-sdk` 的那份能跑：
+⚠️ **先订正一条假结论**：之前记的「主 SDK 里的 emulator 包文件损坏」是**错的** ——
+逐文件比对下来，`C:\tm-sdk\emulator` 与 `%LOCALAPPDATA%\Android\Sdk\emulator`
+**387 个文件全部逐字节相同**（0 个不同、0 个独有）。
+真正的原因是 **`ANDROID_SDK_ROOT` 没设** ⇒ emulator 直接报 `invalid sdk root`，
+**根本没执行到**「损坏」那一步。
+
+⇒ **主 SDK 那份是好的**，设好环境变量就能跑：
 
 ```powershell
 $env:ANDROID_SDK_ROOT="$env:LOCALAPPDATA\Android\Sdk"
-& 'C:\tm-sdk\emulator\emulator.exe' -avd teslamate_test -no-window -no-audio -no-boot-anim -gpu swiftshader -memory 2048 -port 5554
+& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -avd teslamate_test -no-window -no-audio -no-boot-anim -gpu swiftshader -memory 2048 -port 5554
 ```
+
+⚠️ **模拟器崩溃（qemu 0xc0000005 访问违例）的真凶是洞 4**：
+一个 **1574px 高、3000+ 字符**的 `RouteTemplate` 数据转储被软件渲染器一渲染就崩。
+
+隔离实验（三段，各自带 App / 不带 App）：
+
+| 段 | 条件 | 结果 |
+|---|---|---|
+| A | 模拟器**裸奔**（不启动 App） | 90 秒存活 ✓ |
+| B | 启动 App、停在车况页 | 60 秒存活 ✓ |
+| C | 点进「充电记录」页 | **5 秒内 qemu 崩**（0xc0000005 访问违例） |
+
+修掉洞 4 之后：**充电记录 / 充电详情 / 行程详情三页各观察 20 秒，全部稳定**。
+（`-gpu off` 也一样崩 ⇒ 不是 swiftshader 的锅，是那个超大的 TextView。）
 
 - 屏幕按手机参数覆盖：`wm size 1440x3200` + `wm density 600`
   （物理 1080×2400/420 → Android 15）。
@@ -119,7 +173,7 @@ $env:ANDROID_SDK_ROOT="$env:LOCALAPPDATA\Android\Sdk"
 - **App 配置必须用 UI 输入**：令牌是纯 0-9+a-z 48 字符，`input text` 可用；
   手写 DataStore protobuf 会让 App 崩溃（`DataStoreImpl.readState` 抛异常）。
 
-### 六、验收
+### 七、验收
 
 - 客户端闸门 **6/6**（含新的基线棘轮，负向验证通过）、服务端闸门 3/3、冒烟 37/37、密钥扫描 CLEAN。
 - 模拟器实拍：车控卡四个分区全部渲染（空调与温度 / 充电 / 其他 / 高危动作，16 个动作）。

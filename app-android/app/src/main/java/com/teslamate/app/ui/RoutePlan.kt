@@ -1018,7 +1018,20 @@ data class RoutePlan(
         // 复审原话：「**我不看段数**」。
         // 那两个数是**内部口径**（段数 ≠ 充电次数），对用户没有决策价值，
         // 只会占掉一行。
-        if (s.stopCount > 0) parts += "$s.stopCount 次沿途充电"
+        // ⚠️ **v0.74.0（模拟器 UI 树实测）**：这里原来写的是 `"$s.stopCount 次沿途充电"`。
+        //
+        // ⚠️ **Kotlin 的简单模板 `$identifier` 只取标识符** ——
+        // 后面的 `.stopCount` 是**字面文本**，不是属性访问。
+        // 而 `s` 是 [RouteTemplate] 这个 data class ⇒ 渲染出来的是
+        // 「RouteTemplate(key=…, legs=[…], stops=[JourneyStop(charge=Charge(id=66, …)])」
+        // —— **整个数据模型被打印进界面**。
+        //
+        // 实锤（模拟器 1440×3200 的 UI 树）：线路余量表的**决策句**那个 TextView
+        // 高 **1574px**、内容是 3000+ 字符的数据转储；
+        // TalkBack 会把这一整坨念出来。
+        //
+        // 正确写法是 `"${s.stopCount}"` —— 花括号是必须的。
+        if (s.stopCount > 0) parts += "${s.stopCount} 次沿途充电"
         // ⚠️ **v0.46.0（第 27 轮复审）：必须给**日期**。**
         //
         // 复审的批评很准：
