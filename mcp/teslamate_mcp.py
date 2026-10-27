@@ -532,6 +532,9 @@ def teslamate_command_catalog() -> dict:
     或者你要下发动作前**先查参数名**（参数拼错会失败）。
 
     风险等级：high（解锁车门 / 开合尾门 / 远程启动）/ medium / low。
+
+    每个动作还带一个 `完成后是什么样`（「锁车」→「已锁车」）——
+    下发成功后**直接用这一句**告诉用户，别自己拼。
     """
     d = _get(f"/api/v1/cars/{CAR_ID}/commands")
     if not isinstance(d, dict) or "error" in d:
@@ -541,6 +544,7 @@ def teslamate_command_catalog() -> dict:
         "动作": [{
             "动作名": a.get("action"),
             "说明": a.get("description"),
+            "完成后是什么样": a.get("done"),
             "风险": a.get("risk"),
             "参数": a.get("params") or [],
             "会唤醒车": a.get("wakes_vehicle"),
@@ -559,6 +563,12 @@ def teslamate_vehicle_command(action: str, params: dict | None = None) -> dict:
     ⚠️ 动作名与参数名先查 `teslamate_command_catalog`，别猜。
     ⚠️ 车在休眠时命令发不出去 —— 会返回「车在休眠或离线，先唤醒再试」。
     ⚠️ 唤醒（wake_up）本身会耗电、也可能被 Tesla 计费。
+
+    ⚠️ **回读「车端结果」，别只看「已下发」**（v0.76.0）：
+    - `车端结果` = `executed` ⇒ **车真的照做了**，可以跟用户说「已锁车」；
+    - `车端结果` = `rejected` ⇒ **车明确拒绝了**（原因见 `原因`），
+      绝对不要报成功 —— 常见原因有「车已经在充电了」「充电枪没插」「当前状态不允许」；
+    - `车端结果` = `dispatched` ⇒ 发出去了但**还没拿到车端确认**，如实说「已下发，等确认」。
     """
     act = (action or "").strip()
     if not act:
@@ -572,9 +582,17 @@ def teslamate_vehicle_command(action: str, params: dict | None = None) -> dict:
         "说明": res.get("description"),
         "风险": res.get("risk"),
         "已下发": res.get("sent"),
+        "车端已执行": res.get("executed"),
+        "车端结果": res.get("state"),
         "车": res.get("vin"),
         "时间": res.get("at"),
     }
+    if res.get("done"):
+        out["完成后是什么样"] = res.get("done")
+    if res.get("reason"):
+        out["原因码"] = res.get("reason")
+    if res.get("reason_text"):
+        out["原因"] = res.get("reason_text")
     if res.get("error"):
         out["错误"] = res.get("error")
     if res.get("hint"):

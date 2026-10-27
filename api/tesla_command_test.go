@@ -224,3 +224,143 @@ func TestTeslaCommandCatalog_NoNullParams(t *testing.T) {
 		t.Errorf("清单里出现了 \"params\":null ⇒ App 端会解析失败")
 	}
 }
+
+// --------------------------------------------------------------------------
+// ⚠️ **v0.76.0**：车端「执行结果」的解析 —— 把假成功堵死。
+//
+// ## 为什么这是最重要的一条
+//
+// 原来只有一个 `sent` 标志，语义是「HTTP 2xx」。
+// 于是车端**明确拒绝**（`{"response":{"result":false,"reason":"already_charging"}}`）
+// 也会被报成「已下发」＝ **假成功**。
+//
+// 车没照做，App 却说搞定了 —— 用户会以为车没听指挥，**然后再点一次**
+// （而「开始充电」这种命令点两次是有副作用的）。
+//
+// ⇒ 官方响应形状（developer.tesla.com → Vehicle Commands）：
+//
+//	{"response": {"result": true|false, "reason": "..."}}
+//
+// 三态必须分清：**已执行** / **被拒绝** / **发出去了但没确认**。
+// --------------------------------------------------------------------------
+
+func TestParseTeslaCommandOutcome_Executed(t *testing.T) {
+	body := map[string]any{
+		"response": map[string]any{"result": true, "reason": ""},
+	}
+	executed, hasResult, reason := parseTeslaCommandOutcome(body)
+	if !hasResult {
+		t.Fatal("应该能读到 result")
+	}
+	if !executed {
+		t.Error("result=true 应解析成已执行")
+	}
+	if reason != "" {
+		t.Errorf("reason 应为空，实际 %q", reason)
+	}
+}
+
+func TestParseTeslaCommandOutcome_Rejected(t *testing.T) {
+	body := map[string]any{
+		"response": map[string]any{"result": false, "reason": "already_charging"},
+	}
+	executed, hasResult, reason := parseTeslaCommandOutcome(body)
+	if !hasResult {
+		t.Fatal("应该能读到 result")
+	}
+	if executed {
+		t.Error("result=false 必须解析成「没执行」—— 假成功就是从这儿漏出去的")
+	}
+	if reason != "already_charging" {
+		t.Errorf("reason = %q，期望 already_charging", reason)
+	}
+}
+
+func TestParseTeslaCommandOutcome_NoResult(t *testing.T) {
+	// 拿到了 2xx 但没有车端确认 ⇒ 只能说「已下发」，不能说「已完成」。
+	for _, body := range []map[string]any{
+		nil,
+		{},
+		{"response": "base64-not-an-object"},
+		{"response": map[string]any{"reason": "some text"}},
+	} {
+		executed, hasResult, _ := parseTeslaCommandOutcome(body)
+		if hasResult {
+			t.Errorf("%v 不该解析出 result", body)
+		}
+		if executed {
+			t.Errorf("%v 不该解析成已执行", body)
+		}
+	}
+}
+
+// 结果条上的文案必须**分得出成败** —— 三个状态三句话。
+func TestTeslaCommandReasonChinese(t *testing.T) {
+	cases := []struct{ code, want string }{
+		{"already_charging", "车端拒绝（already_charging）"}, // 未收录 ⇒ 保留原码，不臆造
+		{"is_charging", "车已经在充电了"},
+		{"not_charging", "车当前没有在充电"},
+		{"disconnected", "充电枪没插"},
+		{"no_power", "充电桩没有供电"},
+		{"already_set", "充电上限已经是这个值了"},
+		{"car_wash", "车在洗车模式"},
+		{"not allowed", "车的当前状态不允许这个操作"},
+	}
+	for _, c := range cases {
+		got := teslaCommandReasonChinese(c.code)
+		if got != c.want {
+			t.Errorf("%s ⇒ %q，期望 %q", c.code, got, c.want)
+		}
+	}
+	// 空原因不该编出一句话
+	if got := teslaCommandReasonChinese(""); got != "" {
+		t.Errorf("空原因应返回空串，实际 %q", got)
+	}
+}
+
+// 下划线写法与空格写法要能查到同一张表（Tesla 两种都用过）。
+func TestTeslaNormalizeReason(t *testing.T) {
+	if teslaNormalizeReason("already_set") != "already set" {
+		t.Errorf("归一化不对：%q", teslaNormalizeReason("already_set"))
+	}
+	if teslaCommandReasonChinese("already_set") != "充电上限已经是这个值了" {
+		t.Errorf("下划线写法没查到：%q", teslaCommandReasonChinese("already_set"))
+	}
+	if teslaCommandReasonChinese("already set") != "充电上限已经是这个值了" {
+		t.Errorf("空格写法没查到：%q", teslaCommandReasonChinese("already set"))
+	}
+}
+
+// ⚠️ **v0.76.0 真车实测**：Tesla 回来的原因码**带前缀** ——
+// 文档里写的是裸码 `disconnected`，实际收到的是
+// `"car could not execute command: disconnected"`。
+//
+// ⇒ 不剥前缀的话，最有用的那截原因会被埋掉，用户只看到一串英文。
+func TestTeslaCommandReasonChinese_Prefixed(t *testing.T) {
+	cases := []struct{ code, want string }{
+		{"car could not execute command: disconnected", "充电枪没插"},
+		{"car could not execute command: is_charging", "车已经在充电了"},
+		{"car could not execute command: not_charging", "车当前没有在充电"},
+		{"car could not execute command: already_set", "充电上限已经是这个值了"},
+	}
+	for _, c := range cases {
+		got := teslaCommandReasonChinese(c.code)
+		if got != c.want {
+			t.Errorf("%q ⇒ %q，期望 %q", c.code, got, c.want)
+		}
+	}
+	// 前缀剥掉后仍不认识 ⇒ 整句摊开（保留原文，不臆造）
+	got := teslaCommandReasonChinese("car could not execute command: some_new_code")
+	if got != "车端拒绝（car could not execute command: some_new_code）" {
+		t.Errorf("未收录的原因应保留原文，实际 %q", got)
+	}
+}
+
+// 每个动作都得有完成态文案 —— 结果条上要说「现在的样子」。
+func TestTeslaCommandCatalog_HasDone(t *testing.T) {
+	for _, s := range teslaCommandCatalog {
+		if strings.TrimSpace(s.Done) == "" {
+			t.Errorf("%s 缺少完成态文案（done）", s.Action)
+		}
+	}
+}

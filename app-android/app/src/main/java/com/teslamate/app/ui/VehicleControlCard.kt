@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
@@ -24,6 +26,9 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -42,12 +47,14 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.teslamate.app.Api
 import com.teslamate.app.CommandCatalog
+import com.teslamate.app.CommandResult
 import com.teslamate.app.VehicleCommand
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -96,6 +103,32 @@ fun VehicleControlCard(
      *   每 15 秒重读一次纯属浪费。）
      */
     refreshSignal: Int = 0,
+    /**
+     * ⚠️ **v0.76.0**：命令下发**之后**回调 —— 让上层把车况重新读一遍。
+     *
+     * ## 为什么必须有
+     *
+     * 轮询间隔是 2 分钟，所以「我刚开了空调」之后，
+     * 屏幕上的「空调关闭」会**赖两分钟** —— 车真的开了，App 却像是「点了没反应」。
+     * 用户会以为车没听指挥，**然后再点一次**。
+     *
+     * 服务端在命令后已经**立即回读**过一次车况（缓存已是新的），
+     * 这里再读一次，磁贴就会**当场**变成新状态。
+     */
+    onCommandFinished: () -> Unit = {},
+    /**
+     * ⚠️ **v0.76.0**：全局反馈宿主（Snackbar）。
+     *
+     * ## 为什么结果提示不能留在卡片里
+     *
+     * 卡片很长（空调 / 充电 / 其他 / 高危动作 四区），
+     * 用户点「闪灯」时**卡片底部在屏幕外** ——
+     * 结果条跟着一起看不见 = **「点了没反应」**，
+     * 用户会以为车没听指挥，**然后再点一次**。
+     *
+     * ⇒ 结果改走屏幕底部的 Snackbar：**无论滚到哪儿都看得见**。
+     */
+    snackbarHostState: SnackbarHostState? = null,
     modifier: Modifier = Modifier,
 ) {
     var catalog by remember { mutableStateOf<CommandCatalog?>(null) }
@@ -106,6 +139,7 @@ fun VehicleControlCard(
     var resultBad by remember { mutableStateOf(false) }
     /** 卡片自己的「重试」按钮用：+1 就重新读一次清单。 */
     var reloadKey by remember { mutableStateOf(0) }
+    /** ⚠️ v0.76.0：上一次失败的动作 —— 给 Snackbar 的「重试」用。 */
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(api, carId, refreshSignal, reloadKey) {
@@ -121,12 +155,28 @@ fun VehicleControlCard(
         }
     }
 
-    // ⚠️ v0.71.0：结果条**自动消失** —— 旧结果赖在卡片里不走，
-    // 用户看到的是「半分钟前那次操作的结果」，而不是刚才那次。
-    LaunchedEffect(resultMsg) {
-        if (resultMsg != null) {
-            delay(3000)
-            resultMsg = null
+    /**
+     * ⚠️ **v0.76.0**：把结果**说给用户听**。
+     *
+     * - 成功 ⇒ 4 秒后自动消失（Material3 的 Short）。
+     * - 失败 ⇒ **不自动消失**（Indefinite）+ 一个真的有用的「重试」——
+     *   「车端拒绝：充电枪没插」⇒ 用户插上枪，点「重试」就行；
+     *   给一个「知道了」那种没用的按钮等于没说。
+     */
+    fun announce(text: String, bad: Boolean, retry: (() -> Unit)? = null) {
+        resultMsg = text
+        resultBad = bad
+        val host = snackbarHostState ?: return
+        scope.launch {
+            val r = host.showSnackbar(
+                message = text,
+                actionLabel = if (bad && retry != null) "重试" else null,
+                duration = if (bad) SnackbarDuration.Indefinite else SnackbarDuration.Short,
+            )
+            // ⚠️ 用户点了「重试」⇒ 原样再发一次（参数不变）。
+            if (r == SnackbarResult.ActionPerformed && retry != null) {
+                retry()
+            }
         }
     }
 
@@ -140,16 +190,21 @@ fun VehicleControlCard(
             running = false
             pending = null
             res.onSuccess { r ->
-                resultBad = !r.sent
-                resultMsg = when {
-                    r.sent -> "已下发：${cmd.description}"
-                    !r.error.isNullOrBlank() -> r.error
-                    else -> "命令没发出去"
+                // ⚠️ **v0.76.0**：三态文案 —— 「已执行 / 被拒绝 / 已下发待确认」。
+                // 原来只有一句「已下发」，于是**车端拒绝也会被报成成功**。
+                val outcome = commandOutcome(r, cmd.done)
+                if (outcome.bad) {
+                    announce(outcome.text, true) { execute(cmd, params) }
+                } else {
+                    announce(outcome.text, false)
                 }
             }.onFailure { e ->
-                resultBad = true
-                resultMsg = e.message ?: "命令没发出去"
+                val msg = e.message ?: "命令没发出去"
+                announce(msg, true) { execute(cmd, params) }
             }
+            // ⚠️ **v0.76.0**：命令之后**立刻回读车况** ——
+            // 否则「空调已开启」和上面的「空调关闭」磁贴会互相打脸（最多两分钟）。
+            onCommandFinished()
         }
     }
 
@@ -271,20 +326,28 @@ fun VehicleControlCard(
                     ActionSection("高危动作", danger, running, pending?.action, ::request, danger = true)
                 }
 
-                // ── 结果条（自动消失）──
-                AnimatedVisibility(
-                    visible = resultMsg != null,
-                    enter = fadeIn(tween(Motion.ExpandFadeIn)),
-                    exit = fadeOut(tween(Motion.ExpandFadeOut)),
-                ) {
-                    Column {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            resultMsg.orEmpty(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (resultBad) LocalAccentColors.current.warnAmber
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                // ── 结果条 ──
+                //
+                // ⚠️ **v0.76.0**：结果**优先走屏幕底部的 Snackbar** ——
+                // 卡片很长，用户点上面的按钮时卡片底部在屏幕外，
+                // 结果条跟着看不见 = 「点了没反应」。
+                //
+                // 这里保留它只是**没有全局宿主时的兜底**（别处单独用这张卡时）。
+                if (snackbarHostState == null) {
+                    AnimatedVisibility(
+                        visible = resultMsg != null,
+                        enter = fadeIn(tween(Motion.ExpandFadeIn)),
+                        exit = fadeOut(tween(Motion.ExpandFadeOut)),
+                    ) {
+                        Column {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                resultMsg.orEmpty(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (resultBad) LocalAccentColors.current.warnAmber
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -299,6 +362,64 @@ fun VehicleControlCard(
             onDismiss = { if (!running) pending = null },
             onConfirm = { params -> execute(cmd, params) },
         )
+    }
+}
+
+/**
+ * ⚠️ **v0.76.0**：一次命令的**结果陈述**。
+ *
+ * ## 为什么要有它
+ *
+ * 原来只有一句「已下发：{动作}」—— 只要 HTTP 2xx 就这么写。
+ * 而车端会**明确拒绝**（`result:false`，比如 `already_charging` / `not_charging` /
+ * `disconnected`）：车没照做，App 却说搞定了。
+ * ⇒ 这是**假成功** —— 用户会以为车没听指挥，**然后再点一次**
+ * （而「开始充电」点两次是有副作用的）。
+ *
+ * ⇒ 现在必须分清三件事：
+ *
+ * | 车端说的      | 该怎么说              | 是坏消息吗 |
+ * |-------------|---------------------|-----------|
+ * | 已执行       | 「已锁车」            | 否         |
+ * | 明确拒绝     | 「车端拒绝：…」      | **是**     |
+ * | 发出去了但没确认 | 「已下发，等车端确认」 | 否     |
+ *
+ * ⚠️ **坏消息不自动消失**（成功才自动消失）——
+ * 「车端拒绝：充电枪没插」三秒后自己没了，等于没说。
+ */
+data class CommandOutcome(val text: String, val bad: Boolean)
+
+/**
+ * 把服务端返回的命令结果翻译成一句人话。
+ *
+ * ⚠️ **老服务端兼容**：`state` 为空（服务端是旧版）⇒ 退回老口径
+ * （`sent` ⇒ 「已下发：{动作}」），别让旧服务端一升级就显示不出东西。
+ */
+fun commandOutcome(result: CommandResult, fallbackDone: String = ""): CommandOutcome {
+    val done = result.done?.takeIf { it.isNotBlank() }
+        ?: fallbackDone.takeIf { it.isNotBlank() }
+        ?: result.description.takeIf { it.isNotBlank() }
+        ?: "命令"
+    val reasonText = result.reason_text?.takeIf { it.isNotBlank() }
+        ?: result.reason?.takeIf { it.isNotBlank() }
+
+    return when (result.state) {
+        "executed" -> CommandOutcome(done, false)
+        "rejected" -> CommandOutcome(
+            "车端拒绝" + (reasonText?.let { "：$it" } ?: ""),
+            true,
+        )
+        "dispatched" -> CommandOutcome("已下发，等车端确认", false)
+        "failed" -> CommandOutcome(
+            result.error?.takeIf { it.isNotBlank() } ?: "命令没发出去",
+            true,
+        )
+        else -> when {
+            // 老服务端：只有 sent / error
+            !result.error.isNullOrBlank() -> CommandOutcome(result.error!!, true)
+            result.sent -> CommandOutcome("已下发：$done", false)
+            else -> CommandOutcome("命令没发出去", true)
+        }
     }
 }
 
@@ -506,7 +627,15 @@ private fun ActionGrid(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         actions.chunked(2).forEach { pair ->
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // ⚠️ **v0.76.0**：一行里的两个按钮**等高**。
+            //
+            // 「唤醒车辆（会耗电、可能计费）」这种长标签要能换成两行，
+            // 而同排的另一个按钮只有一行 —— 不等高就会一高一低，像没对齐。
+            // `height(IntrinsicSize.Min)` + 按钮 `fillMaxHeight()` 是 Compose 的标准做法。
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.height(IntrinsicSize.Min),
+            ) {
                 pair.forEach { cmd ->
                     ActionButton(
                         label = cmd.description.ifBlank { cmd.action },
@@ -515,7 +644,7 @@ private fun ActionGrid(
                         primary = false,
                         danger = danger,
                         busy = running && runningAction == cmd.action,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
                     )
                 }
                 if (pair.size == 1) Spacer(Modifier.weight(1f))
@@ -544,6 +673,7 @@ private fun ActionButton(
         color = container,
         shape = MaterialTheme.shapes.large,
         modifier = modifier
+            .heightIn(min = 48.dp)
             .semantics { contentDescription = label }
             .pressable(onClick = onClick, enabled = enabled, scaleDown = 0.96f),
     ) {
@@ -564,7 +694,18 @@ private fun ActionButton(
                     label,
                     style = MaterialTheme.typography.bodyMedium,
                     color = content,
-                    maxLines = 1,
+                    // ⚠️ **v0.76.0**：**允许换成两行**。
+                    //
+                    // 原来 maxLines=1 且不设 overflow ⇒ Compose 默认 **Clip**，
+                    // 于是「唤醒车辆（会耗电、可能计费）」被**拦腰砍断**成
+                    // 「唤醒车辆（会耗电、」—— 看起来像渲染坏了，
+                    // 而且**代价提示整个不见了**。
+                    //
+                    // 而 v0.71.0 的设计决定正是「后果写在标签里就不必再打断一次」
+                    // ⇒ 标签必须完整可见。
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
                 )
             }
         }

@@ -48,6 +48,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -118,6 +119,15 @@ fun StatusScreen(
     cars: List<com.teslamate.app.Car> = emptyList(),
     /** ⚠️ v0.16.0：切换当前车辆。 */
     onCarChange: (Int) -> Unit = {},
+    /**
+     * ⚠️ **v0.76.0**：全局反馈用的 Snackbar 宿主。
+     *
+     * 车控命令的**结果提示必须落在屏幕底部**，而不是卡片的最下面 ——
+     * 卡片很长，用户点「闪灯」时卡片底部在**屏幕外**，
+     * 结果提示跟着一起看不见 = 「点了没反应」，
+     * 用户会以为车没听指挥，**然后再点一次**。
+     */
+    snackbarHostState: SnackbarHostState? = null,
 ) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
@@ -712,6 +722,16 @@ fun StatusScreen(
                             locked = st.locked,
                             carAsleep = st.fleet_state == "asleep",
                             refreshSignal = controlRefresh,
+                            // ⚠️ **v0.76.0**：命令之后立刻把车况读回来。
+                            //
+                            // 服务端在命令后已经回读过一次车况（缓存是新的），
+                            // 这里再读一次 —— 锁车磁贴/空调状态会**当场**变，
+                            // 而不是让用户对着「空调已开启」和「空调关闭」互相打脸两分钟。
+                            //
+                            // ⚠️ 走 `load()` 而不是 `refresh()`：后者会亮起整页的刷新指示器，
+                            // 那是在说「页面在加载」，而这里只是背景里更新一次。
+                            onCommandFinished = { scope.launch { load() } },
+                            snackbarHostState = snackbarHostState,
                         )
 
                         // 保养 / 轮胎卡片（配过基准才出现）

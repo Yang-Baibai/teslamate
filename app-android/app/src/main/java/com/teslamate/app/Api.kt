@@ -1422,6 +1422,11 @@ class Api private constructor(private val base: String, private val token: Strin
 data class VehicleCommand(
     val action: String = "",
     val description: String = "",
+    /**
+     * ⚠️ **v0.76.0**：动作**做完之后**的一句话（「锁车」→「已锁车」）。
+     * 由服务端给 —— 跟 `risk` 一样是策略，不该在客户端抄一份。
+     */
+    val done: String = "",
     val risk: String = "low",
     val params: List<String> = emptyList(),
     val wakes_vehicle: Boolean = false,
@@ -1441,7 +1446,27 @@ data class CommandResult(
     val risk: String = "",
     val description: String = "",
     val vin: String = "",
+    /** 命令**发到了** Tesla（HTTP 2xx）。 */
     val sent: Boolean = false,
+    /**
+     * ⚠️ **v0.76.0**：车端**确认执行**了（`response.result == true`）。
+     *
+     * ⚠️ `sent=true` **不等于**车照做了 —— 车端会明确拒绝
+     * （`already_charging` / `not_charging` / `disconnected` …），
+     * 那种情况 `sent=true` 而 `executed=false`。
+     */
+    val executed: Boolean = false,
+    /**
+     * 四态：`executed`（车端确认）/ `rejected`（车端拒绝）/
+     * `dispatched`（已下发待确认）/ `failed`（没发出去）。
+     */
+    val state: String = "",
+    /** 完成态文案（「已锁车」）—— 服务端给的，客户端不自己编。 */
+    val done: String? = null,
+    /** 车端给的原因码（协议原值，如 `already_charging`）。 */
+    val reason: String? = null,
+    /** 原因码的人话（服务端翻译；未收录时形如「车端拒绝（<原码>）」）。 */
+    val reason_text: String? = null,
     val error: String? = null,
     val hint: String? = null,
     val response: JsonObject? = null,

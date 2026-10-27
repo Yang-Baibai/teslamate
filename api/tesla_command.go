@@ -100,9 +100,12 @@ const (
 
 // teslaCommandSpec 一个可下发的动作的静态描述。
 type teslaCommandSpec struct {
-	Action       string   `json:"action"`
-	Endpoint     string   `json:"-"`
-	Description  string   `json:"description"`
+	Action      string `json:"action"`
+	Endpoint    string `json:"-"`
+	Description string `json:"description"`
+	// ⚠️ **v0.76.0**：动作**做完之后**的一句话（「锁车」→「已锁车」）。
+	// 结果条要说的是「现在的样子」，不是「我干了什么」。
+	Done         string   `json:"done"`
 	Risk         string   `json:"risk"`
 	Params       []string `json:"params"`
 	WakesVehicle bool     `json:"wakes_vehicle"`
@@ -133,29 +136,35 @@ func (s teslaCommandSpec) MarshalJSON() ([]byte, error) {
 // teslaCommandCatalog 全部 16 个动作。
 //
 // ⚠️ 顺序 = App 与 MCP 展示的顺序（按风险从高到低排）。
+//
+// ⚠️ **v0.76.0：每个动作多了 `Done`** —— 动作**做完之后**的一句话。
+// 「锁车」是动作名，「已锁车」才是**做完的样子** ——
+// 用户看结果条的时候要的是后者。
+// 它住在服务端（跟 `risk` 一样是安全/语义策略，只该有一处），
+// App 与 MCP 都直接用，不各自抄一份。
 var teslaCommandCatalog = []teslaCommandSpec{
-	{Action: "door_unlock", Endpoint: "door_unlock", Description: "解锁车门", Risk: teslaCmdRiskHigh},
-	{Action: "actuate_trunk", Endpoint: "actuate_trunk", Description: "开合尾门", Risk: teslaCmdRiskHigh},
-	{Action: "remote_start_drive", Endpoint: "remote_start_drive", Description: "远程启动（无钥匙驾驶 2 分钟）", Risk: teslaCmdRiskHigh,
+	{Action: "door_unlock", Endpoint: "door_unlock", Description: "解锁车门", Done: "已解锁", Risk: teslaCmdRiskHigh},
+	{Action: "actuate_trunk", Endpoint: "actuate_trunk", Description: "开合尾门", Done: "尾门已动作", Risk: teslaCmdRiskHigh},
+	{Action: "remote_start_drive", Endpoint: "remote_start_drive", Description: "远程启动（无钥匙驾驶 2 分钟）", Done: "已远程启动", Risk: teslaCmdRiskHigh,
 		Params: []string{"password"}},
-	{Action: "set_valet_mode", Endpoint: "set_valet_mode", Description: "代客模式开关", Risk: teslaCmdRiskMedium,
+	{Action: "set_valet_mode", Endpoint: "set_valet_mode", Description: "代客模式开关", Done: "代客模式已切换", Risk: teslaCmdRiskMedium,
 		Params: []string{"on", "password"}},
-	{Action: "set_temperature", Endpoint: "set_temps", Description: "设定座舱温度（℃）", Risk: teslaCmdRiskMedium,
+	{Action: "set_temperature", Endpoint: "set_temps", Description: "设定座舱温度（℃）", Done: "温度已设定", Risk: teslaCmdRiskMedium,
 		Params: []string{"driver_temp", "passenger_temp"}},
-	{Action: "set_climate_on", Endpoint: "set_climate_on", Description: "开启空调", Risk: teslaCmdRiskMedium},
-	{Action: "set_climate_off", Endpoint: "set_climate_off", Description: "关闭空调", Risk: teslaCmdRiskMedium},
-	{Action: "set_charge_limit", Endpoint: "set_charge_limit", Description: "设置充电上限（%）", Risk: teslaCmdRiskMedium,
+	{Action: "set_climate_on", Endpoint: "set_climate_on", Description: "开启空调", Done: "空调已开启", Risk: teslaCmdRiskMedium},
+	{Action: "set_climate_off", Endpoint: "set_climate_off", Description: "关闭空调", Done: "空调已关闭", Risk: teslaCmdRiskMedium},
+	{Action: "set_charge_limit", Endpoint: "set_charge_limit", Description: "设置充电上限（%）", Done: "充电上限已设定", Risk: teslaCmdRiskMedium,
 		Params: []string{"percent"}},
-	{Action: "set_charging_amps", Endpoint: "set_charging_amps", Description: "设置充电电流（A）", Risk: teslaCmdRiskMedium,
+	{Action: "set_charging_amps", Endpoint: "set_charging_amps", Description: "设置充电电流（A）", Done: "充电电流已设定", Risk: teslaCmdRiskMedium,
 		Params: []string{"charging_amps"}},
-	{Action: "charge_start", Endpoint: "charge_start", Description: "开始充电", Risk: teslaCmdRiskMedium},
-	{Action: "charge_stop", Endpoint: "charge_stop", Description: "停止充电", Risk: teslaCmdRiskMedium},
-	{Action: "wake_up", Endpoint: "wake_up", Description: "唤醒车辆（会耗电、可能计费）", Risk: teslaCmdRiskMedium,
+	{Action: "charge_start", Endpoint: "charge_start", Description: "开始充电", Done: "已开始充电", Risk: teslaCmdRiskMedium},
+	{Action: "charge_stop", Endpoint: "charge_stop", Description: "停止充电", Done: "已停止充电", Risk: teslaCmdRiskMedium},
+	{Action: "wake_up", Endpoint: "wake_up", Description: "唤醒车辆（会耗电、可能计费）", Done: "已唤醒", Risk: teslaCmdRiskMedium,
 		WakesVehicle: true},
-	{Action: "door_lock", Endpoint: "door_lock", Description: "锁车", Risk: teslaCmdRiskMedium},
-	{Action: "honk_horn", Endpoint: "honk_horn", Description: "鸣笛", Risk: teslaCmdRiskLow},
-	{Action: "flash_lights", Endpoint: "flash_lights", Description: "闪灯", Risk: teslaCmdRiskLow},
-	{Action: "set_sentry_mode", Endpoint: "set_sentry_mode", Description: "哨兵模式开关", Risk: teslaCmdRiskMedium,
+	{Action: "door_lock", Endpoint: "door_lock", Description: "锁车", Done: "已锁车", Risk: teslaCmdRiskMedium},
+	{Action: "honk_horn", Endpoint: "honk_horn", Description: "鸣笛", Done: "已鸣笛", Risk: teslaCmdRiskLow},
+	{Action: "flash_lights", Endpoint: "flash_lights", Description: "闪灯", Done: "已闪灯", Risk: teslaCmdRiskLow},
+	{Action: "set_sentry_mode", Endpoint: "set_sentry_mode", Description: "哨兵模式开关", Done: "哨兵模式已切换", Risk: teslaCmdRiskMedium,
 		Params: []string{"on"}},
 }
 
@@ -343,15 +352,189 @@ func teslaCommandProxyClient() (*http.Client, error) {
 }
 
 // teslaCommandResult 一次命令下发的结果。
+//
+// ⚠️ **v0.76.0：把「发出去了」与「车真的做了」拆成两件事**。
+//
+// 原来只有 `Sent` 一个标志，语义是「HTTP 2xx」——
+// 于是车端**明确拒绝**（`result:false`，比如 `already_started` / `not_charging` /
+// `disconnected`）也会被报成「已下发」= **假成功**。
+// 车没照做，App 却说搞定了 —— 这是最坏的一种错。
+//
+// 现在三个字段各管一件事：
+//
+//	Sent     命令**发到了** Tesla（HTTP 2xx）
+//	Executed 车端**确认执行**了（`response.result == true`）
+//	State    四态：executed / rejected / dispatched / failed
 type teslaCommandResult struct {
-	Action      string         `json:"action"`
-	Risk        string         `json:"risk"`
-	Description string         `json:"description"`
-	VIN         string         `json:"vin"`
-	Sent        bool           `json:"sent"`
-	Response    map[string]any `json:"response,omitempty"`
-	Error       string         `json:"error,omitempty"`
-	At          time.Time      `json:"at"`
+	Action      string `json:"action"`
+	Risk        string `json:"risk"`
+	Description string `json:"description"`
+	// ⚠️ **v0.76.0**：完成态文案（「已锁车」）—— 随结果一起回来，
+	// 消费方不必再回头查一遍清单。
+	Done       string         `json:"done"`
+	VIN        string         `json:"vin"`
+	Sent       bool           `json:"sent"`
+	Executed   bool           `json:"executed"`
+	State      string         `json:"state"`
+	Reason     string         `json:"reason,omitempty"`
+	ReasonText string         `json:"reason_text,omitempty"`
+	Response   map[string]any `json:"response,omitempty"`
+	Error      string         `json:"error,omitempty"`
+	At         time.Time      `json:"at"`
+}
+
+// --------------------------------------------------------------------------
+// 车端结果（v0.76.0）
+// --------------------------------------------------------------------------
+
+// 命令结果的四种状态。
+const (
+	// teslaCmdStateExecuted 车端确认执行了（`result: true`）。
+	teslaCmdStateExecuted = "executed"
+	// teslaCmdStateRejected 车端**明确拒绝**了（`result: false` + 原因）。
+	teslaCmdStateRejected = "rejected"
+	// teslaCmdStateDispatched 发出去了，但没拿到车端确认。
+	teslaCmdStateDispatched = "dispatched"
+	// teslaCmdStateFailed 命令根本没发出去（网络/代理/车在休眠）。
+	teslaCmdStateFailed = "failed"
+)
+
+// teslaCommandReasonText 车端原因码 → 人话。
+//
+// ⚠️ **只收官方文档里逐条列出来过的原因码**
+// （developer.tesla.com → Fleet API → Vehicle Commands，各命令的说明里
+//
+//	明确写了 "This command may return already_started / is_charging / …"）。
+//
+// ⚠️ **没收录的一律回落到「车端拒绝（<原码>）」** ——
+// 按前缀猜含义就是幻觉，宁可把原码摊给用户看，也不要编一个像模像样的解释。
+var teslaCommandReasonText = map[string]string{
+	// charge_start —— 官方原文："This command may return errors if the vehicle
+	// is unable to begin charging. complete - … is_charging - … disconnected - …
+	// no_power - … requested - …"
+	"complete":     "充电已经完成了",
+	"is charging":  "车已经在充电了",
+	"disconnected": "充电枪没插",
+	"no power":     "充电桩没有供电",
+	"requested":    "车已经收到过充电请求了",
+	// charge_stop —— "may return not_charging if the vehicle is not currently charging"
+	"not charging": "车当前没有在充电",
+	// set_charge_limit —— "may return already_set if the requested percent is the same"
+	"already set": "充电上限已经是这个值了",
+	// charge_standard —— "may return already_started if the existing charge limit
+	// request is already less than or equal to the standard/default charge limit"
+	"already started": "已经是标准充电模式了",
+	// charge_port_door_close —— "already closed - … cable connected - …
+	// no motorized charge port - …"
+	"already closed":           "充电口盖已经关着了",
+	"cable connected":          "充电线还插着",
+	"no motorized charge port": "这台车没有电动充电口盖",
+	// charge_port_door_open —— "car_wash - … not allowed - …"
+	"car wash":    "车在洗车模式",
+	"not allowed": "车的当前状态不允许这个操作",
+}
+
+// teslaNormalizeReason 归一化原因码：去空白、转小写、下划线→空格。
+//
+// Tesla 的原因码是小写下划线或小写带空格（如 `already_set` / `not allowed`），
+// 归一之后两种写法都能查到同一张表。
+func teslaNormalizeReason(s string) string {
+	return strings.ToLower(strings.TrimSpace(strings.ReplaceAll(s, "_", " ")))
+}
+
+// teslaCommandReasonChinese 把车端原因码翻成人话。
+//
+// 没收录 ⇒ 「车端拒绝（<原码>）」，**保留原码** ——
+// 用户能拿它去搜/问客服，我们也不至于编一个假的解释。
+//
+// ⚠️ **v0.76.0 实测（真车）**：Tesla 回来的原因码**带前缀**，不是文档里那个裸码：
+//
+//	"car could not execute command: disconnected"
+//
+// （文档写的是 `disconnected`。）⇒ 先按**最后一个 ": "** 切一刀，
+// 用尾巴去查表；查不到再整句摊给用户 —— 前缀本身是上下文，尾巴才是原因码。
+func teslaCommandReasonChinese(reason string) string {
+	r := strings.TrimSpace(reason)
+	if r == "" {
+		return ""
+	}
+	if i := strings.LastIndex(r, ": "); i >= 0 {
+		tail := strings.TrimSpace(r[i+2:])
+		if tail != "" {
+			if t, ok := teslaCommandReasonText[teslaNormalizeReason(tail)]; ok {
+				return t
+			}
+		}
+	}
+	if t, ok := teslaCommandReasonText[teslaNormalizeReason(r)]; ok {
+		return t
+	}
+	return "车端拒绝（" + r + "）"
+}
+
+// parseTeslaCommandOutcome 解析 Tesla 的命令响应，取车端的**执行结果**。
+//
+// 官方响应形状（developer.tesla.com → Vehicle Commands）：
+//
+//	{"response": {"result": true|false, "reason": "..."}}
+//
+// ⚠️ `result:false` 是**车端拒绝**，不是「命令没发出去」—— 两者必须分开。
+// ⚠️ 没有 `result` 字段 ⇒ 拿到了 2xx 但没拿到车端确认 ⇒ 只能说「已下发」。
+// ⚠️ `response` 有时是 base64 字符串（session info 那类端点）⇒ 解析不出来
+// 就当「没有车端确认」，绝不瞎猜。
+func parseTeslaCommandOutcome(body map[string]any) (executed bool, hasResult bool, reason string) {
+	if body == nil {
+		return false, false, ""
+	}
+	payload := body
+	if inner, ok := body["response"].(map[string]any); ok {
+		payload = inner
+	}
+	switch v := payload["result"].(type) {
+	case bool:
+		hasResult = true
+		executed = v
+	case float64:
+		hasResult = true
+		executed = v != 0
+	}
+	if s, ok := payload["reason"].(string); ok {
+		reason = strings.TrimSpace(s)
+	}
+	return executed, hasResult, reason
+}
+
+// refreshStateAfterCommand 命令下发后**立刻**回读一次车况。
+//
+// ⚠️ **为什么必须做**（v0.76.0 实测发现）：
+// 轮询间隔是 2 分钟（`teslaPollInterval`），
+// 所以「我刚开了空调」之后，屏幕上的「空调关闭」会**赖两分钟** ——
+// 车真的开了，App 却像是「点了没反应」。用户会以为车没听指挥，然后**再点一次**。
+//
+// 官方 Fleet API Best Practices 也写着：
+// "It is the developer's responsibility to ensure the vehicle is in the desired state."
+// —— 状态回读是**开发者**的责任，不该转嫁给用户去等。
+//
+// ⚠️ **单飞**：连点几个按钮 = 几次 vehicle_data，那是要计费的请求，
+// 而且完全没必要（在飞的那一次会把结果一起写进缓存）。
+func (c *teslaClient) refreshStateAfterCommand(ctx context.Context) {
+	c.refreshMu.Lock()
+	if c.refreshing {
+		c.refreshMu.Unlock()
+		return
+	}
+	c.refreshing = true
+	c.refreshMu.Unlock()
+	defer func() {
+		c.refreshMu.Lock()
+		c.refreshing = false
+		c.refreshMu.Unlock()
+	}()
+
+	// 车在休眠时 vehicle_data 会回 408 —— 那是预期的，不算错误。
+	if err := c.pollOnce(ctx); err != nil {
+		log.Printf("ℹ️  命令后回读车况失败（不影响命令本身）：%v", err)
+	}
 }
 
 // resolveVehicleVIN 取这台车的 VIN（17 位）。
@@ -451,6 +634,7 @@ func (c *teslaClient) sendTeslaCommand(ctx context.Context, action string, param
 		Action:      action,
 		Risk:        spec.Risk,
 		Description: spec.Description,
+		Done:        spec.Done,
 		VIN:         vin,
 		At:          time.Now(),
 	}
@@ -460,11 +644,36 @@ func (c *teslaClient) sendTeslaCommand(ctx context.Context, action string, param
 		if json.Unmarshal(respBody, &parsed) == nil {
 			res.Response = parsed
 		}
+		// ⚠️ **v0.76.0**：2xx 只说明「命令送到 Tesla 了」，**不等于车照做了**。
+		// 车端会回 `{"response":{"result":false,"reason":"already_charging"}}`
+		// 这种「明确拒绝」—— 原来一律报成「已下发」＝ **假成功**。
+		executed, hasResult, reason := parseTeslaCommandOutcome(parsed)
+		switch {
+		case hasResult && executed:
+			res.State = teslaCmdStateExecuted
+			res.Executed = true
+		case hasResult && !executed:
+			res.State = teslaCmdStateRejected
+			res.Reason = reason
+			res.ReasonText = teslaCommandReasonChinese(reason)
+		default:
+			res.State = teslaCmdStateDispatched
+		}
+		// ⚠️ **v0.76.0**：命令后**立刻回读**车况 ——
+		// 否则轮询间隔（2 分钟）会让屏幕上的状态「赖」两分钟，
+		// 用户看到的是「点了没反应」，然后再点一次。
+		if res.State != teslaCmdStateRejected {
+			refreshCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+			c.refreshStateAfterCommand(refreshCtx)
+			cancel()
+		}
 		// ⚠️ 审计：谁、什么时候、对哪台车做了什么 —— 车控是**不可逆**的。
-		log.Printf("🚗 车控下发：action=%s risk=%s vin=%s params=%s", action, spec.Risk, vin, redactCommandParams(action, params))
+		log.Printf("🚗 车控下发：action=%s risk=%s vin=%s state=%s params=%s",
+			action, spec.Risk, vin, res.State, redactCommandParams(action, params))
 		return res, nil
 	}
 	res.Error = strings.TrimSpace(string(respBody))
+	res.State = teslaCmdStateFailed
 	log.Printf("⚠️ 车控失败：action=%s risk=%s vin=%s http=%d err=%s", action, spec.Risk, vin, resp.StatusCode, res.Error)
 	return res, nil
 }
@@ -570,6 +779,7 @@ func handleTeslaCommand(w http.ResponseWriter, r *http.Request) {
 			"action":      res.Action,
 			"risk":        res.Risk,
 			"description": res.Description,
+			"done":        res.Done,
 			"valid":       true,
 			"dry_run":     true,
 			"at":          res.At,
@@ -597,6 +807,8 @@ func handleTeslaCommand(w http.ResponseWriter, r *http.Request) {
 			"risk":        res.Risk,
 			"description": res.Description,
 			"sent":        false,
+			"executed":    false,
+			"state":       teslaCmdStateFailed,
 			"error":       "车在休眠或离线 —— 先唤醒再试",
 			"hint":        "车醒着的时候命令才发得出去；唤醒本身会耗电、可能计费",
 			"at":          res.At,

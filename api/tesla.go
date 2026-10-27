@@ -121,10 +121,16 @@ type teslaClient struct {
 	// 两者不能互换。
 	vehicleVIN string
 
-	stateMu  sync.RWMutex
-	locked   *bool
-	lockedAt *time.Time
-	liveTPMS TeslaTPMS // 实时胎压快照（来源 Fleet API 的 vehicle_state）
+	// ⚠️ **v0.76.0**：命令后**立即回读**车况用的单飞锁。
+	//
+	// 连点几个按钮就会连着发几次 vehicle_data —— 那是要计费的请求，
+	// 而且完全没必要（在飞的那一次会把结果一起写进缓存）。
+	refreshMu  sync.Mutex
+	refreshing bool
+	stateMu    sync.RWMutex
+	locked     *bool
+	lockedAt   *time.Time
+	liveTPMS   TeslaTPMS // 实时胎压快照（来源 Fleet API 的 vehicle_state）
 	// ⚠️ v0.21.0：车端里程表（km），同样来自 Fleet API 的 vehicle_state.odometer。
 	//
 	// 为什么需要它：TeslaMate 的 `positions.odometer` 是**按 GPS 点累计**的里程表，

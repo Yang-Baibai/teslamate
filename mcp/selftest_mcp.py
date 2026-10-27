@@ -2,6 +2,16 @@
 """MCP 服务自检：① 工具直接调 ② stdio 握手 + tools/list + tools/call。"""
 import io, json, os, subprocess, sys, time
 
+# ⚠️ **v0.76.0**：Windows 的默认控制台编码是 GBK ——
+# 打印「✓」这种符号会直接 **UnicodeEncodeError 崩掉自检**，
+# 于是「自检跑不起来」被误当成「服务坏了」。
+# ⇒ 强制 stdout 走 UTF-8，并对编不出的字符降级而不是抛异常。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 SRV = os.path.join(REPO, 'mcp', 'teslamate_mcp.py')

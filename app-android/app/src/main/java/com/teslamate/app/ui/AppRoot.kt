@@ -36,6 +36,8 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -273,6 +275,12 @@ private fun MainScaffold(
     onTabChange: (Tab) -> Unit,
 ) {
     val ctx = LocalContext.current
+    // ⚠️ **v0.76.0**：全局反馈宿主。
+    //
+    // 车控命令的结果必须落在**屏幕底部** —— 卡片很长，
+    // 用户点上面的动作时卡片底部在屏幕外，结果提示跟着看不见
+    // = 「点了没反应」⇒ 用户会再点一次。
+    val snackbarHostState = remember { SnackbarHostState() }
 
     // ⚠️ v0.20.0（iOS IA 评审 P1-3）：**深链到设置页的指定二级页** ——
     // 原来所有「去设置」出口都只是切 Tab —— 用户从 401 横幅点过去，
@@ -334,6 +342,9 @@ private fun MainScaffold(
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         contentWindowInsets = WindowInsets.systemBars.only(WindowInsetsSides.Bottom),
+        // ⚠️ **v0.76.0**：全局反馈条（车控结果等）。
+        // Material3 默认把它放在 bottomBar 之上 ⇒ 不会被导航栏压住。
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             // 毛玻璃导航栏（iOS bar material）
             val accents = LocalAccentColors.current
@@ -482,6 +493,7 @@ private fun MainScaffold(
                         settings = settings,
                         modifier = Modifier.fillMaxSize(),
                         store = statusStore,
+                        snackbarHostState = snackbarHostState,
                         // 令牌失效时给用户一个直达设置的出口（见 ApiErrorKind.AUTH）
                         // ⚠️ v0.20.0：直接落到「服务器」二级页 —— 401 的原因就是地址/令牌，
                         // 落点与原因一致，不用让用户自己找。
