@@ -25,7 +25,6 @@ import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -357,24 +356,30 @@ fun RecordsScreen(
                                 currentId = settings.carId,
                                 onSelect = onCarChange,
                             )
-                            // ⚠️ v0.22.0：**充电记录入口**（闪电图标）。
+                            // ⚠️ **v0.73.0（苹果设计总监复审）**：入口从**纯图标**改成**带文字的按钮**。
                             //
-                            // 放在顶栏而不是时间轴里，是因为：
-                            // ① 时间轴是**混合**的（充电与行程交替），
-                            //    在里面塞一个「全部充电记录」入口会让人以为充电是另一类记录；
-                            // ② 顶栏是 iOS 里「进入另一个维度」的惯例位置，
-                            //    不占滚动空间，也不会把时间轴的第一屏挤掉。
+                            // 原来是一个 24dp 的 ⚡ 图标。放在顶栏这个位置本身没错
+                            // （iOS 惯例：顶栏 = 进入另一个维度，不占滚动空间）——
+                            // 但**纯图标**有个硬伤：用户得先「认出闪电」才知道那是什么，
+                            // 而「记录」页里一个闪电很容易被读成「正在快充」。
                             //
-                            // 图标：闪电 = 充电（与记录页时间轴里的充电节点同图标）。
-                            IconButton(
-                                onClick = { onSelectionChange(RecordSelection.ChList) },
-                            ) {
-                                Icon(
-                                    Icons.Filled.Bolt,
-                                    contentDescription = "充电记录",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
+                            // 而这不是个次要动作 —— 后面是 **69 次充电、1737 度电、真实电费**。
+                            // 一级内容不该藏在无标签的图标后面。
+                            //
+                            // 现在按钮**带文字**：认不认图标都能进。
+                            // （方向与 Apple 近年的做法一致：减少纯图标按钮、补文字标签。）
+                            Text(
+                                "充电记录",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .clip(MaterialTheme.shapes.small)
+                                    .pressable(
+                                        onClick = { onSelectionChange(RecordSelection.ChList) },
+                                        scaleDown = 0.96f,
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                            )
                         },
                     )
                     // ⚠️ v0.9.0：加下拉刷新（原来只有一次性加载，网络一断就再也不请求）

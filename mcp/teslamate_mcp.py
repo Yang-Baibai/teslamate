@@ -143,9 +143,12 @@ def _tpms_pressure(v: Any) -> Any:
 
 @mcp.tool()
 def teslamate_status() -> dict:
-    """查这台车现在的状态：电量、续航、锁车、位置、内外温、实时胎压、车辆是否醒着。
+    """查这台车**现在**的状态：电量、续航、锁没锁、位置、内外温、实时胎压、车醒没醒。
 
-    车在休眠时锁车与胎压会显示「未知」—— 那是没读到，不是车没锁。
+    **什么时候用**：用户问「车锁了吗」「还有多少电」「车在哪」「外面多少度」
+    「胎压正常吗」「车醒着吗」—— 都归它。
+
+    ⚠️ 车在休眠时锁车与胎压会显示「未知」—— 那是**没读到**，不是车没锁。
     """
     s = _get(f"/api/v1/cars/{CAR_ID}/status")
     if not isinstance(s, dict) or "error" in s:
@@ -180,7 +183,14 @@ def teslamate_status() -> dict:
 
 @mcp.tool()
 def teslamate_battery() -> dict:
-    """查电池健康度：当前实测可用容量、相对出厂的健康度、出厂折算的满电续航、衰减趋势。"""
+    """查**电池健康度**：现在还能装多少度、相对出厂的健康度百分比、出厂折算的满电续航、衰减趋势。
+
+    **什么时候用**：用户问「电池还行吗」「衰减了多少」「还能装多少度」
+    「换块新电池能装多少」—— 都归它。
+
+    ⚠️ 「健康度」是**相对出厂可用容量**的百分比（不是「还剩多少」）；
+    「近期趋势」是**相对首测**，不是相对出厂 —— 两件事，别混。
+    """
     b = _get(f"/api/v1/cars/{CAR_ID}/battery")
     if not isinstance(b, dict) or "error" in b:
         return b
@@ -209,10 +219,12 @@ def teslamate_battery() -> dict:
 
 @mcp.tool()
 def teslamate_charges(limit: int = 10) -> dict:
-    """查最近的充电记录（时间、地点、充入电量、起始/结束电量、费用、功率）。
+    """查**最近的充电记录**：时间、地点、充入多少度、起止电量、费用、峰值/平均功率。
 
-    ⚠️ **v0.72.0 修过字段映射**：原来这里取的是 `location_name` / `charge_kwh`，
-    而 API 真实字段叫 `place` / `energy_added_kwh` ⇒ 地点与电量**全是 null**。
+    **什么时候用**：用户问「上次在哪充的」「充了多少度」「充电花了多少钱」
+    「这个月充了几次」—— 都归它。
+
+    ⚠️ 要看某一场的功率曲线，用返回的 `id` 接着调 `teslamate_charge_curve`。
     """
     data = _get(f"/api/v1/cars/{CAR_ID}/charges")
     items = data.get("items") if isinstance(data, dict) else data
@@ -244,10 +256,12 @@ def teslamate_charges(limit: int = 10) -> dict:
 
 @mcp.tool()
 def teslamate_drives(limit: int = 10) -> dict:
-    """查最近的行程记录（时间、起止、里程、时长、能耗、到达电量）。
+    """查**最近的行程记录**：时间、起终点、里程、时长、能耗、到达电量。
 
-    ⚠️ **v0.72.0 修过字段映射**：原来取的是 `start_location_name` / `kwh_per_100km`，
-    而 API 真实字段叫 `start_place` / `wh_per_km` ⇒ 起终点与能耗**全是 null**。
+    **什么时候用**：用户问「上次开车去哪了」「这趟开了多远」「油耗多少」
+    「最近跑了哪些路」—— 都归它。
+
+    ⚠️ 要看某一趟的电量剖面，用返回的 `id` 接着调 `teslamate_route_profile`。
     """
     data = _get(f"/api/v1/cars/{CAR_ID}/drives")
     items = data.get("items") if isinstance(data, dict) else data
@@ -279,7 +293,13 @@ def teslamate_drives(limit: int = 10) -> dict:
 
 @mcp.tool()
 def teslamate_stats(period: str = "week") -> dict:
-    """查用量统计。period 取 today / week / month / year。"""
+    """查**一段时间的用量汇总**：里程、行驶耗电、充入电量、行程数、充电次数。
+
+    **什么时候用**：用户问「这周开了多少」「这个月用了多少电」「今天跑没跑」
+    —— 都归它。period 取 today / week / month / year。
+
+    ⚠️ 要**钱**（电费）用 `teslamate_cost`；要**电池健康**用 `teslamate_battery`。
+    """
     p = (period or "week").strip().lower()
     if p not in ("today", "week", "month", "year"):
         return {"error": f"period 只能是 today/week/month/year，收到 {period!r}"}
@@ -300,7 +320,14 @@ def teslamate_stats(period: str = "week") -> dict:
 
 @mcp.tool()
 def teslamate_driving_profile() -> dict:
-    """查驾驶画像：平顺分、各分项（急刹/急加/能耗/夜驾/速度档）、评分口径。"""
+    """查**驾驶画像**：平顺分，以及急刹 / 急加 / 能耗 / 夜驾 / 速度档各扣了多少分。
+
+    **什么时候用**：用户问「我开车平顺吗」「急刹多不多」「这个分怎么算的」
+    —— 都归它。
+
+    ⚠️ 名字叫「平顺分」，但**只有 60 分是平顺相关**（急刹 30 + 急加 20 + 速度 10），
+    另 40 分来自能耗与夜驾 —— 别当成纯粹的平顺度量。
+    """
     d = _get(f"/api/v1/cars/{CAR_ID}/driving_profile")
     if not isinstance(d, dict) or "error" in d:
         return d
@@ -321,10 +348,10 @@ def teslamate_driving_profile() -> dict:
 
 @mcp.tool()
 def teslamate_stay_points(limit: int = 10) -> dict:
-    """查常驻点（停得最多/最久的地方）。
+    """查**常驻点**：停得最多、最久的地方（家 / 公司 / 常去的商场）。
 
-    ⚠️ **v0.72.0 修过字段映射**：原来取的是 `items`，
-    而 API 真实字段叫 `points` ⇒ 整个工具以前**只返回「返回格式异常」**。
+    **什么时候用**：用户问「车平时停哪」「最常去哪个地方」「在家待多久」
+    —— 都归它。
     """
     d = _get(f"/api/v1/cars/{CAR_ID}/stay_points")
     items = (d.get("points") if isinstance(d, dict) else d) or []
@@ -364,10 +391,13 @@ def teslamate_stay_points(limit: int = 10) -> dict:
 
 @mcp.tool()
 def teslamate_cost(period: str = "week") -> dict:
-    """查充电成本：充了多少度、直流/交流/家充各占多少、行驶里程。
+    """查**充电成本构成**：充了多少度、直流 / 交流 / 家充各占多少、行驶里程。
 
-    period 取 today / week / month / year。
-    ⚠️ 费用本身要**在 App 设置里填电价与服务费**才有 —— 没填的话这里只给用电量。
+    **什么时候用**：用户问「这个月电费多少」「充电花了多少」「家充占比多少」
+    —— 都归它。period 取 today / week / month / year。
+
+    ⚠️ **金额**要 App「设置 → 电价与成本」里填了电价与服务费才有；
+    没填时这里只给用电量 —— 别自己乘个电价当结论。
     """
     p = (period or "week").strip().lower()
     if p not in ("today", "week", "month", "year"):
@@ -392,9 +422,12 @@ def teslamate_cost(period: str = "week") -> dict:
 
 @mcp.tool()
 def teslamate_energy_profile() -> dict:
-    """查能耗-车速曲线：每个速度档的平均 Wh/km（车轮功率 / 毛耗电）与跑了多少公里。
+    """查**能耗-车速曲线**：每个速度档的平均 Wh/km（车轮功率 / 毛耗电）与跑了多少公里。
 
-    回答「我开多快最省电」用 —— 找 wh_per_km_gross 最低的那个速度档。
+    **什么时候用**：用户问「我开多快最省电」「高速费电吗」「多少码最经济」
+    —— 都归它。看 `毛耗电Wh/km` 最低的那个速度档。
+
+    ⚠️ 车轮 Wh/km 不含传动损耗与回充抵扣；**毛耗电**含回充抵扣，更接近真实电表。
     """
     d = _get(f"/api/v1/cars/{CAR_ID}/energy_profile")
     if not isinstance(d, dict) or "error" in d:
@@ -421,10 +454,13 @@ def teslamate_energy_profile() -> dict:
 
 @mcp.tool()
 def teslamate_route_profile(drive_ids: str, step_km: int = 0) -> dict:
-    """查一趟（或几趟连续行程）的**电量剖面**：每走多少公里，电量掉到多少。
+    """查**一趟（或几趟连续行程）的电量剖面**：每走多少公里，电量掉到多少。
 
-    drive_ids 用逗号分隔的行程 id（先用 teslamate_drives 拿到 id）。
-    回答「这趟电够不够、掉得顺不顺」用。
+    **什么时候用**：用户问「这趟电够不够」「电量是怎么一路掉下去的」
+    「中途会不会没电」—— 都归它。
+
+    ⚠️ drive_ids 用逗号分隔的行程 id（先用 `teslamate_drives` 拿 id）。
+    ⚠️ km 是**相对起点**（可能是负数 = 起点之前），% 是该点的电量。
     """
     ids = (drive_ids or "").strip()
     if not ids:
@@ -452,9 +488,12 @@ def teslamate_route_profile(drive_ids: str, step_km: int = 0) -> dict:
 
 @mcp.tool()
 def teslamate_charge_curve(charge_id: int) -> dict:
-    """查某一场充电的**功率曲线**：随时间变化的功率、SOC、电压、电流。
+    """查**某一场充电的功率曲线**：随时间变化的功率、SOC、电压、电流。
 
-    charge_id 用 `teslamate_charges` 返回的 `id` 字段（已带上，可直接接上）。
+    **什么时候用**：用户问「这次充电功率曲线什么样」「快充慢充怎么变的」
+    「充电中途功率掉过吗」—— 都归它。
+
+    ⚠️ charge_id 用 `teslamate_charges` 返回的 `id` 字段（已带上，可直接接上）。
     """
     try:
         cid = int(charge_id)
@@ -487,9 +526,12 @@ def teslamate_charge_curve(charge_id: int) -> dict:
 
 @mcp.tool()
 def teslamate_command_catalog() -> dict:
-    """列出这台车支持的车控动作、每个动作的风险等级与需要的参数。
+    """列出这台车**支持哪些车控动作**，每个动作的风险等级与需要的参数。
 
-    风险等级：high（解锁/开合尾门/远程启动）/ medium / low。
+    **什么时候用**：用户问「车能做什么」「有没有鸣笛」「怎么远程启动」；
+    或者你要下发动作前**先查参数名**（参数拼错会失败）。
+
+    风险等级：high（解锁车门 / 开合尾门 / 远程启动）/ medium / low。
     """
     d = _get(f"/api/v1/cars/{CAR_ID}/commands")
     if not isinstance(d, dict) or "error" in d:
@@ -508,10 +550,13 @@ def teslamate_command_catalog() -> dict:
 
 @mcp.tool()
 def teslamate_vehicle_command(action: str, params: dict | None = None) -> dict:
-    """给这台车下发一条命令（锁车/解锁/空调/充电上限/闪灯/鸣笛/尾门/远程启动…）。
+    """给这台车**下发一条命令**：锁车 / 解锁 / 空调 / 充电上限 / 闪灯 / 鸣笛 / 尾门 / 远程启动 / 唤醒…
+
+    **什么时候用**：用户**明确要求**某个动作时（「把车锁了」「打开空调」「鸣一下笛」）。
 
     ⚠️ **高危动作**（door_unlock / actuate_trunk / remote_start_drive）
     请**先向用户确认**再调用。
+    ⚠️ 动作名与参数名先查 `teslamate_command_catalog`，别猜。
     ⚠️ 车在休眠时命令发不出去 —— 会返回「车在休眠或离线，先唤醒再试」。
     ⚠️ 唤醒（wake_up）本身会耗电、也可能被 Tesla 计费。
     """

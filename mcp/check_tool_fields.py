@@ -77,6 +77,27 @@ def resolve(obj, path):
     return cur, None
 
 
+def check_descriptions() -> list:
+    """每个工具的 description 必须写明「什么时候用」。
+
+    ⚠️ **v0.73.0**：MCP 协议里，工具的 `description` 是模型**挑选工具的唯一依据**。
+    原来 13 个工具写的是「**这个工具返回什么**」，缺「**什么时候该用它**」——
+    而「电量」同时出现在 status / battery / stats / cost 四个工具里，
+    模型只能靠猜。
+
+    ⇒ 统一要求：description 里必须出现「什么时候用」这一段。
+    """
+    bad = []
+    for name in sorted(n for n in dir(T) if n.startswith("teslamate_")):
+        fn = getattr(T, name)
+        doc = (fn.__doc__ or "").strip()
+        if "什么时候用" not in doc:
+            bad.append("%-26s description 里没有「什么时候用」" % name)
+        elif len(doc) < 60:
+            bad.append("%-26s description 太短（%d 字），说不清用途" % (name, len(doc)))
+    return bad
+
+
 def main() -> int:
     print("=== MCP 工具字段映射自检 ===")
     bad = []
@@ -114,6 +135,15 @@ def main() -> int:
     except Exception as e:
         bad.append("charges→charge_curve 串联异常 %r" % e)
         print("  ✗ charges→charge_curve 串联异常 %r" % e)
+
+    # description 体检：模型靠它选工具
+    desc_bad = check_descriptions()
+    for b in desc_bad:
+        print("  ✗ %s" % b)
+    if not desc_bad:
+        names = sorted(n for n in dir(T) if n.startswith("teslamate_"))
+        print("  ✓ %-26s %-24s %d 个工具都写了「什么时候用」" % ("（description）", "工具用途说明", len(names)))
+    bad.extend(desc_bad)
 
     print("\n  ⇒ %s（%d 项不合规）" % ("通过" if not bad else "有问题", len(bad)))
     return 0 if not bad else 1
