@@ -64,3 +64,8 @@ app-android/local.properties
 *.swp
 Thumbs.db
 .DS_Store
+
+# ── Python 字节码（编译产物，不该入库）────────────────────────────
+__pycache__/
+*.pyc
+*.pyo

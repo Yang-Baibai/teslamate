@@ -133,5 +133,38 @@ case "$SEC" in
   *)     ok "密钥扫描跳过（无 .env）" ;;
 esac
 
+# ── ③ 仓库卫生（二进制产物不得入库）──────────────────────────────
+# ⚠️ **v0.72.0**：这个检查是被一次真实疏漏逼出来的 ——
+# `mcp/__pycache__/teslamate_mcp.cpython-313.pyc` 在 v0.66.0 就被提交进去了
+# （`git add -A` 把编译产物一起带上了），v0.72.0 又带进去两个。
+#
+# 字节码进库的后果：
+#   · 仓库体积被无意义地撑大；
+#   · **它可能含字符串常量** —— 哪天哪个脚本里写了密钥，字节码里就有副本，
+#     而密钥扫描扫的是**文本文件**，扫不到 .pyc ⇒ **绕过密钥闸门**；
+#   · 每次改源码都会产生一个「变了」的二进制 ⇒ diff 全是噪声。
+HYG=$(python - <<'PY' 2>/dev/null
+import subprocess, sys
+root = __import__("os").getcwd()
+out = subprocess.run(["git", "-C", root, "ls-files"], capture_output=True).stdout
+bad = []
+for raw in out.decode("utf-8", "replace").splitlines():
+    rel = raw.strip()
+    if not rel:
+        continue
+    low = rel.lower()
+    if ("__pycache__/" in low or low.endswith((".pyc", ".pyo", ".class", ".jar"))
+            or low.endswith((".apk", ".aab", ".so", ".dll", ".exe"))):
+        bad.append(rel)
+print("HITS:" + "; ".join(bad[:8]) if bad else "CLEAN")
+PY
+)
+case "$HYG" in
+  HITS:*) fail "仓库卫生 —— 有二进制产物被跟踪：$(echo "$HYG" | sed 's/^HITS://')"
+          echo "    ⇒ git rm --cached <文件>  并在 .gitignore 里加规则" ;;
+  CLEAN) ok "仓库卫生（无二进制产物入库）" ;;
+  *)     ok "仓库卫生跳过" ;;
+esac
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ]
