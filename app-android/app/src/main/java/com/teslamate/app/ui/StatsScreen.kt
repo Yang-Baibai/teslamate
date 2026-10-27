@@ -120,7 +120,20 @@ fun StatsScreen(
     }
     // ⚠️ v0.8.5（效率车主复核）：默认从「近 30 天」改「近 7 天」。
     // 30 根柱子密到看不出形状；7 根能看出工作日/周末的节奏。
-    var periodIndex by remember { mutableIntStateOf(0) }
+    //
+    // ⚠️ **v0.75.0（模拟器真机复核）：默认段是「7 天」，不是「今天」。**
+    //
+    // v0.29.0 把分段重排成「今天 / 7 天 / 本月 / 1 年」，
+    // 但这里的下标**没跟着改** ⇒ 默认落到了**索引 0 =「今天」**。
+    // 而上面那段注释（v0.8.5 效率车主复核）写的仍然是「默认…改『近 7 天』」——
+    // **注释与代码打架**，最后是代码赢了。
+    //
+    // 实测（模拟器 1440×3200）：打开「用量」页 = 今天没开车 ⇒
+    // 首屏是「今天还没开车」+ **三张灰色实心图表块**
+    // （行驶里程 / 充入电量 / 行驶耗电），用户第一眼读作「App 坏了」。
+    //
+    // ⇒ 默认回「7 天」：一进来就有内容，也正是 v0.8.5 那条判断的意思。
+    var periodIndex by remember { mutableIntStateOf(1) }
     val apiPeriod = periods[periodIndex].second.first
     val bucketCount = periods[periodIndex].second.second
     // ⚠️ v0.30.0：费用窗口（与里程窗口**同源**，见 periods 的注释）
@@ -386,7 +399,15 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
             val coverageRatio = if (totalBuckets > 0) filledBuckets.toFloat() / totalBuckets else 1f
             val coverageLow = totalBuckets > 0 && coverageRatio < 0.9f
             val bucketUnit = if (s.granularity == "month") "个月" else "天"
-            if (coverageLow) {
+            // ⚠️ **v0.75.0（模拟器真机复核）：覆盖度为 0 时**不显示**这一行。**
+            //
+            // 「数据只覆盖 0/1 天（0%）」—— 这句话**不含任何信息**：
+            // 0/1 天就是「这一天没数据」，而下面的空态已经说了「今天还没开车」。
+            // 而覆盖度这行**本来是诚实披露工具**（v0.27.0 复审要的就是它）——
+            // 一旦变成 0，它就从「披露」退化成「噪音」。
+            //
+            // ⇒ 只在**有数据但没覆盖满**时说话（那才是需要提醒的情况）。
+            if (coverageLow && filledBuckets > 0) {
                 item {
                     Text(
                         "数据只覆盖 $filledBuckets/$totalBuckets $bucketUnit" +

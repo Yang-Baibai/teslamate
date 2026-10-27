@@ -83,6 +83,7 @@ import com.teslamate.app.fmt
 import com.teslamate.app.fmtKwh100
 import com.teslamate.app.fmtShort
 import com.teslamate.app.fmtThousands
+import com.teslamate.app.odometerLine
 import com.teslamate.app.relTime
 import java.time.Instant
 import kotlin.math.roundToInt
@@ -408,8 +409,15 @@ fun StatusScreen(
                             // ⚠️ v0.21.0：**优先用车端里程表** ——
                             // 车主填的保养基准是他**仪表盘上看到的数**（车端），
                             // 拿 TeslaMate 按 GPS 点累计的数去套，会偏几百公里。
-                            // 车端读不到时（车休眠 / 没配 Fleet 凭据）才回落 GPS 值。
-                            maintenanceReminders(st.odometer_vehicle ?: st.odometer, settings)
+                            //
+                            // ⚠️ **v0.75.0（查库实测）：那个回落**不只偏几百公里，是偏 38,422 公里** ——
+                            // `positions.odometer` 的绝对值被停车时的 GPS 抖动污染（实测日漂移可达 1,143 公里）。
+                            // 拿它当基准算出来的会是「保养 **超期 38,422 公里**」——
+                            // **误报的方向最危险**（让人以为车立刻要保养，白花钱）。
+                            //
+                            // ⇒ **车端读不到就不报**（宁可不报，也不误报）。
+                            // 车醒着时 Fleet API 会给出仪表里程表，提醒照常出现。
+                            maintenanceReminders(st.odometer_vehicle, settings)
                         }
                         reminders.firstOrNull { it.needsAction }?.let { r ->
                             // ⚠️ v0.20.0（车主 P1-1）：**保养超期不再用红色** ——
@@ -523,8 +531,18 @@ fun StatusScreen(
                                     when (st.fleet_state) {
                                         "disabled" ->
                                             append("这台车没连实时状态源，锁车与实时胎压拿不到 —— 不是车的问题。")
+                                        // ⚠️ **v0.75.0（模拟器真机复核）：不再重复「车在休眠」。**
+                                        //
+                                        // 页面顶部那行状态芯片已经写着
+                                        // 「车在休眠 · 锁车状态等它醒来才更新」——
+                                        // 横幅又说一遍「车在休眠，锁车…要等它醒来才更新」，
+                                        // **同一个事实说了两遍**，两块灰横幅把电量环挤到第三屏。
+                                        //
+                                        // 上面那段注释写的分工是「**横幅 = 顶部那行没有的信息**」——
+                                        // 那就照它做：顶部说了「车在休眠 + 锁车状态」，
+                                        // 横幅只补**实时胎压**这一条。
                                         "asleep" ->
-                                            append("车在休眠，锁车与实时胎压要等它醒来才更新 —— 不是车的问题。")
+                                            append("实时胎压要等它醒来才更新 —— 不是车的问题。")
                                         else ->
                                             append("没读到车机的锁车状态 —— 这不代表车没锁。")
                                     }
@@ -537,8 +555,20 @@ fun StatusScreen(
                                     if (st.locked == null) {
                                         append("（最后一次成功获取：${ok.relTime()}）")
                                     } else {
-                                        // 有旧值：说清上面那个值是什么时候读到的
-                                        append(" —— 上面显示的是 ${ok.relTime()}读到的旧值。")
+                                        // ⚠️ **v0.75.0（模拟器真机复核）：只有**真的旧**才说「旧值」。**
+                                        //
+                                        // 原来无条件写「上面显示的是 X 读到的旧值」——
+                                        // 而 X 可能是「刚刚」⇒ 屏幕上出现
+                                        // 「上面显示的是 刚刚读到的旧值」⇒ **既刚刚又旧，自相矛盾**。
+                                        //
+                                        // 现在按**值自己的采集时间**（`locked_at`）判断新鲜度：
+                                        // 5 分钟内 = 新鲜 ⇒ 不加这句（没脏就别提「脏」）。
+                                        val ageMin = st.locked_at?.let {
+                                            java.time.Duration.between(it, java.time.Instant.now()).toMinutes()
+                                        } ?: Long.MAX_VALUE
+                                        if (ageMin >= 5) {
+                                            append(" —— 上面显示的是 ${ok.relTime()}读到的旧值。")
+                                        }
                                     }
                                 }
                             }.takeIf { it.isNotBlank() }
@@ -1064,24 +1094,16 @@ private fun RangeAndOdometer(
             //   st.odometer_vehicle  = 车辆自己记的（真值）
             // 说清楚来源，比只给一个数更让人放心。
             buildString {
-                append("里程表 ")
-                append(st.odometer?.fmtThousands() ?: "—")
-                append(" 公里")
-                val veh = st.odometer_vehicle
-                if (veh != null) {
-                    append("（GPS 估算）· 车端 ")
-                    append(veh.fmtThousands())
-                    append(" 公里")
-                    val gps = st.odometer
-                    if (gps != null) {
-                        val diff = gps - veh
-                        if (kotlin.math.abs(diff) >= 1.0) {
-                            append(" · 差 ")
-                            append(kotlin.math.abs(diff).toLong())
-                            append(" 公里")
-                        }
-                    }
-                }
+                // ⚠️ **v0.75.0（查库实测）：「里程表」= 仪表盘上那个数 = 车端。**
+                // 口径与理由见 [odometerLine]（Fmt.kt）：
+                // `positions.odometer` 的**绝对值**被停车时的 GPS 抖动污染
+                // （本机实测日漂移可达 1,143 公里，全窗口偏 **38,422 公里**），
+                // 而它的窗口**跨度**是准的 —— 所以绝对值不能叫「里程表」。
+                //
+                // 原来是把两个数并列（GPS 估算 + 车端 + 差 N 公里），
+                // 那恰恰会制造 v0.21.0 想消灭的怀疑：「我拿 App 的里程表和特斯拉 App 对，
+                // 于是我怀疑车被人动了」。
+                append(odometerLine(st.odometer, st.odometer_vehicle))
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

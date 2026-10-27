@@ -63,6 +63,7 @@ import com.teslamate.app.Api
 import com.teslamate.app.AppSettings
 import com.teslamate.app.Charge
 import com.teslamate.app.CurvePoint
+import com.teslamate.app.districtCity
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtFull
 import com.teslamate.app.fmtMonth
@@ -542,10 +543,29 @@ internal fun ChargeDetail(
                 ) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            charge.place ?: "未知地点",
+                            // ⚠️ **v0.75.0（模拟器真机复核）：地址不再原样打印。**
+                            //
+                            // 原来直接渲染数据库里的完整邮编地址：
+                            // 「石化大道西, 西区街道, 惠州大亚湾经济技术开发区, 惠阳区, 惠州市, 广东省, 516083, 中国」
+                            // —— **占三行**，邮编与「中国」对车主零价值，
+                            // 读起来像一段没清洗的日志。
+                            //
+                            // 现在按 App **既有的**地址语言（v0.14.0 的位置卡就是这么做的）：
+                            // **标题 = 第一段**（「石化大道西」），
+                            // **副行 = 行政区层级**（「惠阳区 惠州市」）。
+                            // 信息一点没丢（完整地址仍在地图详情里），但读起来像地址了。
+                            charge.place.firstSegment() ?: charge.place ?: "未知地点",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        // ⚠️ v0.75.0：行政区层级做副行（v0.14.0 的「区 + 市」口径，与位置卡一致）。
+                        charge.place.districtCity()?.let { dc ->
+                            Text(
+                                dc,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = if (charge.is_dc) Icons.Filled.Bolt else Icons.Filled.Power,

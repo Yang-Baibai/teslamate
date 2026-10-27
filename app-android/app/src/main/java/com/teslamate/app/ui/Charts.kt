@@ -365,14 +365,29 @@ fun StackedBarChart(
                 // 浅色下露白、深色下露黑，**贯穿全高的竖条读起来像划痕/缝隙**，不像刻度。
                 // 现在：绘图区先铺一层极淡的底，缝隙露的是底而不是卡片面，
                 // 空槽本身也压到 0.22 —— 竖条消失，量程结构还在。
-                drawRoundRect(
-                    // ⚠️ v0.30.0（P0-5）：空槽用**不透明**的 chartTrack（≥3:1），
-                    // 原来压到 22% 透明度后浅色底上只有 1.04:1。
-                    color = trackColor,
-                    topLeft = Offset(x, plotTop),
-                    size = Size(bw, plotHeight),
-                    cornerRadius = CornerRadius(4.dp.toPx()),
-                )
+                //
+                // ⚠️ **v0.75.0（模拟器真机复核）：轨道只画在**有数据的**那一格后面。**
+                //
+                // 原来空槽是**无条件**画的（v0.30.0 把它换成不透明的 chartTrack 以满足 3:1），
+                // 于是「近 7 天」这种**只有两三天有数据**的图长这样：
+                // **5 根全高深灰块 + 2 根蓝柱** —— 灰色比数据还多，整张图读作「一堵墙」。
+                //
+                // 轨道的语义是「**这一格**还有多少量程」——
+                // 那它只需要出现在**这一格有柱子**的时候（柱子上方那段）。
+                // 那天**根本没有数据**的格子，X 轴标签已经说清了是哪天，
+                // 不需要一根深灰块占位（Apple Charts 也是「没有值就没有柱」）。
+                //
+                // ⇒ 轨道跟柱子**同一个条件**（`t > 0`）⇒ 灰色永远不会是主角。
+                if (t > 0f) {
+                    drawRoundRect(
+                        // ⚠️ v0.30.0（P0-5）：空槽用**不透明**的 chartTrack（≥3:1），
+                        // 原来压到 22% 透明度后浅色底上只有 1.04:1。
+                        color = trackColor,
+                        topLeft = Offset(x, plotTop),
+                        size = Size(bw, plotHeight),
+                        cornerRadius = CornerRadius(4.dp.toPx()),
+                    )
+                }
                 var curY = plotBottom
                 series.forEach { s ->
                     val v = s.values.getOrNull(i) ?: 0f
