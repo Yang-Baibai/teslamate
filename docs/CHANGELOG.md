@@ -5,6 +5,73 @@
 
 ---
 
+## 2026-10-28（v0.79.0 · 1/3：Fleet Telemetry 接收端就绪）
+
+> 本轮版本：`0.79.0`（App 未改动，versionCode 仍为 93）。
+> 这是三步里的**第一步**：先把「车能主动把数据推给我们」这条路打通。
+
+### 一、为什么值得做
+
+| | 轮询 vehicle_data（现状） | Fleet Telemetry |
+|---|---|---|
+| 车况新鲜度 | 2 分钟级，且要唤醒 | 车在线时近实时，**不唤醒** |
+| 唤醒次数 | 每轮一次 | 睡着时 0 次 |
+| 故障码 | **拿不到** | 有（alerts 记录） |
+| 尾流费 | 按唤醒计 | 按信号量计，远低 |
+
+`BMS_*` / `DI_*` / `VCFRONT_*` / `CP_*` 这些故障码，
+`vehicle_data` 端点里**根本没有这些字段** —— 只靠轮询是永远拿不到的。
+
+### 二、架构：443 和 8443 必须分开
+
+- **443**：`https://<主机名>.<tailnet域>.ts.net/.well-known/appspecific/com.tesla.3p.public-key.pem`
+  —— 应用公钥托管，**Tesla 云来拉，不带客户端证书** ⇒ 必须普通 HTTPS。
+- **8443**：遥测数据入口，车端带 **Tesla CA 签发的客户端证书** ⇒ 必须端到端 TLS。
+
+⇒ 中间**不能**插普通反代（反代会剥掉客户端证书）。
+⇒ 官方参考实现 `teslamotors/fleet-telemetry` 本身是 **mTLS-only**
+  （缺 `tls` 段直接 panic），且校验客户端证书 CA —— 实测自签证书被
+  `TLSV1_ALERT_UNKNOWN_CA` 拒掉 ⇒ 它要的就是 Tesla 签发的那种。
+⇒ Funnel 允许的公网端口只有 443/8443/10000 ⇒ 8443 是唯一可选。
+⇒ Funnel 用的是 **raw TCP 透传**（不是 TLS 终止）⇒ 客户端证书原样到达。
+
+### 三、实测确认的几件事
+
+- 接收端证书必须**公网可信**（raw TCP 模式下 Tesla 直接看到它，自签会被拒）
+  ⇒ 用 Tailscale 签的 Let's Encrypt 证书（`tailscale cert`），验证 `Verify return code: 0 (ok)`。
+- ⚠️ **openssl 说「握手成功」是 TLS 1.3 的表象** —— 客户端证书校验发生在握手之后。
+  真正的判据是「带自签客户端证书连过去会不会被 `unknown ca` 拒掉」⇒ 被拒 = 确实在校验 CA。
+- Funnel 写配置**需要 Windows 管理员权限**（`401 Unauthorized: must be a Windows local admin`）。
+
+### 四、落地
+
+- `compose.yaml` 新增 `fleet-telemetry` 服务（官方镜像 `tesla/fleet-telemetry:latest`）。
+  ⚠️ 端口只绑 `127.0.0.1` —— 明文 WS 不许暴露到局域网。
+- `fleet-telemetry/config.json`：`alerts` / `errors` / `V` / `connectivity` → logger，
+  `transmit_decoded_records: true`（输出 JSON，省掉 protobuf 解析）。
+- `scripts/renew-telemetry-cert.ps1`：LE 证书 90 天过期 ⇒ 每周续期 + 重启容器
+  （bind mount 挂的是**文件**，`tailscale cert` 写新文件后容器还握着旧 inode）。
+  ⚠️ 证书目录**故意放在 OneDrive 外面** —— 私钥不该被同步。
+- `docs/27-FleetTelemetry接入.md`：架构、已就绪资产、恢复步骤。
+
+### 五、还需要做的
+
+**用户侧**：① 确认车辆固件 ≥ 2024.26；② 确认虚拟密钥已配对
+（`https://tesla.com/_ak/<developer-domain>`）；③ developer.tesla.com 后台确认
+「Fleet Telemetry」开关 + 「允许的源 URL」填**完整主机名**（根域没有证书会当场报红）。
+
+**我侧（下两轮）**：① 在 teslamate API 里加「下发 `fleet_telemetry_config`」的端点
+（复用已有的 `ensureToken()` + command-proxy client，不另写令牌逻辑）；
+② 数据落地 mosquitto → Go API → Postgres；③ 接进 App 车况页 + 推送通道。
+
+### 影响
+
+App 与 API 的对外行为**零变化**（本轮只加了一个不参与业务的服务）。
+新增 `fleet-telemetry` 容器会随 `docker compose up -d` 一起起来。
+回滚：`git revert 本次提交` + `docker compose rm -sf fleet-telemetry`。
+
+---
+
 ## 2026-10-28（v0.78.0：充电结束 ≠ 充电完成 —— 把通知通道里的假成功拿掉）
 
 > 本轮版本：`0.78.0`，versionCode 93。

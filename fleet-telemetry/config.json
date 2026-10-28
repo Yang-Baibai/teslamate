@@ -1,0 +1,36 @@
+{
+  "host": "0.0.0.0",
+  "port": 4443,
+  "log_level": "info",
+  "json_log_enable": true,
+  "namespace": "tesla_telemetry",
+  "reliable_ack": false,
+
+  "transmit_decoded_records": true,
+
+  "monitoring": {
+    "prometheus_metrics_port": 9090
+  },
+
+  "rate_limit": {
+    "enabled": true,
+    "message_interval_time": 30,
+    "message_limit": 1000
+  },
+
+  "records": {
+    "alerts": ["logger"],
+    "errors": ["logger"],
+    "V": ["logger"],
+    "connectivity": ["logger"]
+  },
+
+  "logger": {
+    "verbose": true
+  },
+
+  "tls": {
+    "server_cert": "/certs/server.crt",
+    "server_key": "/certs/server.key"
+  }
+}

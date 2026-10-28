@@ -127,6 +127,38 @@ services:
         aliases:
           - command-proxy
 
+  # ── v0.79.0：Tesla Fleet Telemetry 接收端 ───────────────────────
+  #
+  # 为什么要有它：我们是**轮询** vehicle_data 拿车况的 ——
+  # 车每次都要被唤醒一次，既费电又有尾流费。
+  # Fleet Telemetry 是反过来：**车主动把数据推给我们**，
+  # 车在线时几乎零成本，睡着时完全不打扰。
+  #
+  # ⚠️ 它收到的数据里有**故障码**（BMS_*/DI_*/VCFRONT_*/CP_*）——
+  #    这是轮询 vehicle_data 拿不到的东西（本项目 v0.78.0 之前一直缺）。
+  #
+  # ⚠️ **没有 tls 段**：TLS 由 Tailscale Funnel 终止（公开可信的 LE 证书），
+  #    容器里跑明文 HTTP/WS。端口只绑 **127.0.0.1** ——
+  #    对局域网不可见，公网入口只有 Tailscale 那一条。
+  #    （官方建议 mTLS 终止在接收端；自用场景下车辆身份由应用层 JWT 保证。）
+  fleet-telemetry:
+    image: tesla/fleet-telemetry:latest
+    container_name: teslamate-fleet-telemetry
+    restart: unless-stopped
+    command: ["/fleet-telemetry", "-config=/etc/fleet-telemetry/config.json"]
+    volumes:
+      - ./fleet-telemetry/config.json:/etc/fleet-telemetry/config.json:ro
+      # 服务器证书 = **Tailscale 签的 Let's Encrypt 证书**（公开可信，Tesla 会验）。
+      # ⚠️ 必须是公网可信的：Tesla 直接看到这张证书（Funnel 用 raw TCP 透传，
+      #    TLS 端到端，不在 Tailscale 那边终止）⇒ 自签会被 Tesla 拒。
+      # ⚠️ 这个目录在 OneDrive **外面**（证书不该被同步），由
+      #    scripts/renew-telemetry-cert.ps1 每周续期后重启本容器。
+      - ${CERTS_DIR}:/certs:ro
+    ports:
+      # ⚠️ 只绑回环：明文 WS 不许暴露到局域网。
+      - "127.0.0.1:4443:4443"
+      - "127.0.0.1:9090:9090"
+
   grafana:
     # 中文仪表盘版（https://github.com/wjsall/teslamate-chinese-dashboards）
     # 原官方镜像：teslamate/grafana:latest（回滚见 compose.yaml.bak.*）
