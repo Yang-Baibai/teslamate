@@ -65,37 +65,83 @@ Funnel 允许的公网端口只有 `443` / `8443` / `10000`，所以 8443 是唯
 
 `fleet-telemetry/config.json`：
 
-- `records`: `alerts` / `errors` / `V` / `connectivity` → `logger`
-  ⇒ 先用 logger（stdout JSON），确认数据格式后再接 mqtt dispatcher。
-- `transmit_decoded_records: true` ⇒ logger 输出 JSON 而不是 protobuf（省掉 protobuf 解析）。
+- `records`: `alerts` / `errors` / `V` / `connectivity` → **`mqtt`**
+  ⇒ 数据落到本机 mosquitto（`tcp://mosquitto:1883`），主题前缀 `tesla_telemetry`。
+- `mqtt.retained: true` ⇒ 订阅方重启后**立刻**拿到当前状态（不用等下一条）。
+- `transmit_decoded_records: true` ⇒ 输出 JSON 而不是 protobuf。
 - `tls`: 指向 `/certs/server.crt` / `/certs/server.key`。
   ⚠️ **这个服务是 mTLS-only 的**，没有 `tls` 段会直接 panic 退出。
 
-## 还需要做的
+### MQTT 主题结构（官方 `datastore/mqtt/README.md`）
 
-### 一、用户侧（我做不到的）
+```
+<base>/<VIN>/v/<field>                 ← 车辆数据字段（Soc / Locked / …）
+<base>/<VIN>/alerts/<name>/current     ← 正在持续的告警
+<base>/<VIN>/alerts/<name>/history     ← 已结束的告警
+<base>/<VIN>/errors/<name>             ← 遥测错误
+<base>/<VIN>/connectivity              ← 连接事件
+```
 
-1. **确认车辆固件 ≥ 2024.26**
-   （中国区文档口径；传统证书签名流程的应用要求 ≥ 2023.20.6。
-   2021 年前的 Model S/X 不支持。）
-   查法：车机屏幕 → 软件更新；或 Tesla App → 车辆 → 设置 → 软件版本。
-   ⚠️ 唤醒车只为了查这个版本不划算（耗电 + 可能计费），所以**交给用户查**。
-2. **确认虚拟密钥已配对**
-   `https://tesla.com/_ak/<developer-domain>` → 在 Tesla App 里把钥匙加到车上。
-   车控能跑通 ⇒ 大概率已配对，但要用 `fleet_status` 端点最终确认。
-3. **developer.tesla.com 后台**：确认 app 上的「Fleet Telemetry」开关已打开，
-   且「允许的源 URL」里是**完整主机名** `https://<主机名>.<tailnet域>.ts.net`
+⚠️ **告警码在主题里，不在载荷里** —— 载荷只有 `StartedAt` / `EndedAt` / `Audiences`。
+解析错就会把所有码读成空字符串，界面一片空白。
+
+## 已完成（2026-10-28 v0.79.0 3/3 实测）
+
+| 项 | 状态 |
+|---|---|
+| 下发 `fleet_telemetry_config` | ✅ `sent=true, accepted=true`；车端回 `{"response":{"updated_vehicles":1}}` |
+| 车端接入 | ✅ 唤醒后 **13 秒**连上；`tm_telemetry_connectivity` 落库 `CONNECTED` |
+| 车端遥测客户端版本 | ✅ `1.3.0`（固件 `2026.26.200`） |
+| 数据落地 | ✅ `Soc` / `Locked` / `Odometer` / `ChargeAmps` / `DetailedChargeState` / `EstBatteryRange` |
+| 故障码查询 | ✅ `GET /api/v1/cars/{id}/alerts` |
+| 车况页 | ✅ `/status` 的 `telemetry` 块 → App 故障码卡 |
+| 推送 | ✅ `watch-car.ps1` 按码集合判定 |
+| Hermes | ✅ MCP 第 15 个工具 `teslamate_alerts` |
+
+### 踩过的坑（照抄报错比猜参数快）
+
+1. **`exp` 有硬边界**。Tesla 的原文：
+   `expiration should be greater than 1793204345 and less than 1824653945`
+   ⇒ `exp ∈ (服务端当下, 服务端当下 + 365 天)`。
+   ⚠️ 用本地时钟算「now + 365 天」会**晚几秒越界** ⇒ 本机取 **360 天**。
+2. **`synced=true` 不是「已生效」**。车端**没有配置**时也回 `{"synced":true,"config":null}`
+   —— 那是**默认值**。判据只能是 `config != null`。
+3. **中国区的 `fleet_status` 字段是嵌套的**（在 `vehicle_info[VIN]` 里），
+   与官方文档的平铺结构不同 ⇒ 必须保留 `Raw` 原文对照。
+4. **`fleet_status` 的 POST body 必须带 `vins`**，否则 400
+   `param is missing or the value is empty or invalid: vins`。
+5. **CA 串里不能有叶子证书**。车端信任库只该有中间 + 根；
+   本机 `server.crt` 4 段（叶子 + 2 中间 + 1 根）⇒ 下发时剥掉叶子，剩 **3 段**。
+   `config_summary` 里 `ca_certificates` 与 `ca_source_certificates` 两个数一对才看得出对不对。
+
+### 界面的三种状态（绝不能混成一种）
+
+| 情况 | 界面 | 为什么 |
+|---|---|---|
+| 有正在持续的故障码 | 故障码卡（红色顶条 + 码 + 已核验含义） | 有话可说 |
+| 遥测正常、确实没有故障 | **什么都不显示** | 装饰宁删勿留 |
+| 遥测**从未**接上 / 读不到 | 显式说「遥测还没接上，暂时拿不到故障码。」 | 否则就是**假安全** |
+
+### 运维：证书与配置的到期线
+
+- **证书 90 天** ⇒ `scripts/renew-telemetry-cert.ps1` 每周续期 + 重启容器。
+  ⚠️ 该脚本原先解析到期时间会抛异常（中文区域认不出 `GMT`）⇒ **续期从来没成功执行过**，
+  已改成不依赖区域设置的解析（正则 + 月份表 + 按 UTC 构造）。
+- **配置 360 天** ⇒ 续期脚本现在会**顺带重下发**遥测配置
+  （证书换了 ⇒ 车端手里的旧 CA 验不过新证书 ⇒ 不重下发遥测会**静默断流**）。
+
+## 还需要用户确认的
+
+1. **developer.tesla.com 后台**：app 上的「Fleet Telemetry」开关是否已打开，
+   「允许的源 URL」里是不是**完整主机名** `https://<主机名>.<tailnet域>.ts.net`
    （不是根域 —— 根域没有证书，后台会当场报红）。
-
-### 二、我侧（下一轮）
-
-1. 在 teslamate API 里加「下发 `fleet_telemetry_config`」的端点
-   —— **复用已有的 `ensureToken()` + command-proxy client**（v0.76.0 车控那条路），
-   不要另写一套令牌逻辑。
-2. 数据落地：mosquitto → Go API → Postgres。
-3. 接进 App 车况页 + 推送通道（故障码告警）。
+   ⚠️ 数据流已实证生效（车端用我们的配置连上并推送），但后台开关状态仍需人工看一眼。
+2. **确认车辆固件 ≥ 2024.26**（走车控代理的要求）。
+   本机实测 `2026.26.200` ✓，可不用再查。
 
 ## 恢复步骤（Funnel 配置丢了时）
+
+
 
 Funnel 配置存在 tailscaled 里，重启会自动恢复。若真丢了：
 

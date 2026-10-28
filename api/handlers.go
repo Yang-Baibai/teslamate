@@ -222,6 +222,44 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ⚠️ **v0.79.0：故障码（遥测）块**。
+	//
+	// 故障码只能从 Fleet Telemetry 拿（`vehicle_data` 端点里没有这些字段）。
+	// 这里复用 `loadTelemetryAlerts` —— 与 `GET /alerts` 端点**同一份事实**，
+	// 不会出现「告警页说 3 条、车况页说 1 条」这种对不上的局面。
+	//
+	// ⚠️ **读不到也要给这个块**（只把 error 填上）：
+	//    静默不返回 = App 以为「没有故障码」= **假安全**。
+	{
+		block := &TelemetryStatus{
+			Stream: telemetryState.snapshot(),
+			Alerts: []telemetryAlertView{},
+		}
+		vin, verr := carVIN(r.Context(), id)
+		switch {
+		case verr != nil:
+			block.Error = verr.Error()
+		default:
+			tel, terr := loadTelemetryAlerts(r.Context(), vin)
+			if terr != nil {
+				block.Error = terr.Error()
+			} else {
+				block.Connected = tel.Connectivity == "CONNECTED"
+				block.EverConnected = tel.EverConnected
+				block.Alerts = tel.Alerts
+				block.TotalAlerts = len(tel.Alerts)
+				block.Hint = tel.Hint
+				block.UpdatedAt = tel.UpdatedAt
+				for _, a := range tel.Alerts {
+					if a.Active {
+						block.ActiveAlerts++
+					}
+				}
+			}
+		}
+		s.Telemetry = block
+	}
+
 	// 服务端统一算好告警判定，App 与推送脚本读同一份结果（见 alerts.go）
 	tpmsAlert := EvaluateTpms(s.TpmsFL, s.TpmsFR, s.TpmsRL, s.TpmsRR)
 	s.TpmsAlert = tpmsAlert.Alerting

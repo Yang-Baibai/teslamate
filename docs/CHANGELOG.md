@@ -5,6 +5,131 @@
 
 ---
 
+## 2026-10-28（v0.79.0 · 3/3：让车把故障码交给我们）
+
+> 本轮版本：`0.79.0`，versionCode 95。
+>
+> ⚠️ 前两轮都在修「充电结局」这一件事。
+> 这一轮换一条线：**故障码**。
+> 之前**完全看不到**它 —— 不是没显示，是**根本没有这条数据通路**。
+
+### 一、故障码为什么之前拿不到
+
+`vehicle_data` 端点里**没有**故障码（`BMS_*` / `DI_*` / `VCFRONT_*` / `CP_*`）。
+那套码只有一条路能拿到：**Fleet Telemetry** —— 车主动把数据推给我们。
+
+本轮把这条管子接通：
+
+```
+Tesla 车 ──mTLS/WS──> fleet-telemetry ──MQTT──> mosquitto ──> Go API ──> Postgres
+```
+
+实测：下发配置后 **13 秒**车端就连上并开始推送
+（`Soc` / `Locked` / `Odometer` / `ChargeAmps` / `DetailedChargeState` / `EstBatteryRange`）。
+
+### 二、下发配置：官方规格逐条核对，不靠猜
+
+| 项 | 官方口径 | 本机实测 |
+|---|---|---|
+| 路径 | `POST /api/1/vehicles/fleet_telemetry_config`（**路径无 VIN**，VIN 放 body `vins`） | ✅ |
+| 签名 | **必须走 command-proxy**（proxy 用私钥签名，`aud` / `iss` 不能自己填） | ✅ 复用已有 `ensureToken()` + proxy client，**一行令牌逻辑都没另写** |
+| claim 名 | `.hostname` / `.ca` / `.port` / `.fields` | ✅ 来自官方 `tools/check_server_cert.sh` |
+| `exp` | `expiration should be greater than <now> and less than <now+365d>` | ⚠️ **硬边界**，本机取 **360 天**（本地时钟算 365 天会晚几秒越界） |
+
+⚠️ 第一次下发被 Tesla **精确拒绝**并回了原文区间 —— 照抄报错比猜参数快。
+
+### 三、`synced=true` 不能当「已生效」的证据
+
+⚠️ 车端**没有配置**时，`fleet_telemetry_config` 也回
+`{"synced":true,"config":null,"limit_reached":false,"key_paired":true}` ——
+`synced` 是**默认值**，不是「车在用我们的配置」。
+⇒ 判「配没配」只能看 `config` 是否为 null（`HasConfig()`）。
+
+### 四、故障码的语义：反幻觉铁律落到代码里
+
+`api/telemetry.go` 是故障码语义的**唯一事实源**：
+
+- **已核验**的码（5 个）⇒ 给出含义
+- **未收录**的码 ⇒ 只按**前缀**解析子系统（`BMS_` → 高压电池管理系统 …），
+  并提示「具体原因请在车机 Service Mode 查看」
+- ⚠️ **绝不按字母硬凑一个中文名** —— 那是编的。
+
+单测里有一条**可执行的反幻觉断言**：
+未知码的摘要里**不允许**出现「故障 / 失效 / 损坏 / 危险 / 已坏」这类断言词。
+
+### 五、三种状态，绝不混成一种
+
+| 情况 | 界面 | 为什么 |
+|---|---|---|
+| 有正在持续的故障码 | 显示故障码卡（红色顶条 + 码 + 已核验含义） | 有话可说 |
+| 遥测正常、确实没有故障 | **什么都不显示** | 装饰宁删勿留 |
+| 遥测**从未**接上 / 读不到 | 显式说「遥测还没接上，暂时拿不到故障码。」 | 把第 3 种渲染成第 2 种 = **假安全** |
+
+模拟器实测三种状态都验过（注入测试数据 → 渲染 → 清理，库已复原）。
+
+### 六、顺带修掉的一个真 bug：证书续期脚本从来没跑通过
+
+`scripts/renew-telemetry-cert.ps1` 解析证书到期时间用的是 `[DateTime]::Parse($s)`，
+而 openssl 的格式是 `Jan 23 15:24:06 2027 GMT` ——
+**这台机器的系统区域是中文**，`.Parse` 直接抛
+`String 'Jan 23 15:24:06 2027 GMT' was not recognized`。
+
+⇒ 脚本**每次跑到那里就崩**，**续期从来没成功执行过** ——
+遥测会在证书到期那天（2027-01-23）**静默断流**。
+
+⚠️ 连 `Parse` 配 `InvariantCulture` 也照样失败（实测），
+`ParseExact` 虽能过却**差 8 小时**（把 GMT 当成了本地时区）。
+⇒ 改成**完全不依赖区域设置**：正则拆字段 + 月份表 + 按 UTC 构造。
+
+### 七、这一轮改了什么
+
+| 层 | 改动 |
+|---|---|
+| 服务端 | `api/telemetry.go`（故障码语义 + MQTT 订阅 + 三张表 + `/alerts`）、`api/fleet_telemetry.go`（下发 + 状态 + CA 摘要）、`api/models.go`（`/status` 的 `telemetry` 块）、`api/handlers.go` |
+| App | `Api.kt` 三个数据类 + `CarStatus.telemetry`；`StatusScreen.kt` 故障码卡 |
+| Hermes | MCP 第 **15** 个工具 `teslamate_alerts` |
+| 推送 | `watch-car.ps1` 按**码集合**判定（布尔标记会漏掉「旧码没了换新码」） |
+| 运维 | `renew-telemetry-cert.ps1` 加入「重下发遥测配置」 |
+
+⚠️ `/status` 与 `/alerts` 两个端点**共用** `loadTelemetryAlerts()` ——
+两边必须给**同一份**事实，否则会出现「告警页 3 条、车况页 1 条」。
+
+### 八、响应的诚实化
+
+`fleet_telemetry` 端点原来直接回吐原始响应（**4115 字节，其中 3523 字节是 CA 证书串**）。
+现在压成结构化摘要，响应 **4867 → 1010 字节**：
+
+```json
+"config_summary": {
+  "hostname": "<主机名>.<tailnet域>.ts.net",
+  "port": 8443, "expires_at": 1824310142, "days_left": 359,
+  "fields": ["ChargeAmps", "DetailedChargeState", "EstBatteryRange", "Locked", "Odometer", "Soc"],
+  "ca_certificates": 3, "ca_source_certificates": 4
+}
+```
+
+⚠️ `ca_certificates` 与 `ca_source_certificates` **两个数一对**才能看出
+「叶子证书剥掉了」—— 车端信任库里**不能**有叶子。
+（本机文件 4 段 = 叶子 + 2 中间 + 1 根 ⇒ 下发 3 段。）
+
+### 九、验证
+
+- `go vet` / `go test`：全绿（新增 12 条用例，含反幻觉断言）
+- 客户端闸门 **9/9**、服务端闸门 **4/4**、冒烟 **39/39**、推送引擎自测 **65/65**（新增 13 条）
+- MCP 字段自检：15 个工具全过
+- 模拟器实测：故障码卡 / 暂无数据 / 无卡片，三种状态都验过
+
+### 十、影响与回滚
+
+- 影响：车况页多一张故障码卡（只在真有故障时出现）；推送通道多一类告警。
+- 回滚：`docker compose --profile control up -d --build api` 回到上一版镜像即可；
+  遥测数据落在 `tm_vehicle_alerts` / `tm_telemetry_errors` / `tm_telemetry_connectivity` 三张表，
+  删表即可（**车端配置不受影响**）。
+- ⚠️ **车端配置有 360 天有效期**，到期前必须重下发
+  （`renew-telemetry-cert.ps1` 现在会自动做这件事）。
+
+---
+
 ## 2026-10-28（v0.79.0 · 2/3：修正 v0.78.0 自己的假事实）
 
 > 本轮版本：`0.79.0`，versionCode 94。

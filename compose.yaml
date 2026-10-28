@@ -44,9 +44,6 @@ services:
   api:
     build: ./api
     restart: unless-stopped
-    depends_on:
-      database:
-        condition: service_healthy
     environment:
       - API_TOKEN=${API_TOKEN}
       - TZ_NAME=Asia/Shanghai
@@ -82,6 +79,24 @@ services:
       # 没起 proxy 时车控端点会明确回「代理没起来」，其余功能零影响。
       - TESLA_COMMAND_PROXY_URL=${TESLA_COMMAND_PROXY_URL}
       - TESLA_COMMAND_PROXY_CA=${TESLA_COMMAND_PROXY_CA}
+      # ── v0.79.0 3/3：Fleet Telemetry 数据落地 ─────────────────────
+      # 故障码（BMS_*/DI_*/VCFRONT_*/CP_*）只有这一条路能拿到 ——
+      # vehicle_data 端点里根本没有这些字段。
+      # 车 → fleet-telemetry → mosquitto → 本服务 → Postgres。
+      - TELEMETRY_MQTT_URL=tcp://mosquitto:1883
+      - TELEMETRY_MQTT_TOPIC_BASE=tesla_telemetry
+      # 车端要连的遥测服务器（与 fleet-telemetry 的 8443 入口同一个域名）。
+      - TELEMETRY_HOST=<主机名>.<tailnet域>.ts.net
+      - TELEMETRY_PORT=8443
+      # 服务器证书链（公开可信的 Let's Encrypt 证书）——
+      # 车端用它验证我们的服务器。⚠️ 车端信任库里**不能**有叶子证书，
+      #    所以程序会自己剥掉第一段，只留中间证书 + 根证书。
+      - TELEMETRY_CA_FILE=/telemetry_certs/server.crt
+    depends_on:
+      database:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
     ports:
       - "8090:8090"
     volumes:
@@ -95,6 +110,10 @@ services:
       # api 容器要信它才能跟 proxy 说 HTTPS。
       # ⚠️ 只挂证书，不挂私钥卷：api 容器不需要车辆私钥。
       - command_ca:/command_ca:ro
+      # 遥测服务器证书链（**公开证书**，不含私钥）——
+      # 下发 fleet_telemetry_config 时要把 CA 串塞进 JWT 交给车端。
+      # ⚠️ 这个目录在 OneDrive **外面**（证书不该被同步）。
+      - ${CERTS_DIR}:/telemetry_certs:ro
 
   # ⚠️ v0.66.0：Tesla 车控代理（官方 tesla/vehicle-command sidecar）。
   #
@@ -146,6 +165,11 @@ services:
     container_name: teslamate-fleet-telemetry
     restart: unless-stopped
     command: ["/fleet-telemetry", "-config=/etc/fleet-telemetry/config.json"]
+    # ⚠️ v0.79.0 3/3：遥测数据要落到本机的 mosquitto（官方 mqtt dispatcher），
+    #    再由 api 容器订阅入库。没有它的话车端连上了也只是一堆容器日志。
+    depends_on:
+      mosquitto:
+        condition: service_started
     volumes:
       - ./fleet-telemetry/config.json:/etc/fleet-telemetry/config.json:ro
       # 服务器证书 = **Tailscale 签的 Let's Encrypt 证书**（公开可信，Tesla 会验）。

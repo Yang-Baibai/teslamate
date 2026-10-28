@@ -428,6 +428,86 @@ Assert-True ($lastBody -match '充到 80%') "判不出来时**仍然报事实**�
 Assert-True ($lastBody -match '17\.6 kWh') "判不出来时**仍然报事实**「充入 17.6 kWh」"
 Assert-True ($lastBody -notmatch '没到充电上限') "判不出来时**不编**「没到充电上限」"
 
+
+
+# ═════════════════════════════════════════════════════════════════
+# 场景 16~20：故障码（v0.79.0，Fleet Telemetry）
+#
+# 守的是**推送通道里的假安全**：
+# 遥测没接上时脚本**不能**沉默 —— 沉默会被读成「车没故障」。
+#
+# ⚠️ 还守一个「布尔标记会漏」的场景：
+# 「旧码没了、换了个新码」时，布尔仍是 true ⇒ 老实现不会推。
+# 这里必须**再推一次**。
+# ═════════════════════════════════════════════════════════════════
+function Set-Telemetry([hashtable[]]$alerts, [bool]$ever = $true) {
+  Set-Status @{ telemetry = @{ ever_connected = $ever; connected = $false; alerts = @($alerts); hint = '' } }
+}
+
+Write-Host "── 场景 16：有活跃故障码 ⇒ 推一次，正文带码与摘要"
+Reset-Log
+if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force }
+Set-Telemetry -alerts @(@{ code = 'BMS_a035'; summary = '电池管理系统 · 含义已收录'; active = $true })
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '故障码') "有活跃故障码 —— 推了 1 条「故障码」"
+$lastBody = Get-LastBody
+Assert-True ($lastBody -match 'BMS_a035') "正文带上了故障码本身"
+Assert-True ($lastBody -match '含义已收录') "正文带上了服务端给的摘要"
+
+Write-Host "── 场景 17：同一个码连着几轮 ⇒ 只推一次"
+Invoke-Watch | Out-Null
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '故障码') "同一个码持续中 —— 不会重复推"
+
+Write-Host "── 场景 18：换了个新码 ⇒ 必须再推一次（布尔标记会漏）"
+Set-Telemetry -alerts @(@{ code = 'DI_a138'; summary = '驱动系统 · 含义未收录'; active = $true })
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 2 (Count-Push $pushes '故障码') "码变了 —— 又推了 1 条（老实现会漏）"
+$lastBody = Get-LastBody
+Assert-True ($lastBody -match 'DI_a138') "新正文带的是新码"
+
+Write-Host "── 场景 19：故障码消失 ⇒ 推「已消除」"
+Set-Telemetry -alerts @()
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '故障码已消除') "故障码没了 —— 推「已消除」"
+
+Write-Host "── 场景 20：遥测从未接入 ⇒ 必须明说「拿不到」，绝不沉默"
+Reset-Log
+if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force }
+Set-Telemetry -alerts @() -ever $false
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '故障码还没接上') "遥测没接上 —— 明说了一次"
+Assert-Eq 0 (Count-Push $pushes '故障码已消除') "**没有**把「没数据」说成「已消除」"
+
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '故障码还没接上') "没接上的提示不会重复推"
+
+Write-Host "── 场景 21：遥测接上后 ⇒ 推一次「已接入」，且不再说「还没接上」"
+Set-Telemetry -alerts @() -ever $true
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '故障码已接入') "接上了 —— 推一次「已接入」"
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '故障码还没接上') "接上之后不再说「还没接上」"
+
+# ═════════════════════════════════════════════════════════════════
+# 场景 22：**没接遥测的老服务端** ⇒ 什么都不说（不是「没接上」，是「这功能还没有」）
+# ═════════════════════════════════════════════════════════════════
+Write-Host "── 场景 22：服务端没有遥测块 ⇒ 保持沉默"
+Reset-Log
+if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force }
+Set-Status @{ tpms_alert = $false }
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 0 (Count-Push $pushes '故障码') "没有遥测块 —— 一条故障码相关的都不推"
+
 # ═════════════════════════════════════════════════════════════════
 # 清理 + 汇总
 # ═════════════════════════════════════════════════════════════════

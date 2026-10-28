@@ -287,6 +287,96 @@ data class TypicalGrade(
     val n: Int = 0,
 )
 
+/**
+ * ⚠️ **v0.79.0：故障码（Fleet Telemetry）**。
+ *
+ * ## 为什么要有它
+ *
+ * 故障码（`BMS_*` / `DI_*` / `VCFRONT_*` / `CP_*`）**只有一条路**能拿到 ——
+ * Fleet Telemetry（车主动把数据推给我们）。
+ * `vehicle_data` 端点里根本没有这些字段。
+ *
+ * ## 为什么 App 不自己解释码
+ *
+ * **反幻觉铁律**：码的含义只来自已核验来源。
+ * 查不到的一律「按前缀报子系统 + 提示进车机 Service Mode」，**绝不编原因**。
+ * ⇒ `meaning` 为空串 = **没收录**，不是「没问题」。
+ */
+@Serializable
+data class TelemetryAlert(
+    /** 原始故障码（如 `BMS_a035`） */
+    val code: String = "",
+    /** 所属子系统（按前缀解析的结构事实）。未收录时是空串 */
+    val subsystem: String = "",
+    /** 已核验的含义。**空串 = 没收录**（不是「正常」） */
+    val meaning: String = "",
+    /** 一句话摘要（服务端给的，App 不改写） */
+    val summary: String = "",
+    /** 这条告警面向谁（官方字段，通常是 `customer`） */
+    val audiences: List<String> = emptyList(),
+    /** 开始时刻 */
+    @Serializable(with = InstantSer::class) val started_at: Instant? = null,
+    /** 结束时刻。null = **还在持续** */
+    @Serializable(with = InstantSer::class) val ended_at: Instant? = null,
+    /** 是否仍在持续 */
+    val active: Boolean = false,
+    /** 最后一次见到它的时刻 */
+    @Serializable(with = InstantSer::class) val last_seen_at: Instant? = null,
+)
+
+/**
+ * ⚠️ **v0.79.0：遥测流自身的健康度**。
+ *
+ * 它回答的是「**我们到底有没有在收数据**」，
+ * 跟「车有没有故障码」是两件事。
+ */
+@Serializable
+data class TelemetryStream(
+    /** 我们的 MQTT 接收端连没连上 broker */
+    val broker_connected: Boolean = false,
+    /** 最后收到一条遥测数据的时刻 */
+    @Serializable(with = InstantSer::class) val last_message_at: Instant? = null,
+    /** 收到过的消息总数 */
+    val messages: Long = 0,
+    val alerts: Long = 0,
+    val errors: Long = 0,
+    /** V（车辆数据字段）条数 */
+    val fields: Long = 0,
+)
+
+/**
+ * ⚠️ **v0.79.0：车况页的「故障码」块**（服务端算好的，App 只读）。
+ *
+ * ## 三种状态，别混成一种
+ *
+ * 1. `active_alerts > 0` ⇒ **有正在持续的故障码** ⇒ 显示故障码卡
+ * 2. `ever_connected == true` 且没有活跃告警 ⇒ 遥测正常、确实没有故障 ⇒ **不显示**
+ * 3. `ever_connected == false` ⇒ **遥测从来没接上** ⇒ 必须显式说「暂无数据」
+ *
+ * ⚠️ 把 3 渲染成 2 = **假安全**（车真出故障时用户以为一切正常）。
+ */
+@Serializable
+data class TelemetryStatus(
+    /** 车端此刻是否连着我们的遥测接收端 */
+    val connected: Boolean = false,
+    /** 遥测流**曾经**接上过吗（查库里的历史，跨重启有效） */
+    val ever_connected: Boolean = false,
+    /** **仍在持续**的故障码数量 */
+    val active_alerts: Int = 0,
+    /** 收到过的故障码总数（含已结束的） */
+    val total_alerts: Int = 0,
+    /** 故障码明细，活跃的排在最前 */
+    val alerts: List<TelemetryAlert> = emptyList(),
+    /** 遥测流健康度 */
+    val stream: TelemetryStream = TelemetryStream(),
+    /** 遇到**不认识**的码时给的下一步指引 */
+    val hint: String = "",
+    /** 库里最后一条遥测数据的时刻 */
+    @Serializable(with = InstantSer::class) val updated_at: Instant? = null,
+    /** 读取遥测数据本身出了什么问题（**不是车的故障，是我们的故障**） */
+    val error: String = "",
+)
+
 @Serializable
 data class CarStatus(
     val car_id: Int,
@@ -431,6 +521,13 @@ data class CarStatus(
      * null = 这台车还没有过充电记录 / 没有判定结果。
      */
     val charge_outcome: ChargeOutcome? = null,
+    /**
+     * ⚠️ **v0.79.0**：**故障码**（Fleet Telemetry）。
+     *
+     * null = 服务端没给这个块（极少见；正常情况下都有）。
+     * ⚠️ **不要用 null 当「没有故障码」** —— 看 `ever_connected`。
+     */
+    val telemetry: TelemetryStatus? = null,
 )
 
 @Serializable

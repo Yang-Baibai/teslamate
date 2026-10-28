@@ -79,6 +79,9 @@ func main() {
 	// ⚠️ v0.79.0：我们自己的表（记录「每场会话当时的充电上限」）。
 	// 建表失败不致命 —— 那样只是充电结局退回近似判定。
 	ensureChargeLimitTable(ctx)
+	// ⚠️ v0.79.0 3/3：Fleet Telemetry 落地表（故障码 / 遥测错误 / 连接状态）。
+	// 建表失败不致命 —— 那样只是拿不到故障码，主服务照常。
+	ensureTelemetryTables(ctx)
 	// Tesla Fleet API（锁车状态）：没配凭据也照常启动，只是 locked 恒为 null（未知）
 	tesla = newTeslaClient(loadTeslaConfig())
 	if tesla.configured() {
@@ -88,6 +91,19 @@ func main() {
 		log.Printf("Tesla Fleet API 已启用（区域 %s，轮询 %s）", tesla.cfg.region, tesla.cfg.pollInterval)
 	} else {
 		log.Printf("⚠️  未配置 Tesla Fleet API 凭据（TESLA_CLIENT_ID / TESLA_REFRESH_TOKEN）：锁车状态恒为未知（null）")
+	}
+	// ⚠️ v0.79.0 3/3：订阅 Fleet Telemetry 数据流（故障码的唯一来源）。
+	//
+	// ⚠️ 与上面的 Fleet API 客户端**互不依赖** —— 遥测是车主动推的，
+	//    不需要令牌、不需要唤醒。没配 broker 就跳过，
+	//    遥测是可选增强，不该拖垮主服务。
+	if telemetryMQTTConfigured() {
+		telemetryCtx, cancelTelemetry := context.WithCancel(context.Background())
+		defer cancelTelemetry()
+		startTelemetryIngest(telemetryCtx)
+		log.Printf("遥测数据落地已启用（%s）", telemetryEnvDump())
+	} else {
+		log.Printf("ℹ️  未配置 TELEMETRY_MQTT_URL：遥测数据落地未启用（故障码拿不到）")
 	}
 	log.Printf("API 服务就绪，端口 %s，时区 %s", cfg.port, cfg.timezone)
 
@@ -136,6 +152,13 @@ func main() {
 	mux.HandleFunc("GET /api/v1/cars/{id}/vehicle_data", auth(handleTeslaVehicleData))
 	mux.HandleFunc("GET /api/v1/cars/{id}/vehicles", auth(handleTeslaVehiclesMeta))
 	mux.HandleFunc("GET /api/v1/cars/{id}/vehicle_snapshot", auth(handleTeslaVehicleSnapshot))
+	// ⚠️ v0.79.0 3/3：Fleet Telemetry（故障码的唯一来源）。
+	//   GET  → 这台车能不能接遥测、现在接上了没
+	//   POST → 下发遥测配置（走 command-proxy 签名）
+	mux.HandleFunc("GET /api/v1/cars/{id}/fleet_telemetry", auth(handleFleetTelemetryStatus))
+	mux.HandleFunc("POST /api/v1/cars/{id}/fleet_telemetry", auth(handleFleetTelemetryDeploy))
+	// ⚠️ v0.79.0 3/3：遥测落地的故障码 / 遥测错误 / 连接状态。
+	mux.HandleFunc("GET /api/v1/cars/{id}/alerts", auth(handleTelemetryAlerts))
 	mux.HandleFunc("GET /api/v1/app/latest", auth(handleAppLatest))
 	mux.HandleFunc("GET /api/v1/app/staticmap", auth(handleStaticMap))
 	// APK 静态服务（不加 auth：DownloadManager 无法塞自定义 header；Tailscale 隧道已加密）

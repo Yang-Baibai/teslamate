@@ -664,6 +664,86 @@ def teslamate_vehicle_command(action: str, params: dict | None = None) -> dict:
     return out
 
 
+@mcp.tool()
+def teslamate_alerts() -> dict:
+    """查这台车的**故障码**（BMS_ / DI_ / VCFRONT_ / CP_ …）与遥测接入状态。
+
+    **什么时候用**：用户问「车有故障吗」「车报了什么码」「电池有没有报警」
+    「车出毛病了吗」「故障码是什么」「车机亮了什么灯」—— 都归它。
+
+    ⚠️ **反幻觉**：故障码的含义**只认已核验的来源**。
+    没收录的码，服务端会明说「含义未收录」并让你去车机 Service Mode 看 ——
+    **不要按字母硬凑一个中文名**（那是编的）。
+
+    ⚠️ **「没有故障码」可能是假的**：先看 `遥测已接入`。
+    它是 false ⇒ 我们**根本没在收数据**（不是「车没故障」）；
+    这时要老实说「拿不到故障码」，**别报「一切正常」**。
+
+    ⚠️ 分工：电量 / 续航 → `teslamate_status`；电池衰减与健康度 → `teslamate_battery`；
+    充电结局 → `teslamate_charge_outcome`；胎压 → `teslamate_status`。
+    """
+    data = _get(f"/api/v1/cars/{CAR_ID}/alerts")
+    if not isinstance(data, dict) or "error" in data:
+        return data if isinstance(data, dict) else {"error": "返回格式异常"}
+
+    ever = bool(data.get("ever_connected"))
+    connected = (data.get("connectivity") or "") == "CONNECTED"
+    if not ever:
+        state = "从未接入"
+    elif connected:
+        state = "已接入"
+    else:
+        state = "已接入（车端此刻离线）"
+
+    stream = data.get("stream") or {}
+    alerts = data.get("alerts") or []
+    errors = data.get("errors") or []
+
+    out = {
+        # ⚠️ **这三个是「必然存在」的** —— 哪怕一台故障码都没有也照样给。
+        #    没它们，调用方就没法区分「车没故障」与「我们没在收数据」。
+        "遥测已接入": ever,
+        "接入状态": state,
+        "活跃故障码": sum(1 for a in alerts if a.get("active")),
+        "故障码总数": len(alerts),
+        "车端此刻在线": connected,
+        "遥测流": {
+            "broker已连接": bool(stream.get("broker_connected")),
+            "收到条数": stream.get("messages"),
+            "告警条数": stream.get("alerts"),
+            "错误条数": stream.get("errors"),
+            "最后一条": stream.get("last_message_at"),
+        },
+        "故障码": [
+            {
+                "码": a.get("code"),
+                "子系统": a.get("subsystem"),
+                "含义": a.get("meaning") or "（未收录，含义以车机 Service Mode 为准）",
+                "摘要": a.get("summary"),
+                "仍在持续": bool(a.get("active")),
+                "开始于": a.get("started_at"),
+                "结束于": a.get("ended_at"),
+            }
+            for a in alerts
+        ],
+        "遥测错误": [
+            {
+                "名称": e.get("name"),
+                "内容": e.get("body"),
+                "时间": e.get("created_at"),
+            }
+            for e in errors
+        ],
+    }
+    if data.get("updated_at"):
+        out["最后一条遥测数据"] = data.get("updated_at")
+    if data.get("hint"):
+        out["提示"] = data.get("hint")
+    if not ever:
+        # ⚠️ 遥测从没接上 ⇒ **不能**让调用方以为「车没故障」。
+        out["警告"] = "遥测从未接入，**拿不到**故障码 —— 这不等于「车没有故障」。"
+    return out
+
 # --------------------------------------------------------------------------
 # 入口
 # --------------------------------------------------------------------------

@@ -19,14 +19,26 @@
   },
 
   "records": {
-    "alerts": ["logger"],
-    "errors": ["logger"],
-    "V": ["logger"],
-    "connectivity": ["logger"]
+    "alerts": ["logger", "mqtt"],
+    "errors": ["logger", "mqtt"],
+    "V": ["logger", "mqtt"],
+    "connectivity": ["logger", "mqtt"]
   },
 
   "logger": {
     "verbose": true
+  },
+
+  "mqtt": {
+    "broker": "mosquitto:1883",
+    "client_id": "fleet-telemetry",
+    "topic_base": "tesla_telemetry",
+    "qos": 1,
+    "retained": true,
+    "connect_timeout_ms": 30000,
+    "publish_timeout_ms": 2500,
+    "connect_retry_interval_ms": 10000,
+    "keep_alive_seconds": 30
   },
 
   "tls": {

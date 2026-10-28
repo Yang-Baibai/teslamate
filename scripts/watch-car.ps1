@@ -251,6 +251,31 @@ function Update-Alert(
   }
 }
 
+# ── 故障码告警（按**码集合**判定，不只是「有没有」）─────────────────
+#
+# ⚠️ **v0.79.0：为什么不能直接用 Update-Alert 的布尔标记**：
+#
+#	布尔只能表达「有 / 没有」。而真实情况是
+#	「旧码消失了、换了个新码」—— 布尔仍然是 true ⇒ **不会推**，
+#	用户就错过了新故障码。
+#	⇒ 这里把**码集合本身**存进状态，集合变了就推。
+#
+# ⚠️ 推的内容是**服务端给的原话**（摘要 + 指引）——
+#    脚本不解释码的含义（那是反幻觉铁律）。
+function Update-FaultCodeAlert(
+  [hashtable]$Alerted, [string[]]$Codes,
+  [string]$Title, [string]$Body, [string]$RTitle, [string]$RBody
+) {
+  $now = (($Codes | Sort-Object) -join '|')
+  $was = ''
+  if ($Alerted.ContainsKey('fault_code')) { $was = [string]$Alerted['fault_code'] }
+  if ($now -ne '' -and $now -ne $was) {
+    if (Send-Hermes $Title $Body) { $Alerted['fault_code'] = $now }
+  } elseif ($now -eq '' -and $was -ne '') {
+    if (Send-Hermes $RTitle $RBody) { $Alerted['fault_code'] = '' }
+  }
+}
+
 # ═════════════════════════════════════════════════════════════════
 # 一、拉车况
 # ═════════════════════════════════════════════════════════════════
@@ -442,6 +467,48 @@ Update-Alert $alerted 'tpms' $tpmsAlert `
   "✅ $CarName 胎压已恢复正常" `
   "胎压已回到正常范围，检查过就好。"
 
+# ── 故障码（v0.79.0，Fleet Telemetry）─────────────────────────────
+#
+# ⚠️ **反幻觉**：码的含义由**服务端**给（摘要 + 指引），脚本**原样转述**，
+#    不自己解释、不按字母猜。
+$tel = Get-Prop $st 'telemetry' $null
+$telEver = $false
+$activeCodes = @()
+$codeLines = @()
+$telHint = ''
+if ($null -ne $tel) {
+  $telEver = [bool](Get-Prop $tel 'ever_connected' $false)
+  $telHint = [string](Get-Prop $tel 'hint' '')
+  $allAlerts = @(Get-Prop $tel 'alerts' @())
+  foreach ($a in ($allAlerts | Where-Object { [bool](Get-Prop $_ 'active' $false) })) {
+    $code = [string](Get-Prop $a 'code' '')
+    if (-not $code) { continue }
+    $activeCodes += $code
+    $summary = [string](Get-Prop $a 'summary' '')
+    $codeLines += "- $code　$summary"
+  }
+}
+$codeBody = if ($codeLines.Count -gt 0) { ($codeLines -join "`n") } else { "" }
+if ($telHint) { $codeBody = "$codeBody`n$telHint" }
+Update-FaultCodeAlert $alerted $activeCodes `
+  "⚠️ $CarName 故障码 · 需要检查" `
+  "$codeBody" `
+  "✅ $CarName 故障码已消除" `
+  "车已经不再报故障码了。"
+
+# ⚠️ 遥测**从来没接上**时，必须**明说**「拿不到故障码」——
+#    默默不推 = 用户以为车没故障 = **假安全**。
+#
+# ⚠️ 只在服务端**给得出**遥测块时才判断；
+#    老服务端没有这个块 ⇒ 什么都不说（不是「没接上」，是「这个功能还没有」）。
+if ($null -ne $tel) {
+  Update-Alert $alerted 'telemetry_never' (-not $telEver) `
+    "ℹ️ $CarName 故障码还没接上" `
+    "遥测（Fleet Telemetry）还没接入，车况页会显示「故障码暂无数据」。`n接入之后，有故障码会主动推给你。" `
+    "✅ $CarName 故障码已接入" `
+    "遥测已接入，之后车报故障码会主动告诉你。"
+}
+
 # ── 数据过期 ──
 $ageH = Get-Prop $st 'data_age_hours' 0
 Update-Alert $alerted 'data_stale' $dataStale `
@@ -512,4 +579,4 @@ $mark = (($alerted.Keys | Sort-Object) -join ',')
 # ⚠️ 这里**必须**用 ${}：PowerShell 的变量名可以含中文，
 #    写成 "$unlockedM分钟" 会被解析成变量 `$unlockedM分钟`（不存在）⇒ 直接报错。
 #    同款陷阱在 Kotlin 模板里也咬过两次（"$s.stopCount"）。
-Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAlert 数据过期=$dataStale fleet=$fleetState 未锁=$unlockedTimeout(持续${unlockedM}分钟) 车窗=$windowTimeout(持续${windowM}分钟) 已告知=[$mark]"
+Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAlert 数据过期=$dataStale fleet=$fleetState 未锁=$unlockedTimeout(持续${unlockedM}分钟) 车窗=$windowTimeout(持续${windowM}分钟) 故障码=$($activeCodes.Count) 遥测接入=$telEver 已告知=[$mark]"

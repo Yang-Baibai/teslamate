@@ -79,6 +79,8 @@ import com.teslamate.app.AppSettings
 import com.teslamate.app.CarStatus
 import com.teslamate.app.ConsumptionModel
 import com.teslamate.app.Haptics
+import com.teslamate.app.TelemetryAlert
+import com.teslamate.app.TelemetryStatus
 import com.teslamate.app.districtCity
 import com.teslamate.app.fmt
 import com.teslamate.app.fmtKwh100
@@ -682,6 +684,12 @@ fun StatusScreen(
                             charging = st.active_charge != null,
                             modifier = Modifier.padding(bottom = 4.dp),
                         )
+
+                        // ⚠️ **v0.79.0：故障码**（Fleet Telemetry）。
+                        //
+                        // 位置在能量条之后、状态卡之前 —— **活跃故障比「正在充电」更该先看到**。
+                        // 平时（遥测正常、无故障）这张卡**不出现**，首屏布局一点不变。
+                        TelemetrySection(st.telemetry)
 
                         st.active_charge?.let { ChargeNowCard(it) }
                         // ⚠️ **v0.78.0**：不充电时，把「上次那次到底怎么了」说出来 ——
@@ -1727,6 +1735,176 @@ private fun com.teslamate.app.ChargeOutcome.worthShowing(): Boolean {
     val ended = ended_at ?: return false
     val hours = java.time.Duration.between(ended, java.time.Instant.now()).toHours()
     return hours < 24
+}
+
+/**
+ * ⚠️ **v0.79.0：故障码（Fleet Telemetry）**。
+ *
+ * ## 故障码只有一条路能拿到
+ *
+ * `vehicle_data` 端点里**没有**故障码（`BMS_*` / `DI_*` / `VCFRONT_*` / `CP_*`）——
+ * 只有 Fleet Telemetry（车主动把数据推给我们）才有。
+ *
+ * ## 三种状态，只有两种会出现在屏幕上
+ *
+ * - **有正在持续的故障码** ⇒ 显示故障码卡（红色）
+ * - **遥测正常、确实没有故障** ⇒ **不显示**（装饰宁删勿留）
+ * - **遥测从来没接上 / 读不到** ⇒ 显示一张安静的提示卡（琥珀，不是红）
+ *
+ * ⚠️ 第三种**绝不能**渲染成第二种 —— 那是**假安全**：
+ * 用户以为车没事，真出事时根本不会去看。
+ *
+ * ## 措辞
+ *
+ * 码的含义由**服务端**给（`summary`），App 一个字都不多编 ——
+ * 没收录的码服务端会明说「含义未收录」，并让车机 Service Mode 去查。
+ */
+@Composable
+private fun TelemetrySection(tel: TelemetryStatus?) {
+    if (tel == null) return
+    val active = tel.alerts.filter { it.active }
+    when {
+        // 有正在持续的故障码 ⇒ 说清楚有几个、是哪几个
+        active.isNotEmpty() -> TelemetryAlertCard(tel, active)
+        // ⚠️ 遥测没接上 / 读不到 ⇒ **明说没数据**，不能装作「一切正常」
+        !tel.ever_connected || tel.error.isNotBlank() -> TelemetryNoDataNotice(tel)
+        else -> Unit
+    }
+}
+
+/**
+ * ⚠️ **v0.79.0：故障码卡**（有正在持续的故障码时才出现）。
+ *
+ * ⚠️ 只列**仍在持续**的 —— 已经结束的故障码是历史，
+ *    常驻在车况页只是噪音（要看历史走 `teslamate_alerts` 工具）。
+ */
+@Composable
+private fun TelemetryAlertCard(tel: TelemetryStatus, active: List<TelemetryAlert>) {
+    val accents = LocalAccentColors.current
+    Surface(
+        // 与 ChargeNowCard / ChargeOutcomeCard 同材质：
+        // 状态卡只靠**顶部一条色条**区分，层级才正确。
+        color = accents.cardSurface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().cardDepth(),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                    .background(accents.danger)
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.WarningAmber,
+                    contentDescription = null,
+                    tint = accents.danger,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "故障码",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${active.size} 条在持续",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            active.forEach { a -> TelemetryAlertRow(a) }
+            // ⚠️ 服务端只在**有没收录的码**时才给指引；
+            //    这里原样转述，不自己补解释。
+            if (tel.hint.isNotBlank()) {
+                Text(
+                    tel.hint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** 一条故障码：码本身 + 服务端给的一句话摘要。 */
+@Composable
+private fun TelemetryAlertRow(a: TelemetryAlert) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            a.code,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            // ⚠️ `summary` 是服务端算好的三档摘要
+            //    （「子系统 · 含义」/「子系统 · 含义未收录」/「未收录的子系统 · 含义未收录」）。
+            //    App 不用 meaning/subsystem 自己拼 —— 拼出来必然跟服务端漂移。
+            a.summary.ifBlank { a.code },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * ⚠️ **v0.79.0：故障码「暂无数据」提示**。
+ *
+ * ⚠️ 用**琥珀**而不是红 —— 这不是车的故障，是我们**没拿到数据**。
+ *    红是给「车出问题」用的；这里用红会让用户以为车坏了。
+ */
+@Composable
+private fun TelemetryNoDataNotice(tel: TelemetryStatus) {
+    val accents = LocalAccentColors.current
+    Surface(
+        color = accents.cardSurface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().cardDepth(),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                    .background(accents.warnAmber)
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.HelpOutline,
+                    contentDescription = null,
+                    tint = accents.warnAmber,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "故障码",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            // ⚠️ **v0.79.0**：两种「拿不到」是**两回事**，分开说 ——
+            //    用户需要知道是「还没接上」还是「服务端读挂了」。
+            //    两句各自都在啰嗦棘轮的阈值下（视觉宽度 < 44），
+            //    所以是两条独立说明，不是「一段长文字」。
+            if (tel.error.isNotBlank()) {
+                Text(
+                    "服务端读取遥测数据出错，故障码暂时拿不到。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    "遥测还没接上，暂时拿不到故障码。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 }
 
 @Composable

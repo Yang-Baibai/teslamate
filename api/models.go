@@ -164,6 +164,47 @@ type CarStatus struct {
 	//
 	// nil = 没东西可说（既没有进行中的充电，也没有任何已结束的会话）。
 	ChargeOutcome *ChargeOutcome `json:"charge_outcome,omitempty"`
+
+	// ⚠️ **v0.79.0：故障码（遥测）**。
+	//
+	// 故障码（`BMS_*` / `DI_*` / `VCFRONT_*` / `CP_*`）**只能**从 Fleet Telemetry 拿 ——
+	// `vehicle_data` 端点里根本没有这些字段。
+	//
+	// ⚠️ **永远给这个字段**（不 omitempty）：App 必须能区分三件事：
+	//   1. 有活跃故障码      → 显示故障码卡
+	//   2. 遥测接上了、没告警 → 不显示卡（装饰宁删勿留）
+	//   3. 遥测**从未**接上   → 显式说「故障码暂无数据」
+	// 把 3 渲染成 2 就是**假安全** —— 车真出问题时用户以为一切正常。
+	Telemetry *TelemetryStatus `json:"telemetry"`
+}
+
+// TelemetryStatus 遥测块（v0.79.0）。
+//
+// 事实源在 api/telemetry.go —— App / 推送脚本 / Hermes 都只读这一份。
+type TelemetryStatus struct {
+	// Connected 车端**此刻**是否连着我们的遥测接收端。
+	Connected bool `json:"connected"`
+	// EverConnected 遥测流**曾经**接上过吗（查库里的历史，跨重启有效）。
+	EverConnected bool `json:"ever_connected"`
+	// ActiveAlerts 仍在持续的故障码数量 —— App 的**主角数字**。
+	ActiveAlerts int `json:"active_alerts"`
+	// TotalAlerts 收到过的故障码总数（含已结束的）。
+	TotalAlerts int `json:"total_alerts"`
+	// Alerts 故障码明细，活跃的排在最前。
+	Alerts []telemetryAlertView `json:"alerts"`
+	// Stream 遥测流自身的健康度（broker 连没连、收到多少条）。
+	Stream telemetryStreamView `json:"stream"`
+	// Hint 遇到**不认识**的码时给用户的下一步指引（不解释原因，只指路）。
+	Hint string `json:"hint,omitempty"`
+	// UpdatedAt 库里最后一条遥测数据的时间。
+	//
+	// ⚠️ 不用 omitempty —— 没有就输出 null，
+	//    让 App 能区分「还没有遥测数据」与「这个字段没传」。
+	UpdatedAt *time.Time `json:"updated_at"`
+	// Error 读取遥测数据本身出了什么问题（不是车的故障，是我们的故障）。
+	//
+	// 空串 = 一切正常 ⇒ 不输出这个键（不让 App 以为出事了）。
+	Error string `json:"error,omitempty"`
 }
 
 type ActiveCharge struct {
