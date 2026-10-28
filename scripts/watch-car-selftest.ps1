@@ -365,31 +365,41 @@ Assert-Eq 0 (Count-Push $pushes '开始充电') "首轮不把「本来就在充�
 #
 # 守的是通知通道里的**假成功**：
 # 旧版不管充到哪儿，结束一律说「✅ 充电完成」。
-# 实测本机最近一次（2026-10-28，Tesla 超充）只充到 **80%**（上限 100%），
+# 实测本机最近一次（2026-10-28，Tesla 超充）只充到 **80%**，
 # 旧版却说「完成」—— 用户看到「完成」就不会再看第二眼。
 #
-# 结局由服务端判（收尾曲线 + 车端状态），脚本只翻译标题 + 透传正文。
+# ⚠️ **v0.79.0**：结局由服务端判（「结束电量 vs **当时**的上限」），
+#    脚本只翻译标题 + 透传正文。
+#    「没到充电上限」这句话**只有服务端在有当时的上限时才说**，
+#    脚本这边只是原样透传，不自己判断。
 # ═════════════════════════════════════════════════════════════════
 
-Write-Host "── 场景 10：充到上限 ⇒ 说「充电完成」"
-$pushes = @(Invoke-ChargeEnd 'complete' '已充到上限：充到 100%，充入 20.6 kWh，用了 51 分钟')
-Assert-Eq 1 (Count-Push $pushes '充电完成') "真的充到上限 —— 说「充电完成」"
+Write-Host "── 场景 10：充到上限 ⇒ 说「充到上限」"
+$pushes = @(Invoke-ChargeEnd 'complete' '充到上限了：充到 100%，充入 20.6 kWh，用了 51 分钟')
+Assert-Eq 1 (Count-Push $pushes '充到上限') "真的充到上限 —— 说「充到上限」"
 Assert-Eq 0 (Count-Push $pushes '充电中断') "充到上限不是「中断」"
 $lastBody = Get-LastBody
 Assert-True ($lastBody -match '充入 20\.6 kWh') "正文透传了服务端给的结论"
 
-Write-Host "── 场景 11：拔枪没充到上限 ⇒ 说「充电结束」，绝不说「完成」"
-$pushes = @(Invoke-ChargeEnd 'ended_early' '没到充电上限（上限 100%）：充到 80%，充入 17.6 kWh，用了 19 分钟')
-Assert-Eq 1 (Count-Push $pushes '充电结束') "没充到上限 —— 说「充电结束」"
-Assert-Eq 0 (Count-Push $pushes '充电完成') "**没有**说「充电完成」（这正是本轮要消灭的假成功）"
+Write-Host "── 场景 10b：充到上限**附近**（曲线降流但没有当时的上限）⇒ 不许说「充到上限」"
+$pushes = @(Invoke-ChargeEnd 'tapered' '充到上限附近：充到 96%，充入 54.9 kWh，用了 83 分钟')
+Assert-Eq 1 (Count-Push $pushes '充到上限附近') "曲线降流 ⇒ 说「充到上限附近」"
+Assert-Eq 1 (Count-Push $pushes '附近') "标题带着「附近」（不是笃定的「充到上限」）"
+$lastBody = Get-LastBody
+Assert-True ($lastBody -match '充到 96%') "正文带着事实「充到 96%」"
+
+Write-Host "── 场景 11：没充到上限就结束了 ⇒ 说「充电提前结束」，绝不说「完成」"
+$pushes = @(Invoke-ChargeEnd 'ended_early' '没充到上限就结束了：充到 80%，充入 17.6 kWh，用了 19 分钟')
+Assert-Eq 1 (Count-Push $pushes '充电提前结束') "没充到上限 —— 说「充电提前结束」"
+Assert-Eq 0 (Count-Push $pushes '充电完成') "**没有**说「充电完成」（这正是要消灭的假成功）"
 Assert-Eq 0 (Count-Push $pushes '充电中断') "拔枪走人不算「中断」"
 $lastBody = Get-LastBody
-Assert-True ($lastBody -match '没到充电上限') "正文说明了「没到充电上限」"
+Assert-True ($lastBody -match '没充到上限') "正文说明了「没充到上限」"
 Assert-True ($lastBody -match '充到 80%') "正文带着事实「充到 80%」"
 Assert-True ($lastBody -notmatch '完成') "正文里**没有**「完成」二字"
 
 Write-Host "── 场景 12：枪还插着但停了 ⇒ 说「充电中断」"
-$pushes = @(Invoke-ChargeEnd 'interrupted' '没充到上限就停了，枪还插着：充到 80%，充入 12.4 kWh，用了 30 分钟')
+$pushes = @(Invoke-ChargeEnd 'interrupted' '枪还插着，但充不了了：充到 80%，充入 12.4 kWh，用了 30 分钟')
 Assert-Eq 1 (Count-Push $pushes '充电中断') "枪还插着却停了 —— 说「充电中断」"
 Assert-Eq 0 (Count-Push $pushes '充电完成') "中断不是「完成」"
 $lastBody = Get-LastBody
@@ -408,6 +418,15 @@ Assert-Eq 1 (Count-Push $pushes '充电结束') "判不出来时只说「充电�
 $lastBody = Get-LastBody
 Assert-True ($lastBody -match '当前电量') "判不出来时只报事实（当前电量）"
 Assert-True ($lastBody -notmatch '完成|没到充电上限|已充到上限') "判不出来时**不编**任何结论"
+
+Write-Host "── 场景 15：结束方式判断不了（unknown，但有事实）⇒ 说「充电结束」并把事实报出来"
+$pushes = @(Invoke-ChargeEnd 'unknown' '结束方式判断不了：充到 80%，充入 17.6 kWh，用了 19 分钟')
+Assert-Eq 0 (Count-Push $pushes '充电完成') "判不出来时**不能**说「完成」"
+Assert-Eq 1 (Count-Push $pushes '充电结束') "判不出来时只说「充电结束」"
+$lastBody = Get-LastBody
+Assert-True ($lastBody -match '充到 80%') "判不出来时**仍然报事实**「充到 80%」"
+Assert-True ($lastBody -match '17\.6 kWh') "判不出来时**仍然报事实**「充入 17.6 kWh」"
+Assert-True ($lastBody -notmatch '没到充电上限') "判不出来时**不编**「没到充电上限」"
 
 # ═════════════════════════════════════════════════════════════════
 # 清理 + 汇总

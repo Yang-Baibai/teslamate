@@ -76,6 +76,9 @@ func main() {
 	if amapKey == "" {
 		log.Printf("⚠️  AMAP_KEY 未配置：/api/v1/app/staticmap 端点将不可用")
 	}
+	// ⚠️ v0.79.0：我们自己的表（记录「每场会话当时的充电上限」）。
+	// 建表失败不致命 —— 那样只是充电结局退回近似判定。
+	ensureChargeLimitTable(ctx)
 	// Tesla Fleet API（锁车状态）：没配凭据也照常启动，只是 locked 恒为 null（未知）
 	tesla = newTeslaClient(loadTeslaConfig())
 	if tesla.configured() {

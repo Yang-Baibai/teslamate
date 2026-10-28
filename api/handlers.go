@@ -181,18 +181,25 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	// ⚠️ **v0.78.0：这次充电到底怎么了**。
 	//
 	// 旧版通知里充电结束**一律**说「✅ 充电完成」——
-	// 实测本机最近一次（2026-10-28，Tesla 超充）只充到 **80%**（上限 100%），
+	// 实测本机最近一次（2026-10-28，Tesla 超充）只充到 **80%**，
 	// 通知却说「完成」。这是通知通道里的**假成功**，
 	// 和 v0.76.0 修掉的「车端拒绝过的事被报成已下发」是同一类错。
 	//
-	// 判据只用官方事实：车端 `charge_state.charging_state` 枚举
-	// + **收尾曲线**（末次非零功率 vs 本场峰值）
-	// + DB 里**精确**的结束电量（见 charge_outcome.go）。
-	// 判不出来就说「判不出来」，**不编**。
+	// ⚠️ **v0.79.0 修正**：v0.78.0 的主判据（收尾曲线）证明不了
+	// 「没到充电上限」—— 高比值组里有 3 场结束在 94~96%（会话 2/28/54）。
+	// 现在主判据换成「结束电量 vs **当时**的上限」（充电期间记在
+	// `tm_charge_limits` 表里）；曲线降流只作辅助证据（支持「充到上限附近」）。
+	// 判不出来就说「判不出来」，**不编**（见 charge_outcome.go）。
 	{
 		fleetCharge, hasFleet := teslaChargeContext()
 		activeCharging := chargeID != nil
 		if activeCharging || lastChargeID != nil {
+			// ⚠️ 那场会话**当时**的充电上限（v0.79.0 起才有记录）。
+			//    查不到就当没有 —— 判定会退回「近似」或「不知道」，**不拿现在的上限顶替**。
+			var sessionLimit *int
+			if lastChargeID != nil {
+				sessionLimit = sessionChargeLimit(r.Context(), *lastChargeID)
+			}
 			outcome := EvaluateChargeOutcome(ChargeOutcomeInput{
 				Fleet:          fleetCharge,
 				HasFleet:       hasFleet,
@@ -209,6 +216,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 				LastDurationMin: lastChargeMinutes,
 				LastChargeID:    lastChargeID,
 				LastEndedAt:     lastChargeEndedAt,
+				SessionLimitSoc: sessionLimit,
 			})
 			s.ChargeOutcome = &outcome
 		}

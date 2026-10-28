@@ -1690,11 +1690,15 @@ private fun ChargeOutcomeCard(oc: com.teslamate.app.ChargeOutcome) {
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 InfoTile("充到", oc.end_soc?.let { "$it%" } ?: "—", Modifier.weight(1f))
-                // ⚠️ 上限读不到时**整格不出现**（车在休眠就读不到 Fleet 的上限）。
-                //    一整格都是「—」纯属装饰 —— 按「宁删勿留」，
-                //    两个有数的格子比三个格子其中一个是空的更好看。
-                oc.limit_soc?.let { lim ->
-                    InfoTile("上限", "$lim%", Modifier.weight(1f))
+                // ⚠️ **v0.79.0**：这里读的是**那场会话当时**的上限
+                //    （`session_limit_soc`），**不是**现在的上限（`limit_soc`）。
+                //
+                // 拿现在的上限跟那次的结束电量并排显示，等于在暗示
+                // 「当时差了多少」—— 而我们并不知道「当时的上限是多少」
+                // （上限会变，方向还不确定）。读不到就整格不出现，
+                // 按「宁删勿留」：两个有数的格子比三个里有一个是空的更好看。
+                oc.session_limit_soc?.let { lim ->
+                    InfoTile("当时上限", "$lim%", Modifier.weight(1f))
                 }
                 InfoTile("充入", oc.energy_added_kwh?.fmt(1, " 度") ?: "—", Modifier.weight(1f))
             }
@@ -1703,13 +1707,23 @@ private fun ChargeOutcomeCard(oc: com.teslamate.app.ChargeOutcome) {
 }
 
 /**
- * ⚠️ **v0.78.0**：这次充电结局**值不值得占一格屏幕**。
+ * ⚠️ **v0.78.0 / v0.79.0**：这次充电结局**值不值得占一格屏幕**。
  *
- * - 只在「有话可说」的三种结局下出现（充到上限 = 常态，不出现）
+ * - `complete`（充到上限了）与 `tapered`（充到上限附近）是**常态** ⇒ 不出现
+ * - `ended_early` / `interrupted` / `no_power` ⇒ 要说（有问题或需要留意）⇒ 出现
+ * - `unknown`（结束方式判断不了）⇒ **只要有事实就出现** ——
+ *   用户至少该知道「上次充到多少、充了多少度」，
+ *   只是「怎么结束的」还说不准。v0.79.0：v0.78.0 这里直接不显示，
+ *   等于把一堆已知事实一起藏起来了。
  * - 且只在这场充电结束后的 24 小时内出现（更早 = 过期信息 = 噪音）
  */
 private fun com.teslamate.app.ChargeOutcome.worthShowing(): Boolean {
-    if (outcome !in setOf("ended_early", "interrupted", "no_power")) return false
+    val interesting = when (outcome) {
+        "ended_early", "interrupted", "no_power" -> true
+        "unknown" -> end_soc != null || energy_added_kwh != null || duration_min != null
+        else -> false
+    }
+    if (!interesting) return false
     val ended = ended_at ?: return false
     val hours = java.time.Duration.between(ended, java.time.Instant.now()).toHours()
     return hours < 24

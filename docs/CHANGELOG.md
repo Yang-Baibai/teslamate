@@ -5,70 +5,150 @@
 
 ---
 
-## 2026-10-28（v0.79.0 · 1/3：Fleet Telemetry 接收端就绪）
+## 2026-10-28（v0.79.0 · 2/3：修正 v0.78.0 自己的假事实）
 
-> 本轮版本：`0.79.0`（App 未改动，versionCode 仍为 93）。
-> 这是三步里的**第一步**：先把「车能主动把数据推给我们」这条路打通。
+> 本轮版本：`0.79.0`，versionCode 94。
+>
+> ⚠️ 这一版的主角是**上一版自己**。
+> v0.78.0 说「充电结束 ≠ 充电完成」，方向对；
+> 但它**用错了判据**，于是自己又造了一个假事实。
+> 这轮把它挖出来、换掉。
 
-### 一、为什么值得做
+### 一、v0.78.0 的判据证明不了它要证明的事
 
-| | 轮询 vehicle_data（现状） | Fleet Telemetry |
+v0.78.0 的主判据是「收尾曲线比值」：
+
+```
+末次非零功率 / 本场峰值功率
+  ≤ 0.18 ⇒ BMS 降流收尾 ⇒ 充到上限了
+  > 0.18 ⇒ 满功率一刀切 ⇒ 有人拔了枪 ⇒ 没充到上限
+```
+
+当时拿「实测 30 场，两簇分得很开，中间没有空隙」当验证。
+⚠️ **那个验证是自我循环论证** —— 阈值就是按分位点选的，
+再拿它去分组当然分得开。真正要验的是「这个判据与结论之间有没有反例」。
+
+拿 **79 场**重新检验：
+
+| 分组 | 场次数 | 结束电量 | 结论 |
+|---|---|---|---|
+| 低比值（≤0.18） | 18 | **全部 ≥ 94%** | 「是按充到上限的方式收尾的」—— **成立**（无反例） |
+| 高比值（>0.18） | 61 | 8% ~ 100% 都有 | 「所以没充到上限」—— **不成立** |
+
+⚠️ 高比值组里有 **3 个反例**：会话 2（94%）、28（94%）、54（96%）
+—— 结束在高位，却被判成「拔枪没充满」。
+
+⇒ **曲线能支持「充到上限」，但完全不能支持「没到上限」。**
+⇒ 而 v0.78.0 恰恰是靠**后者**给出「没到充电上限」的结论。
+
+这不是措辞问题，是**假事实**：会话 79（54%→80%）在当时上限就是 80% 的情况下，
+实际是**充到了上限**，却被判成「没到上限」。
+
+### 二、真正靠得住的判据：结束电量 vs **当时**的上限
+
+⚠️ 为什么不能用「现在的上限」（`charge_limit_soc`）代替？
+因为上限**会变**，而且**变化方向不确定**：
+
+```
+结束电量 92%、现在上限 95% ⇒ 当时上限可能是 90%（当时到了）或 100%（当时没到）
+结束电量 92%、现在上限 90% ⇒ 当时上限可能是 90%（当时到了）或 80%（当时没到）
+```
+
+⇒ 两种情况都推不出来 ⇒ **必须把当时的上限记下来**。
+
+⇒ **v0.79.0 起，充电期间每轮轮询都记一次上限**：
+- 新表 `tm_charge_limits`（`charge_id` → `limit_soc`，UPSERT 覆盖，
+  用户中途改上限时**后一次**观测才是结束时的上限）
+- 写入点：`api/charge_limit.go` 的 `recordChargeLimitIfCharging`
+  （轮询顺带记录，不额外占 API 额度）
+- 读取点：独立查询（⚠️ **不进主查询的 CTE** —— 主查询引用一张可能不存在的表
+  会让整个 status 端点 500；独立查询查不到就当「没有记录」）
+
+### 三、结局枚举改了，文案跟着改
+
+| outcome | 何时判出 | verdict |
 |---|---|---|
-| 车况新鲜度 | 2 分钟级，且要唤醒 | 车在线时近实时，**不唤醒** |
-| 唤醒次数 | 每轮一次 | 睡着时 0 次 |
-| 故障码 | **拿不到** | 有（alerts 记录） |
-| 尾流费 | 按唤醒计 | 按信号量计，远低 |
+| `complete` | 有当时的上限，且结束电量 ≥ 上限 | 充到上限了 |
+| `ended_early` | 有当时的上限，且结束电量 < 上限 | 没充到上限就结束了 |
+| `tapered`（**新增**） | 没有当时的上限，但曲线降流 | 充到上限**附近** |
+| `interrupted` | 车端说 Stopped（枪还插着） | 枪还插着，但充不了了 |
+| `no_power` | 车端说 NoPower | 充电桩没有供电 |
+| `unknown` | 都判不出来 | 结束方式判断不了（**事实照报**） |
 
-`BMS_*` / `DI_*` / `VCFRONT_*` / `CP_*` 这些故障码，
-`vehicle_data` 端点里**根本没有这些字段** —— 只靠轮询是永远拿不到的。
+⚠️ `tapered` 为什么单列一档：18 场低比值会话里有 3 场结束在 94~96%
+⇒ 说「充到上限了」是吹牛 ⇒ 只能说「充到上限**附近**」。
 
-### 二、架构：443 和 8443 必须分开
+⚠️ `unknown` 为什么也要带事实：v0.78.0 的 unknown 只回结论词，
+把「充到 80%、充入 17.6 度、用了 19 分钟」这些**已知事实**一起扔了。
+现在事实照报，只是「怎么结束的」还说不准。
 
-- **443**：`https://<主机名>.<tailnet域>.ts.net/.well-known/appspecific/com.tesla.3p.public-key.pem`
-  —— 应用公钥托管，**Tesla 云来拉，不带客户端证书** ⇒ 必须普通 HTTPS。
-- **8443**：遥测数据入口，车端带 **Tesla CA 签发的客户端证书** ⇒ 必须端到端 TLS。
+### 四、同一个会话，三种「当时的上限」⇒ 三种结论（测试固化）
 
-⇒ 中间**不能**插普通反代（反代会剥掉客户端证书）。
-⇒ 官方参考实现 `teslamotors/fleet-telemetry` 本身是 **mTLS-only**
-  （缺 `tls` 段直接 panic），且校验客户端证书 CA —— 实测自签证书被
-  `TLSV1_ALERT_UNKNOWN_CA` 拒掉 ⇒ 它要的就是 Tesla 签发的那种。
-⇒ Funnel 允许的公网端口只有 443/8443/10000 ⇒ 8443 是唯一可选。
-⇒ Funnel 用的是 **raw TCP 透传**（不是 TLS 终止）⇒ 客户端证书原样到达。
+真实会话 79（54%→80%，收尾 36 kW / 峰值 87 kW）：
 
-### 三、实测确认的几件事
+```
+当时上限 80%  ⇒ complete     「充到上限了」
+当时上限 90%  ⇒ ended_early  「没充到上限就结束了」
+没有当时上限  ⇒ unknown      「结束方式判断不了」
+```
 
-- 接收端证书必须**公网可信**（raw TCP 模式下 Tesla 直接看到它，自签会被拒）
-  ⇒ 用 Tailscale 签的 Let's Encrypt 证书（`tailscale cert`），验证 `Verify return code: 0 (ok)`。
-- ⚠️ **openssl 说「握手成功」是 TLS 1.3 的表象** —— 客户端证书校验发生在握手之后。
-  真正的判据是「带自签客户端证书连过去会不会被 `unknown ca` 拒掉」⇒ 被拒 = 确实在校验 CA。
-- Funnel 写配置**需要 Windows 管理员权限**（`401 Unauthorized: must be a Windows local admin`）。
+⇒ 这证明「当时的上限」是**唯一**能精确判定「充没充满」的东西，
+也证明 v0.78.0 靠曲线下结论是**没有依据**的。
+（`TestEvaluateChargeOutcomeSessionLimitIsTheOnlyPreciseJudge`）
 
-### 四、落地
+### 五、下游全部同步
 
-- `compose.yaml` 新增 `fleet-telemetry` 服务（官方镜像 `tesla/fleet-telemetry:latest`）。
-  ⚠️ 端口只绑 `127.0.0.1` —— 明文 WS 不许暴露到局域网。
-- `fleet-telemetry/config.json`：`alerts` / `errors` / `V` / `connectivity` → logger，
-  `transmit_decoded_records: true`（输出 JSON，省掉 protobuf 解析）。
-- `scripts/renew-telemetry-cert.ps1`：LE 证书 90 天过期 ⇒ 每周续期 + 重启容器
-  （bind mount 挂的是**文件**，`tailscale cert` 写新文件后容器还握着旧 inode）。
-  ⚠️ 证书目录**故意放在 OneDrive 外面** —— 私钥不该被同步。
-- `docs/27-FleetTelemetry接入.md`：架构、已就绪资产、恢复步骤。
+- **服务端**：`api/charge_outcome.go` 重写判定；`api/charge_limit.go` 新增；
+  `api/queries.go` 不动（独立查询）；`api/handlers.go` 接 `SessionLimitSoc`。
+- **App**：`ChargeOutcome` 加 `session_limit_soc`；「上限」格改读**当时**的上限
+  （⚠️ 拿现在的上限跟那次的结束电量并排显示，等于在暗示「当时差了多少」）；
+  `worthShowing()` 让 `unknown`（有事实时）也出现。
+- **推送脚本**：`complete`→「✅ 充到上限」、`tapered`→「✅ 充到上限附近」、
+  `ended_early`→「🔌 充电提前结束」。
+- **MCP**：`teslamate_charge_outcome` 的描述改成新判据，
+  并明确告诉模型「判不出来时**别把结束说成完成**，也别编『没到上限』」。
+- **客户端闸门 9**：verdict 禁词表跟着服务端一起换
+  （旧词「已充到上限」「没充到上限就停了」「没到充电上限」全部退役）。
 
-### 五、还需要做的
+### 六、计费确认（顺带查清）
 
-**用户侧**：① 确认车辆固件 ≥ 2024.26；② 确认虚拟密钥已配对
-（`https://tesla.com/_ak/<developer-domain>`）；③ developer.tesla.com 后台确认
-「Fleet Telemetry」开关 + 「允许的源 URL」填**完整主机名**（根域没有证书会当场报红）。
+官方 Fleet API 计费（developer.tesla.com）：
 
-**我侧（下两轮）**：① 在 teslamate API 里加「下发 `fleet_telemetry_config`」的端点
-（复用已有的 `ensureToken()` + command-proxy client，不另写令牌逻辑）；
-② 数据落地 mosquitto → Go API → Postgres；③ 接进 App 车况页 + 推送通道。
+| 类型 | 单价 | $10/月免费额度 ≈ |
+|---|---|---|
+| 流式信号 | 150,000 signals / $1 | 150 万信号 |
+| 命令 | 1,000 req / $1 | 1 万条命令 |
+| 轮询 `vehicle_data` | 500 req / $1 | 5,000 次轮询 |
+| **唤醒** | **50 req / $1** | **500 次唤醒（≈16 次/天）** |
 
-### 影响
+官方原文：*"Each account receives a $10 monthly discount… roughly cover
+data streaming, 100 commands, and 2 wakes per day for two vehicles."*
 
-App 与 API 的对外行为**零变化**（本轮只加了一个不参与业务的服务）。
-新增 `fleet-telemetry` 容器会随 `docker compose up -d` 一起起来。
-回滚：`git revert 本次提交` + `docker compose rm -sf fleet-telemetry`。
+⇒ **唤醒完全在免费额度内**。
+⇒ ⚠️ 但**轮询比流式贵约 18 倍**（$0.12 vs $0.00667 / 车·小时）。
+⇒ 本机 teslamate 已经走流式（`car_settings.use_streaming_api = true`），
+  **不烧唤醒费**；⚠️ 烧额度的是**我们自己的 API**（每 2 分钟轮询一次 `vehicle_data`）——
+  这是 v0.79.0 之后要换成 Fleet Telemetry 的直接理由。
+
+### 七、车辆兼容性已确认
+
+唤醒车辆读到固件：**`2026.26.200.11`**
+（要求 ≥ 2024.26；2021 年前的 Model S/X 不支持 —— 本车是 model3 / p74d）。
+⇒ Fleet Telemetry 的前置条件**全部满足**。
+
+### 八、影响
+
+- ⚠️ **历史会话（v0.79.0 之前）的结局判定会变**：
+  没有当时的上限 ⇒ `unknown`「结束方式判断不了」+ 事实照报。
+  这是**从「说了没依据的话」换成「说实话」**，不是信息变少 ——
+  充到多少、充了多少度、用了多久都还在。
+- 从下一场充电开始，判定就用上了当时的上限 ⇒ 精确。
+- API 新增 `charge_outcome.session_limit_soc` 字段（可选，omitempty）；
+  老客户端忽略未知字段不受影响。
+- 推送标题文案变了（`complete` 不再说「充电完成」）。
+- 冒烟 39/39、客户端闸门 9/9、服务端闸门 4/4、Go vet + go test 全绿、
+  推送引擎自测 52/52、密钥扫描 CLEAN。
+- 回滚：`git revert 本次提交`。
 
 ---
 

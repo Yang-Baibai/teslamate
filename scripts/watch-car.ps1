@@ -413,10 +413,14 @@ $outcomeKind = [string](Get-Prop $outcome 'outcome' '')
 $outcomeText = [string](Get-Prop $outcome 'detail' '')
 
 $endTitle = switch ($outcomeKind) {
-  'complete'    { "✅ $CarName 充电完成" }
+  'complete'    { "✅ $CarName 充到上限" }
+  # ⚠️ v0.79.0：「充到上限**附近**」—— 收尾时电流降下来了，
+  #    但没有那场会话**当时**的上限，不能说「充到上限了」。
+  'tapered'     { "✅ $CarName 充到上限附近" }
+  'ended_early' { "🔌 $CarName 充电提前结束" }
   'interrupted' { "⚠️ $CarName 充电中断" }
   'no_power'    { "⚠️ $CarName 充电中断（充电桩没供电）" }
-  # ⚠️ 「结束」而不是「完成」—— 没到上限就是没到上限，不能粉饰。
+  # ⚠️ 「结束」而不是「完成」—— 没有依据就不能说「完成」。
   default       { "🔌 $CarName 充电结束" }
 }
 # 服务端没给结论（老服务端 / 没数据）⇒ 只报事实，**绝不说「完成」**。

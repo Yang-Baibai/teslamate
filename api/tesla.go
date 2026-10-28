@@ -759,6 +759,14 @@ func (c *teslaClient) pollOnce(ctx context.Context) error {
 	// ⚠️ **v0.67.0**：缓存原始 vehicle_data（下游要原样拿）。
 	if st.Raw != nil {
 		c.setRawVehicleData(st.Raw)
+		// ⚠️ **v0.79.0**：记录「那场会话**当时**的充电上限」。
+		//
+		// 「这次充电充满了吗？」只有这一个精确依据：
+		// 结束电量 vs **当时**的上限。而现在的上限推不出当时的
+		// （上限会变且方向不确定）⇒ 必须在充电期间把上限记下来。
+		if fc, ok := chargeContextFromRaw(st.Raw); ok {
+			recordChargeLimitIfCharging(ctx, vid, fc.LimitSoc)
+		}
 	}
 	return nil
 }
