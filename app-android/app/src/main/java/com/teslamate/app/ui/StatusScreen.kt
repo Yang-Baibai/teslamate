@@ -684,6 +684,10 @@ fun StatusScreen(
                         )
 
                         st.active_charge?.let { ChargeNowCard(it) }
+                        // ⚠️ **v0.78.0**：不充电时，把「上次那次到底怎么了」说出来 ——
+                        //    位置与「充电中」卡同一个格（状态卡的槽位），不额外占屏。
+                        //    只在有话可说时出现（见 worthShowing）。
+                        st.charge_outcome?.takeIf { it.worthShowing() }?.let { ChargeOutcomeCard(it) }
                         st.active_drive?.let { DriveNowCard(it, st) }
 
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1617,6 +1621,98 @@ private fun TpmsCell(label: String, value: Double?, alert: Boolean, modifier: Mo
             )
         }
     }
+}
+
+/**
+ * ⚠️ **v0.78.0：上次充电的结局卡**。
+ *
+ * ## 为什么只在「有话可说」的时候出现
+ *
+ * 充到上限（`complete`）是**常态**，说一声等于没说话 ——
+ * 按「装饰宁删勿留」，那种情况下整张卡**不出现**。
+ *
+ * 只有下面三种「用户需要知道」的情况才出现：
+ * - `ended_early` 没到上限就结束了（多半是拔枪走了）
+ * - `interrupted` 停了但枪还插着（桩可能有问题）
+ * - `no_power` 桩没供电
+ *
+ * ## 为什么过了 24 小时就不出现
+ *
+ * 「上次充电没充满」三天后是**噪音**（信息过时，还让人困惑）。
+ * 它的价值窗口就是「刚充完、还没开远」。
+ */
+@Composable
+private fun ChargeOutcomeCard(oc: com.teslamate.app.ChargeOutcome) {
+    val accents = LocalAccentColors.current
+    Surface(
+        // 同 ChargeNowCard：状态卡与其余卡片同材质，只用顶部色条区分状态。
+        // ⚠️ 这里用**琥珀**而不是充电绿 —— 充电绿只表示「正在充电」，
+        //    这张卡说的恰恰是「**没在充**」。
+        color = accents.cardSurface,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth().cardDepth(),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                    .background(accents.warnAmber)
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.Bolt,
+                    contentDescription = null,
+                    tint = accents.warnAmberText,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "上次充电",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    oc.ended_at.relTime(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // ⚠️ 结论词是**服务端给的**（`verdict`）—— App 不自己写，
+            //    否则三处各写一份、迟早漂移（通知 / Hermes / App 口径必须一致）。
+            Text(
+                oc.verdict.ifBlank { oc.detail },
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = accents.warnAmberText,
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                InfoTile("充到", oc.end_soc?.let { "$it%" } ?: "—", Modifier.weight(1f))
+                // ⚠️ 上限读不到时**整格不出现**（车在休眠就读不到 Fleet 的上限）。
+                //    一整格都是「—」纯属装饰 —— 按「宁删勿留」，
+                //    两个有数的格子比三个格子其中一个是空的更好看。
+                oc.limit_soc?.let { lim ->
+                    InfoTile("上限", "$lim%", Modifier.weight(1f))
+                }
+                InfoTile("充入", oc.energy_added_kwh?.fmt(1, " 度") ?: "—", Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+/**
+ * ⚠️ **v0.78.0**：这次充电结局**值不值得占一格屏幕**。
+ *
+ * - 只在「有话可说」的三种结局下出现（充到上限 = 常态，不出现）
+ * - 且只在这场充电结束后的 24 小时内出现（更早 = 过期信息 = 噪音）
+ */
+private fun com.teslamate.app.ChargeOutcome.worthShowing(): Boolean {
+    if (outcome !in setOf("ended_early", "interrupted", "no_power")) return false
+    val ended = ended_at ?: return false
+    val hours = java.time.Duration.between(ended, java.time.Instant.now()).toHours()
+    return hours < 24
 }
 
 @Composable

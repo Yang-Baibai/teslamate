@@ -66,6 +66,33 @@ WITH lp AS (
   ) ch ON true
   WHERE cp.car_id = $1 AND cp.end_date IS NULL
   ORDER BY cp.start_date DESC LIMIT 1
+), lc AS (
+  -- ⚠️ **v0.78.0：最近一次已结束**的充电会话。
+  --
+  -- 为什么要单独一个 CTE：判定「这次充电到底怎么了」需要**精确的结束电量**。
+  -- Fleet 缓存里的 battery_level 是「当前电量」，
+  -- 而 Fleet 每 2 分钟才轮询一次 —— 充电刚结束时那一格**可能还停在充电中的读数**。
+  -- DB 里 charging_processes.end_battery_level 是车端记账的**精确结束电量**，用它。
+  --
+  -- ⚠️ 结束电量可能为 NULL（TeslaMate 没采到），此时判定会降级为 unknown，
+  --    **不会**拿充电中的读数冒充结束电量。
+  --
+  -- ⚠️ v0.78.0：另外取**收尾曲线**的两个数 ——
+  --   last_nz_power = 最后一个非零功率采样（收尾那一刻车还在吃多少功率）
+  --   peak_power    = 本场峰值功率
+  -- 两者之比能区分「BMS 降流收尾（充到上限）」与「满功率一刀切（拔枪走人）」，
+  -- **不需要充电上限** —— 而充电上限是会变的，用现在的上限去比历史会话本身就不可靠。
+  SELECT cp.id AS charge_id, cp.end_date, cp.end_battery_level,
+         cp.charge_energy_added::float8 AS energy_added,
+         cp.duration_min,
+         (SELECT (array_agg(ch.charger_power ORDER BY ch.date DESC)
+                     FILTER (WHERE ch.charger_power > 0))[1]
+            FROM charges ch WHERE ch.charging_process_id = cp.id) AS last_nz_power,
+         (SELECT max(ch.charger_power)
+            FROM charges ch WHERE ch.charging_process_id = cp.id) AS peak_power
+  FROM charging_processes cp
+  WHERE cp.car_id = $1 AND cp.end_date IS NOT NULL
+  ORDER BY cp.end_date DESC LIMIT 1
 ), ad AS (
   SELECT id AS drive_id, start_date FROM drives
   WHERE car_id = $1 AND end_date IS NULL ORDER BY start_date DESC LIMIT 1
@@ -110,11 +137,15 @@ SELECT lp.date, lp.battery_level, lp.usable_battery_level,
        ac.charge_id, ac.start_date, ac.energy_added, ac.charger_power,
        ac.charger_voltage, ac.charger_current, ac.charger_phases,
        ac.fast_charger_present, ac.battery_level,
+       -- ⚠️ v0.78.0：最近一次已结束的充电会话（充电结局判定用）。
+       lc.charge_id, lc.end_date, lc.end_battery_level, lc.energy_added, lc.duration_min,
+       lc.last_nz_power, lc.peak_power,
        ad.drive_id, ad.start_date
 FROM lp
 LEFT JOIN rx ON true
 LEFT JOIN ls ON true
 LEFT JOIN ac ON true
+LEFT JOIN lc ON true
 LEFT JOIN ad ON true
 CROSS JOIN loc`
 
@@ -283,7 +314,6 @@ addr_norm AS (
   FROM addr_use u
   JOIN comp_meta cm ON cm.root = u.id
 )`
-
 
 // ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：逐趟的毛耗电 / 回充 / 爬升。**
 //

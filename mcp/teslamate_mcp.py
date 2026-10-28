@@ -225,6 +225,9 @@ def teslamate_charges(limit: int = 10) -> dict:
     「这个月充了几次」—— 都归它。
 
     ⚠️ 要看某一场的功率曲线，用返回的 `id` 接着调 `teslamate_charge_curve`。
+
+    ⚠️ 问「**充满了吗**」「这次算不算完成」—— 用 `teslamate_charge_outcome`，
+    那个工具专门给结论（这里只给记录，不给判定）。
     """
     data = _get(f"/api/v1/cars/{CAR_ID}/charges")
     items = data.get("items") if isinstance(data, dict) else data
@@ -252,6 +255,61 @@ def teslamate_charges(limit: int = 10) -> dict:
             "结束续航km": it.get("end_range_km"),
         })
     return {"共": len(items), "最近": rows}
+
+
+# ⚠️ **v0.78.0**：结局的**文案**只有服务端那一份（`verdict` / `detail`）。
+#
+# 原来这里还写了一份枚举 → 中文说明的映射表（`_OUTCOME_CN`）——
+# 那就是**第二份副本**，三处各写一份文案、迟早漂移（v0.76.0 吃过一次亏）。
+# 现在改成**直接透传服务端的结论**，本文件只负责转述。
+#
+# 枚举本身（`charging` / `complete` / …）是**机器可读**的标识，
+# 配上一句服务端给的中文结论，模型要答什么都有足够的依据。
+
+
+@mcp.tool()
+def teslamate_charge_outcome() -> dict:
+    """查**最近一次充电的结局**：充满了吗、充到多少、充了多少度、用了多久、为什么没充满。
+
+    **什么时候用**：用户问「刚才那次充满了吗」「充满电了吗」「充到多少了」
+    「这次充电算成功吗」「为什么没充满」「我刚拔枪算完成吗」「充电结束了吗」
+    —— 都归它。
+
+    ⚠️ **「充电结束」≠「充电完成」**：充到 80% 就拔枪，结局是「没到充电上限」，
+    **不是**「完成」。这个判定由服务端按**收尾曲线**做（充到上限时 BMS 会把功率
+    一路压低到峰值的 18% 以下；拔枪是满功率一刀切），**别自己猜**。
+
+    ⚠️ 分工：历次充了多少度、在哪充的 → `teslamate_charges`；
+    某一场的功率曲线 → `teslamate_charges` 的 `id` 调 `teslamate_charge_curve`。
+    """
+    s = _get(f"/api/v1/cars/{CAR_ID}/status")
+    if not isinstance(s, dict) or "error" in s:
+        return s
+    oc = s.get("charge_outcome")
+    if not isinstance(oc, dict):
+        return {
+            "结局": "unknown",
+            "结论": "这台车还没有过充电记录",
+            "提示": "先用 teslamate_charges 看有没有充电记录",
+        }
+    out = {
+        # ⚠️ 枚举 + 服务端给的中文结论，**不改写**。
+        "结局": oc.get("outcome") or "unknown",
+        "结论": oc.get("verdict") or oc.get("detail"),
+        "完整结论": oc.get("detail"),
+        "结束电量%": oc.get("end_soc"),
+        "充电上限%": oc.get("limit_soc"),
+        "充到上限了吗": oc.get("reached_limit"),
+        "充入kWh": oc.get("energy_added_kwh"),
+        "时长分钟": oc.get("duration_min"),
+        "结束于": oc.get("ended_at"),
+        "场次id": oc.get("charge_id"),
+    }
+    # 判据本身也交出来 —— 结论要**可核对**，不能只给一句话。
+    if oc.get("last_power_kw") is not None:
+        out["收尾功率kW"] = oc.get("last_power_kw")
+        out["本场峰值kW"] = oc.get("peak_power_kw")
+    return out
 
 
 @mcp.tool()

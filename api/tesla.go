@@ -289,6 +289,28 @@ func (c *teslaClient) OpenWindows() []string {
 	return windowsFromRaw(raw)
 }
 
+// ⚠️ **v0.78.0**：车端 charge_state（充电结局判定的事实源）。
+//
+// 返回 (FleetCharge, false) = 没读到（没配凭据 / 车一直睡着）。
+// 具体字段缺失时对应字段为 nil，**不压成 0**。
+func (c *teslaClient) ChargeContext() (FleetCharge, bool) {
+	if c == nil {
+		return FleetCharge{}, false
+	}
+	c.stateMu.RLock()
+	raw := c.rawVehicleData
+	c.stateMu.RUnlock()
+	return chargeContextFromRaw(raw)
+}
+
+// teslaChargeContext 全局入口。
+func teslaChargeContext() (FleetCharge, bool) {
+	if tesla == nil {
+		return FleetCharge{}, false
+	}
+	return tesla.ChargeContext()
+}
+
 // windowFields 车窗字段表（Tesla vehicle_state）。
 //
 // ⚠️ 中国区实测这些字段是**整数 0/1**，不是布尔：

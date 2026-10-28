@@ -388,7 +388,7 @@ $windowTimeout = ($null -ne $windowMinutes) -and ($windowMinutes -ge $WindowTime
 # ═════════════════════════════════════════════════════════════════
 
 # ── 充电 ──
-# 「开始充电 / 充电完成」也是一对**上升沿**：false→true 推开始，true→false 推完成。
+# 「开始充电 / 充电结束」也是一对**上升沿**：false→true 推开始，true→false 推结束。
 # 首轮不推（车在你装脚本时就在充电，不等于「刚刚开始充电」）。
 $chargingKnown = $prev.ContainsKey('last_charging')
 $socNow = if ($null -ne $battery) { "$battery%" } else { "未知" }
@@ -396,11 +396,37 @@ $prevBat = Get-Prop $prev 'last_battery'
 $socPrev = if ($null -ne $prevBat) { "$prevBat%" } else { "未知" }
 $prevAdded = Get-Prop $prev 'last_added_kwh'
 $extra = if ($null -ne $prevAdded) { "`n充入 $([math]::Round([double]$prevAdded,1)) kWh" } else { "" }
+
+# ⚠️ **v0.78.0：充电结束 ≠ 充电完成**。
+#
+# 旧版不管充到哪儿，结束一律说「✅ 充电完成」。
+# 实测本机最近一次（2026-10-28，Tesla 超充）：54% → 80%，充电上限 100% ——
+# **根本没充满**，旧版却说「完成」。
+#
+# 这和 v0.76.0 修掉的「车端拒绝过的事被报成已下发」是同一类错：**假成功**。
+# 用户看到「完成」就不会再看第二眼，而真正需要知道「为什么没充满」的时刻被错过了。
+#
+# 结局由**服务端**判定（收尾曲线 + 车端状态），文案也由服务端给 ——
+# 这里只把结局翻译成标题，**不自己编结论**（三处各写一份文案，迟早漂移）。
+$outcome     = Get-Prop $st 'charge_outcome' $null
+$outcomeKind = [string](Get-Prop $outcome 'outcome' '')
+$outcomeText = [string](Get-Prop $outcome 'detail' '')
+
+$endTitle = switch ($outcomeKind) {
+  'complete'    { "✅ $CarName 充电完成" }
+  'interrupted' { "⚠️ $CarName 充电中断" }
+  'no_power'    { "⚠️ $CarName 充电中断（充电桩没供电）" }
+  # ⚠️ 「结束」而不是「完成」—— 没到上限就是没到上限，不能粉饰。
+  default       { "🔌 $CarName 充电结束" }
+}
+# 服务端没给结论（老服务端 / 没数据）⇒ 只报事实，**绝不说「完成」**。
+$endBody = if ($outcomeText) { $outcomeText } else { "当前电量 $socPrev$extra" }
+
 Update-Alert $alerted 'charging' ($charging -and $chargingKnown) `
   "🔌 $CarName 开始充电" `
-  "当前电量 $socNow`n充电完成会通知你。" `
-  "✅ $CarName 充电完成" `
-  "当前电量 $socPrev$extra"
+  "当前电量 $socNow`n充电结束会通知你。" `
+  $endTitle `
+  $endBody
 
 # ── 胎压 ──
 $tpmsDetail = Get-Prop $st 'tpms_alert_detail' ''

@@ -117,6 +117,59 @@ data class ActiveDrive(
 )
 
 /**
+ * ⚠️ **v0.78.0：充电结局** —— 「这次充电到底怎么了」。
+ *
+ * ## 为什么要有它
+ *
+ * 旧版通知里充电结束**一律**说「✅ 充电完成」。
+ * 实测本机最近一次（2026-10-28，Tesla 超充）只充到 **80%**（上限 100%），
+ * 通知却说「完成」—— 那是**假成功**。
+ *
+ * ## 判定在**服务端**，App 不自己判
+ *
+ * 判据是**收尾曲线**：电池逼近充电上限时 BMS 会把功率一路压低，
+ * 拔枪则是满功率一刀切。本机 30 场实测两簇分得很开（0.031~0.104 vs 0.260~1.000）。
+ * **不需要充电上限** —— 而充电上限是会变的，拿现在的上限去比历史会话本身就不可靠。
+ *
+ * ⇒ App 只读结果，不算阈值（和 `tpms_alert` 一样：判定只有一处）。
+ */
+@Serializable
+data class ChargeOutcome(
+    /** 车端原始的 charging_state（排查用，不解释） */
+    val state: String = "",
+    /**
+     * 结局枚举：
+     * `charging` 正在充 · `complete` 充到上限 · `interrupted` 中断（枪还插着）
+     * · `no_power` 桩没供电 · `ended_early` 没到上限就结束了 · `unknown` 判不出来
+     */
+    val outcome: String = "unknown",
+    /** 一句话结论（服务端给的，App 不改写） */
+    val verdict: String = "",
+    /** 完整一句话 = 结论 + 事实 */
+    val detail: String = "",
+    /** 车**现在**的充电上限（%）。null = 没读到 */
+    val limit_soc: Int? = null,
+    /** 本次会话的结束电量（%）。正在充电时为 null */
+    val end_soc: Int? = null,
+    /** 当前电量（%） */
+    val battery_level: Int? = null,
+    /** 充入（kWh） */
+    val energy_added_kwh: Double? = null,
+    /** 时长（分钟） */
+    val duration_min: Int? = null,
+    /** 是否充到了（当时的）充电上限。null = 判不了 */
+    val reached_limit: Boolean? = null,
+    /** 会话 id（可接 teslamate_charge_curve） */
+    val charge_id: Int? = null,
+    /** 结束时刻 */
+    @Serializable(with = InstantSer::class) val ended_at: Instant? = null,
+    /** 收尾时的功率（kW）—— 判据本身，露出来好核对 */
+    val last_power_kw: Int? = null,
+    /** 本场峰值功率（kW） */
+    val peak_power_kw: Int? = null,
+)
+
+/**
  * ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：本车的爬升能耗系数。**
  *
  * 服务端用 `positions.power × Δt` 整趟积分拟合：
@@ -359,6 +412,12 @@ data class CarStatus(
     @Serializable(with = InstantSer::class) val fleet_last_ok: Instant? = null,
     val active_charge: ActiveCharge? = null,
     val active_drive: ActiveDrive? = null,
+    /**
+     * ⚠️ **v0.78.0**：最近一次充电的**结局**（服务端算好）。
+     *
+     * null = 这台车还没有过充电记录 / 没有判定结果。
+     */
+    val charge_outcome: ChargeOutcome? = null,
 )
 
 @Serializable

@@ -154,6 +154,16 @@ type CarStatus struct {
 
 	ActiveCharge *ActiveCharge `json:"active_charge,omitempty"`
 	ActiveDrive  *ActiveDrive  `json:"active_drive,omitempty"`
+
+	// ⚠️ **v0.78.0：这次充电到底怎么了**。
+	//
+	// 旧版通知里充电结束**一律**说「✅ 充电完成」，
+	// 而实测本机最近一次只充到 80%（上限 100%）——
+	// **假成功**。现在由服务端算好结局（见 charge_outcome.go），
+	// App / 推送脚本 / Hermes 工具都只读这一份，不各写一套口径。
+	//
+	// nil = 没东西可说（既没有进行中的充电，也没有任何已结束的会话）。
+	ChargeOutcome *ChargeOutcome `json:"charge_outcome,omitempty"`
 }
 
 type ActiveCharge struct {

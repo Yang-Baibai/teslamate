@@ -647,6 +647,60 @@ else
 fi
 rm -f "$TMP"
 
+# ── 闸门 9：充电结局的**文案**只能来自服务端 ──────────────────────
+#
+# ⚠️ **v0.78.0（一次真实的假成功）**
+#
+# 旧版通知里，充电结束**一律**说「✅ 充电完成」——
+# 实测本机 2026-10-28 那次超充只充到 80%（上限 100%），通知却说「完成」。
+# 假成功的危害：用户看到「完成」就不会再看第二眼。
+#
+# 修法是**判定与文案都收归服务端**（`charge_outcome.verdict` / `.detail`），
+# App / 推送脚本 / Hermes 工具**只读不写**。
+#
+# ⚠️ 三处各写一份文案，迟早漂移（v0.76.0 已经吃过一次亏：
+#    「完成后是什么样」在服务端与客户端各写了一份）。
+# 所以这道闸门把「App 不许自己写结局文案」变成契约。
+#
+# 豁免：注释行不算（那是在解释，不是在界面上显示）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import re, pathlib, sys
+LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+
+# 服务端拥有的结局文案（api/charge_outcome.go 里的 verdict 常量）。
+OWNED = (
+    '已充到上限',
+    '没充到上限就停了',
+    '充电桩没有供电',
+    '没到充电上限',
+    '充电完成',      # ← 旧版那句假成功，永远不该回来
+)
+
+bad = []
+for p in sorted(root.rglob('*.kt')):
+    for idx, ln in enumerate(p.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+        st = ln.strip()
+        if st.startswith('//') or st.startswith('*') or st.startswith('/*'):
+            continue
+        for lit in LIT.findall(ln):
+            for w in OWNED:
+                if w in lit:
+                    bad.append('%s:%d  含服务端专属文案「%s」: %s' % (p.name, idx, w, lit[:60]))
+
+if bad:
+    print('App 自己写了充电结局文案 %d 处 —— 结论必须**只**来自服务端：' % len(bad))
+    for b in bad[:14]:
+        print('   ', b)
+    print('   ⇒ 用 charge_outcome.verdict / charge_outcome.detail（服务端给的原文）')
+    print('   ⇒ 「充电完成」更不许出现 —— 没充满时说它就是**假成功**')
+    sys.exit(1)
+print('App 自己写的结局文案 0 处（结论全部来自服务端）')
+PYEOF
+if [ $? -eq 0 ]; then ok "结局文案单一来源（App 不自己写充电结局）"; else fail "结局文案单一来源"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

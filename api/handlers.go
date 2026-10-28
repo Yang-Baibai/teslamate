@@ -119,8 +119,18 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		chargePhase  *int
 		chargeFast   *bool
 		chargeSoc    *int
-		driveID      *int
-		driveStart   *time.Time
+		// ⚠️ v0.78.0：最近一次**已结束**的充电会话（充电结局判定用）。
+		lastChargeID       *int
+		lastChargeEndedAt  *time.Time
+		lastChargeEndSoc   *int
+		lastChargeEnergy   *float64
+		lastChargeMinutes  *int
+		// ⚠️ v0.78.0：收尾曲线的两个数（末次非零功率 / 本场峰值）。
+		// 判「充到上限」还是「拔枪走人」靠它们，**不靠充电上限**。
+		lastChargeLastPower *int
+		lastChargePeakPower *int
+		driveID             *int
+		driveStart          *time.Time
 	)
 	s.CarID = id
 	// ⚠️ v0.29.0：把**服务端时区**一并下发 ——
@@ -134,6 +144,9 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		&s.LocationName,
 		&s.State, &s.StateSince,
 		&chargeID, &chargeStart, &chargeAdded, &chargePower, &chargeVolt, &chargeAmps, &chargePhase, &chargeFast, &chargeSoc,
+		// ⚠️ v0.78.0：最近一次**已结束**的充电会话（充电结局判定用）。
+		&lastChargeID, &lastChargeEndedAt, &lastChargeEndSoc, &lastChargeEnergy, &lastChargeMinutes,
+		&lastChargeLastPower, &lastChargePeakPower,
 		&driveID, &driveStart,
 	)
 	if err != nil {
@@ -164,6 +177,43 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	if driveID != nil {
 		s.ActiveDrive = &ActiveDrive{DriveID: *driveID, StartedAt: *driveStart}
 	}
+
+	// ⚠️ **v0.78.0：这次充电到底怎么了**。
+	//
+	// 旧版通知里充电结束**一律**说「✅ 充电完成」——
+	// 实测本机最近一次（2026-10-28，Tesla 超充）只充到 **80%**（上限 100%），
+	// 通知却说「完成」。这是通知通道里的**假成功**，
+	// 和 v0.76.0 修掉的「车端拒绝过的事被报成已下发」是同一类错。
+	//
+	// 判据只用官方事实：车端 `charge_state.charging_state` 枚举
+	// + **收尾曲线**（末次非零功率 vs 本场峰值）
+	// + DB 里**精确**的结束电量（见 charge_outcome.go）。
+	// 判不出来就说「判不出来」，**不编**。
+	{
+		fleetCharge, hasFleet := teslaChargeContext()
+		activeCharging := chargeID != nil
+		if activeCharging || lastChargeID != nil {
+			outcome := EvaluateChargeOutcome(ChargeOutcomeInput{
+				Fleet:          fleetCharge,
+				HasFleet:       hasFleet,
+				ActiveCharging: activeCharging,
+				// 进行中这场的事实（**不是**上一场的）。
+				ActiveSoc:    chargeSoc,
+				ActiveEnergy: chargeAdded,
+				Curve: CurveFacts{
+					LastNonZeroPower: lastChargeLastPower,
+					PeakPower:        lastChargePeakPower,
+				},
+				LastEndSoc:      lastChargeEndSoc,
+				LastEnergy:      lastChargeEnergy,
+				LastDurationMin: lastChargeMinutes,
+				LastChargeID:    lastChargeID,
+				LastEndedAt:     lastChargeEndedAt,
+			})
+			s.ChargeOutcome = &outcome
+		}
+	}
+
 	// 服务端统一算好告警判定，App 与推送脚本读同一份结果（见 alerts.go）
 	tpmsAlert := EvaluateTpms(s.TpmsFL, s.TpmsFR, s.TpmsRL, s.TpmsRR)
 	s.TpmsAlert = tpmsAlert.Alerting

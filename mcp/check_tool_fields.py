@@ -25,6 +25,15 @@ from __future__ import annotations
 
 import sys
 
+# ⚠️ **必须**：这台机器的默认编码是 GBK，Python 打印 '✓' / '✗' 会抛
+#    UnicodeEncodeError ⇒ **扫描器自己崩了**，退出码非 0，
+#    而调用方只看到「闸门失败」，根本不知道是「检查没过」还是「检查器崩了」。
+#    这和 v0.77.0 在服务端闸门踩过的坑是同一个。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # pragma: no cover - 老 Python 没有这个 API
+    pass
+
 import teslamate_mcp as T
 
 # (工具名, 参数, 结果里的路径, 说明)
@@ -41,6 +50,13 @@ SPEC = [
     ("teslamate_charges", {"limit": 3}, "最近[0].充入kWh", "充入电量"),
     ("teslamate_charges", {"limit": 3}, "最近[0].开始%", "起始电量"),
     ("teslamate_charges", {"limit": 3}, "最近[0].id", "充电 id（要能接 charge_curve）"),
+    # ⚠️ **v0.78.0**：充电结局工具。
+    #    只断言「**必然存在**」的字段 ——
+    #    「结束电量%」在**正在充电**时合法为 null（那时还没有结束电量），
+    #    所以不列它；「场次id」同理（充电中场次还没定稿）。
+    ("teslamate_charge_outcome", {}, "结局", "充电结局枚举"),
+    ("teslamate_charge_outcome", {}, "结论", "结局结论（服务端给的中文原文）"),
+    ("teslamate_charge_outcome", {}, "完整结论", "结局完整一句话"),
     ("teslamate_drives", {"limit": 3}, "最近[0].起点", "起点"),
     ("teslamate_drives", {"limit": 3}, "最近[0].终点", "终点"),
     ("teslamate_drives", {"limit": 3}, "最近[0].能耗kWh/100km", "能耗"),
@@ -135,6 +151,26 @@ def main() -> int:
     except Exception as e:
         bad.append("charges→charge_curve 串联异常 %r" % e)
         print("  ✗ charges→charge_curve 串联异常 %r" % e)
+
+    # 串联断言：结局里的「场次id」要能直接喂给 charge_curve。
+    #
+    # ⚠️ 正在充电时场次还没定稿（charge_id 为 null），此时跳过 ——
+    #    那不是「接不上」，是「还没结束」。
+    try:
+        oc = T.teslamate_charge_outcome()
+        ocid = oc.get("场次id")
+        if ocid:
+            cc = T.teslamate_charge_curve(ocid)
+            if cc.get("曲线"):
+                print("  ✓ %-26s %-24s 接得上（%d 个采样点）" % ("teslamate_charge_curve", "由结局.场次id 串起来", cc.get("点数") or 0))
+            else:
+                bad.append("charge_curve 拿不到曲线（结局给的 id）")
+                print("  ✗ charge_curve 拿不到曲线（结局给的 id）")
+        else:
+            print("  · %-26s %-24s 跳过（正在充电，场次未定稿）" % ("teslamate_charge_curve", "由结局.场次id 串起来"))
+    except Exception as e:
+        bad.append("charge_outcome→charge_curve 串联异常 %r" % e)
+        print("  ✗ charge_outcome→charge_curve 串联异常 %r" % e)
 
     # description 体检：模型靠它选工具
     desc_bad = check_descriptions()
