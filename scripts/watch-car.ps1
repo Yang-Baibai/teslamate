@@ -1,24 +1,57 @@
 #!/usr/bin/env pwsh
-# 车况监听 → Hermes 推送
+# 车况监听 → Hermes 推送（**主动通知引擎**）
 #
-# 职责：轮询本机 API 的 /cars/{id}/status，检测状态跳变，调用 Hermes 推送到微信/飞书。
+# 职责：轮询本机 API 的 /cars/{id}/status，判断「此刻有哪些问题成立」，
+#       把**新成立**的问题推给用户，恢复时再推一条「已恢复」把通道闭上。
 #
 # 为什么放在服务端（而不是 App 里）：
 #   这台电脑 7×24 开着，是 TeslaMate 的宿主，手机可能连不上它（外出/Tailscale 卡住）。
 #   判定口径也统一在 API 层（api/alerts.go），App 和本脚本读同一份结果，不会自相矛盾。
 #
-# 触发场景（只在状态「跳变」时推，否则每 5 分钟一条噪音，几天后就会被关掉）：
-#   • 开始充电 → 通知
-#   • 停止充电 → 通知（带最终电量与充入量）
-#   • 胎压异常 → 通知（同一异常只推一次，恢复正常后才重置）
-#   • 数据超过 N 小时未更新 → 通知
+# ⚠️ **v0.77.0：这一版重写了通知引擎本身。**
+#
+# 旧版有四个洞，每一个都是「用户会把通知关掉」级别的：
+#
+#   ① **告警风暴** —— 取数失败时用 `failCount -ge 3` 判定，
+#      于是**越过阈值后每一轮都推**。实测 2026-10-27 01:10→11:05 推了 **97 次**
+#      「⚠️ 车况服务取不到数据」。99 条里 97 条是噪音 ⇒ 用户直接静音 ⇒ 通道作废。
+#      现在改成「**首次越过阈值才推**」，之后保持安静。
+#
+#   ② **状态丢失** —— 失败路径写状态文件时**只写** `{fail_count, last_check_at}`，
+#      把 `last_charging` / `last_tpms_alert` / `last_stale` / `last_fleet_*` 全冲掉。
+#      于是服务一恢复，第一轮会把「开始充电」「胎压异常」「数据过期」**全部重推一遍**。
+#      现在改成**合并写**：只更新本轮真的变的字段，其余原样保留。
+#
+#   ③ **没有闭环** —— 恢复时一条消息都不推。
+#      用户收到「服务挂了」之后，永远不知道它好了没有 —— 通道张着口不闭合。
+#      现在恢复时推一条「已恢复」。
+#
+#   ④ **该提醒的不提醒** —— 「车一直没锁」「车窗一直开着」这类**最要紧**的事没有提醒。
+#      现在补上（带超时，避免「刚开门拿东西」就吵）。
+#
+# ## 引擎的三个不变量（改这个脚本时不要破坏它们）
+#
+#   · **上升沿**：一条问题「本轮成立且上轮不成立」才推。恢复时推一条「已恢复」。
+#   · **合并写**：任何一轮都只更新本轮真的变的字段，绝不覆盖别人的字段。
+#   · **不确定 ≠ 否定**：读不到锁车状态（null）**不等于**「车没锁」——
+#     计时器在「读不到」时保持不动，而不是重置。
 #
 # 用法：
 #   pwsh -File scripts/watch-car.ps1            # 正常跑一轮
-#   pwsh -File scripts/watch-car.ps1 -DryRun    # 只打印不发送（首次部署用）
+#   pwsh -File scripts/watch-car.ps1 -DryRun    # 只记日志不发送（首次部署用）
+#   pwsh -File scripts/watch-car-selftest.ps1   # 引擎自测（不需要车）
 
 param(
-  [switch]$DryRun
+  [switch]$DryRun,
+  # ── 测试钩子（自测用，正常跑不要传）──
+  [string]$StateFile = '',    # 覆盖状态文件路径
+  [string]$StatusFile = '',   # 从 JSON 文件读车况（不给就走 HTTP）
+  [string]$LogFile = '',      # 覆盖日志路径
+  [string]$ApiBase = '',      # 覆盖 API 地址
+  [string]$CarName = '',      # 覆盖车名（省一次 /cars 请求）
+  [int]$UnlockTimeoutMinutes = 30,   # 未锁车多久算问题
+  [int]$WindowTimeoutMinutes = 30,   # 车窗未关多久算问题
+  [int]$FailThreshold = 3             # 连续失败几轮才推「服务挂了」
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,8 +59,8 @@ Set-StrictMode -Version Latest
 
 $Root       = Split-Path -Parent $PSScriptRoot
 $EnvFile    = Join-Path $Root '.env'
-$StateFile  = Join-Path $Root 'scripts/.watch-car-state.json'
-$LogFile    = Join-Path $Root 'scripts/.watch-car.log'
+if (-not $StateFile) { $StateFile = Join-Path $Root 'scripts/.watch-car-state.json' }
+if (-not $LogFile)   { $LogFile   = Join-Path $Root 'scripts/.watch-car.log' }
 
 # ── 读配置：真实环境变量优先于 .env ────────────────────────────────
 # 环境变量优先的好处：临时改配置不用动 .env（测试、临时换通道都用它）。
@@ -42,46 +75,72 @@ function Get-EnvValue([string]$key, [string]$default = '') {
   if ($v) { return $v } else { return $default }
 }
 
-$ApiBase    = Get-EnvValue 'WATCH_API_BASE' 'http://127.0.0.1:8090'
+if (-not $ApiBase) { $ApiBase = Get-EnvValue 'WATCH_API_BASE' 'http://127.0.0.1:8090' }
 $ApiToken   = Get-EnvValue 'API_TOKEN'
 $CarId      = Get-EnvValue 'WATCH_CAR_ID' '1'
 $HermesTo   = Get-EnvValue 'WATCH_HERMES_TARGET' 'feishu'
 $HermesBin  = Get-EnvValue 'HERMES_BIN' (Join-Path $env:LOCALAPPDATA 'hermes\bin\hermes.exe')
 
-if (-not $ApiToken) { Write-Output "❌ .env 里没有 API_TOKEN，退出"; exit 1 }
-if (-not (Test-Path $HermesBin)) {
+# ⚠️ DryRun / 自测模式**不要求**令牌与 Hermes 可执行文件存在 ——
+# 自测就是要能在没有 Hermes 的机器上跑。
+if (-not $DryRun -and -not $StatusFile -and -not $ApiToken) {
+  Write-Output "❌ .env 里没有 API_TOKEN，退出"; exit 1
+}
+if (-not $DryRun -and -not (Test-Path $HermesBin)) {
   Write-Output "❌ 找不到 Hermes 可执行文件: $HermesBin（可用环境变量 HERMES_BIN 指定）"
   exit 1
 }
 
-function Write-Log([string]$msg) {
-  $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
-  Write-Output $line
+# ── 日志 ──────────────────────────────────────────────────────────
+#
+# ⚠️ **两个日志函数，不是一个** —— 这是 PowerShell 的一个真陷阱：
+# 函数里 `Write-Output` 的内容会混进**返回值**。
+# 如果 Send-Hermes 顺手把日志也 Write-Output 出去，
+# 那么 `if (Send-Hermes ...)` 拿到的是「日志行 + true」的**数组**，
+# 而非空数组在 `if` 里恒为真 ⇒ **推送失败也会被当成成功**，
+# 于是告警被标记成「已告知」，用户永远收不到。
+# 所以：会返回值的函数一律用 Write-LogQuiet（只写文件）。
+function Format-LogLine([string]$msg) {
+  "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
+}
+
+function Write-LogQuiet([string]$msg) {
+  $line = Format-LogLine $msg
   try { Add-Content -LiteralPath $LogFile -Value $line -Encoding utf8 } catch { }
+}
+
+function Write-Log([string]$msg) {
+  Write-Output (Format-LogLine $msg)
+  Write-LogQuiet $msg
 }
 
 # ── 发送消息 ──────────────────────────────────────────────────────
 # 用 --file 传正文：中文消息里有引号/括号，走命令行参数容易被 PowerShell 拆碎。
 $MsgTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("teslamate-msg-" + [guid]::NewGuid().ToString('N') + ".txt")
 
+# 返回 $true = 送达（调用方据此决定要不要重试）。
 function Send-Hermes([string]$subject, [string]$body) {
   if ($DryRun) {
-    Write-Log "[DryRun] 标题: $subject"
-    Write-Log "[DryRun] 正文: $body"
-    return
+    Write-LogQuiet "[DryRun] 标题: $subject"
+    Write-LogQuiet "[DryRun] 正文: $body"
+    Write-Host "[DryRun] $subject"
+    return $true
   }
   try {
     Set-Content -LiteralPath $MsgTmp -Value $body -Encoding utf8
     # & 调 .exe；--quiet 只看退出码，成功时 stdout 无噪音
     & $HermesBin send --to $HermesTo --subject $subject --file $MsgTmp --quiet 2>&1 |
-      ForEach-Object { if ($_ -match '\S') { Write-Log "  hermes: $_" } }
+      ForEach-Object { if ($_ -match '\S') { Write-LogQuiet "  hermes: $_" } }
     if ($LASTEXITCODE -eq 0) {
-      Write-Log "✅ 已推送[$HermesTo] $subject"
+      Write-LogQuiet "✅ 已推送[$HermesTo] $subject"
+      return $true
     } else {
-      Write-Log "❌ 推送失败[$HermesTo] 退出码=$LASTEXITCODE"
+      Write-LogQuiet "❌ 推送失败[$HermesTo] 退出码=$LASTEXITCODE"
+      return $false
     }
   } catch {
-    Write-Log "❌ 推送异常: $($_.Exception.Message)"
+    Write-LogQuiet "❌ 推送异常: $($_.Exception.Message)"
+    return $false
   } finally {
     Remove-Item -LiteralPath $MsgTmp -Force -EA SilentlyContinue
   }
@@ -90,59 +149,170 @@ function Send-Hermes([string]$subject, [string]$body) {
 # ── 安全取属性 ────────────────────────────────────────────────────
 # API 对空值字段用了 omitempty（如没充电时就不返回 active_charge），
 # 而 Set-StrictMode 下访问不存在的属性会直接报错，所以统一走这个取。
+#
+# ⚠️ 必须同时支持 **hashtable** 与 **PSCustomObject**：
+# hashtable 的键**不在** `PSObject.Properties` 里（那是 Hashtable 自己的成员表），
+# 只按 PSCustomObject 取会永远取不到 —— 状态文件读回来正是 hashtable。
 function Get-Prop($obj, [string]$name, $default = $null) {
   if ($null -eq $obj) { return $default }
+  if ($obj -is [System.Collections.IDictionary]) {
+    if (-not $obj.Contains($name)) { return $default }
+    $v = $obj[$name]
+    if ($null -eq $v) { return $default }
+    return $v
+  }
   $p = $obj.PSObject.Properties[$name]
   if ($null -eq $p) { return $default }
   if ($null -eq $p.Value) { return $default }
   return $p.Value
 }
 
-# ── 拉状态 ────────────────────────────────────────────────────────
-try {
-  $hdr  = @{ Authorization = "Bearer $ApiToken" }
-  $st   = Invoke-RestMethod -Uri "$ApiBase/api/v1/cars/$CarId/status" -Headers $hdr -TimeoutSec 15
-} catch {
-  Write-Log "❌ 取状态失败: $($_.Exception.Message)"
-  # ⚠️ **v0.22.0（自托管运维评审 P1-5）：失败也要说一声** ——
-  # 服务器或 API 挂掉时，用户唯一的告警通道（Hermes 推送）**恰好随服务一起沉默** ——
-  # 于是「车况服务挂了」这件事完全没人知道，只能等用户自己发现 App 不更新。
-  #
-  # 连着失败 3 轮才推（避免网络抖一下就吵），
-  # 但每次失败都把计数写进状态文件，恢复后归零。
+# ── 状态文件：读 / 合并写 ─────────────────────────────────────────
+#
+# ⚠️ **合并写是这一版的核心修复**（旧版的第二个洞）。
+#
+# 旧版失败路径直接 `Set-Content` 一个只含两三个键的新对象，
+# 把 `last_charging` / `last_tpms_alert` / `last_stale` / `last_fleet_*` 全冲掉 ——
+# 于是服务恢复后第一轮会把这些**全部重推一遍**（用户看到「充电开始」紧接着「充电完成」）。
+#
+# 现在：读出旧状态 → 只覆盖本轮真的变的键 → 写回。
+# 任何一个**没被本轮提到**的键都原样保留。
+function ConvertTo-Hashtable($obj) {
+  $h = @{}
+  if ($null -eq $obj) { return $h }
+  if ($obj -is [System.Collections.IDictionary]) {
+    foreach ($k in $obj.Keys) { $h[[string]$k] = $obj[$k] }
+    return $h
+  }
+  foreach ($p in $obj.PSObject.Properties) { $h[$p.Name] = $p.Value }
+  return $h
+}
+
+function Read-State {
+  if (-not (Test-Path -LiteralPath $StateFile)) { return @{} }
+  try {
+    $raw = Get-Content -LiteralPath $StateFile -Raw -Encoding utf8
+    if (-not $raw) { return @{} }
+    return ConvertTo-Hashtable ($raw | ConvertFrom-Json)
+  } catch {
+    Write-LogQuiet "⚠️ 状态文件读不了（当空处理）: $($_.Exception.Message)"
+    return @{}
+  }
+}
+
+function Save-State([hashtable]$patch) {
+  $cur = Read-State
+  foreach ($k in $patch.Keys) { $cur[$k] = $patch[$k] }
+  try {
+    ($cur | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $StateFile -Encoding utf8
+  } catch {
+    Write-LogQuiet "❌ 状态文件写失败: $($_.Exception.Message)"
+  }
+}
+
+# 状态里的 `alerted` 是「已经告诉过用户」的条件集合（code → bool）。
+function Get-Alerted($state) {
+  $v = Get-Prop $state 'alerted' $null
+  if ($null -eq $v) { return @{} }
+  return ConvertTo-Hashtable $v
+}
+
+# ── 时间工具 ──────────────────────────────────────────────────────
+function Get-SinceMinutes($iso, [datetime]$nowUtc) {
+  if (-not $iso) { return $null }
+  try {
+    $dto = [datetimeoffset]::Parse([string]$iso)
+    return ($nowUtc - $dto.UtcDateTime).TotalMinutes
+  } catch {
+    return $null
+  }
+}
+
+# ── 告警判定与推送（统一上升沿）──────────────────────────────────
+#
+# $Alerted 是 hashtable（引用类型），这里直接改它。
+#
+# 规则：
+#   成立且没告诉过 → 推告警，标记为「已告知」
+#   不成立且告诉过 → 推「已恢复」，取消标记
+#   其它           → 什么都不做（**不重复推**）
+#
+# 推失败时**不**改标记 ⇒ 下一轮会重试（通知没送到用户就等于没告知）。
+function Update-Alert(
+  [hashtable]$Alerted, [string]$Code, [bool]$Active,
+  [string]$Title, [string]$Body, [string]$RTitle, [string]$RBody
+) {
+  $was = $false
+  if ($Alerted.ContainsKey($Code)) { $was = [bool]$Alerted[$Code] }
+  if ($Active -and -not $was) {
+    if (Send-Hermes $Title $Body) { $Alerted[$Code] = $true }
+  } elseif ((-not $Active) -and $was) {
+    if (Send-Hermes $RTitle $RBody) { $Alerted[$Code] = $false }
+  }
+}
+
+# ═════════════════════════════════════════════════════════════════
+# 一、拉车况
+# ═════════════════════════════════════════════════════════════════
+$st = $null
+$fetchError = $null
+if ($StatusFile) {
+  try {
+    $st = Get-Content -LiteralPath $StatusFile -Raw -Encoding utf8 | ConvertFrom-Json
+  } catch {
+    $fetchError = "读状态文件失败: $($_.Exception.Message)"
+  }
+} else {
+  try {
+    $hdr = @{ Authorization = "Bearer $ApiToken" }
+    $st  = Invoke-RestMethod -Uri "$ApiBase/api/v1/cars/$CarId/status" -Headers $hdr -TimeoutSec 15
+  } catch {
+    $fetchError = $_.Exception.Message
+  }
+}
+
+$prev      = Read-State
+$alerted   = Get-Alerted $prev
+$nowUtc    = (Get-Date).ToUniversalTime()
+$nowIso    = $nowUtc.ToString('o')
+
+# ═════════════════════════════════════════════════════════════════
+# 二、取不到数据 —— 只推一次，**合并写**，不冲掉任何状态
+# ═════════════════════════════════════════════════════════════════
+if ($null -ne $fetchError) {
+  Write-Log "❌ 取状态失败: $fetchError"
+
   $failCount = 1
-  if (Test-Path $StateFile) {
-    try {
-      $pf = Get-Content -LiteralPath $StateFile -Raw -Encoding utf8 | ConvertFrom-Json
-      $failCount = [int](Get-Prop $pf 'fail_count' 0) + 1
-    } catch { $failCount = 1 }
-  }
-  if ($failCount -ge 3) {
-    Send-Hermes "⚠️ 车况服务取不到数据" "已连续 $failCount 轮无法从服务器读取车况。`n请确认家里那台电脑开着、服务器在跑，以及手机上的 Tailscale 已连接。"
-  }
-  $failState = [ordered]@{
+  if ($prev.ContainsKey('fail_count')) { $failCount = [int]$prev['fail_count'] + 1 }
+
+  # ⚠️ **只推一次**（旧版的第一个洞：`failCount -ge 3` 越过阈值后每轮都推 ⇒ 实测 97 次）。
+  #    阈值只用来决定「什么时候第一次说」，不决定「说几次」。
+  Update-Alert $alerted 'service_unreachable' ($failCount -ge $FailThreshold) `
+    "⚠️ 车况服务取不到数据" `
+    "已连续 $failCount 轮无法从服务器读取车况。`n请确认家里那台电脑开着、服务器在跑，以及手机上的 Tailscale 已连接。" `
+    "✅ 车况服务已恢复" `
+    "已重新读到车况数据，接下来继续盯着。"
+
+  # ⚠️ **合并写**（旧版的第二个洞）：只更新失败计数与告警集合，
+  #    `last_charging` / `unlocked_since` / `alerted` 里其它条件的标记**一个都不动**。
+  Save-State @{
     fail_count    = $failCount
-    last_check_at = (Get-Date).ToUniversalTime().ToString('o')
+    alerted       = $alerted
+    last_check_at = $nowIso
   }
-  $failState | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding utf8
   exit 2
 }
 
-# ── 读上次状态 ────────────────────────────────────────────────────
-$prev = $null
-if (Test-Path $StateFile) {
-  try { $prev = Get-Content -LiteralPath $StateFile -Raw -Encoding utf8 | ConvertFrom-Json } catch { $prev = $null }
-}
-if (-not $prev) {
-  Write-Log "首次运行：无历史状态可比对（充电类事件不推），但现存问题（胎压/数据过期）会照常推一次"
-}
-
+# ═════════════════════════════════════════════════════════════════
+# 三、读车况事实
+# ═════════════════════════════════════════════════════════════════
 $chargeInfo = Get-Prop $st 'active_charge'
-$charging  = $null -ne $chargeInfo
-$battery   = Get-Prop $st 'battery_level'
-$addedKwh  = if ($charging) { Get-Prop $chargeInfo 'energy_added_kwh' } else { $null }
-$tpmsAlert = [bool](Get-Prop $st 'tpms_alert')
-$dataStale = [bool](Get-Prop $st 'data_stale')
+$charging   = $null -ne $chargeInfo
+$battery    = Get-Prop $st 'battery_level'
+$addedKwh   = if ($charging) { Get-Prop $chargeInfo 'energy_added_kwh' } else { $null }
+$tpmsAlert  = [bool](Get-Prop $st 'tpms_alert')
+$dataStale  = [bool](Get-Prop $st 'data_stale')
+
 # ⚠️ v0.22.0：Fleet 实时状态（四态）。
 #
 # 为什么推送脚本必须读它：
@@ -153,87 +323,163 @@ $dataStale = [bool](Get-Prop $st 'data_stale')
 # unauthorized  → 不会自愈，要人工在服务器上重新授权
 # unreachable  → 会自愈（退避重试中），但还是值得说一声
 $fleetState = [string](Get-Prop $st 'fleet_state' 'ok')
-$carName   = try {
-  (Invoke-RestMethod -Uri "$ApiBase/api/v1/cars" -Headers $hdr -TimeoutSec 10 |
-    Where-Object { $_.id -eq [int]$CarId } | Select-Object -First 1).name
-} catch { "车辆" }
-if (-not $carName) { $carName = "车辆" }
 
-$events = @()
+if (-not $CarName) {
+  $CarName = try {
+    (Invoke-RestMethod -Uri "$ApiBase/api/v1/cars" -Headers @{ Authorization = "Bearer $ApiToken" } -TimeoutSec 10 |
+      Where-Object { $_.id -eq [int]$CarId } | Select-Object -First 1).name
+  } catch { "车辆" }
+}
+if (-not $CarName) { $CarName = "车辆" }
 
-# 充电是「状态跳变」，必须要有上一次的状态才能判断，所以首轮不推
-# （车在你装脚本时就在充电，不等于「刚刚开始充电」）
-$wasCharging = $null -ne $prev -and [bool](Get-Prop $prev 'last_charging')
+# ── 锁车状态：三态 ────────────────────────────────────────────────
+# $null = **不知道**（没配凭据 / 拉取失败），**不等于**「没锁」。
+$lockedRaw = Get-Prop $st 'locked' $null
 
-if ($charging -and -not $wasCharging -and $prev) {
-  $soc = if ($null -ne $battery) { "$battery%" } else { "未知" }
-  $events += @{
-    subject = "🔌 $carName 开始充电"
-    body    = "当前电量 $soc`n充电完成会通知你。"
+# ── 车窗状态：三态 ────────────────────────────────────────────────
+# ⚠️ 数组要显式 @() 包一层：PowerShell 函数返回空数组会被**解包成 $null**，
+#    「全关」会被误判成「不知道」—— 那样计时器永远不结束。
+$openWindows = $null
+$owProp = $st.PSObject.Properties['open_windows']
+if ($null -ne $owProp -and $null -ne $owProp.Value) {
+  $openWindows = @($owProp.Value)
+}
+
+# ═════════════════════════════════════════════════════════════════
+# 四、计时器：未锁车 / 车窗未关
+# ═════════════════════════════════════════════════════════════════
+#
+# 为什么计时器在**脚本**这一层（而不是服务端）：
+#   「开着多久了才该提醒」是**通知策略**，不是车的事实；
+#   服务端重启会让内存里的计时归零 ⇒ 告警反复重来。
+#   脚本的状态文件在磁盘上，重启不丢 ⇒ 计时连续。
+#
+# 三态处理：
+#   事实成立   → 计时开始 / 继续
+#   事实不成立 → 计时清零
+#   读不到    → **计时保持不动**（读不到 ≠ 已经好了）
+
+$unlockedSince = Get-Prop $prev 'unlocked_since' $null
+if ($null -ne $lockedRaw) {
+  if ([bool]$lockedRaw) {
+    $unlockedSince = $null                      # 锁好了 → 计时清零
+  } elseif (-not $unlockedSince) {
+    $unlockedSince = $nowIso                    # 开始计时
   }
 }
+# lockedRaw 为 null（不知道）⇒ 计时保持不动
+$unlockedMinutes = Get-SinceMinutes $unlockedSince $nowUtc
+$unlockedTimeout = ($null -ne $unlockedMinutes) -and ($unlockedMinutes -ge $UnlockTimeoutMinutes)
 
-if (-not $charging -and $wasCharging) {
-  $prevBat = Get-Prop $prev 'last_battery'
-  $soc = if ($null -ne $battery) { "$battery%" } elseif ($null -ne $prevBat) { "$prevBat%" } else { "未知" }
-  $prevAdded = Get-Prop $prev 'last_added_kwh'
-  $extra = if ($null -ne $prevAdded) { "`n充入 $([math]::Round([double]$prevAdded,1)) kWh" } else { "" }
-  $events += @{
-    subject = "✅ $carName 充电完成"
-    body    = "当前电量 $soc$extra"
+$windowSince = Get-Prop $prev 'window_open_since' $null
+if ($null -ne $openWindows) {
+  if ($openWindows.Count -eq 0) {
+    $windowSince = $null                        # 全关上了 → 计时清零
+  } elseif (-not $windowSince) {
+    $windowSince = $nowIso                      # 开始计时
   }
 }
+# openWindows 为 null（不知道）⇒ 计时保持不动
+$windowMinutes = Get-SinceMinutes $windowSince $nowUtc
+$windowTimeout = ($null -ne $windowMinutes) -and ($windowMinutes -ge $WindowTimeoutMinutes)
 
-# 胎压 / 数据过期是「现存问题」，不是跳变。
-# 所以首次运行就该报一次——你刚装好脚本时车已经有胎压异常，理应立刻知道。
-# 之后同一异常只推一次（服务端已判好 tpms_alert），恢复正常后才重置。
-if ($tpmsAlert -and -not [bool](Get-Prop $prev 'last_tpms_alert')) {
-  $detail = Get-Prop $st 'tpms_alert_detail' ''
-  $wheels = @(Get-Prop $st 'tpms_alert_wheels' @())
-  $wheelsText = if ($wheels.Count -gt 0) { $wheels -join '、' } else { "未知" }
-  $events += @{
-    subject = "⚠️ $carName 胎压异常 · 建议检查"
-    body    = "$detail`n异常轮胎：$wheelsText`n可能是漏气或胎压异常，建议尽快检查。"
-  }
+# ═════════════════════════════════════════════════════════════════
+# 五、逐条判定（上升沿 + 恢复闭环）
+# ═════════════════════════════════════════════════════════════════
+
+# ── 充电 ──
+# 「开始充电 / 充电完成」也是一对**上升沿**：false→true 推开始，true→false 推完成。
+# 首轮不推（车在你装脚本时就在充电，不等于「刚刚开始充电」）。
+$chargingKnown = $prev.ContainsKey('last_charging')
+$socNow = if ($null -ne $battery) { "$battery%" } else { "未知" }
+$prevBat = Get-Prop $prev 'last_battery'
+$socPrev = if ($null -ne $prevBat) { "$prevBat%" } else { "未知" }
+$prevAdded = Get-Prop $prev 'last_added_kwh'
+$extra = if ($null -ne $prevAdded) { "`n充入 $([math]::Round([double]$prevAdded,1)) kWh" } else { "" }
+Update-Alert $alerted 'charging' ($charging -and $chargingKnown) `
+  "🔌 $CarName 开始充电" `
+  "当前电量 $socNow`n充电完成会通知你。" `
+  "✅ $CarName 充电完成" `
+  "当前电量 $socPrev$extra"
+
+# ── 胎压 ──
+$tpmsDetail = Get-Prop $st 'tpms_alert_detail' ''
+$wheels = @(Get-Prop $st 'tpms_alert_wheels' @())
+$wheelsText = if ($wheels.Count -gt 0) { $wheels -join '、' } else { "未知" }
+Update-Alert $alerted 'tpms' $tpmsAlert `
+  "⚠️ $CarName 胎压异常 · 建议检查" `
+  "$tpmsDetail`n异常轮胎：$wheelsText`n可能是漏气或胎压异常，建议尽快检查。" `
+  "✅ $CarName 胎压已恢复正常" `
+  "胎压已回到正常范围，检查过就好。"
+
+# ── 数据过期 ──
+$ageH = Get-Prop $st 'data_age_hours' 0
+Update-Alert $alerted 'data_stale' $dataStale `
+  "ⓘ $CarName 数据已 $ageH 小时未更新" `
+  "车辆长时间没有上报数据。`n车停着不动属正常；若你人在外地，也可能是网络不通，请留意。" `
+  "✅ $CarName 车况数据已恢复更新" `
+  "车辆又开始上报数据了。"
+
+# ── Fleet 授权失效 ──
+Update-Alert $alerted 'fleet_unauthorized' ($fleetState -eq 'unauthorized') `
+  "🔑 $CarName Tesla 授权已失效 · 锁车状态已停更" `
+  "实时状态拿不到了（一次性令牌过期，重试也不会成功）。`n请在服务器上重新授权：scripts/tesla-authorize.ps1`n在此之前，App 里的锁车状态与实时胎压都不可信。" `
+  "✅ $CarName Tesla 授权已恢复" `
+  "实时状态重新开始更新，锁车与胎压都可信了。"
+
+# ── Fleet 连不上 ──
+Update-Alert $alerted 'fleet_unreachable' ($fleetState -eq 'unreachable') `
+  "📡 $CarName 暂时连不上 Tesla 云端" `
+  "实时状态暂时取不到（会自己恢复）。`n锁车与实时胎压显示的是最后一次成功获取的数据。" `
+  "✅ $CarName 已重新连上 Tesla 云端" `
+  "实时状态已恢复更新。"
+
+# ── 服务恢复（取数失败那条的闭环）──
+Update-Alert $alerted 'service_unreachable' $false `
+  "⚠️ 车况服务取不到数据" `
+  "已连续多轮无法从服务器读取车况。" `
+  "✅ 车况服务已恢复" `
+  "已重新读到车况数据，接下来继续盯着。"
+
+# ── 未锁车超时 ──
+$unlockedSinceText = if ($unlockedSince) {
+  ([datetimeoffset]::Parse([string]$unlockedSince)).ToLocalTime().ToString('MM-dd HH:mm')
+} else { "" }
+Update-Alert $alerted 'unlocked_timeout' $unlockedTimeout `
+  "🔓 $CarName 已解锁超过 $UnlockTimeoutMinutes 分钟" `
+  "从 $unlockedSinceText 起一直没上锁。`n如果已经停好了，回 App 点一下「锁车」就行。" `
+  "✅ $CarName 车已锁好" `
+  "锁车状态恢复正常。"
+
+# ── 车窗未关超时 ──
+$windowText = if ($openWindows -and $openWindows.Count -gt 0) { $openWindows -join '、' } else { "未知" }
+$windowSinceText = if ($windowSince) {
+  ([datetimeoffset]::Parse([string]$windowSince)).ToLocalTime().ToString('MM-dd HH:mm')
+} else { "" }
+Update-Alert $alerted 'window_open_timeout' $windowTimeout `
+  "⚠️ $CarName 车窗未关超过 $WindowTimeoutMinutes 分钟" `
+  "开着的是：$windowText（自 $windowSinceText 起）。`n停在露天的话记得关窗。" `
+  "✅ $CarName 车窗已关好" `
+  "车窗状态恢复正常。"
+
+# ═════════════════════════════════════════════════════════════════
+# 六、存新状态（合并写）
+# ═════════════════════════════════════════════════════════════════
+Save-State @{
+  last_charging     = $charging
+  last_battery      = $battery
+  last_added_kwh    = if ($charging) { $addedKwh } else { Get-Prop $prev 'last_added_kwh' }
+  unlocked_since    = $unlockedSince
+  window_open_since = $windowSince
+  alerted           = $alerted
+  fail_count        = 0
+  last_check_at     = $nowIso
 }
 
-if ($dataStale -and -not [bool](Get-Prop $prev 'last_stale')) {
-  $ageH = Get-Prop $st 'data_age_hours' 0
-  $events += @{
-    subject = "ⓘ $carName 数据已 $ageH 小时未更新"
-    body    = "车辆长时间没有上报数据。`n车停着不动属正常；若你人在外地，也可能是网络不通，请留意。"
-  }
-}
-
-# ⚠️ v0.22.0：Fleet 状态告警（只推一次，恢复后重置）。
-if ($fleetState -eq 'unauthorized' -and -not [bool](Get-Prop $prev 'last_fleet_unauthorized')) {
-  $events += @{
-    subject = "🔑 $carName Tesla 授权已失效 · 锁车状态已停更"
-    body    = "实时状态拿不到了（一次性令牌过期，重试也不会成功）。`n请在服务器上重新授权：scripts/tesla-authorize.ps1`n在此之前，App 里的锁车状态与实时胎压都不可信。"
-  }
-}
-if ($fleetState -eq 'unreachable' -and -not [bool](Get-Prop $prev 'last_fleet_unreachable')) {
-  $events += @{
-    subject = "📡 $carName 暂时连不上 Tesla 云端"
-    body    = "实时状态暂时取不到（会自己恢复）。`n锁车与实时胎压显示的是最后一次成功获取的数据。"
-  }
-}
-
-foreach ($e in $events) { Send-Hermes $e.subject $e.body }
-
-# ── 存新状态 ──────────────────────────────────────────────────────
-$new = [ordered]@{
-  last_charging    = $charging
-  last_battery     = $battery
-  last_added_kwh   = if ($charging) { $addedKwh } else { Get-Prop $prev 'last_added_kwh' }
-  last_tpms_alert  = $tpmsAlert
-  last_stale       = $dataStale
-  # ⚠️ v0.22.0：Fleet 状态的两个告警位（恢复后自动重置，不再重复推）。
-  last_fleet_unauthorized = ($fleetState -eq 'unauthorized')
-  last_fleet_unreachable  = ($fleetState -eq 'unreachable')
-  # ⚠️ v0.22.0：本轮成功 → 失败计数**归零**（下次再失败时重新从 1 数）。
-  fail_count    = 0
-  last_check_at = (Get-Date).ToUniversalTime().ToString('o')
-}
-$new | ConvertTo-Json | Set-Content -LiteralPath $StateFile -Encoding utf8
-Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAlert 数据过期=$dataStale fleet=$fleetState 事件数=$($events.Count)"
+$unlockedM = 0; if ($null -ne $unlockedMinutes) { $unlockedM = [math]::Round([double]$unlockedMinutes, 1) }
+$windowM = 0;    if ($null -ne $windowMinutes)    { $windowM = [math]::Round([double]$windowMinutes, 1) }
+$mark = (($alerted.Keys | Sort-Object) -join ',')
+# ⚠️ 这里**必须**用 ${}：PowerShell 的变量名可以含中文，
+#    写成 "$unlockedM分钟" 会被解析成变量 `$unlockedM分钟`（不存在）⇒ 直接报错。
+#    同款陷阱在 Kotlin 模板里也咬过两次（"$s.stopCount"）。
+Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAlert 数据过期=$dataStale fleet=$fleetState 未锁=$unlockedTimeout(持续${unlockedM}分钟) 车窗=$windowTimeout(持续${windowM}分钟) 已告知=[$mark]"

@@ -258,6 +258,116 @@ func teslaOdometer() *float64 {
 	return tesla.Odometer()
 }
 
+// ⚠️ **v0.77.0：开着哪几扇窗**（推送引擎的「车窗未关」判定用）。
+//
+// 返回值是**三态**，别压成两个：
+//   - nil        → **不知道**（还没拿到过 vehicle_data，或车一直睡着）
+//   - []string{} → 知道，**全关着**
+//   - [...]      → 知道，开着这些（"左前窗" / "右前窗" / "左后窗" / "右后窗"）
+//
+// 为什么「不知道」与「全关」必须分开：
+// 推送侧的「车窗未关」是**带计时器**的判定（开着超过 N 分钟才提醒），
+// 而「读不到」时计时器必须**保持不动** ——
+// 读不到 ≠ 关上了；压成空数组会让计时器误判成「刚关上」，提醒直接消失。
+func teslaOpenWindows() []string {
+	if tesla == nil {
+		return nil
+	}
+	return tesla.OpenWindows()
+}
+
+// OpenWindows 返回开着哪几扇窗（nil = 不知道）。
+func (c *teslaClient) OpenWindows() []string {
+	if c == nil {
+		return nil
+	}
+	c.stateMu.RLock()
+	raw := c.rawVehicleData
+	c.stateMu.RUnlock()
+	// ⚠️ 锁外读 raw 是安全的：它来自一次 json.Unmarshal，
+	// 发布后**不再被修改**（轮询只是整体换掉引用），读它不会与写并发。
+	return windowsFromRaw(raw)
+}
+
+// windowFields 车窗字段表（Tesla vehicle_state）。
+//
+// ⚠️ 中国区实测这些字段是**整数 0/1**，不是布尔：
+//
+//	fd_window=0  fp_window=0  rd_window=0  rp_window=0   ← 车确定锁着关着时全是 0
+//
+// 而全球区有的版本给的是布尔。两种都认（见 isOpenFlag）。
+var windowFields = []struct {
+	key  string
+	name string
+}{
+	{"fd_window", "左前窗"},
+	{"fp_window", "右前窗"},
+	{"rd_window", "左后窗"},
+	{"rp_window", "右后窗"},
+}
+
+// windowsFromRaw 从缓存的原始 vehicle_data 里解析「开着哪几扇窗」。
+//
+// 纯函数（不碰缓存、不碰网络）⇒ 可以直接单测。
+func windowsFromRaw(raw map[string]any) []string {
+	if raw == nil {
+		return nil
+	}
+	vs, ok := raw["vehicle_state"].(map[string]any)
+	if !ok || vs == nil {
+		return nil
+	}
+	open := []string{}
+	saw := 0
+	for _, f := range windowFields {
+		v, present := vs[f.key]
+		if !present {
+			continue
+		}
+		saw++
+		if isOpenFlag(v) {
+			open = append(open, f.name)
+		}
+	}
+	// 有一扇开着 = **确定**开着（哪怕只读到一部分字段）。
+	if len(open) > 0 {
+		return open
+	}
+	// 四个车窗都读到、且全是关的 = **确定全关**。
+	if saw == len(windowFields) {
+		return []string{}
+	}
+	// 只读到一部分、且没读到开着的那 ⇒ **不知道**（不能声称「全关」）。
+	return nil
+}
+
+// isOpenFlag 判断一个车窗/门字段是不是「开着」。
+//
+// 中国区实测是整数 0/1，全球区有的版本是布尔。
+//
+// ⚠️ **nil 不能当成「关」** —— 那是「没读到」。
+func isOpenFlag(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case float64:
+		return t != 0
+	case int:
+		return t != 0
+	case json.Number:
+		f, err := t.Float64()
+		return err == nil && f != 0
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "1", "true", "open":
+			return true
+		}
+		return false
+	default:
+		return false
+	}
+}
+
 // FleetStatus 返回轮询健康状态（读侧不加锁排队）。
 func (c *teslaClient) FleetStatus() (string, *time.Time) {
 	c.stateMu.RLock()

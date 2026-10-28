@@ -202,6 +202,16 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。
 	s.Locked, s.LockedAt = teslaLockState()
 
+	// ⚠️ **v0.77.0：开着哪几扇窗**。
+	//
+	// 这是推送引擎「车窗未关超时提醒」的**事实源**：
+	// 判定口径留在服务端（App 与推送脚本读同一份），而「开着多久了算问题」
+	// 是**通知策略**，属于推送脚本那一层（它才是唯一有状态的一环）。
+	//
+	// nil = 不知道（还没拿到过实时数据），**不是**「全关」——
+	// 压成空数组会让推送脚本把「读不到」误判成「刚关上」。
+	s.OpenWindows = teslaOpenWindows()
+
 	// 实时胎压同样来自 Fleet API 的后台轮询缓存（同一个 vehicle_data 响应）。
 	// ⚠️ 与上面的 tpms_fl/fr/rl/rr 是两个来源，不互相覆盖：
 	//   tpms_fl…   = TeslaMate 的稀疏采样（数小时才有一条）

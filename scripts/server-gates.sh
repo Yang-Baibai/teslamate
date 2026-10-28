@@ -72,6 +72,13 @@ fi
 # 那条是**决策记录**，不是泄露，故不拦。
 SEC=$(python - <<'PY' 2>/dev/null
 import io, os, re, subprocess, sys
+# ⚠️ stdout 必须转 UTF-8：Windows 控制台默认 GBK，
+#    以后谁在这里加一句带「⇒」的中文输出就会 UnicodeEncodeError，
+#    而扫描器一崩，闸门就会**静默跳过**（显示成通过）。
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
 root = os.getcwd()
 FORBIDDEN_KEYS = ("API_TOKEN", "AMAP_KEY", "ta-secret",
                   "TESLA_REFRESH_TOKEN", "TESLA_CLIENT_SECRET")
@@ -130,7 +137,9 @@ PY
 case "$SEC" in
   HITS:*) fail "密钥扫描 —— $(echo "$SEC" | sed 's/^HITS://')" ;;
   CLEAN) ok "密钥扫描（无真实密钥入库）" ;;
-  *)     ok "密钥扫描跳过（无 .env）" ;;
+  SKIP)  ok "密钥扫描跳过（无 .env）" ;;
+  # ⚠️ 扫描器崩了 ≠ 没发现问题 —— 必须报红，否则就是「亮绿灯的假通过」。
+  *)     fail "密钥扫描自身出错（扫描器没有输出）—— 这次没检查成，不算通过" ;;
 esac
 
 # ── ③ 仓库卫生（二进制产物不得入库）──────────────────────────────
@@ -145,6 +154,10 @@ esac
 #   · 每次改源码都会产生一个「变了」的二进制 ⇒ diff 全是噪声。
 HYG=$(python - <<'PY' 2>/dev/null
 import subprocess, sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
 root = __import__("os").getcwd()
 out = subprocess.run(["git", "-C", root, "ls-files"], capture_output=True).stdout
 bad = []
@@ -163,7 +176,66 @@ case "$HYG" in
   HITS:*) fail "仓库卫生 —— 有二进制产物被跟踪：$(echo "$HYG" | sed 's/^HITS://')"
           echo "    ⇒ git rm --cached <文件>  并在 .gitignore 里加规则" ;;
   CLEAN) ok "仓库卫生（无二进制产物入库）" ;;
-  *)     ok "仓库卫生跳过" ;;
+  # ⚠️ 扫描器崩了 ≠ 仓库干净 —— 必须报红。
+  *)     fail "仓库卫生闸门自身出错（扫描器没有输出）—— 这次没检查成，不算通过" ;;
+esac
+
+# ── ④ PowerShell 字符串里的「$变量中文」────────────────────────────
+#
+# ⚠️ **v0.77.0（一次真实的线上事故）**
+#
+# PowerShell 的变量名**可以含中文**（Unicode 字母都算标识符字符），
+# 所以 `"$unlockedM分钟"` 会被解析成变量 `$unlockedM分钟` —— 一个不存在的变量。
+#
+# 后果不是「显示错」，而是**脚本在这一行直接抛异常、退出码非 0**：
+# 定时任务里跑就是「每 5 分钟失败一次」，而状态文件在抛异常**之前**已经写完 ——
+# 于是看起来「数据是对的、状态也对」，唯独任务一直报红。
+#
+# 这与 Kotlin 字符串模板的坑**同源**（`"$s.stopCount"` ⇒ `.stopCount` 是字面文本，
+# 本项目已被它咬过两次）。同一个陷阱在两种语言里各埋一次 ⇒ 值得上闸门。
+#
+# 正确写法：`${unlockedM}分钟`。
+PSG=$(python - <<'PY' 2>/dev/null
+import pathlib, re, sys
+# ⚠️ **必须**把 stdout 改成 UTF-8：Windows 控制台默认是 GBK，
+#    而本闸门的输出里有「⇒」这种 GBK 编不了的字符 ——
+#    不改就会 UnicodeEncodeError → 扫描器崩溃 → **闸门静默跳过**，
+#    也就是「闸门自己坏了，界面却显示通过」。
+#    （本项目已踩过同款坑：PowerShell 控制台打印「✓」会崩。）
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+root = pathlib.Path('scripts')
+# `$标识符` 后面紧跟一个中日韩字符 ⇒ 会被吞进变量名
+PAT = re.compile(r'\$([A-Za-z_][A-Za-z0-9_]*)([\u4e00-\u9fff])')
+bad = []
+for p in sorted(root.rglob('*.ps1')):
+    src = p.read_text(encoding='utf-8', errors='replace')
+    for i, ln in enumerate(src.splitlines(), 1):
+        st = ln.strip()
+        if st.startswith('#'):
+            continue
+        # 已经写成 ${var} 的不算（`$` 后面是 `{`）
+        for m in PAT.finditer(ln):
+            if m.start() > 0 and ln[m.start()-1] == '{':
+                continue
+            bad.append('%s:%d  $%s%s  ⇒ 写成 ${%s}%s' % (
+                p.name, i, m.group(1), m.group(2), m.group(1), m.group(2)))
+            break
+if bad:
+    print('HITS:' + '; '.join(bad[:8]))
+else:
+    print('CLEAN')
+PY
+)
+case "$PSG" in
+  HITS:*) fail "PowerShell 变量名吞中文（\$变量中文）—— $(echo "$PSG" | sed 's/^HITS://')"
+          echo "    ⇒ PowerShell 会把中文当成变量名的一部分，那个变量不存在 ⇒ 运行时报错" ;;
+  CLEAN) ok "PowerShell 字符串（没有 \$变量中文 这种吞字符写法）" ;;
+  # ⚠️ 走到这里说明**扫描器自己崩了**（不是「没发现问题」）。
+  #    闸门自己坏了必须报红 —— 否则就是「亮绿灯的假通过」。
+  *)     fail "PowerShell 闸门自身出错（扫描器没有输出）—— 这次没检查成，不算通过" ;;
 esac
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"

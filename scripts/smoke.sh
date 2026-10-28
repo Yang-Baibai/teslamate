@@ -83,6 +83,22 @@ assert v is None or isinstance(v,(int,float)), 'odometer_vehicle must be number 
 " 2>/dev/null \
   && ok "status 含 fleet_enabled 与车端里程表" || fail "status 含 fleet_enabled 与车端里程表"
 
+# 4f. ⚠️ v0.77.0：开着哪几扇窗（推送引擎「车窗未关超时提醒」的事实源）。
+# 三态必须分得开：null=不知道 / []=全关 / [...]=开着这些。
+# 压成 [] 会让推送脚本把「这会儿没取到数据」误判成「用户刚把窗关上」，
+# 于是「开着 29 分钟」的提醒在第 30 分钟凭空消失 —— 而车窗其实一直开着。
+echo "$S" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'open_windows' in d, 'missing open_windows'
+v=d['open_windows']
+assert v is None or isinstance(v,list), 'open_windows must be list or null'
+if v is not None:
+    for name in v:
+        assert name in ('左前窗','右前窗','左后窗','右后窗'), 'bad window name: '+str(name)
+" 2>/dev/null \
+  && ok "status 含 open_windows（三态：null=不知道 / []=全关）" || fail "status 含 open_windows"
+
 # 5. 充电列表含损耗率
 CH=$(curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charges?limit=3")
 echo "$CH" | python -c "import json,sys;d=json.load(sys.stdin);assert len(d)>0 and 'loss_percent' in d[0]" 2>/dev/null \
@@ -404,6 +420,26 @@ else
   fail "服务端闸门"
   cat /tmp/server-gates.log | sed 's/^/    /'
 fi
+# 18d. ⚠️ v0.77.0：主动通知引擎自测（告警风暴 / 状态丢失 / 恢复闭环 / 未锁车超时）
+#
+# ⚠️ 这个项目的推送脚本是**唯一有状态**的一环，
+# 而它的价值全在「什么时候推、什么时候不推」上 ——
+# 正常运行时几乎测不出来（得先让服务挂掉、再恢复、再让车解锁半小时）。
+# 所以它有独立的桩驱动自测：喂 JSON 车况、跑独立进程、从日志里数推了几条。
+#
+# 本机没有 pwsh 时跳过（远程验证场景）。
+if command -v pwsh >/dev/null 2>&1; then
+  if pwsh -NoProfile -File scripts/watch-car-selftest.ps1 > /tmp/watch-selftest.log 2>&1; then
+    ok "推送引擎自测（风暴 / 状态丢失 / 恢复闭环 / 未锁车超时）"
+    grep -E '✓' /tmp/watch-selftest.log | tail -3 | sed 's/^/    /'
+  else
+    fail "推送引擎自测"
+    cat /tmp/watch-selftest.log | sed 's/^/    /'
+  fi
+else
+  ok "推送引擎自测跳过（本机无 pwsh）"
+fi
+
 # 19. 爬升能耗系数（v0.33.0）：系数的物理自洽性是硬指标
 CM2=$(curl -s -m 180 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/climb_model?min_km=20")
 echo "$CM2" | python -c "

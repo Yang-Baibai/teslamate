@@ -52,6 +52,19 @@ type CarStatus struct {
 	Locked   *bool      `json:"locked"`
 	LockedAt *time.Time `json:"locked_at"` // 本次状态采集时刻（App 用它判断新鲜度）
 
+	// ⚠️ **v0.77.0：开着哪几扇窗**（来源 Tesla Fleet API 的 vehicle_state）。
+	//
+	// 三态，**不能用 omitempty**，也**不能**压成空数组：
+	//   - null  → **不知道**（还没拿到过 vehicle_data / 车一直睡着）
+	//   - []    → 知道，**全关着**
+	//   - [...] → 知道，开着这些（"左前窗" / "右前窗" / "左后窗" / "右后窗"）
+	//
+	// 「不知道」与「全关」必须分开：
+	// 推送侧的「车窗未关」是**带计时器**的判定（开着超过 N 分钟才提醒），
+	// 而「读不到」时计时器必须**保持不动** ——
+	// 读不到 ≠ 关上了；压成空数组会让计时器误判成「刚关上」，提醒凭空消失。
+	OpenWindows []string `json:"open_windows"`
+
 	// ⚠️ **v0.29.0：服务端时区**（如 "Asia/Shanghai"）。
 	//
 	// 服务端按这个时区分日/月桶，而 App 的时间戳按**手机时区**显示 ——

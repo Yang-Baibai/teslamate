@@ -575,6 +575,78 @@ PYEOF
 if [ $? -eq 0 ]; then ok "字符串模板（没有 $对象.属性 这种字面文本写法）"; else fail "字符串模板「\$对象.属性」"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 8：APK 的 versionCode 必须与服务端通告的版本对齐 ──────────
+#
+# ⚠️ **v0.77.0（一次真实的发版事故）**
+#
+# App 的更新检查是 `if (remote > BuildConfig.VERSION_CODE)` ——
+# `remote` 来自服务端 `/api/v1/app/latest` 的 `APP_VERSION_CODE`，
+# 而 `BuildConfig.VERSION_CODE` 来自 **APK 里编译进去的** `build.gradle.kts`。
+#
+# v0.76.0 只改了服务端（发布通告 0.76.0/code 91），
+# 却**忘了改 `build.gradle.kts`**（APK 仍是 code 90 / v0.75.0）——
+# 于是 App 每次启动都判定「有新版 0.76.0」，
+# 用户点更新下载回来的**还是同一个 code 90 的包**，然后继续提示。
+# 一个**永远关不掉的更新弹窗**。
+#
+# 这道闸门把「记得改两处」变成「改一处就会被抓住」：
+#   build.gradle.kts 的 versionCode 必须等于 .env 的 APP_VERSION_CODE。
+# 没有 .env（远程验证场景）时跳过。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys, os
+
+gradle = pathlib.Path('app-android/app/build.gradle.kts')
+if not gradle.exists():
+    print('找不到 app-android/app/build.gradle.kts')
+    sys.exit(1)
+src = gradle.read_text(encoding='utf-8', errors='replace')
+
+def grab(pattern):
+    m = re.search(pattern, src)
+    return m.group(1).strip() if m else None
+
+code = grab(r'versionCode\s*=\s*(\d+)')
+name = grab(r'versionName\s*=\s*"([^"]*)"')
+if code is None or name is None:
+    print('build.gradle.kts 里读不到 versionCode / versionName')
+    sys.exit(1)
+
+env_path = pathlib.Path('.env')
+if not env_path.exists():
+    print('SKIP')
+    sys.exit(0)
+
+remote = None
+for line in env_path.read_text(encoding='utf-8-sig', errors='replace').splitlines():
+    line = line.strip()
+    if line.startswith('APP_VERSION_CODE='):
+        remote = line.split('=', 1)[1].strip().strip('"').strip("'")
+        break
+
+if remote is None:
+    print('SKIP')
+    sys.exit(0)
+
+if remote != code:
+    print('版本脱节：APK 的 versionCode = %s（versionName %s），' % (code, name))
+    print('但服务端 /app/latest 通告的是 %s。' % remote)
+    print('后果：App 每次启动都提示「有更新」，下载回来的还是同一个包 —— 弹窗关不掉。')
+    print('⇒ 两处必须一起改：app-android/app/build.gradle.kts 与 .env 的 APP_VERSION_CODE。')
+    sys.exit(1)
+print('APK versionCode=%s 与服务端通告的 %s 一致（versionName %s）' % (code, remote, name))
+PYEOF
+RC=$?
+if grep -q '^SKIP$' "$TMP"; then
+  ok "版本对齐闸门跳过（无 .env）"
+elif [ $RC -eq 0 ]; then
+  ok "版本对齐（APK versionCode 与服务端通告一致）"
+else
+  fail "版本对齐（APK versionCode 与服务端通告脱节）"
+  cat "$TMP" | sed 's/^/    /'
+fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
