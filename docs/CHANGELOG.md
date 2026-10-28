@@ -117,6 +117,8 @@ Tesla 车 ──mTLS/WS──> fleet-telemetry ──MQTT──> mosquitto ─�
 - `go vet` / `go test`：全绿（新增 12 条用例，含反幻觉断言）
 - 客户端闸门 **9/9**、服务端闸门 **4/4**、冒烟 **39/39**、推送引擎自测 **65/65**（新增 13 条）
 - MCP 字段自检：15 个工具全过
+- MCP stdio 实测：`tools/list` 返回 **15** 个（含 `teslamate_alerts`）；
+  协议通道上的中文是 **UTF-8**（不是 GBK）⇒ Hermes 侧不会乱码
 - 模拟器实测：故障码卡 / 暂无数据 / 无卡片，三种状态都验过
 
 ### 十、影响与回滚
@@ -127,6 +129,24 @@ Tesla 车 ──mTLS/WS──> fleet-telemetry ──MQTT──> mosquitto ─�
   删表即可（**车端配置不受影响**）。
 - ⚠️ **车端配置有 360 天有效期**，到期前必须重下发
   （`renew-telemetry-cert.ps1` 现在会自动做这件事）。
+
+### 十一、顺带修掉的第二个真 bug：Hermes 配置体检脚本**自己**在崩溃
+
+`mcp/check_hermes_config.py` 是专门用来抓「YAML 重复顶层键」这种**静默**失效的
+（v0.66.0 踩过：配置文件末尾又写了一个 `mcp_servers:` 顶层键，
+把 Housekeeper 的 6 个工具**整个顶掉**，而 `yaml.safe_load` **不报错**）。
+
+⚠️ 但这台机器的控制台编码是 **GBK**，而 `✅` / `❌` / `⇒` **全都不在 GBK 里**
+⇒ `print()` 直接抛 `UnicodeEncodeError`
+⇒ **体检脚本自己崩在最后一行** —— 调用方只看到「检查器挂了」，
+根本分不清「配置有问题」和「检查器坏了」。
+
+⇒ 修法：把 stdout/stderr 强制成 UTF-8（`errors="replace"` 兜底），
+和 `check_tool_fields.py` 里**早就有的**同一段保护对齐。
+
+⚠️ 教训跟 v0.77.0 在服务端闸门踩的是同一个：
+**闸门自己崩了 ≠ 通过。**
+体检工具必须先保证自己能跑完，再谈它检查得准不准。
 
 ---
 

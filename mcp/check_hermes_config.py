@@ -37,6 +37,21 @@ from __future__ import annotations
 import os
 import sys
 
+# ⚠️ **v0.79.0 3/3 修掉的真 bug**：这台机器的控制台编码是 GBK，
+# 而 ✅ / ❌ / ⇒ **全都不在 GBK 里** ⇒ `print()` 直接抛 UnicodeEncodeError。
+#
+# ⇒ 后果不是「显示不好看」，而是**体检脚本自己崩在最后一行** ——
+# 调用方只看到「检查器挂了」，根本分不清「配置有问题」和「检查器坏了」。
+# 这和「闸门自己崩了 ≠ 通过」是同一个坑。
+#
+# ⇒ 做法和 `check_tool_fields.py` 一致：把 stdout/stderr 强制成 UTF-8，
+# 用 `errors="replace"` 兜底（万一还有别的字符不在 UTF-8 里，也不至于抛异常）。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # pragma: no cover - 老 Python 没有这个 API
+    pass
+
 try:
     import yaml
 except ImportError:  # pragma: no cover
