@@ -63,6 +63,21 @@ type CarStatus struct {
 	// 不标来源，调用方就会把 9 小时前的状态当现在的样子报出去。
 	LockedSource string `json:"locked_source"`
 
+	// ⚠️ **v0.84.0：当前固件版本**（遥测 `Version` 优先，轮询 `car_version` 兜底）。
+	//
+	// 空串 = 不知道（两个来源都没拿到）。
+	CarVersion string `json:"car_version"`
+
+	// ⚠️ **v0.84.0：待安装的固件版本**（官方 `SoftwareUpdateVersion`，编号 220）。
+	//
+	// 空串 = 不知道（**不是**「没有更新」—— 这两个必须分开）。
+	SoftwareUpdateVersion string `json:"software_update_version"`
+
+	// ⚠️ **v0.84.0：真的**有**待安装的更新**。
+	//
+	// 只有「两个版本号都拿到且不相等」才为 true（见 api/telemetry_update.go）。
+	UpdatePending bool `json:"update_pending"`
+
 	// ⚠️ **v0.80.0：这个锁车状态是不是「车断线前的最后已知值」**。
 	//
 	// true ⇒ 车现在离线，这个值是它断线那一刻的（**旧，但真实**）。

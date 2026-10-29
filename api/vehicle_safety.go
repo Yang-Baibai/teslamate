@@ -374,6 +374,10 @@ func telemetrySafetyForVIN(ctx context.Context, vin string) telemetrySafety {
 		}
 	}
 
+	// ── 固件版本 / 待安装版本（v0.84.0）────────────────────
+	out.CarVersion = telemetryFirmwareVersion(idx)
+	out.UpdateVersion = telemetryUpdateVersion(idx)
+
 	// ── 哨兵 ──────────────────────────────────────────────
 	if f, ok := idx["SentryMode"]; ok {
 		code, _, known := telemetryParseState(f.Text, telemetrySentryStateNames, telemetrySentryStates)
@@ -429,6 +433,13 @@ type telemetrySafety struct {
 	SentryAt    *time.Time
 	SentryStale bool
 	SentryOK    bool
+
+	// ⚠️ **v0.84.0**：固件版本与待安装的固件版本。
+	//
+	//	CarVersion    官方 `Version`（编号 68）—— 车睡着也有
+	//	UpdateVersion 官方 `SoftwareUpdateVersion`（编号 220）
+	CarVersion    string
+	UpdateVersion string
 }
 
 // --------------------------------------------------------------------------

@@ -383,6 +383,20 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.SentrySource = sentrySource
 	s.SentryAt = sentryAt
 
+	// ⚠️ **v0.84.0：固件版本 + 有没有可装的固件**。
+	//
+	// 固件版本两个来源：遥测 `Version`（官方 68，**车睡着也有**）
+	// 与轮询 `vehicle_state.car_version`（车醒着才有）⇒ 遥测优先。
+	//
+	// ⚠️ 「待安装的固件版本」**只有遥测侧有**（官方 `SoftwareUpdateVersion`，220）。
+	s.CarVersion = telSafety.CarVersion
+	if s.CarVersion == "" {
+		s.CarVersion = carVersionFromRaw(pollRaw)
+	}
+	s.SoftwareUpdateVersion = telSafety.UpdateVersion
+	// ⚠️ 只有「两个版本号都拿到且不相等」才算真的有更新。
+	s.UpdatePending = updatePending(s.CarVersion, s.SoftwareUpdateVersion)
+
 	// ⚠️ **v0.82.0**：这一组安全状态的**最旧**采集时刻（保守）。
 	//
 	// 选中的是哪一份来源，就用**那份**的采集时刻 ——

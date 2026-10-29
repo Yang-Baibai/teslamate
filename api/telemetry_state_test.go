@@ -54,6 +54,9 @@ var telemetryOfficialFieldNumbers = map[string]int{
 	"TpmsSoftWarnings":    225,
 	"ChargePortDoorOpen":  183,
 	"IsolationResistance": 11,
+	"Version":             68,
+	// ⚠️ **v0.84.0**：`SoftwareUpdateVersion` = 「可安装的固件版本」。
+	"SoftwareUpdateVersion": 220,
 }
 
 // TestTelemetryFieldNamesAreOfficial 我们用的每个字段名都必须在官方名单里。

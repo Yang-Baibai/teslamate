@@ -243,6 +243,12 @@ def teslamate_status() -> dict:
         "哨兵状态": s.get("sentry_state"),
         "哨兵数据来源": _source_cn(s.get("sentry_source")),
         "哨兵采集于": s.get("sentry_at"),
+        # ⚠️ v0.84.0：固件版本 + 有没有可装的固件。
+        # 「待安装版本」空串 = **不知道**（不是「没有更新」）——
+        # 所以另给一个布尔「有可装固件」，别让调用方自己比字符串。
+        "当前固件": s.get("car_version"),
+        "待安装固件": s.get("software_update_version"),
+        "有可装固件": bool(s.get("update_pending")),
         "数据滞后小时": s.get("data_age_hours"),
         "最后采集于": s.get("updated_at"),
     }

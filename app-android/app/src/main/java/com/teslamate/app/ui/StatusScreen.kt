@@ -417,6 +417,22 @@ fun StatusScreen(
                             }
                             // ⚠️ **v0.82.0**：车窗 / 车门 / 哨兵（遥测接管后的当下安全状态）。
                             VehicleSafetyRow(st)
+                            // ⚠️ **v0.84.0**：有可安装的新固件时**多一行**。
+                            //
+                            // 「装饰宁删勿留」⇒ **没有更新就不出现这一行**。
+                            //
+                            // ⚠️ 它不是紧急情况 ⇒ **不上红**（红色留给哨兵警报触发）。
+                            //   但它是一件「可做的事」⇒ 用正文次级色，不用灰到看不见。
+                            //
+                            // ⚠️ 只有 `update_pending` 为真才显示 —— 服务端的判据是
+                            //   「两个版本号都拿到且不相等」，不会因为字段存在就误报。
+                            if (st.update_pending && st.software_update_version.isNotBlank()) {
+                                Text(
+                                    "有 ${st.software_update_version} 待安装",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
 
                         // ⚠️ v0.13.0（iOS 交互评审 P1-12）：**告警排在中性提示之前**。

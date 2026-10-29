@@ -474,6 +474,25 @@ data class CarStatus(
      */
     @Serializable(with = InstantSer::class) val vehicle_safety_at: Instant? = null,
     /**
+     * ⚠️ **v0.84.0**：当前固件版本。
+     *
+     * 遥测 `Version`（官方编号 68）优先，轮询 `vehicle_state.car_version` 兜底。
+     * 空串 = 不知道（两个来源都没拿到）。
+     */
+    val car_version: String = "",
+    /**
+     * ⚠️ **v0.84.0**：待安装的固件版本（官方 `SoftwareUpdateVersion`，编号 220）。
+     *
+     * ⚠️ 空串 = **不知道**（不是「没有更新」）—— 这两个必须分开。
+     */
+    val software_update_version: String = "",
+    /**
+     * ⚠️ **v0.84.0**：真的**有**待安装的更新。
+     *
+     * 只有「两个版本号都拿到且不相等」才为 true（服务端判定）。
+     */
+    val update_pending: Boolean = false,
+    /**
      * ⚠️ v0.21.0：**车端里程表**（km，来源 Tesla Fleet API 的 `vehicle_state.odometer`）。
      *
      * 与 [odometer]（TeslaMate 按 GPS 点累计）不同：

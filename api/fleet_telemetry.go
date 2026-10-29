@@ -114,6 +114,19 @@ var telemetryFields = map[string]any{
 	"OutsideTemp":         map[string]any{"interval_seconds": 300},
 	"ChargeLimitSoc":      map[string]any{"interval_seconds": 300},
 	"IsolationResistance": map[string]any{"interval_seconds": 300},
+
+	// ⚠️ **v0.84.0 新增**：固件版本 + **可安装**的固件版本。
+	//
+	//	`Version`（官方编号 **68**）= 当前固件版本
+	//	`SoftwareUpdateVersion`（官方编号 **220**）= **待安装**的固件版本
+	//
+	// ⇒ 有了它们，**车睡着也能知道**「有没有新固件可装」——
+	//   轮询侧的 `vehicle_state.car_version` 只有车**醒着**时才拉得到。
+	//
+	// ⚠️ **单独成组**（上面留空行）是有意的：gofmt 按「连续行」对齐，
+	//    混进上面那组会把整张表的排版都重排 —— 那是与本次改动无关的 diff 污染。
+	"Version":               map[string]any{"interval_seconds": 300},
+	"SoftwareUpdateVersion": map[string]any{"interval_seconds": 300},
 }
 
 // --------------------------------------------------------------------------
