@@ -145,6 +145,19 @@ type CarStatus struct {
 	TpmsLiveAlertDetail string   `json:"tpms_live_alert_detail"` // 如 "左后 2.80 bar"
 	TpmsLiveWarnWheels  []string `json:"tpms_live_warn_wheels"`  // 接近阈值的轮次（软告警）
 
+	// ⚠️ **v0.81.0**：这批实时胎压的**数据来源**（telemetry / poll / 空 = 没有数据）。
+	//
+	//	两个来源都是真的，但**新鲜度的算法不同**：
+	//	- telemetry = 车主动推（Fleet Telemetry）⇒ 车睡着时留「断线前的最后已知值」
+	//	- poll      = 我们每 2 分钟去 Fleet API 拉的
+	//
+	//	⇒ 必须标出来，否则调用方会把「9 小时前的遥测值」当成「刚刚的轮询值」。
+	TpmsSource string `json:"tpms_source"`
+
+	// ⚠️ **v0.81.0**：开着哪几扇窗这批结论的**数据来源**（telemetry / poll / 空）。
+	// 语义与 OpenWindows 一致（三态：nil=不知道 / 空数组=全关 / 列表=开着这些）。
+	OpenWindowsSource string `json:"open_windows_source"`
+
 	// v0.7.0 新增：服务端算好的告警判定（唯一事实源，App 与推送脚本共用）
 	// 详见 alerts.go —— 阈值与判定逻辑只在服务端实现一次。
 	TpmsAlert       bool     `json:"tpms_alert"`

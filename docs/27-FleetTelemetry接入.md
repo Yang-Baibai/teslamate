@@ -116,6 +116,14 @@ v/DetailedChargeState "DetailedChargeStateDisconnected"  ← 带引号的字符�
 | `ChargeAmps` | 0 | 5 秒 |
 | `DetailedChargeState` | `DetailedChargeStateDisconnected` | 5 秒 |
 | `Odometer` | 63073.42… | 300 秒 |
+| `TpmsPressureFl/Fr/Rl/Rr` | 3.0000000447034836 / 2.925… / 2.875… / 2.875… | 300 秒 |
+| `TpmsHardWarnings` / `TpmsSoftWarnings` | `null` | 300 秒 |
+| `FdWindow` / `FpWindow` / `RdWindow` / `RpWindow` | `WindowStateClosed` | 300 秒 |
+| `DoorState` | `{"DriverFront":false,…}` | 300 秒 |
+| `SentryMode` | `SentryModeStateOff` | 300 秒 |
+| `InsideTemp` / `OutsideTemp` | 29.30000103265047 / 28.5 | 300 秒 |
+| `ChargeLimitSoc` | 80 | 300 秒 |
+| `IsolationResistance` | 9830 | 300 秒 |
 
 ### ⚠️ retained 重放 = 「旧值说成新的」
 
@@ -156,10 +164,83 @@ GET /api/v1/cars/{id}/telemetry_state
 ⇒ 官方枚举编号已抄进 `api/telemetry_state_test.go` 的
 `telemetryOfficialFieldNumbers`，用到的字段名不在名单里 ⇒ **测试当场变红**。
 
-还没用上、但已在官方名单里备着的（等扩大遥测配置时直接用）：
-`TpmsPressureFl/Fr/Rl/Rr`（胎压）、`FdWindow/FpWindow/RdWindow/RpWindow`（车窗）、
-`DoorState`（车门）、`ChargeLimitSoc`（充电上限）、`InsideTemp` / `OutsideTemp`、
-`SentryMode`（哨兵）、`TpmsHardWarnings` / `TpmsSoftWarnings`。
+⚠️ **v0.81.0 起这批字段全部已用上**（真车已下发并收到），见下一节。
+
+## V 字段扩容（v0.81.0）
+
+### 下发给车端的字段清单（22 个）
+
+`api/fleet_telemetry.go` → `telemetryFields` → JWT claim 的 `fields`。
+
+| 字段 | 间隔 | 中文 | 官方编号 |
+|---|---|---|---|
+| `Soc` | 60s | 电量 | 8 |
+| `Locked` | 60s | 锁车状态 | 59 |
+| `EstBatteryRange` | 60s | 估算续航 | 40 |
+| `Odometer` | 300s | 车端里程表 | 5 |
+| `ChargeAmps` | 5s | 充电电流 | 49 |
+| `DetailedChargeState` | 5s | 充电状态 | 179 |
+| `TpmsPressureFl` / `Fr` / `Rl` / `Rr` | 300s | 四轮胎压 | 69 / 70 / 71 / 72 |
+| `TpmsHardWarnings` / `TpmsSoftWarnings` | 300s | 胎压硬/软告警位 | 224 / 225 |
+| `FdWindow` / `FpWindow` / `RdWindow` / `RpWindow` | 300s | 四扇车窗 | 60 / 61 / 62 / 63 |
+| `DoorState` | 300s | 车门 + 前后备箱 | 58 |
+| `SentryMode` | 300s | 哨兵模式 | 65 |
+| `InsideTemp` / `OutsideTemp` | 300s | 车内 / 车外温度 | 85 / 86 |
+| `ChargeLimitSoc` | 300s | 充电上限 | 38 |
+| `IsolationResistance` | 300s | 高压绝缘电阻 | 11 |
+
+⚠️ `interval_seconds` 是**最小间隔**（官方口径：值变了才发，且不比间隔更频繁）。
+⚠️ 固件门槛：字段 179 需 ≥2024.38、184/187 需 ≥2024.44.32、260+ 需 ≥2026.32。
+本车固件 `2026.26.200` ⇒ **260 及以后的字段不可用**（所以没用 `GpsAccuracyMeters` 那些）。
+
+### 车端实际给的形态（2026-10-29 真车实测）
+
+⚠️ 官方 proto 只定义**类型**，没告诉我们车端怎么**编码**。实测：
+
+| 字段 | 车端给的 | 解析要点 |
+|---|---|---|
+| `FdWindow` … `RpWindow` | `"WindowStateClosed"` | **枚举名**（`WindowStateUnknown/Closed/PartiallyOpen/Opened` = 0/1/2/3） |
+| `DoorState` | `{"DriverFront":false,…}` | **对象**；官方 `message Doors` 的 6 个字段名逐字照抄 |
+| `SentryMode` | `"SentryModeStateOff"` | **枚举名**（`Unknown/Off/Idle/Armed/Aware/Panic/Quiet` = 0–6） |
+| `TpmsHardWarnings` / `TpmsSoftWarnings` | `null`（**字面量**） | = 「**没有告警位**」，不是解析失败 |
+| `TpmsPressureFl` | `3.0000000447034836` | 浮点 |
+| `InsideTemp` / `OutsideTemp` | `29.30000103265047` / `28.5` | 浮点 |
+
+⚠️ **枚举名与数字都要认** —— 官方 README 明说类型会随固件漂移
+（`"12.3"` 与 `12.3` 都可能），解析器三种形态全认，认不出就**摊原文**。
+
+### 单位：靠交叉验证，不靠猜
+
+⚠️ 遥测 proto **没标任何单位**。用同一时刻的两个来源对撞（2026-10-29 12:18）：
+
+| 量 | 遥测 | 轮询 `vehicle_data` | 结论 |
+|---|---|---|---|
+| 左前胎压 | `3.0000000447034836` | `3` | **bar** |
+| 右前 / 左后 / 右后 | `2.925` / `2.875` / `2.875` | `2.925` / `2.875` / `2.875` | **bar** |
+| 车外温 | `28.5` | `28.5` | **℃** |
+| 车内温 | `29.30000103265047` | `30` | **℃**（`climate_state` 取整） |
+
+⚠️ `IsolationResistance` 官方**没标单位** ⇒ 只给原始值，不编单位。
+
+### 对外接口
+
+```
+GET /api/v1/cars/{id}/telemetry_state    ← 原始字段流（逐字段 label/at/stale）
+GET /api/v1/cars/{id}/telemetry_vehicle  ← 解读后的车况实况（v0.81.0）
+```
+
+`telemetry_vehicle` 返回：胎压（四轮 + 单位 + 告警三态）、车窗（四扇 + 中文状态）、
+门/舱盖（6 个）、哨兵、内外温、充电上限、绝缘电阻，
+外加整组的 `at` / `stale` / `connected` / `ever_connected`。
+
+⚠️ `open_windows` / `open_doors` 可能是 **null** —— 那是「**不知道**」，不是「全关」。
+
+### 两个来源怎么合
+
+`pickNewerTPMS` / `pickNewerWindows`：**按采集时刻取更新的那个**
+（遥测可能是「车断线前的最后已知值」，轮询是上一次成功拉取）。
+
+⚠️ 一边「不知道」（nil）时直接用另一边 —— 不能把「读不到」当成「全关」。
 
 ## 已完成（2026-10-28 v0.79.0 3/3 实测）
 

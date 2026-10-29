@@ -331,19 +331,42 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	//
 	// nil = 不知道（还没拿到过实时数据），**不是**「全关」——
 	// 压成空数组会让推送脚本把「读不到」误判成「刚关上」。
-	s.OpenWindows = teslaOpenWindows()
+	// ⚠️ **v0.81.0**：车窗结论有两个来源了（轮询缓存 / 车主动推的遥测）。
+	//
+	//	不是无条件「遥测优先」——遥测的值可能是**车断线前的最后已知值**（9 小时前），
+	//	轮询的值是上一次成功拉取的 ⇒ 按采集时刻**取更新的那个**。
+	//
+	//	⚠️ 三态语义不变（nil=不知道 / []=全关 / 列表=开着这些）——
+	//	推送侧的「车窗未关」是**带计时器**的判定，读不到时计时器必须保持不动。
+	pollWin, pollWinAt := teslaOpenWindowsAt()
+	var telWin []string
+	var telWinAt *time.Time
+	if carVinErr == nil {
+		telWin, telWinAt = telemetryOpenWindowsForVIN(r.Context(), carVin)
+	}
+	s.OpenWindows, s.OpenWindowsSource = pickNewerWindows(pollWin, pollWinAt, telWin, telWinAt)
 
-	// 实时胎压同样来自 Fleet API 的后台轮询缓存（同一个 vehicle_data 响应）。
-	// ⚠️ 与上面的 tpms_fl/fr/rl/rr 是两个来源，不互相覆盖：
+	// 实时胎压同样有两个来源：
+	// ⚠️ 与上面的 tpms_fl/fr/rl/rr 是三个来源，不互相覆盖：
 	//   tpms_fl…   = TeslaMate 的稀疏采样（数小时才有一条）
-	//   tpms_live… = Fleet API 的实时值（车醒着时每 2 分钟一条，明显更鲜）
+	//   tpms_live… = 实时值（明显更鲜）
 	// App 端：live 有值就用 live，没有才回退 tpms_fl…。
+	//
+	// ⚠️ **v0.81.0** 加进遥测这条路：车主动推，**车睡着时也留最后已知值**，
+	// 而且不用我们去轮询（轮询会撞 Tesla 的 429 限流）。
+	// 但**不是无条件遥测优先** ⇒ 按采集时刻取更新的那个（见 pickNewerTPMS）。
 	live := teslaLiveTPMS()
+	telTPMS, telTPMSOK := TeslaTPMS{}, false
+	if carVinErr == nil {
+		telTPMS, telTPMSOK = telemetryLiveTPMS(r.Context(), carVin)
+	}
+	live, tpmsSource := pickNewerTPMS(live, telTPMS, telTPMSOK)
 	s.TpmsLiveFL = live.FL.Pressure
 	s.TpmsLiveFR = live.FR.Pressure
 	s.TpmsLiveRL = live.RL.Pressure
 	s.TpmsLiveRR = live.RR.Pressure
 	s.TpmsLiveAt = live.At
+	s.TpmsSource = tpmsSource
 	// 告警判定：Tesla 服务端自己的硬/软告警位优先，阈值兜底（见 alerts.go）。
 	// 四轮一个都没读到 = 未知（null），不能报成「正常」。
 	if live.FL.Pressure != nil || live.FR.Pressure != nil ||

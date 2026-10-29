@@ -80,6 +80,40 @@ var telemetryFields = map[string]any{
 	"Odometer":            map[string]any{"interval_seconds": 300},
 	"ChargeAmps":          map[string]any{"interval_seconds": 5},
 	"DetailedChargeState": map[string]any{"interval_seconds": 5},
+
+	// ⚠️ **v0.81.0 新增**：车停着不动时最该知道的那批。
+	//
+	//	这批字段的共同点是「我们**主动去拉**很难拿到」：
+	//	- 胎压 / 车窗 / 门 / 哨兵 / 温度：都在 `vehicle_state` 里，
+	//	  但要车**醒着**才拉得到；车睡了就只能守着旧缓存
+	//	- 充电上限：轮询里也有，但那是 2 分钟前的
+	//
+	//	⇒ 走遥测（车主动推）之后，**车睡着也有最后已知值**，
+	//	而且不用我们为了这几个字段去高频轮询（轮询会撞 Tesla 的 429 限流）。
+	//
+	// ⚠️ 字段名必须与官方 `vehicle_data.proto` 逐字一致 ——
+	//	写错**不报错**，只是那个字段永远不来（静默失效）。
+	//	`TestTelemetryConfiguredFieldsAreOfficial` 会当场变红。
+	//
+	// ⚠️ `interval_seconds` 是**最小间隔**（官方口径：值变了才发，且不比间隔更频繁）。
+	//	这批都是变化慢的量 ⇒ 300s。**不要**为了「更实时」调小 ——
+	//	车端有速率限制，调小只会把别的字段挤掉。
+	"TpmsPressureFl":      map[string]any{"interval_seconds": 300},
+	"TpmsPressureFr":      map[string]any{"interval_seconds": 300},
+	"TpmsPressureRl":      map[string]any{"interval_seconds": 300},
+	"TpmsPressureRr":      map[string]any{"interval_seconds": 300},
+	"TpmsHardWarnings":    map[string]any{"interval_seconds": 300},
+	"TpmsSoftWarnings":    map[string]any{"interval_seconds": 300},
+	"FdWindow":            map[string]any{"interval_seconds": 300},
+	"FpWindow":            map[string]any{"interval_seconds": 300},
+	"RdWindow":            map[string]any{"interval_seconds": 300},
+	"RpWindow":            map[string]any{"interval_seconds": 300},
+	"DoorState":           map[string]any{"interval_seconds": 300},
+	"SentryMode":          map[string]any{"interval_seconds": 300},
+	"InsideTemp":          map[string]any{"interval_seconds": 300},
+	"OutsideTemp":         map[string]any{"interval_seconds": 300},
+	"ChargeLimitSoc":      map[string]any{"interval_seconds": 300},
+	"IsolationResistance": map[string]any{"interval_seconds": 300},
 }
 
 // --------------------------------------------------------------------------

@@ -76,6 +76,19 @@ SPEC = [
     ("teslamate_alerts", {}, "故障码总数", "故障码总数"),
     ("teslamate_alerts", {}, "车端此刻在线", "车端此刻是否连着"),
     ("teslamate_alerts", {}, "遥测流.收到条数", "遥测流计数"),
+    # ⚠️ **v0.81.0**：实时胎压的**来源**。
+    #    遥测给的值可能是「车断线前 9 小时」的 —— 不标来源就会被当成刚测的。
+    ("teslamate_status", {}, "胎压数据来源", "实时胎压来自遥测还是轮询"),
+    ("teslamate_status", {}, "胎压采集于", "这批胎压的采集时刻"),
+    # ⚠️ **v0.81.0**：车况实况工具。
+    #    只断言「**必然存在**」的字段 ——
+    #    「胎压bar.左前」在车还没推过胎压时合法为 null（那时还没有这个字段）。
+    ("teslamate_telemetry", {}, "车端此刻在线", "车端此刻是否连着"),
+    ("teslamate_telemetry", {}, "遥测已接入", "遥测是否接得上"),
+    ("teslamate_telemetry", {}, "数据是旧的", "这批数据是不是车断线前的最后已知值"),
+    ("teslamate_telemetry", {}, "开着哪几扇窗", "车窗结论（三态，恒在）"),
+    ("teslamate_telemetry", {}, "开着哪几个门", "门/舱盖结论（三态，恒在）"),
+    ("teslamate_telemetry", {}, "哨兵", "哨兵模式状态"),
     ("teslamate_drives", {"limit": 3}, "最近[0].起点", "起点"),
     ("teslamate_drives", {"limit": 3}, "最近[0].终点", "终点"),
     ("teslamate_drives", {"limit": 3}, "最近[0].能耗kWh/100km", "能耗"),

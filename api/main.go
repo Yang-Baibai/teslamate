@@ -162,6 +162,9 @@ func main() {
 	// ⚠️ **v0.80.0**：遥测的 **V 字段**（车主动推的车辆实时数据）。
 	// 锁车 / 电量 / 胎压 / 车窗… —— 车睡着时也有「断线前的最后已知值」。
 	mux.HandleFunc("GET /api/v1/cars/{id}/telemetry_state", auth(handleTelemetryState))
+	// ⚠️ **v0.81.0**：遥测的**车辆实况**（解读后的胎压 / 车窗 / 门 / 哨兵 / 温度 / 充电上限）。
+	// 与上面的 telemetry_state 分工：那个给原始字段流，这个给能直接用的结论。
+	mux.HandleFunc("GET /api/v1/cars/{id}/telemetry_vehicle", auth(handleTelemetryVehicle))
 	mux.HandleFunc("GET /api/v1/app/latest", auth(handleAppLatest))
 	mux.HandleFunc("GET /api/v1/app/staticmap", auth(handleStaticMap))
 	// APK 静态服务（不加 auth：DownloadManager 无法塞自定义 header；Tailscale 隧道已加密）

@@ -136,26 +136,31 @@ def _tpms_pressure(v: Any) -> Any:
     return v
 
 
-# ⚠️ **v0.80.0**：锁车状态的数据来源 → 人话。
+# ⚠️ **v0.80.0 / v0.81.0**：实时数据的**来源** → 人话。
 #
 #   telemetry —— **车主动推**（Fleet Telemetry）。车睡着时也有「断线前的最后已知值」。
 #   poll      —— **我们轮询**（Fleet API vehicle_data）。车睡着时拉不到。
 #   unknown   —— 两边都没有 ⇒ 真的不知道。
 #
-# ⚠️ 为什么要说清楚：同一个「已上锁」，来源不同意味着**新鲜度完全不同**。
+# ⚠️ 为什么要说清楚：同一个「已上锁」/「胎压 2.9」，来源不同意味着**新鲜度完全不同**。
 # 遥测给的可能是 9 小时前的状态 —— 不标出来就会被当成「现在锁着」。
-_LOCK_SOURCE_CN = {
+#
+# ⚠️ **v0.81.0**：锁车与胎压现在**共用**这一张表 ——
+#    两条路的来源语义完全一样（遥测优先 + 时间诚实），
+#    分成两张表只会让「哪个来源」在两处有**两种说法**。
+_SOURCE_CN = {
     "telemetry": "车主动推（遥测）",
     "poll": "服务端轮询",
     "unknown": "未知",
+    "": "未知",
 }
 
 
-def _lock_source_cn(v: Any) -> str:
-    """锁车数据来源 → 人话。认不出来的原样摊开（不编）。"""
+def _source_cn(v: Any) -> str:
+    """数据来源 → 人话。认不出来的原样摊开（不编）。"""
     if v is None:
         return "未知"
-    return _LOCK_SOURCE_CN.get(v, str(v))
+    return _SOURCE_CN.get(v, str(v))
 
 
 # --------------------------------------------------------------------------
@@ -197,7 +202,7 @@ def teslamate_status() -> dict:
         "锁车状态采集于": s.get("locked_at"),
         # ⚠️ 这两个是 **v0.80.0** 新增的 —— 少了它们，
         # 9 小时前的锁车状态会被当成「现在锁着」报出去。
-        "锁车数据来源": _lock_source_cn(s.get("locked_source")),
+        "锁车数据来源": _source_cn(s.get("locked_source")),
         "锁车状态是旧的": bool(s.get("locked_stale")),
         "位置": s.get("location_name"),
         "车外温℃": s.get("outside_temp"),
@@ -212,6 +217,10 @@ def teslamate_status() -> dict:
             "右后": _tpms_pressure(s.get("tpms_live_rr")),
         },
         "胎压告警": s.get("tpms_live_alert_detail") or s.get("tpms_alert_detail"),
+        # ⚠️ **v0.81.0**：实时胎压也有两个来源了（遥测 / 轮询）——
+        #    少了这两个，9 小时前的胎压会被当成「刚刚测的」报出去。
+        "胎压数据来源": _source_cn(s.get("tpms_source")),
+        "胎压采集于": s.get("tpms_live_at"),
         "数据滞后小时": s.get("data_age_hours"),
         "最后采集于": s.get("updated_at"),
     }
@@ -698,6 +707,78 @@ def teslamate_vehicle_command(action: str, params: dict | None = None) -> dict:
     if res.get("response"):
         out["车端回应"] = res.get("response")
     return out
+
+
+@mcp.tool()
+def teslamate_telemetry() -> dict:
+    """查这台车的**车况实况**（车主动推的实时数据）：胎压、车窗、门、哨兵、温度、充电上限。
+
+    **什么时候用**：用户问「四个轮胎压多少」「胎压正常吗」「车窗关了吗」
+    「后备箱开着吗」「哨兵开着吗」「车里热不热」「充电上限设的多少」—— 都归它。
+
+    ⚠️ **与 `teslamate_status` 的分工**：
+    - `teslamate_status` = **汇总状态**（电量 / 续航 / 位置 / 锁车）
+    - `teslamate_telemetry` = **车主动推的实时细节**（胎压 / 车窗 / 门 / 哨兵 / 温度 / 充电上限）
+
+    ⚠️ **「数据是旧的」必须一起报**：
+    车睡着时车端就断了，broker 上留的是**断线前的最后已知值**。
+    `数据是旧的` = true ⇒ 那批值是**车断线那一刻**的（可能已经过了好几个小时）——
+    **报给用户时必须带上 `采集于` 的时间**，别当成「现在的样子」。
+
+    ⚠️ **没读到就是没读到**：
+    `开着哪几扇窗` / `开着哪几个门` 若是「不知道（没读到）」，
+    **不要说成「都关着」** —— 那会让「车窗未关」的提醒凭空消失。
+    """
+    d = _get(f"/api/v1/cars/{CAR_ID}/telemetry_vehicle")
+    if not isinstance(d, dict) or "error" in d:
+        return d if isinstance(d, dict) else {"error": "返回格式异常"}
+
+    tpms = d.get("tpms") or {}
+    windows = d.get("windows") or []
+    doors = d.get("doors") or []
+    sentry = d.get("sentry") or {}
+
+    open_win = d.get("open_windows")
+    open_door = d.get("open_doors")
+
+    def _open_text(v):
+        """三态：None=不知道 / []=全关 / 列表=开着这些。"""
+        if v is None:
+            return "不知道（没读到）"
+        if not v:
+            return "全部关闭"
+        return "、".join(v)
+
+    return {
+        "车端此刻在线": bool(d.get("connected")),
+        # ⚠️ 「从未接入」与「车睡着了」是两回事 —— 少了它就分不清。
+        "遥测已接入": bool(d.get("ever_connected")),
+        "采集于": d.get("at"),
+        # ⚠️ 少了这个，9 小时前的胎压会被当成「刚刚测的」。
+        "数据是旧的": bool(d.get("stale")),
+        "胎压bar": {
+            "左前": tpms.get("fl"),
+            "右前": tpms.get("fr"),
+            "左后": tpms.get("rl"),
+            "右后": tpms.get("rr"),
+        },
+        "胎压是否异常": tpms.get("alert"),
+        "胎压异常轮次": tpms.get("alert_wheels") or [],
+        "胎压接近阈值轮次": tpms.get("warn_wheels") or [],
+        "胎压异常详情": tpms.get("detail") or "",
+        "开着哪几扇窗": _open_text(open_win),
+        "车窗状态": {w.get("label"): w.get("text") for w in windows},
+        "开着哪几个门": _open_text(open_door),
+        "门状态": {x.get("label"): ("开着" if x.get("open") else "关着") for x in doors},
+        # ⚠️ 哨兵状态认不出来时，服务端给的是**车端原文** —— 原样报，不编。
+        "哨兵": sentry.get("text") or "不知道（没读到）",
+        "车内温℃": d.get("inside_temp"),
+        "车外温℃": d.get("outside_temp"),
+        "充电上限%": d.get("charge_limit_soc"),
+        "高压绝缘电阻": d.get("insulation_resistance"),
+        # 原始字段：任何我们拿到的字段都能在这里查到（label → 车端原值）。
+        "原始字段": {f.get("label") or f.get("field"): f.get("text") for f in (d.get("fields") or [])},
+    }
 
 
 @mcp.tool()

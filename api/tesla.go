@@ -276,6 +276,28 @@ func teslaOpenWindows() []string {
 	return tesla.OpenWindows()
 }
 
+// ⚠️ **v0.81.0**：轮询缓存里的「开着哪几扇窗」+ **这批数据的采集时刻**。
+//
+// 有了时刻，才能和遥测那份比「谁更新」（见 pickNewerWindows）。
+//
+// ⚠️ 时刻取的是**我们拉到的时刻**（rawFetchedAt）——
+//	它比车端 timestamp 晚几十毫秒，但两边都是 UTC，可比。
+func teslaOpenWindowsAt() ([]string, *time.Time) {
+	if tesla == nil {
+		return nil, nil
+	}
+	raw, at := tesla.RawVehicleData()
+	if raw == nil || at.IsZero() {
+		return nil, nil
+	}
+	w := windowsFromRaw(raw)
+	if w == nil {
+		return nil, nil
+	}
+	t := at
+	return w, &t
+}
+
 // OpenWindows 返回开着哪几扇窗（nil = 不知道）。
 func (c *teslaClient) OpenWindows() []string {
 	if c == nil {

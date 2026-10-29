@@ -73,6 +73,10 @@ var telemetryFieldNames = map[string]string{
 	"InsideTemp":          "车内温度",
 	"OutsideTemp":         "车外温度",
 	"SentryMode":          "哨兵模式",
+	// ⚠️ **v0.81.0** 新增三个（官方 proto 里都存在，编号见单测的权威名单）。
+	"TpmsHardWarnings":    "胎压硬告警",
+	"TpmsSoftWarnings":    "胎压软告警",
+	"IsolationResistance": "高压绝缘电阻",
 }
 
 // --------------------------------------------------------------------------
