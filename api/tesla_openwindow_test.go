@@ -88,17 +88,51 @@ func TestWindowsFromRawPartialButOpen(t *testing.T) {
 	}
 }
 
-func TestIsOpenFlag(t *testing.T) {
+// ⚠️ **v0.83.0**：取值**合法性**与「开/关」是两个维度。
+//
+// 旧用例只验了「非 0 即开」，没验「**取值不在编码里**该怎么办」——
+// 于是 `rt = 32`（真车实测出现过）会被说成「后备箱开着」。
+func TestPollOpenFlagCheckedValid(t *testing.T) {
 	open := []any{true, float64(1), float64(2), int(1), "1", "true", "OPEN"}
 	for _, v := range open {
-		if !isOpenFlag(v) {
+		got, valid := pollOpenFlagChecked(v)
+		if !valid {
+			t.Errorf("%#v 应当是合法取值", v)
+			continue
+		}
+		if !got {
 			t.Errorf("%#v 应当算「开着」", v)
 		}
 	}
-	closed := []any{false, float64(0), int(0), "0", "false", "", nil}
+	closed := []any{false, float64(0), int(0), "0", "false"}
 	for _, v := range closed {
-		if isOpenFlag(v) {
+		got, valid := pollOpenFlagChecked(v)
+		if !valid {
+			t.Errorf("%#v 应当是合法取值", v)
+			continue
+		}
+		if got {
 			t.Errorf("%#v 应当算「关着」", v)
+		}
+	}
+}
+
+// ⚠️ 这些值**不在** legacy 编码 {0,1,2} 里 ⇒ 必须判为「无效」。
+//
+// ⚠️ 特别地：**空串与 nil 不等于「关」** —— 它们是「没读到」，
+// 把「没读到」说成「全关」是假安全。
+func TestPollOpenFlagCheckedInvalid(t *testing.T) {
+	for _, v := range []any{
+		float64(32), // 真车实测出现过的 rt
+		float64(3),  // 官方枚举里是 Opened，但 legacy 里不存在
+		float64(-1),
+		int(99),
+		nil,
+		"",
+		"unknown",
+	} {
+		if _, valid := pollOpenFlagChecked(v); valid {
+			t.Errorf("%#v 应当判为无效取值（= 没读到），不能当成「关」", v)
 		}
 	}
 }

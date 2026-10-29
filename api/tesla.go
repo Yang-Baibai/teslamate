@@ -335,11 +335,30 @@ func teslaChargeContext() (FleetCharge, bool) {
 
 // windowFields 车窗字段表（Tesla vehicle_state）。
 //
-// ⚠️ 中国区实测这些字段是**整数 0/1**，不是布尔：
+// ⚠️ **轮询侧用的是 legacy 整数编码，不是官方枚举**（v0.83.0 订正）：
 //
-//	fd_window=0  fp_window=0  rd_window=0  rp_window=0   ← 车确定锁着关着时全是 0
+//	0 = 关、1 = 开一条缝（vented）、2 = 开
 //
-// 而全球区有的版本给的是布尔。两种都认（见 isOpenFlag）。
+// 中国区实测（2026-10-29）车确定锁着关着时四扇窗全是 0：
+//
+//	fd_window=0  fp_window=0  rd_window=0  rp_window=0
+//
+// 全球区有的版本给的是布尔。两种都认（见 pollOpenFlagChecked）。
+//
+// ⚠️⚠️ **这套编码与遥测侧不是同一套** —— 这是本文件最容易踩的坑：
+//
+//	轮询侧 = legacy 整数（0 关 / 1 开一条缝 / 2 开）
+//	遥测侧 = 官方 `WindowState` 枚举
+//	         （0=Unknown / 1=Closed / 2=PartiallyOpen / 3=Opened）
+//
+// 官方「Available Data」表把 `FdWindow` 对到 `vehicle_state.fd_window`，
+// 但它只说明「**是哪个字段**」，**没说两边编码相同**。
+// 实测佐证（2026-10-29）：轮询四扇窗全 0，遥测同时给 "WindowStateClosed"
+// （枚举 1）⇒ 两边编码确实不同（0 在 legacy 是「关」，在枚举是「Unknown」）。
+//
+// ⇒ 因此：**跨源只能比「开着哪几扇」这个语义，不能比原始编码值**。
+//
+//	见 ADR #24 与 api/vehicle_safety.go 的 sameOpenSet。
 var windowFields = []struct {
 	key  string
 	name string
@@ -368,8 +387,17 @@ func windowsFromRaw(raw map[string]any) []string {
 		if !present {
 			continue
 		}
+		isOpen, valid := pollOpenFlagChecked(v)
+		if !valid {
+			// ⚠️ v0.83.0：取值**不在这套编码里**（实测见过 32）⇒
+			// 它不表示任何已知状态 ⇒ 当成「**没读到**」，不是「关着」。
+			// 否则「非 0 即开」会把一个无意义的值说成「开着」。
+			log.Printf("⚠️ 车窗字段 %s 取值 %v（%T）不在 legacy 编码 {0,1,2} 内 ⇒ 该字段按「没读到」处理",
+				f.key, v, v)
+			continue
+		}
 		saw++
-		if isOpenFlag(v) {
+		if isOpen {
 			open = append(open, f.name)
 		}
 	}
@@ -385,31 +413,70 @@ func windowsFromRaw(raw map[string]any) []string {
 	return nil
 }
 
-// isOpenFlag 判断一个车窗/门字段是不是「开着」。
+// pollOpenFlagChecked 判断一个轮询侧的车窗/门字段是不是「开着」，
+// **并**校验它的取值是否合法。
 //
-// 中国区实测是整数 0/1，全球区有的版本是布尔。
+// 返回 (open, valid)：
 //
-// ⚠️ **nil 不能当成「关」** —— 那是「没读到」。
-func isOpenFlag(v any) bool {
+//   - valid = false ⇒ 这个值**不表示任何已知状态**（**不是「关」**），
+//     调用方必须把它当成「**没读到**」。
+//
+// ⚠️ **为什么要有 valid 这一层**（2026-10-29 真车实测）：
+//
+// 轮询侧用 legacy 整数编码 0=关 / 1=开一条缝 / 2=开。
+// 实测某刻只有后备箱 `rt = 32` 非零 —— **32 不在这套编码里**，
+// 它什么都不表示。旧代码「非 0 即开」会把它说成「后备箱开着」
+// （那次碰巧与遥测一致，**纯属运气**）：遥测一旦缺失，
+// 那就是一句**编出来的「开着」**。
+//
+// ⚠️ 遥测侧用的是**官方 `WindowState` 枚举**
+// （0=Unknown / 1=Closed / 2=PartiallyOpen / 3=Opened），
+// **与轮询侧不是同一套编码** ⇒ 跨源只能比**语义**（「开着哪几扇」），
+// 不能比原始编码值。官方「Available Data」表的 related field 列
+// 只说「是哪个字段」，**没说编码相同**。
+//
+// ⚠️ nil 不能当成「关」 —— 那是「没读到」。
+func pollOpenFlagChecked(v any) (open bool, valid bool) {
 	switch t := v.(type) {
+	case nil:
+		return false, false
 	case bool:
-		return t
+		return t, true
 	case float64:
-		return t != 0
+		return pollOpenFlagNum(t)
 	case int:
-		return t != 0
+		return pollOpenFlagNum(float64(t))
 	case json.Number:
 		f, err := t.Float64()
-		return err == nil && f != 0
+		if err != nil {
+			return false, false
+		}
+		return pollOpenFlagNum(f)
 	case string:
 		switch strings.ToLower(strings.TrimSpace(t)) {
-		case "1", "true", "open":
-			return true
+		case "0", "false", "closed", "close":
+			return false, true
+		case "1", "2", "true", "open", "opened", "vented", "partiallyopen", "partially_open":
+			return true, true
 		}
-		return false
+		// ⚠️ 空串与任何认不出的词（如 "unknown"）⇒ **无效**，
+		// 不能当成「关」—— 那会凭空造出一个「全关」。
+		return false, false
 	default:
-		return false
+		return false, false
 	}
+}
+
+// pollOpenFlagNum legacy 整数编码：0=关 / 1=开一条缝 / 2=开；
+// 其它取值 ⇒ **无效**（不表示任何已知状态）。
+func pollOpenFlagNum(f float64) (open bool, valid bool) {
+	switch f {
+	case 0:
+		return false, true
+	case 1, 2:
+		return true, true
+	}
+	return false, false
 }
 
 // FleetStatus 返回轮询健康状态（读侧不加锁排队）。

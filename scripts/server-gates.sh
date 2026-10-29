@@ -238,5 +238,76 @@ case "$PSG" in
   *)     fail "PowerShell 闸门自身出错（扫描器没有输出）—— 这次没检查成，不算通过" ;;
 esac
 
+# ── ⑤ Go 文件不得被「平台命名规则」静默排除 ───────────────────────
+#
+# ⚠️ **v0.83.0：一次真实的「闸门假通过」**
+#
+# Go 的隐式构建规则：文件名去掉 `.go`（再去掉 `_test`）之后，
+# 如果以 `_` + 某个 GOOS/GOARCH 结尾，**那个文件只在该平台参与编译**。
+#
+# 本仓库的 `api/tesla_windows_test.go` 正好撞上：
+# 去掉 `_test.go` 后是 `tesla_windows` ⇒ **只给 GOOS=windows 编译**。
+# 而 CI/闸门跑在 `golang:1.23-alpine`（GOOS=linux）⇒
+# **这个文件里的 5 条用例从 v0.77.0 起一次都没跑过**，
+# 而 `go test ./...` 照样报 `ok` —— 闸门是绿的，测试是空的。
+#
+# ⇒ 这道闸门查三件事：
+#   ① 有没有 .go 文件被隐式限制到某个平台（在本机 linux/amd64 上会被排除）；
+#   ② 有没有 .go 文件带 `//go:build` 约束（同样可能整体不参与编译）；
+#   ③ 每个 `_test.go` 文件里**至少要有一个 `func Test`**（防止文件被清空）。
+#
+# ⚠️ 纯静态检查，不跑容器、不需要网络 ⇒ 秒级返回。
+GOFILE=$(python - <<'PY' 2>/dev/null
+import io, os, pathlib, re, sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+
+GOOS = {"aix", "android", "darwin", "dragonfly", "freebsd", "hurd", "illumos",
+        "ios", "js", "linux", "nacl", "netbsd", "openbsd", "plan9", "solaris",
+        "wasip1", "windows", "zos"}
+GOARCH = {"386", "amd64", "amd64p32", "arm", "arm64", "arm64be", "armbe",
+          "loong64", "mips", "mips64", "mips64le", "mips64p32", "mips64p32le",
+          "mipsle", "ppc", "ppc64", "ppc64le", "riscv", "riscv64", "s390",
+          "s390x", "sparc", "sparc64", "wasm"}
+SKIP_DIRS = {".git", "node_modules", "build", ".gradle", "apk", "vendor"}
+
+bad = []
+root = pathlib.Path('.').resolve()
+for p in sorted(root.rglob('*.go')):
+    rel = p.relative_to(root).as_posix()
+    if any(part in SKIP_DIRS for part in p.parts):
+        continue
+    stem = p.name[:-3]
+    if stem.endswith('_test'):
+        stem = stem[:-5]
+    tail = stem.rsplit('_', 1)[-1] if '_' in stem else ''
+    if tail in GOOS or tail in GOARCH:
+        kind = 'GOOS' if tail in GOOS else 'GOARCH'
+        bad.append('%s  文件名后缀 _%s ⇒ 只在 %s 上编译（本机 linux 上被排除）'
+                   % (rel, tail, kind))
+    head = p.read_bytes()[:2000].decode('utf-8', 'replace')
+    for line in head.split('\n')[:12]:
+        st = line.strip()
+        if st.startswith('//go:build') or st.startswith('// +build'):
+            bad.append('%s  带构建约束 %s ⇒ 可能整体不参与编译' % (rel, st))
+            break
+    if p.name.endswith('_test.go'):
+        src = p.read_text(encoding='utf-8', errors='replace')
+        if not re.search(r'^func Test', src, re.M):
+            bad.append('%s  测试文件里一个 func Test 都没有（文件被清空？）' % rel)
+
+print('HITS:' + ' || '.join(bad[:8]) if bad else 'CLEAN')
+PY
+)
+case "$GOFILE" in
+  HITS:*) fail "Go 文件被平台规则静默排除 —— $(echo "$GOFILE" | sed 's/^HITS://')"
+          echo "    ⇒ 改文件名（别用 _windows/_linux/_amd64 这类后缀）⇒ 否则该文件的测试永远不跑，而 go test 照样报 ok" ;;
+  CLEAN) ok "Go 文件没被平台规则静默排除（测试文件都真的参与编译）" ;;
+  # ⚠️ 扫描器崩了 ≠ 没发现问题 —— 必须报红，否则就是「亮绿灯的假通过」。
+  *)     fail "Go 文件名闸门自身出错（扫描器没有输出）—— 这次没检查成，不算通过" ;;
+esac
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ]

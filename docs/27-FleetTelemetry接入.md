@@ -212,6 +212,34 @@ Fleet Telemetry「Available Data」页的 `related field` 列就是官方给的�
 `HomelinkDeviceCount` / `HomelinkNearby` 的 related field 互换了
 ⇒ **以逐位实测对撞为准**，不照抄笔误。
 
+#### ⚠️ `related field` 只说「**是哪个字段**」，**没说两边编码相同**
+
+`FdWindow → vehicle_state.fd_window` 看上去是「同一个字段」，但**编码是两套**：
+
+| 来源 | 编码 | 取值 |
+|---|---|---|
+| **轮询侧**（Fleet API `vehicle_data`） | **legacy 整数** | 0 关 / 1 开一条缝 / 2 开 |
+| **遥测侧**（官方 `WindowState` 枚举） | **枚举名** | Unknown=0 / Closed=1 / PartiallyOpen=2 / Opened=3 |
+
+官方 proto `protos/vehicle_data.proto` 的编号逐字为：
+
+```
+WindowStateUnknown = 0;  WindowStateClosed = 1;
+WindowStatePartiallyOpen = 2;  WindowStateOpened = 3;
+```
+
+⚠️ **实测佐证**（2026-10-29）：轮询四扇窗全 **0**，遥测同时给 **"WindowStateClosed"**（枚举 **1**）
+⇒ 两边编码确实不同（0 在 legacy 是「关」，在枚举是「Unknown」）。
+
+⇒ **两条推论**（都已落地）：
+
+1. **跨源只能比语义**（「开着哪几扇」），**不能比原始编码值**
+   ⇒ `sameOpenSet` + 「口径冲突以遥测为准」（ADR #24）。
+2. **轮询侧的取值要先过合法性闸门**：不在 {0,1,2}（或布尔）之内 ⇒ **按「没读到」处理**。
+   实测某刻 `rt = 32` —— **它什么都不表示**；旧代码「非 0 即开」会把它说成「后备箱开着」
+   （那次碰巧与遥测一致，**纯属运气**）。
+   ⇒ v0.83.0 起该字段降级为「不知道」，由遥测接管（ADR #26）。
+
 ⚠️ **两条互相咬住的固件陷阱**（都只影响老车，但别忘了）：
 
 1. `DoorState` 在 **2024.44.32 之前**固件里，**副驾前门 ↔ 主驾后门互换**；

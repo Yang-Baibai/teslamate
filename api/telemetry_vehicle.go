@@ -607,8 +607,9 @@ func pickNewerTPMS(poll, tel TeslaTPMS, telOK bool) (TeslaTPMS, string) {
 	return poll, "poll"
 }
 
-
-// pickNewerWindows 在「轮询」与「遥测」两份车窗结论里挑**更新的**那份。
+// pickNewerWindows 在「轮询」与「遥测」两份车窗结论里挑一份。
+//
+// ⚠️ **v0.83.0**：语义不一致时以**遥测**为准（同 pickNewerDoors，ADR #24）。
 //
 // ⚠️ 三态语义：nil = **不知道**（不是「全关」）。
 //
@@ -625,6 +626,24 @@ func pickNewerWindows(poll []string, pollAt *time.Time, tel []string, telAt *tim
 	case poll == nil:
 		return tel, "telemetry"
 	}
+	// ⚠️ **v0.83.0**：与 pickNewerDoors 同规则 —— 两边**语义不一致**时，
+	// 以**遥测**为准（而不是取更新的那个）。
+	//
+	// **为什么**（官方锚点 + 2026-10-29 实测）：
+	//
+	//	官方「Available Data」表把 `FdWindow` 对到 `vehicle_state.fd_window`，
+	//	但**两边的编码不同**（轮询 legacy 0/1/2；遥测官方枚举 0..3）。
+	//	⇒ 一旦 Tesla 换编码形态，轮询侧的「1」就可能变成官方枚举里的
+	//	「Closed」⇒ 旧代码会把「关着」说成「开着」。
+	//	⇒ 冲突时只有**官方编码**的那份（遥测）配当裁判。
+	//
+	// ⚠️ 比较的是**语义**（「开着哪几扇」），不是原始编码值 ——
+	//    两边中文名同源（telemetryWindowFields ↔ windowFields）。
+	if !sameOpenSet(poll, tel) {
+		log.Printf("⚠️ 车窗口径冲突：轮询=%v 遥测=%v ⇒ 以遥测（官方 WindowState 枚举）为准", poll, tel)
+		return tel, "telemetry"
+	}
+	// 语义一致时，才按采集时刻取更新的那个。
 	if telAt != nil && (pollAt == nil || telAt.After(*pollAt)) {
 		return tel, "telemetry"
 	}

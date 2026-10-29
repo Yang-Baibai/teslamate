@@ -158,7 +158,19 @@ func swapDoorLabels(names []string) {
 //	[]   = 知道，全关
 //	列表 = 开着这些
 //
-// ⚠️ 中国区实测这些字段是**整数 0/1**，不是布尔 —— 两种都认（isOpenFlag）。
+// ⚠️ 中国区实测这些字段是**整数 0/1**，不是布尔 —— 两种都认
+// （pollOpenFlagChecked）。
+//
+// ⚠️ **v0.83.0：取值先过「合法性闸门」** ——
+//
+//	轮询侧用 legacy 整数编码（0 关 / 1 开一条缝 / 2 开）。
+//	实测某刻 `rt = 32`（既非 0 也非 1，也不在 legacy 编码里）
+//	⇒ 它**什么都不表示**。旧代码「非 0 即开」会把它说成「后备箱开着」
+//	（那次碰巧与遥测一致，**纯属运气**）：遥测一旦缺失，
+//	那就是一句**编出来的「开着」**。
+//
+//	⇒ 现在：取值不合法 ⇒ 该字段按「**没读到**」处理（不计入 saw），
+//	   整体降级为「不知道」，由遥测接管。
 func doorsFromRaw(raw map[string]any) []string {
 	vs := vehicleStateRaw(raw)
 	if vs == nil {
@@ -171,8 +183,14 @@ func doorsFromRaw(raw map[string]any) []string {
 		if !present {
 			continue
 		}
+		isOpen, valid := pollOpenFlagChecked(v)
+		if !valid {
+			log.Printf("⚠️ 门位字段 %s 取值 %v（%T）不在 legacy 编码 {0,1,2} 内 ⇒ 该字段按「没读到」处理",
+				f.key, v, v)
+			continue
+		}
 		saw++
-		if isOpenFlag(v) {
+		if isOpen {
 			open = append(open, f.name)
 		}
 	}
