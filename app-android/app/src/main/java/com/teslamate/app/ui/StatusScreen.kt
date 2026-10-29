@@ -20,6 +20,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -1308,6 +1310,7 @@ private fun LockStateChip(locked: Boolean?, lockedAt: Instant?, fleetState: Stri
  * 没数据就整行不出现 —— 不制造一排「没读到」的噪音。
  */
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun VehicleSafetyRow(st: CarStatus) {
     val accents = LocalAccentColors.current
 
@@ -1342,44 +1345,57 @@ private fun VehicleSafetyRow(st: CarStatus) {
         java.time.Duration.between(it, java.time.Instant.now()).toMinutes()
     } ?: Long.MAX_VALUE
 
-    Row(
+    // ⚠️ **v0.85.0（真机复核）**：改用 `FlowRow` —— 放不下就**换行**，绝不省略号截断。
+    //
+    // **为什么**（2026-10-29 真机 + 受控注入实测）：
+    //
+    //	车窗开着 + 车门开着时，旧写法把「左前窗开着」截成「**左前窗开...**」、
+    //	把「副驾前门开着」截成「**副驾前门...**」
+    //	⇒ **读不出是什么意思** —— 那是一句被截断的半截话（静默说错）。
+    //	而 `maxLines = 1` + `overflow = Ellipsis` 在 **200% 字号**下必然更糟
+    //	（项目自己的无障碍要求就是「200% 字号可用」）。
+    //
+    // ⚠️ 这已经是**第三处**同一个坑（ChargesScreen v0.8.10、DrivesScreen、这里）
+    //    ⇒ 统一用 FlowRow，别再写「Row + 省略号」那种会截半截话的东西。
+    //
+    // ⚠️ 分隔符改**后置**「·」：换行后行尾留一个「·」读起来是「接着说」，
+    //    而前置「·」会让第二行开头凭空多一个点。
+    FlowRow(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         bits.forEachIndexed { idx, bit ->
-            if (idx > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "·",
+                    bit.label,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(3.dp))
+                Text(
+                    bit.text,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = when (bit.tone) {
+                        SafetyTone.WARN -> accents.warnAmber
+                        SafetyTone.DANGER -> accents.danger
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
+                )
+                // ⚠️ 除最后一项外都带一个**后置**分隔符。
+                if (idx < bits.size - 1 || ageMin in 5..Long.MAX_VALUE) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "·",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-            Text(
-                bit.label,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.width(3.dp))
-            Text(
-                bit.text,
-                style = MaterialTheme.typography.labelMedium,
-                color = when (bit.tone) {
-                    SafetyTone.WARN -> accents.warnAmber
-                    SafetyTone.DANGER -> accents.danger
-                    else -> MaterialTheme.colorScheme.onSurface
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                // ⚠️ weight(fill=false)：内容超宽时**这一项**先省略，
-                // 而不是把后面的项挤出屏幕（那样会整项消失）。
-                modifier = Modifier.weight(1f, fill = false),
-            )
         }
         if (ageMin in 5..Long.MAX_VALUE) {
-            Spacer(Modifier.width(6.dp))
             Text(
-                "· ${st.vehicle_safety_at!!.relTime()}",
+                st.vehicle_safety_at!!.relTime(),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,

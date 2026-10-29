@@ -14,8 +14,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // ⚠️ **v0.82.0**：App 改了（页首新增车窗 / 车门 / 哨兵状态行）⇒ 版本号要涨。
-        versionCode = 97
-        versionName = "0.84.0"
+        versionCode = 98
+        versionName = "0.85.0"
     }
 
     buildTypes {

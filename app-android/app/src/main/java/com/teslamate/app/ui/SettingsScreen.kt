@@ -1119,8 +1119,19 @@ private fun SettingsServerStatusPage(
                             KV(
                                 "最后车况",
                                 if (age != null) {
-                                    val hrs = age.toInt()
-                                    if (hrs >= 24) "${hrs / 24} 天前" else "$hrs 小时前"
+                                    // ⚠️ **v0.85.0（真机复核）**：原来**只到「小时」** ——
+                                    // 25 分钟前会显示成「**0 小时前**」，
+                                    // 那既像「刚刚」又像「没有数据」（读者没法判断）。
+                                    // 现在**小时以下一律用分钟**。
+                                    val mins = (age * 60).toInt()
+                                    when {
+                                        mins < 1 -> "刚刚"
+                                        mins < 60 -> "$mins 分钟前"
+                                        else -> {
+                                            val hrs = age.toInt()
+                                            if (hrs >= 24) "${hrs / 24} 天前" else "$hrs 小时前"
+                                        }
+                                    }
                                 } else {
                                     "—"
                                 },
