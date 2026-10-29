@@ -5,6 +5,141 @@
 
 ---
 
+## 2026-10-29（v0.80.0 · 车睡着时，「锁没锁」也有答案）
+
+> ⚠️ **版本号未变**（`0.79.0` / code 95）—— **App 代码零改动**。
+> 本轮是**纯服务端**增强：旧的 APK 连新服务端就能拿到改进后的锁车状态。
+> ⇒ **用户不需要升级 App**，打开就是新的。
+
+### 一、之前的问题：车停在家里的 9 个小时，「锁没锁」是空白
+
+实测（改之前）：
+
+```
+locked            = None        ← 锁车状态完全未知
+locked_at         = None
+fleet_last_ok     = None        ← 本次启动后一次都没成功拉过 vehicle_data
+fleet_state       = 'asleep'
+tpms_live_*       = None
+data_age_hours    = 9
+```
+
+⚠️ 根因不是「没配凭据」，而是**数据通路本身**：
+`vehicle_data` 要**我们主动去拉**，车睡着时 Fleet API 直接回 408。
+⇒ 车一旦停下（「停着不动时属正常」），锁车与实时胎压就一起变成**未知**。
+而「锁没锁」是车主**第一诉求**。
+
+### 二、另一条路：车**主动推**
+
+Fleet Telemetry 的 `V` 字段是车连上时推一轮、之后按间隔推的。
+⚠️ 关键：**车断线后，broker 上仍留着断线前的最后已知值**（MQTT retained）。
+实测本机 broker 确实留着：
+
+```
+tesla_telemetry/<VIN>/v/Locked true
+tesla_telemetry/<VIN>/v/Soc 73.92228293867637
+tesla_telemetry/<VIN>/v/Odometer 63073.42048767418
+tesla_telemetry/<VIN>/v/DetailedChargeState "DetailedChargeStateDisconnected"
+tesla_telemetry/<VIN>/v/ChargeAmps 0
+```
+
+⇒ 锁车状态**不再依赖那 2 分钟一次的轮询**。
+
+### 三、⚠️ 最危险的一处：retained 重放会把**旧值说成新的**
+
+MQTT 的 retained 消息**不带采集时间**（载荷就是裸值），
+broker 会在订阅者上线时**重发** retained
+⇒ 「收到时刻」≠「采集时刻」。
+
+⚠️ 如果直接拿「收到时刻」当新鲜度，**API 一重启，9 小时前的旧值会显示成「刚刚」**
+—— 这是最坏的一种假信息。
+
+⇒ 判据（`telemetryFieldFreshness`，纯函数、可单测）：
+
+| 情况 | 真实采集时刻 | 是否陈旧 |
+|---|---|---|
+| 车在线 | 收到时刻 | 否 |
+| 车离线 + 收到时刻晚于断线时刻（= retained 重放） | **车断线的那个时刻** | **是** |
+| 车离线 + 收到时刻早于断线时刻 | 收到时刻 | 否 |
+| 从来没有连接状态 | 收到时刻 | **是**（不知道就不冒充新鲜） |
+
+实测：车在 **2026-10-29 00:32:40（北京时间）**断线 ⇒ 锁车状态的时刻就是那一刻，
+与 `tm_telemetry_connectivity` 的 DISCONNECTED 记录**逐秒一致**。
+
+### 四、改了什么
+
+- **新表** `tm_telemetry_vehicle_data`
+  （vin / field / value_text / value_num / value_bool / received_at）
+  —— 只存**最新值**（UPSERT）；历史是 TeslaMate 的活
+- **`api/telemetry_state.go`**（新文件）：类型化解析 + 新鲜度判定 + 新端点
+- **V 字段落库**：以前只计数，现在进库
+- **`/status`**：锁车状态**遥测优先**、轮询兜底；新增 `locked_source` / `locked_stale`
+- **新端点** `GET /api/v1/cars/{id}/telemetry_state`：
+  所有 V 字段 + 各自的时刻与陈旧标记
+- **MCP `teslamate_status`**：新增「锁车数据来源」「锁车状态是旧的」
+- **App：零改动**（`ignoreUnknownKeys = true` ⇒ 新字段不破坏反序列化）
+
+### 五、类型漂移：官方明说字段类型会变
+
+官方 `datastore/mqtt/README.md` 原文：
+
+> a float value like the vehicle's speed might be received as 12.3 (numeric)
+> in one version and as "12.3" (string) in another version
+
+⚠️ 实测本机也确实见过两种形态：
+`Soc` 是**裸数字** `73.92…`，而 `DetailedChargeState` 是**带引号的字符串**
+`"DetailedChargeStateDisconnected"`。
+
+⇒ 解析三种形态都认，且**认不出类型也保留原文**（不丢数据）。
+⇒ 另加一道闸门：`Inf` / `NaN` / `1_000` **不许进** `value_num`
+（Go 的 `strconv.ParseFloat` 接受它们，而 Postgres 的 DOUBLE PRECISION 也照收
+⇒ 库里就会多出一条 'Infinity'）。
+
+### 六、反幻觉：字段名必须与官方 proto 逐字一致
+
+⚠️ 字段名写错**不报错** —— 车照常推送、订阅照常成功，只是那个字段**永远不来**
+（静默失效，最难查的一种）。
+
+⇒ 把官方 `protos/vehicle_data.proto` 的 `enum Field` 编号抄进单测
+（`telemetryOfficialFieldNumbers`），
+⇒ 用到的每个字段名**必须**在这份权威名单里，否则测试当场变红。
+
+### 七、验证
+
+- `go vet` + `go test` 全绿（新增 8 条用例：字段名对照官方 / 类型漂移 /
+  retained 重放 / 非有限数 / 中文标签）
+- 服务端闸门 **4/4**、客户端闸门 **9/9**、冒烟 **39/39**
+- MCP 字段自检：15 个工具全过（新增 2 条断言）
+- **模拟器实测**（emulator-5554）：车况页从「锁车状态未知」变成「**已上锁 9 小时前**」
+  ⇒ App 零改动，用户直接受益
+- 实测 `/status`：`locked=True` / `locked_at=2026-10-28T16:32:40Z` /
+  `locked_source=telemetry` / `locked_stale=true`
+
+### 八、影响与回滚
+
+- 影响：车况页锁车状态从「未知」变成「已上锁 + 它自己的时间戳」；
+  遥测块多两个字段；新增一个只读端点。
+- 回滚：回滚镜像即可（`docker compose --profile control up -d --build api`）；
+  遥测数据落在 `tm_telemetry_vehicle_data` 一张表，删表即可（**车端配置不受影响**）。
+- ⚠️ **App 无需升级**：这是纯服务端改动，旧 APK 连新服务端就能拿到改进后的结果。
+
+### 九、顺带抓到的一个范围污染：`gofmt -w` 会重排「本来就没格式化」的文件
+
+⚠️ 本轮 `gofmt -w models.go handlers.go` 之后，diff 突然多出 **300 行**
+与本轮**无关**的改动。查下来是：`models.go` / `handlers.go` 在 **HEAD 里
+本来就不是** gofmt 格式（结构体 tag 的列对齐是历史遗留），
+而 `gofmt` 会把它们**整个重排**（重新对齐 tag 列）。
+
+⇒ 这不是逻辑改动，是**格式污染** —— 会让 review 的人淹没在无关 diff 里。
+⇒ 已 `git checkout` 回退并**只重新应用逻辑改动**，
+现在真实改动量是 `models.go +17/-0`、`handlers.go +29/-4`。
+
+⚠️ **教训**：在历史仓库里，`gofmt -w` **只许作用于本次新增的文件**。
+已存在但未格式化的文件 ⇒ **保持原样**
+（闸门用的是 `gofmt -e`，只查**语法错误**、不查格式 ⇒ 不受影响）。
+
+---
+
 ## 2026-10-29（v0.79.0 · 3/3 订正：开发者后台是 `.cn`，不是 `.com`）
 
 > 本轮版本：`0.79.0`，versionCode 95（**未改版本号** —— 没有新功能，

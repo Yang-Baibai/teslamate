@@ -85,6 +85,82 @@ Funnel 允许的公网端口只有 `443` / `8443` / `10000`，所以 8443 是唯
 ⚠️ **告警码在主题里，不在载荷里** —— 载荷只有 `StartedAt` / `EndedAt` / `Audiences`。
 解析错就会把所有码读成空字符串，界面一片空白。
 
+## V 字段：车主动推的车辆实时数据（v0.80.0）
+
+### 主题
+
+官方 `datastore/mqtt/README.md`：
+
+```
+Metrics: <topic_base>/<VIN>/v/<field_name>
+```
+
+载荷是**裸 JSON 值**（不是对象）：
+
+```
+v/Soc                73.92228293867637            ← 裸数字
+v/Locked             true                          ← 裸布尔
+v/DetailedChargeState "DetailedChargeStateDisconnected"  ← 带引号的字符串
+```
+
+⚠️ **类型会漂移**（官方原文）：同一个字段在某个固件版本是数字，
+在另一个版本可能是字符串 ⇒ 解析必须三种形态都认。
+
+### 本机实际收到的字段（2026-10-29 实测）
+
+| 字段 | 值 | 间隔 |
+|---|---|---|
+| `Soc` | 73.92… | 60 秒 |
+| `Locked` | true | 60 秒 |
+| `EstBatteryRange` | — | 60 秒 |
+| `ChargeAmps` | 0 | 5 秒 |
+| `DetailedChargeState` | `DetailedChargeStateDisconnected` | 5 秒 |
+| `Odometer` | 63073.42… | 300 秒 |
+
+### ⚠️ retained 重放 = 「旧值说成新的」
+
+broker 上保留着每个字段的**最后一份**（`retained: true`）。
+⇒ 我们一订阅就会收到它们 —— 但那是**车断线前**的值，
+而「收到时刻」是**现在**。
+
+⚠️ 直接拿 received_at 当新鲜度 ⇒ **API 一重启，9 小时前的旧值显示成「刚刚」**。
+
+⇒ 判据（`api/telemetry_state.go` 的 `telemetryFieldFreshness`）：
+
+| 情况 | 真实采集时刻 | 陈旧？ |
+|---|---|---|
+| 车在线 | 收到时刻 | 否 |
+| 车离线 + 收到时刻晚于断线时刻（重放） | **车断线的时刻** | **是** |
+| 车离线 + 收到时刻早于断线时刻 | 收到时刻 | 否 |
+| 从来没有连接状态 | 收到时刻 | **是** |
+
+「车断线的时刻」来自 `tm_telemetry_connectivity` 里最近一条 DISCONNECTED。
+
+### 对外接口
+
+```
+GET /api/v1/cars/{id}/telemetry_state
+```
+
+返回每个字段的：原始文本 / 类型化后的值（num、bool）/ 真实采集时刻 / 是否陈旧，
+外加 `connected` / `ever_connected` / `last_connected_at` / `last_disconnected_at`。
+
+⚠️ 调用方**必须**看 `stale` 才敢说「现在锁着」——
+`/status` 的 `locked_source` + `locked_stale` 就是给这个用的。
+
+### ⚠️ 字段名必须逐字照抄官方 proto
+
+出处：`teslamotors/fleet-telemetry → protos/vehicle_data.proto` 的 `enum Field`。
+
+⚠️ 写错**不报错** —— 车照常推送、订阅照常成功，只是那个字段**永远不来**。
+⇒ 官方枚举编号已抄进 `api/telemetry_state_test.go` 的
+`telemetryOfficialFieldNumbers`，用到的字段名不在名单里 ⇒ **测试当场变红**。
+
+还没用上、但已在官方名单里备着的（等扩大遥测配置时直接用）：
+`TpmsPressureFl/Fr/Rl/Rr`（胎压）、`FdWindow/FpWindow/RdWindow/RpWindow`（车窗）、
+`DoorState`（车门）、`ChargeLimitSoc`（充电上限）、`InsideTemp` / `OutsideTemp`、
+`SentryMode`（哨兵）、`TpmsHardWarnings` / `TpmsSoftWarnings`。
+
 ## 已完成（2026-10-28 v0.79.0 3/3 实测）
 
 | 项 | 状态 |

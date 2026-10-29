@@ -159,6 +159,9 @@ func main() {
 	mux.HandleFunc("POST /api/v1/cars/{id}/fleet_telemetry", auth(handleFleetTelemetryDeploy))
 	// ⚠️ v0.79.0 3/3：遥测落地的故障码 / 遥测错误 / 连接状态。
 	mux.HandleFunc("GET /api/v1/cars/{id}/alerts", auth(handleTelemetryAlerts))
+	// ⚠️ **v0.80.0**：遥测的 **V 字段**（车主动推的车辆实时数据）。
+	// 锁车 / 电量 / 胎压 / 车窗… —— 车睡着时也有「断线前的最后已知值」。
+	mux.HandleFunc("GET /api/v1/cars/{id}/telemetry_state", auth(handleTelemetryState))
 	mux.HandleFunc("GET /api/v1/app/latest", auth(handleAppLatest))
 	mux.HandleFunc("GET /api/v1/app/staticmap", auth(handleStaticMap))
 	// APK 静态服务（不加 auth：DownloadManager 无法塞自定义 header；Tailscale 隧道已加密）

@@ -52,6 +52,23 @@ type CarStatus struct {
 	Locked   *bool      `json:"locked"`
 	LockedAt *time.Time `json:"locked_at"` // 本次状态采集时刻（App 用它判断新鲜度）
 
+	// ⚠️ **v0.80.0：锁车状态的数据来源**。
+	//
+	//	"telemetry" —— 来自 Fleet Telemetry（**车主动推**，车睡着也有）
+	//	"poll"      —— 来自 Fleet API 轮询缓存（车睡着时拉不到）
+	//	"unknown"   —— 两边都没有
+	//
+	// ⚠️ 为什么必须说清楚：**同一个「已上锁」，来源不同意味着完全不同的新鲜度**。
+	// 遥测给的是「车断线前的最后已知值」⇒ 可能已经过了 9 小时。
+	// 不标来源，调用方就会把 9 小时前的状态当现在的样子报出去。
+	LockedSource string `json:"locked_source"`
+
+	// ⚠️ **v0.80.0：这个锁车状态是不是「车断线前的最后已知值」**。
+	//
+	// true ⇒ 车现在离线，这个值是它断线那一刻的（**旧，但真实**）。
+	// false ⇒ 车在线，或这个值是车在线时收到的。
+	LockedStale bool `json:"locked_stale"`
+
 	// ⚠️ **v0.77.0：开着哪几扇窗**（来源 Tesla Fleet API 的 vehicle_state）。
 	//
 	// 三态，**不能用 omitempty**，也**不能**压成空数组：

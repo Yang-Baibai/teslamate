@@ -136,6 +136,28 @@ def _tpms_pressure(v: Any) -> Any:
     return v
 
 
+# ⚠️ **v0.80.0**：锁车状态的数据来源 → 人话。
+#
+#   telemetry —— **车主动推**（Fleet Telemetry）。车睡着时也有「断线前的最后已知值」。
+#   poll      —— **我们轮询**（Fleet API vehicle_data）。车睡着时拉不到。
+#   unknown   —— 两边都没有 ⇒ 真的不知道。
+#
+# ⚠️ 为什么要说清楚：同一个「已上锁」，来源不同意味着**新鲜度完全不同**。
+# 遥测给的可能是 9 小时前的状态 —— 不标出来就会被当成「现在锁着」。
+_LOCK_SOURCE_CN = {
+    "telemetry": "车主动推（遥测）",
+    "poll": "服务端轮询",
+    "unknown": "未知",
+}
+
+
+def _lock_source_cn(v: Any) -> str:
+    """锁车数据来源 → 人话。认不出来的原样摊开（不编）。"""
+    if v is None:
+        return "未知"
+    return _LOCK_SOURCE_CN.get(v, str(v))
+
+
 # --------------------------------------------------------------------------
 # 查数据
 # --------------------------------------------------------------------------
@@ -149,6 +171,16 @@ def teslamate_status() -> dict:
     「胎压正常吗」「车醒着吗」—— 都归它。
 
     ⚠️ 车在休眠时锁车与胎压会显示「未知」—— 那是**没读到**，不是车没锁。
+
+    ⚠️ **v0.80.0：锁车状态有两个来源，必须一起报**：
+
+    - `锁车数据来源` = **车主动推**（遥测）⇒ 车睡着时也有「断线前的最后已知值」
+    - `锁车数据来源` = **轮询**（Fleet API）⇒ 车睡着时拉不到
+    - `锁车数据来源` = 未知 ⇒ 两边都没有
+
+    ⚠️ 当来源是遥测、且 `锁车状态是旧的` = true 时，
+    那个锁车状态是**车断线那一刻**的（可能已经过了好几个小时）——
+    **报给用户时必须带上这个时间**，别当成「现在锁着」。
     """
     s = _get(f"/api/v1/cars/{CAR_ID}/status")
     if not isinstance(s, dict) or "error" in s:
@@ -163,6 +195,10 @@ def teslamate_status() -> dict:
         "里程表km": s.get("odometer_vehicle") or s.get("odometer"),
         "已锁": s.get("locked"),
         "锁车状态采集于": s.get("locked_at"),
+        # ⚠️ 这两个是 **v0.80.0** 新增的 —— 少了它们，
+        # 9 小时前的锁车状态会被当成「现在锁着」报出去。
+        "锁车数据来源": _lock_source_cn(s.get("locked_source")),
+        "锁车状态是旧的": bool(s.get("locked_stale")),
         "位置": s.get("location_name"),
         "车外温℃": s.get("outside_temp"),
         "车内温℃": s.get("inside_temp"),

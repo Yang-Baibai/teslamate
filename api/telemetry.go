@@ -182,6 +182,24 @@ var telemetryTables = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS tm_vehicle_alerts_active_idx
 		ON tm_vehicle_alerts (vin, active, started_at DESC)`,
+	// ⚠️ **v0.80.0**：V 字段（车辆实时数据：锁车 / 电量 / 胎压 / 车窗…）。
+	//
+	// 只存**最新值**（UPSERT）—— 这些字段问的是「现在怎么样」，
+	// 历史是 TeslaMate 的活。
+	//
+	// ⚠️ 只有 `received_at`（我们收到这条的时刻），**没有**车端采集时刻 ——
+	// MQTT 的 metrics 载荷是裸值，不带 created_at。
+	// 「这个值有多新」靠 connectivity 表反推（见 telemetry_state.go）。
+	`CREATE TABLE IF NOT EXISTS tm_telemetry_vehicle_data (
+		id BIGSERIAL PRIMARY KEY,
+		vin TEXT NOT NULL,
+		field TEXT NOT NULL,
+		value_text TEXT NOT NULL DEFAULT '',
+		value_num DOUBLE PRECISION,
+		value_bool BOOLEAN,
+		received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		UNIQUE (vin, field)
+	)`,
 }
 
 // ensureTelemetryTables 建表。失败不致命（只告警）。
@@ -192,7 +210,7 @@ func ensureTelemetryTables(ctx context.Context) {
 			return
 		}
 	}
-	log.Printf("✅ 遥测数据表就绪（tm_vehicle_alerts / tm_telemetry_errors / tm_telemetry_connectivity）")
+	log.Printf("✅ 遥测数据表就绪（tm_vehicle_alerts / tm_telemetry_errors / tm_telemetry_connectivity / tm_telemetry_vehicle_data）")
 }
 
 // --------------------------------------------------------------------------
@@ -444,12 +462,17 @@ func telemetryHandleMessage(base, topic string, payload []byte) {
 		}
 		telemetryStoreConnectivity(vin, cv)
 	case telemetryKindFields:
+		// ⚠️ **v0.80.0**：V 字段**落库**了（以前只计数）。
+		//
+		// 这是「车主动推的实时数据」—— 车睡着时也能拿到断线前的最后已知值，
+		// 而 `vehicle_data` 轮询那时只有一片空白（408）。
 		telemetryState.mu.Lock()
 		telemetryState.fields++
 		if telemetryState.lastSample == "" {
 			telemetryState.lastSample = fmt.Sprintf("%s/%s = %s", vin, name, string(payload))
 		}
 		telemetryState.mu.Unlock()
+		telemetryStoreField(vin, name, payload)
 	}
 }
 

@@ -222,6 +222,9 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ⚠️ **v0.80.0**：VIN 提到外层 —— 遥测块与**锁车状态**都要用它。
+	carVin, carVinErr := carVIN(r.Context(), id)
+
 	// ⚠️ **v0.79.0：故障码（遥测）块**。
 	//
 	// 故障码只能从 Fleet Telemetry 拿（`vehicle_data` 端点里没有这些字段）。
@@ -235,12 +238,11 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 			Stream: telemetryState.snapshot(),
 			Alerts: []telemetryAlertView{},
 		}
-		vin, verr := carVIN(r.Context(), id)
 		switch {
-		case verr != nil:
-			block.Error = verr.Error()
+		case carVinErr != nil:
+			block.Error = carVinErr.Error()
 		default:
-			tel, terr := loadTelemetryAlerts(r.Context(), vin)
+			tel, terr := loadTelemetryAlerts(r.Context(), carVin)
 			if terr != nil {
 				block.Error = terr.Error()
 			} else {
@@ -297,6 +299,29 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	// 锁车状态来自 Tesla Fleet API 的后台轮询缓存（api/tesla.go）。
 	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。
 	s.Locked, s.LockedAt = teslaLockState()
+	s.LockedSource = "poll"
+	if s.Locked == nil {
+		s.LockedSource = "unknown"
+	}
+
+	// ⚠️ **v0.80.0：遥测优先**。
+	//
+	// 旧版只有**一条**路：Fleet API 后台轮询的缓存。
+	// ⇒ **车睡着时那个缓存是空的** —— 车停在家里的那 9 个小时，
+	//   「锁没锁」一直是**未知**（locked = null），而这是车主第一诉求。
+	//
+	// 现在多一条路：Fleet Telemetry 的 `Locked` 字段（**车主动推**）。
+	// 车断线后 broker 上仍留着**断线前的最后已知值** ⇒ 车睡着也有答案。
+	//
+	// ⚠️ **来源必须标出来**：遥测给的是「断线前的最后已知值」，
+	// 可能已经过了 9 小时；不说清楚，调用方就会把它当现在的样子报出去。
+	if carVinErr == nil {
+		if tel := telemetryLockState(r.Context(), carVin); tel != nil && tel.Bool != nil {
+			s.Locked, s.LockedAt = tel.Bool, tel.At
+			s.LockedSource = "telemetry"
+			s.LockedStale = tel.Stale
+		}
+	}
 
 	// ⚠️ **v0.77.0：开着哪几扇窗**。
 	//
