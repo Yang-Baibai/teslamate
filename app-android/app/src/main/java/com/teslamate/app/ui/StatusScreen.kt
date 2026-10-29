@@ -893,11 +893,16 @@ private fun RangeAndOdometer(
         // 对只想知道「现在能开多远」的人是干扰 ⇒ 折到 ⓘ 里（点开仍在原位展开）。
         val scopeLine = consumption?.let { m ->
             buildString {
-                append("按 ")
-                append(m.firstDrivenAt ?: "—")
-                append("~")
-                append(m.lastDrivenAt ?: "—")
-                append(" 的 ${m.sampleCount} 条实测")
+                // ⚠️ **v0.86.0（真机复核 · 用户原话「车况页面顶部的续航预估部分小字太多」）**：
+                //
+                // 原来这里常驻的是「按 2026-07-31~2026-10-24 的 88 条实测」——
+                // **日期区间**在 12sp 下占掉**整整两行**，而它对「这个数能不能信」
+                // 没有贡献：来源自曝（v0.26.0 第 17 轮 P0-2）要回答的是
+                // 「**实测**还是**标称**」，「88 条实测」这五个字已经答完了；
+                // 日期区间是**出处**，属于**口径说明** ⇒ 折进 ⓘ（见下面的 scopeNote）。
+                //
+                // ⚠️ 数据一点没丢：日期区间现在在 scopeNote 里（ⓘ 点开仍在原位展开）。
+                append("${m.sampleCount} 条实测")
             }
         }
         val scopeNote = consumption?.let { m ->
@@ -910,6 +915,11 @@ private fun RangeAndOdometer(
                     // 实测样本区间下界是 **8.3°C**，本身就是一条冬季样本。
                     // 说「无冬季样本」与自己给的区间**自相矛盾**。
                     // 改成说清楚**低温样本到底有几条**。
+                    // ⚠️ v0.86.0：样本**日期区间**也折进 ⓘ（常驻位只留「N 条实测」）。
+                    append("；样本区间 ")
+                    append(m.firstDrivenAt ?: "—")
+                    append("~")
+                    append(m.lastDrivenAt ?: "—")
                     if (m.lowTempSamples >= 1) {
                         append("，≤10°C 只有 ${m.lowTempSamples} 条")
                     } else {
@@ -991,28 +1001,55 @@ private fun RangeAndOdometer(
         //
         // ⚠️ 区间还必须**披露样本口径**：这个残差 P90 只用 **km ≥ 100 的长途样本**算
         // （实测 20 条），而基数用的是 0–60 市区档 ⇒ **两个不同总体**，不说就是口径漂移。
-        if (trueRange != null) {
-            val band = consumption?.trueRangeBandKm(
+        // ⚠️ **v0.86.0**：`bandTxt` 提到 `if` **外面** ——
+        // 下面「来源行」的条件要用它（区间存在时，来源已经并进区间那一行 ⇒ 不再单独出现）。
+        //
+        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：残差口径折进 ⓘ，区间数字常驻。
+        //
+        // 「约 197 ~ 257 公里」是**答案**，必须一眼看得见；
+        // 括号里那句「模型残差 90 分位，样本为 N 条 ≥100 公里行程」是
+        // **算法口径说明**（车主点名要折的那一类）⇒ 折到行尾 ⓘ 里。
+        val bandTxt = if (trueRange != null) {
+            consumption?.trueRangeBandKm(
                 ratedRangeKm = ratedRange,
                 speedKph = refSpeed,
                 outsideTempC = st.outside_temp,
-            )
-            // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：残差口径折进 ⓘ，区间数字常驻。
-            //
-            // 「约 197 ~ 257 公里」是**答案**，必须一眼看得见；
-            // 括号里那句「模型残差 90 分位，样本为 N 条 ≥100 公里行程」是
-            // **算法口径说明**（车主点名要折的那一类）⇒ 折到行尾 ⓘ 里。
-            val bandTxt = band?.let { (lo, hi) ->
+            )?.let { (lo, hi) ->
                 "约 $lo ~ $hi 公里" to
                     (consumption?.residualSamples?.takeIf { it > 0 }?.let {
                         "（模型残差 90 分位，样本为 $it 条 ≥100 公里行程）"
                     } ?: "（模型残差 90 分位）")
             }
+        } else null
+        // ⚠️ **v0.86.0（真机复核 · 第二次迭代）**：**恢复 v0.43.0 的「区间紧跟主角」**。
+        //
+        // 第一版把「保底结论」提到区间前面（想强调「我能到哪」），
+        // 但那**违反了 v0.43.0 的防误读约束**：区间是**主角 217 的**区间，
+        // 排在保底行下面 ⇒ 读者会把「约 192 ~ 251 公里」读成 **167 公里**的区间，
+        // 而 192 > 167 ⇒ 看起来像 App 自相矛盾。
+        //
+        // ⇒ **顺序不动**（主角 → 区间 → 保底），要减的是**行数**不是**顺序**。
+        //
+        // ⚠️ 现在这一块一共 **3 行**小字（原 5 行）：
+        //   ①「约 192 ~ 251 公里 · 88 条实测」= 主角的区间 + 来源自曝（**1 行**）
+        //   ②「留 20% 保底还能开 167 公里（约 148 ~ 193 公里）」= 保底结论（**2 行**，自带区间）
+        //   ③「怎么算的 ⌄」= 入口
+        if (trueRange != null) {
+            // ⚠️ **v0.86.0（真机复核 · 用户原话「小字太多」）**：主角下面原来有 **4~5 行**小字
+            // （区间 / 保底 / 来源 / 怎么算的）⇒ 视觉上是一堵**同权重的灰字墙**。
+            //
+            // 现在：**「区间」与「来源」并成一行**（日期区间已折进 ⓘ），
+            // 整个区从 **5 行 → 3 行**。
+            //
+            // ⚠️ 这两样**都不能删** ——
+            //    区间是 v0.65.0（车主点名要「一眼看得见」）、
+            //    来源是 v0.26.0（新手分不清「实测」与「标称」）——
+            //    但它们可以**并成一行**，**数据一点没丢**。
             bandTxt?.let { (txt, note) ->
                 TextWithNote(
-                    text = txt,
-                    note = note,
-                    a11yLabel = "续航区间的残差说明",
+                    text = listOfNotNull(txt, scopeLine).joinToString(" · "),
+                    note = listOfNotNull(note, scopeNote).joinToString("；"),
+                    a11yLabel = "续航区间与实测样本的说明",
                 )
             }
         }
@@ -1027,11 +1064,16 @@ private fun RangeAndOdometer(
                 "留 20% 保底还能开 ${trueRangeFloor.fmt(0)} 公里" +
                     (floorBand?.let { (lo, hi) -> "（约 $lo ~ $hi 公里）" } ?: ""),
                 style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // ⚠️ **v0.86.0（真机复核）**：这行是**「我能到哪」的另一个答案** ⇒
+                // 提为**半粗 + 正文色**。原来和其它小字一样是灰的 ⇒
+                // 主角 217 下面没有一句「结论」，只有一排同权重的说明文字。
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
             )
         }
         // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：来源与温度可信度常驻显示。**
-        if (scopeLine != null) {
+        // ⚠️ v0.86.0：「来源」已并进上面的区间脚注 ⇒ 这里只在**没有区间**时单独出现。
+        if (scopeLine != null && bandTxt == null) {
             if (scopeNote != null) {
                 // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：温度口径折进 ⓘ，
                 // 「N 条实测」这半句仍然常驻（来源自曝是 v0.26.0 P0-2 的硬要求）。

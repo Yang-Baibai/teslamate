@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -292,6 +293,12 @@ fun EnergyProfileCard(
                         // 临界 fontScale = 88 / (5.19 × 13) = **1.30**。
                         modifier = Modifier.widthIn(min = 88.dp),
                     )
+                    // ⚠️ **v0.86.0（真机复核 · 用户原话「集中在左侧」）**：
+                    // `widthIn(min = 88.dp)` 只保证「**不小于** 88dp」，**不保证两列之间有缝**。
+                    // 而「100–110 km/h」正好 ≈ 88dp ⇒ 数值列**紧贴**档名列，
+                    // 真机上就是「100–110 km/h18.4 kWh/100km」**粘成一坨**。
+                    // ⇒ 加一个**固定列间距**（iOS 的列表也是这么做的）。
+                    Spacer(Modifier.width(10.dp))
                     Text(
                         // ⚠️ v0.30.0（P1-A）：明细行改用**毛耗电** ——
                         // 主角与柱高都是毛耗电，明细却给净值 = 同一张卡两个数。
@@ -312,12 +319,17 @@ fun EnergyProfileCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.widthIn(min = 74.dp),
                     )
+                    Spacer(Modifier.width(10.dp))
                     Text(
                         "${b.km.roundToInt()} 公里",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         // 末列吃剩余空间（「1234 公里」在 fs=2.0 时要 107.6dp）
                         modifier = Modifier.weight(1f),
+                        // ⚠️ **v0.86.0（真机复核）**：公里数**右对齐** ⇒ 各档的里程**成列**。
+                        // 原来左对齐 ⇒ 「66 公里 / 235 公里 / 439 公里」参差不齐，
+                        // 视觉上就像「全挤在左侧」。
+                        textAlign = TextAlign.End,
                     )
                 }
             }

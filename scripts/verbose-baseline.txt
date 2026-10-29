@@ -9,7 +9,7 @@ RoutePlan.kt::…（往返）· … 公里… → … · … 公里
 RoutePlan.kt::全程最低 …%（在第 … 公里，低于 20% 保底）全程最低 …%（在第 … 公里）
 RoutePlan.kt::距终点  公里 · 估到终点剩 % ⚠ 低于 % 保底 · 到终点还差  个点
 RoutePlan.kt::这条线路上没有你的充电记录 —— 没有可参考的补电点。
-RoutePlan.kt::这段均速 … · … 档… kWh/100km（含爬升修正后 …）（借用邻档）
+RoutePlan.kt::这段均速 … · … 档 … kWh/100km（含爬升修正后 …）（借用邻档）
 SettingsScreen.kt::请确认家里那台电脑开着、服务器在跑，以及手机上的 Tailscale 已连接。
 StatsScreen.kt::数据只覆盖 …/… …（…%）year —— 不是完整的一年
 StatsScreen.kt::暂无「电池健康度」（未配置出厂容量，服务端不给分母）

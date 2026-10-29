@@ -438,13 +438,26 @@ fun RangeSegmentsCard(
                                 fontWeight = FontWeight.SemiBold,
                             )
                         }
-                        Text(
-                            // ⚠️ **v0.47.0（第 28 轮 a11y P1-3）**：「 · 」换成「，」——
-                            // TTS 会把「点」逐字念出来；「≈」也会被念成「约等于」或跳过。
-                            "${s.km.roundToInt()} 公里，约 ${s.fullChargeKm.roundToInt()} 公里/满电",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        // ⚠️ **v0.86.0（真机复核 · 用户原话「展开的明细布局不太好看」）**：
+                        // 原来第二行是**一句话**「138 公里，约 330 公里/满电」——
+                        // 44 段读下来数字**不成列**，没法横向比较，只能一行行扫。
+                        // ⇒ 改成**两列**：实跑公里 | 折算满电公里（列间留固定间距）。
+                        //   ⚠️ 「约」保留（这是**折算值**，不是实测满电里程）。
+                        //   ⚠️ TTS：「·」会被念出来，「≈」也会被跳过 ⇒ 不用它们。
+                        Row(Modifier.fillMaxWidth()) {
+                            Text(
+                                "${s.km.roundToInt()} 公里",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.widthIn(min = 78.dp),
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                "约 ${s.fullChargeKm.roundToInt()} 公里/满电",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(4.dp))

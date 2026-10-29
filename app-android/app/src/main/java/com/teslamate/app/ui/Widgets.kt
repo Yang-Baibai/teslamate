@@ -553,6 +553,21 @@ fun Modifier.pressable(
 fun SectionCard(
     title: String? = null,
     modifier: Modifier = Modifier,
+    /**
+     * ⚠️ **v0.86.0（真机复核 · 用户原话「收起的按钮不明显」）**：标题行**右侧**的控件。
+     *
+     * ## 为什么需要它
+     *
+     * 卡片折叠时，展开箭头在**卡片右上角**；
+     * 展开后如果把「收起」放在**内容区靠左**（原来就是这样），
+     * 同一个动作就变成**两个位置、两种长相** —— 肌肉记忆完全用不上，
+     * 用户只能靠「哪里有个字」去猜。
+     *
+     * 现在：折叠态的 **⌄** 与展开态的 **⌃** 都住在这个槽位里 ⇒ **同一个位置**。
+     *
+     * ⚠️ 默认 `null` ⇒ **所有既有调用点一字不改**，版面零影响。
+     */
+    trailing: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val accents = LocalAccentColors.current
@@ -571,20 +586,33 @@ fun SectionCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (title != null) {
-                Text(
-                    title,
-                    // ⚠️ **v0.46.0（第 27 轮无障碍复审 P1-7）**：卡片标题是 **heading**。
-                    //
-                    // 复审实测：TalkBack 的「按标题跳转」只能停在**页面标题**
-                    // （`ScreenTitle` 已有 `heading()`）——
-                    // 「线路余量表」「实测满电续航」「常驻点」「驾驶画像」
-                    // 在 TalkBack 里**都不是标题**，标题导航形同虚设。
-                    //
-                    // 一处改动，全 App 所有卡片标题都变成可跳转的锚点。
-                    modifier = Modifier.semantics { heading() },
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                // ⚠️ **v0.86.0**：标题行改成 `Row`（标题 + 右侧 trailing）。
+                //
+                // ⚠️ **trailing 为 null 时版面与从前逐像素一致** ——
+                // `Row` 里只有一个带 `weight(1f)` 的子项 ⇒ 它吃满整行宽度，
+                // 标题的折行宽度与原来（Column 里的 Text）完全相同。
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        title,
+                        // ⚠️ **v0.46.0（第 27 轮无障碍复审 P1-7）**：卡片标题是 **heading**。
+                        //
+                        // 复审实测：TalkBack 的「按标题跳转」只能停在**页面标题**
+                        // （`ScreenTitle` 已有 `heading()`）——
+                        // 「线路余量表」「实测满电续航」「常驻点」「驾驶画像」
+                        // 在 TalkBack 里**都不是标题**，标题导航形同虚设。
+                        //
+                        // 一处改动，全 App 所有卡片标题都变成可跳转的锚点。
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics { heading() },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    trailing?.invoke()
+                }
             }
             content()
         }
