@@ -193,6 +193,33 @@ GET /api/v1/cars/{id}/telemetry_state
 ⚠️ 固件门槛：字段 179 需 ≥2024.38、184/187 需 ≥2024.44.32、260+ 需 ≥2026.32。
 本车固件 `2026.26.200` ⇒ **260 及以后的字段不可用**（所以没用 `GpsAccuracyMeters` 那些）。
 
+### 官方「Available Data」对照表：遥测字段 ↔ 轮询字段（2026-10-29 实读）
+
+Fleet Telemetry「Available Data」页的 `related field` 列就是官方给的对照表：
+
+| 遥测字段 | 官方 related field | 官方备注（逐字） |
+|---|---|---|
+| `DoorState` | `vehicle_state.df` `dr` `pf` `pr` `ft` `rt` | "This field has passenger front and driver rear doors **swapped** in firmware versions prior to **2024.44.32**." |
+| `SentryMode` | `vehicle_state.sentry_mode` | "The current state of sentry mode." |
+| `FdWindow` / `FpWindow` / `RdWindow` / `RpWindow` | `vehicle_state.fd_window` / `fp_window` / `rd_window` / `rp_window` | "The state of the front driver window." 等 |
+| `Locked` | `vehicle_state.locked` | "If the vehicle is locked." |
+| `Version` | `vehicle_state.car_version` | "In firmware versions earlier than 2024.44, this field returned the version of an **available software update**." |
+| `TpmsPressureFl` … `Rr` | `vehicle_state.tpms_pressure_fl` … | "The last measured tire pressure of the front left tire **in bar**." |
+| `InsideTemp` | `climate_state.inside_temp` | "Estimated temperature of the cabin (**in Celsius**)." |
+| `IsolationResistance` | （**无**） | "Resistance between HV bus and chassis." ⇒ 官方**也没标单位** |
+
+⚠️ 官方表里**有两处它自己的笔误**：`TpmsPressureRr` 的 related field 写成了 `tpms_pressure_fr`；
+`HomelinkDeviceCount` / `HomelinkNearby` 的 related field 互换了
+⇒ **以逐位实测对撞为准**，不照抄笔误。
+
+⚠️ **两条互相咬住的固件陷阱**（都只影响老车，但别忘了）：
+
+1. `DoorState` 在 **2024.44.32 之前**固件里，**副驾前门 ↔ 主驾后门互换**；
+2. `Version`（`car_version`）在 **2024.44 之前**返回的是「**可下载的更新版本**」而不是当前固件。
+
+⇒ 合起来：**2024.44 ~ 2024.44.32 这一段，版本号本身不可靠** ⇒ 换门判断在这段区间不可信。
+本车固件 `2026.26.200` ⇒ 两个坑都不在。
+
 ### 车端实际给的形态（2026-10-29 真车实测）
 
 ⚠️ 官方 proto 只定义**类型**，没告诉我们车端怎么**编码**。实测：
@@ -235,12 +262,38 @@ GET /api/v1/cars/{id}/telemetry_vehicle  ← 解读后的车况实况（v0.81.0�
 
 ⚠️ `open_windows` / `open_doors` 可能是 **null** —— 那是「**不知道**」，不是「全关」。
 
+### `/status` 的车况实况字段（v0.82.0）
+
+| 字段 | 含义 |
+|---|---|
+| `open_windows` / `windows_source` | 开着哪几扇窗 + 来源（`poll` / `telemetry`） |
+| `open_doors` / `doors_source` | 开着哪几个门 + 来源 |
+| `sentry_state` / `sentry_text` | 哨兵状态（`off` / `on` / `panic` / `unsupported` …）+ 中文文案 |
+| `sentry_source` / `sentry_at` | 哨兵来源 + 采集时刻 |
+| `vehicle_safety_at` | 整组车况实况的采集时刻（三项里**最旧**的） |
+
+⚠️ 客户端规则（ADR #25）：**没读到 ≠ 全关**；无来源的项**整项不显示**。
+
 ### 两个来源怎么合
 
-`pickNewerTPMS` / `pickNewerWindows`：**按采集时刻取更新的那个**
+`pickNewerTPMS` / `pickNewerWindows` / `pickNewerDoors` / `pickNewerSentry`：
+**口径一致时，按采集时刻取更新的那个**
 （遥测可能是「车断线前的最后已知值」，轮询是上一次成功拉取）。
 
 ⚠️ 一边「不知道」（nil）时直接用另一边 —— 不能把「读不到」当成「全关」。
+
+#### 口径**冲突**时以遥测为准（v0.82.0，被真实实测逼出来的）
+
+某一刻轮询侧只有 `rt` 非零，值是 **32**（既非 0 也非 1）；同一时刻遥测给 `TrunkRear = true`
+⇒ **两个独立来源指向同一个门位**。
+
+⇒ **轮询侧的门位编码是不透明的** ⇒「非 0 即开」这种假设**不成立**，
+必须有官方消息做裁判；而遥测 `DoorState` 是官方 `message Doors` 的**逐字编码**
+⇒ **冲突时以遥测为准**（ADR #24）。
+
+⚠️ **哨兵不做跨词表臆造映射**：轮询侧只能分辨开/关（布尔），
+`true` 只说「**已开启**」，**不猜** armed/aware/panic；
+遥测的 `unknown`（官方枚举 0）**不算「知道了」** ⇒ 不参与与轮询的竞争。
 
 ## 已完成（2026-10-28 v0.79.0 3/3 实测）
 

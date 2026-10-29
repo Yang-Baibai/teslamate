@@ -339,12 +339,69 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	//	⚠️ 三态语义不变（nil=不知道 / []=全关 / 列表=开着这些）——
 	//	推送侧的「车窗未关」是**带计时器**的判定，读不到时计时器必须保持不动。
 	pollWin, pollWinAt := teslaOpenWindowsAt()
-	var telWin []string
-	var telWinAt *time.Time
+
+	// ⚠️ **v0.82.0**：遥测侧的「车窗 / 车门 / 哨兵」**一次读库**取齐。
+	//
+	// 三样都在同一张 V 字段表里 ⇒ 分三次读就是三次 DB 查询。
+	var telSafety telemetrySafety
 	if carVinErr == nil {
-		telWin, telWinAt = telemetryOpenWindowsForVIN(r.Context(), carVin)
+		telSafety = telemetrySafetyForVIN(r.Context(), carVin)
 	}
-	s.OpenWindows, s.OpenWindowsSource = pickNewerWindows(pollWin, pollWinAt, telWin, telWinAt)
+	s.OpenWindows, s.OpenWindowsSource = pickNewerWindows(
+		pollWin, pollWinAt, telSafety.Windows, telSafety.WindowsAt)
+
+	// ⚠️ **v0.82.0：车门 / 哨兵**（遥测 + 轮询双源）。
+	//
+	// 官方 Fleet Telemetry「Available Data」表把遥测 `DoorState` / `SentryMode`
+	// **逐字**对到轮询的 `vehicle_state.df/dr/pf/pr/ft/rt` 与
+	// `vehicle_state.sentry_mode`
+	// ⇒ 两个来源是**同一个底层状态的两份表达**，可互相校验、互相兜底。
+	//
+	// 合并口径与车窗 / 胎压一致：**取更新的那个**；
+	// 一边「不知道」时直接用另一边（nil ≠ 全关）。
+	pollRaw, pollRawAt := teslaVehicleDataAt()
+	pollDoors := doorsFromRaw(pollRaw)
+	pollSentryState, pollSentryOK := sentryFromRaw(pollRaw)
+	var pollSentryAt *time.Time
+	if pollSentryOK {
+		pollSentryAt = pollRawAt
+	}
+	s.OpenDoors, s.DoorsSource = pickNewerDoors(
+		pollDoors, pollRawAt, telSafety.Doors, telSafety.DoorsAt)
+	// ⚠️ 旧固件陷阱（官方 DoorState 原文）：
+	// 「passenger front and driver rear doors swapped in firmware versions
+	//  prior to 2024.44.32」⇒ 副驾前门与主驾后门的名字要对调。
+	if doorFirmwareSwapBefore(carVersionFromRaw(pollRaw)) {
+		names := append([]string(nil), s.OpenDoors...)
+		swapDoorLabels(names)
+		s.OpenDoors = names
+	}
+	sentryState, sentrySource, sentryAt := pickNewerSentry(
+		pollSentryState, pollSentryAt, telSafety.SentryState, telSafety.SentryAt)
+	s.SentryState = sentryState
+	s.SentryText = sentryText(sentryState)
+	s.SentrySource = sentrySource
+	s.SentryAt = sentryAt
+
+	// ⚠️ **v0.82.0**：这一组安全状态的**最旧**采集时刻（保守）。
+	//
+	// 选中的是哪一份来源，就用**那份**的采集时刻 ——
+	// 三项（车窗 / 车门 / 哨兵）里只要有一项是旧的，整组就不能说成「都是新的」。
+	var winAt *time.Time
+	switch s.OpenWindowsSource {
+	case "telemetry":
+		winAt = telSafety.WindowsAt
+	case "poll":
+		winAt = pollRawAt
+	}
+	var doorAt *time.Time
+	switch s.DoorsSource {
+	case "telemetry":
+		doorAt = telSafety.DoorsAt
+	case "poll":
+		doorAt = pollRawAt
+	}
+	s.VehicleSafetyAt = oldestTime(winAt, doorAt, sentryAt)
 
 	// 实时胎压同样有两个来源：
 	// ⚠️ 与上面的 tpms_fl/fr/rl/rr 是三个来源，不互相覆盖：

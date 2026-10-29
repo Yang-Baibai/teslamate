@@ -5,6 +5,114 @@
 
 ---
 
+## 2026-10-29（v0.82.0 · 车况页接入「车窗 / 车门 / 哨兵」当下实况）
+
+> 做了什么：把 v0.81.0 服务端**已经备好、客户端完全没消费**的那块缺口补上 ——
+> 车况页顶部现在直接回答「哪扇窗开着 / 哪个门开着 / 哨兵什么状态」。
+> 这一轮**第一次用上官方文档里的字段对照表**，并因此抓到一个真实的固件陷阱。
+
+### 一、官方锚点：遥测字段 ↔ 轮询字段 的对照表
+
+Fleet Telemetry「Available Data」页的 `related field` 列，就是官方给的对照表（2026-10-29 实读原文）：
+
+| 遥测字段 | 官方 related field | 官方备注（逐字引用） |
+|---|---|---|
+| `DoorState` | `vehicle_state.df` `dr` `pf` `pr` `ft` `rt` | "This field has passenger front and driver rear doors **swapped** in firmware versions prior to **2024.44.32**." |
+| `SentryMode` | `vehicle_state.sentry_mode` | "The current state of sentry mode." |
+| `FdWindow` / `FpWindow` / `RdWindow` / `RpWindow` | `vehicle_state.fd_window` / `fp_window` / `rd_window` / `rp_window` | "The state of the front driver window." 等 |
+| `Locked` | `vehicle_state.locked` | （v0.80.0 已在用） |
+| `Version` | `vehicle_state.car_version` | "In firmware versions earlier than 2024.44, this field returned the version of an **available software update**." |
+| `TpmsPressureFl` … `Rr` | `vehicle_state.tpms_pressure_fl` … | "The last measured tire pressure of the front left tire **in bar**." |
+| `InsideTemp` | `climate_state.inside_temp` | "Estimated temperature of the cabin (**in Celsius**)." |
+| `IsolationResistance` | （**无**） | "Resistance between HV bus and chassis." ⇒ 官方**也没标单位** |
+
+⚠️ 官方表里还有两处**它自己的笔误**：`TpmsPressureRr` 的 related field 写成了 `tpms_pressure_fr`；
+`HomelinkDeviceCount` / `HomelinkNearby` 的 related field 互换了
+⇒ **以逐位实测对撞为准**，不照抄笔误（我们这四个轮压是逐个对撞过的，四个都对得上）。
+
+### 二、抓到的固件陷阱：2024.44.32 之前，副驾前门 ↔ 主驾后门互换
+
+官方明写：`DoorState` 在 **2024.44.32 之前**的固件里，**副驾前门与主驾后门是互换的**。
+
+⇒ 光照抄 `message Doors` 的字段名，在旧固件上会把「副驾前门开着」说成「主驾后门开着」。
+⇒ 本轮新增 `parseFirmwareTriple` + `doorFirmwareSwapBefore`：解析 `car_version`，
+低于 `2024.44.32` 就**对调副驾前门与主驾后门的标签**（12 组版本组合的单测）。
+
+⚠️ 官方同一张表还说了：`Version`（即 `car_version`）在 **2024.44 之前**返回的是
+「**可下载的更新版本**」而不是当前固件版本 ⇒ 也就是说
+**2024.44 ~ 2024.44.32 这一段，版本号本身不可靠**。
+本车固件 `2026.26.200`（远超该区间）⇒ 不受影响；但这个坑记在这里，别以后误判。
+
+### 三、服务端：新增 `api/vehicle_safety.go`（15 条单测）
+
+- 轮询侧：`df/dr/pf/pr/ft/rt` 解析 + 固件换门修正；`sentry_mode` 布尔解析；
+- 遥测侧：**一次读库**同时取车窗 + 车门 + 哨兵（原先车窗要单独读一次）；
+- 双源合并：**口径一致**时按采集时刻取更新的；**口径冲突**时以遥测为准（见下节）。
+
+`/status` 新增 7 个字段：`open_doors` / `doors_source` / `sentry_state` / `sentry_text` /
+`sentry_source` / `sentry_at` / `vehicle_safety_at`（三项里**最旧**的那个采集时刻）。
+
+### 四、关键决策：口径冲突时**以遥测为准**
+
+**这不是设计偏好，是被一个真实实测逼出来的。**
+
+某一刻轮询侧只有 `rt` 非零，且值是 **32**（既不是 0 也不是 1）；而同一时刻遥测给的是
+`TrunkRear = true` ⇒ **两个独立来源指向同一个门位（后备箱）**。
+
+⇒ 说明**轮询侧的门位编码是不透明的**（32 ≠ 布尔）⇒
+「非 0 即开」这种假设**不成立**，必须有官方消息做裁判。
+⇒ 而遥测 `DoorState` 是官方 `message Doors` 的**逐字编码** ⇒ 冲突时官方消息赢。
+⇒ 口径**一致**时，才按采集时刻取更新的那个。
+
+⚠️ 哨兵**不做跨词表臆造映射**：轮询侧只能分辨开/关（布尔），
+`true` 只说「**已开启**」，**不猜** armed/aware/panic；
+遥测的 `unknown`（官方枚举 0）**不算「知道了」** ⇒ 不参与与轮询的竞争。
+
+### 五、App 端：页首「状态区」
+
+锁车行与新增的车窗 / 车门 / 哨兵合成**页首状态区**（`Column(spacedBy(4.dp))` 包裹）：
+
+- **零滚动**、与锁车同属一个「当下安全状态」问题簇；
+- 全是**状态**不是数字 ⇒ **不抢主角数字环**；
+- 展示规则：**没读到 ≠ 全关** —— 无来源的项**整项不显示**（全无数据则整行不出现，零噪音）；
+- 1 个开着**点名**（「左前窗开着」），≥2 个**只说数量**（「2 扇开着」，点名会撑爆一行）；
+- **只有哨兵 `panic` 上红**（警报触发才是坏事），车窗/门开着上琥珀；
+- 数据 >5 分钟才显示相对时间。
+
+### 六、MCP：`teslamate_status` 新增 8 个字段
+
+「开着哪几扇窗 / 车窗数据来源 / 开着哪几个门 / 车门数据来源 /
+哨兵模式 / 哨兵状态 / 哨兵数据来源 / 哨兵采集于」，
+并在工具描述里补上「什么时候用」的场景。
+
+### 七、实测证据（真车）
+
+| 检验 | 结果 |
+|---|---|
+| 轮询 `df/dr/pf/pr/ft/rt` 全 0 ↔ 遥测六门全 false | **逐位一致 ✓** |
+| 轮询 `sentry_mode=false` ↔ 遥测 `SentryModeStateOff` | **一致 ✓** |
+| 轮询 `rt=32`（唯一非零）↔ 遥测 `TrunkRear=true` | **两个独立来源指向同一门位 ✓** |
+| 后备箱关闭后 | 结论随之变为「全关」✓ |
+| 车睡着时 | 轮询侧为空，**遥测侧仍给出车门与哨兵答案** ✓ |
+| `/status` 实测 | `open_doors: ["后备箱"]` / `doors_source: "poll"` / `sentry_state: "off"` / `sentry_text: "未开启"` |
+
+### 八、验证
+
+- `gofmt -w`（**仅本轮新增文件**）+ `go vet ./...` + `go test ./...` 全过（15 条新用例逐条 PASS）；
+- 服务端闸门 **4/4** · 客户端闸门 **9/9** · 冒烟 **39/39** · 推送自测 **65/65**；
+- MCP 字段自检 **16 工具 / 0 项不合规**，`selftest_mcp.py` 通过；
+- Hermes 网关重启：PID **2584 → 20056**，日志 `registered 20 tool(s)`；
+- APK 构建成功并装模拟器：`versionCode=96 / versionName=0.82.0`，
+  页首实测显示「🔒 已上锁 3 分钟前 …… 车况 · 1 分钟前 / 车窗 全关 · 车门 后备箱开着 · 哨兵 未开启」，
+  **单行不溢出、不抢主角数字环**。
+
+### 九、影响与回滚
+
+- 影响：`/status` 增字段（**只增不改**，旧客户端不受影响）；App 车况页页首多一行状态区；
+  `versionCode` 95 → **96**、`versionName` 0.79.0 → **0.82.0**（两端对齐）。
+- 回滚：`git revert` 本次提交 + `docker compose --profile control up -d --build api`；
+  客户端回退到上一版 APK。
+
 ## 2026-10-29（订正 · 「developer.tesla.cn 后台有个 Fleet Telemetry 开关」—— 这句话是我编的）
 
 > 起因：我说「你去后台确认一下 Fleet Telemetry 开关」。

@@ -607,27 +607,6 @@ func pickNewerTPMS(poll, tel TeslaTPMS, telOK bool) (TeslaTPMS, string) {
 	return poll, "poll"
 }
 
-// telemetryOpenWindowsForVIN 遥测里的「开着哪几扇窗」+ 采集时刻。
-//
-// ⚠️ 时刻取**四扇窗里最旧**的那个（保守）——
-//
-//	它们不是同时推的，取最新会显得比实际新鲜。
-func telemetryOpenWindowsForVIN(ctx context.Context, vin string) ([]string, *time.Time) {
-	fields, err := loadTelemetryFields(ctx, vin)
-	if err != nil {
-		log.Printf("⚠️  读遥测车窗失败：%v", err)
-		return nil, nil
-	}
-	idx := telemetryIdx(fields)
-	group := []telemetryFieldView{}
-	for _, f := range telemetryWindowFields {
-		if v, ok := idx[f.key]; ok {
-			group = append(group, v)
-		}
-	}
-	at, _ := telemetryOldest(group)
-	return telemetryOpenWindows(idx), at
-}
 
 // pickNewerWindows 在「轮询」与「遥测」两份车窗结论里挑**更新的**那份。
 //

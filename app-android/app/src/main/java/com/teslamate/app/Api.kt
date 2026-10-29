@@ -430,6 +430,49 @@ data class CarStatus(
     val locked: Boolean? = null,
     /** 锁车状态的采集时刻（用于判断新鲜度） */
     @Serializable(with = InstantSer::class) val locked_at: Instant? = null,
+
+    /**
+     * ⚠️ **v0.82.0**：开着哪几扇窗（**三态**）。
+     *
+     * - `null` = **没读到**（不是「都关着」）
+     * - `[]` = 知道，**全关**
+     * - `[..]` = 开着这些（如 `["左前窗"]`）
+     *
+     * ⚠️ 别把 null 当成空数组 —— 那会让 App 显示「车窗全关」而实际根本没读到，
+     * 「车窗未关」的提醒也会凭空消失。
+     */
+    val open_windows: List<String>? = null,
+    /** 车窗结论的**数据来源**（telemetry / poll / 空 = 没读到） */
+    val open_windows_source: String = "",
+    /**
+     * ⚠️ **v0.82.0**：开着哪几个门 / 舱盖（**三态**，语义同 [open_windows]）。
+     */
+    val open_doors: List<String>? = null,
+    /** 车门结论的**数据来源**（telemetry / poll / 空 = 没读到） */
+    val doors_source: String = "",
+
+    /**
+     * ⚠️ **v0.82.0**：哨兵模式的**归一化状态**（服务端给，App 不自己翻译）。
+     *
+     * - `off` 未开启 / `idle` 待命 / `armed` 已布防 / `aware` 感知中
+     * - `panic` 警报触发 / `quiet` 静默 / `on` 已开启（轮询只能分辨开/关）
+     * - `unsupported` 这台车不支持哨兵 / `unknown` 车自己说「不知道」
+     * - 空串 = **完全没读到**
+     */
+    val sentry_state: String = "",
+    /** 哨兵模式的中文（服务端给；空串 = 没读到） */
+    val sentry_text: String = "",
+    /** 哨兵结论的**数据来源**（telemetry / poll / 空 = 没读到） */
+    val sentry_source: String = "",
+
+    /**
+     * ⚠️ **v0.82.0**：这一组安全状态（车窗 / 车门 / 哨兵）里**最旧**的采集时刻。
+     *
+     * ⚠️ 取最旧是**保守**：三项里只要有一项是旧的，整组就不能说成「都是新的」。
+     *
+     * 车睡着时它是「断线前的最后已知值」的时刻 ⇒ App 据它提示「这是旧值」。
+     */
+    @Serializable(with = InstantSer::class) val vehicle_safety_at: Instant? = null,
     /**
      * ⚠️ v0.21.0：**车端里程表**（km，来源 Tesla Fleet API 的 `vehicle_state.odometer`）。
      *

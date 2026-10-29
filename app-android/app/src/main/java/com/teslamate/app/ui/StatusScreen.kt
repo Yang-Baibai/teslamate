@@ -367,43 +367,56 @@ fun StatusScreen(
                     }
 
                     st != null -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            // ⚠️ v0.8.4：状态行左边原来恒是「在线/休眠/离线」胶囊。
-                            //
-                            // 踩过的坑：**车停着不动时 TeslaMate 就报 state=offline**
-                            // （它把「车休眠/没活动」记成 offline，日志里天天
-                            //   "Start / :offline"）—— 也就是说「离线」是**常态**，
-                            // 不是需要特别提醒的异常。所以不能让它挤掉锁车状态。
-                            //
-                            // 现在：**有锁车数据就显示锁车**（这是这块屏上唯一一件
-                            // 「车停着不动还会变」的信息），并在后面附上车离线标记；
-                            // 只有锁车数据未知（没配 Fleet API / 取不到）时，
-                            // 才退回显示原来的状态胶囊。
-                            // ⚠️ v0.8.5：三态**都显式呈现**（含「锁车状态未知」），
-                            // 不再在拿不到数据时悄悄退回「在线/休眠/离线」胶囊 ——
-                            // 那样等于把「没取到」伪装成「没这功能」。
-                            LockStateChip(st.locked, st.locked_at, st.fleet_state)
-                            Spacer(Modifier.weight(1f))
-                            Text(
-                                // ⚠️ v0.7.1：绝对时间看不出隔了多久，改相对时间
-                                // （「更新于 3 分钟前」），超过一周才回落到绝对时间。
+                        // ⚠️ **v0.82.0**：锁车状态与「车窗 / 车门 / 哨兵」合成页首的**状态区**。
+                        //
+                        // 「锁没锁」「窗关没关」「门关没关」「哨兵开着没」是**同一个问题簇** ——
+                        // 用户每天第一个念头就是这一簇。
+                        // 它们**全是状态、不是数字** ⇒ 不跟电量环抢视觉锚点
+                        //（「一屏一个主角数字」仍然成立）。
+                        //
+                        // 为什么不用卡片：卡片会把主角数字环往下推 130dp，
+                        // 而这三条**零滚动**就该看见 ⇒ 放在页首。
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                // ⚠️ v0.8.4：状态行左边原来恒是「在线/休眠/离线」胶囊。
                                 //
-                                // ⚠️ v0.9.0：显示的这份数据如果是**落盘缓存**里的，
-                                // 必须说清楚「这是上次读到的」——
-                                // 一个会撒谎的缓存比没有缓存更糟。
-                                // ⚠️ v0.9.0（新手车主复核）：两个时间戳挨着会以为是同一个。
-                                // 车主原话：「'更新于 3 分钟前'旁边又挂了锁车的时间戳，
-                                // 两个时间戳挨着，我以为是同一个」。
-                                // 现在右边这句明确是**车况**（TeslaMate 上报）的，
-                                // 左边锁车那颗自带的是 **Tesla 云端**的时间 —— 各自有主语。
-                                if (store.cachedAt != null) {
-                                    "上次读到 · ${store.cachedAt!!.relTime()}"
-                                } else {
-                                    "车况 · ${st.updated_at.relTime()}"
-                                },
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                                // 踩过的坑：**车停着不动时 TeslaMate 就报 state=offline**
+                                // （它把「车休眠/没活动」记成 offline，日志里天天
+                                //   "Start / :offline"）—— 也就是说「离线」是**常态**，
+                                // 不是需要特别提醒的异常。所以不能让它挤掉锁车状态。
+                                //
+                                // 现在：**有锁车数据就显示锁车**（这是这块屏上唯一一件
+                                // 「车停着不动还会变」的信息），并在后面附上车离线标记；
+                                // 只有锁车数据未知（没配 Fleet API / 取不到）时，
+                                // 才退回显示原来的状态胶囊。
+                                // ⚠️ v0.8.5：三态**都显式呈现**（含「锁车状态未知」），
+                                // 不再在拿不到数据时悄悄退回「在线/休眠/离线」胶囊 ——
+                                // 那样等于把「没取到」伪装成「没这功能」。
+                                LockStateChip(st.locked, st.locked_at, st.fleet_state)
+                                Spacer(Modifier.weight(1f))
+                                Text(
+                                    // ⚠️ v0.7.1：绝对时间看不出隔了多久，改相对时间
+                                    // （「更新于 3 分钟前」），超过一周才回落到绝对时间。
+                                    //
+                                    // ⚠️ v0.9.0：显示的这份数据如果是**落盘缓存**里的，
+                                    // 必须说清楚「这是上次读到的」——
+                                    // 一个会撒谎的缓存比没有缓存更糟。
+                                    // ⚠️ v0.9.0（新手车主复核）：两个时间戳挨着会以为是同一个。
+                                    // 车主原话：「'更新于 3 分钟前'旁边又挂了锁车的时间戳，
+                                    // 两个时间戳挨着，我以为是同一个」。
+                                    // 现在右边这句明确是**车况**（TeslaMate 上报）的，
+                                    // 左边锁车那颗自带的是 **Tesla 云端**的时间 —— 各自有主语。
+                                    if (store.cachedAt != null) {
+                                        "上次读到 · ${store.cachedAt!!.relTime()}"
+                                    } else {
+                                        "车况 · ${st.updated_at.relTime()}"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            // ⚠️ **v0.82.0**：车窗 / 车门 / 哨兵（遥测接管后的当下安全状态）。
+                            VehicleSafetyRow(st)
                         }
 
                         // ⚠️ v0.13.0（iOS 交互评审 P1-12）：**告警排在中性提示之前**。
@@ -1256,6 +1269,140 @@ private fun LockStateChip(locked: Boolean?, lockedAt: Instant?, fleetState: Stri
             )
         }
     }
+}
+
+/**
+ * 车辆「当下安全状态」一行：车窗 / 车门 / 哨兵。
+ *
+ * ⚠️ **v0.82.0**。
+ *
+ * **三态**（服务端给的，App **不自己猜**）：
+ * - 车窗 / 车门：`null` = **没读到**（不是「都关着」）/ `[]` = 全关 / `[..]` = 开着这些
+ * - 哨兵：服务端给归一化状态 + 中文
+ *
+ * **颜色不单独承载信息**（WCAG）：文字本身也变 ——
+ * 「全关」与「左前窗开着」读出来就不一样，色觉障碍用户也读得出。
+ *
+ * **颜色口径**：
+ * - 正常（全关 / 未开启 / 已布防…）= 次要灰
+ * - 开着（车窗 / 车门）= **琥珀**（要动手去关）
+ * - 哨兵「警报触发」（官方枚举 `panic`）= **红** —— 唯一真正紧急的
+ *
+ * **为什么一个数据源都没有时整行不出现**：
+ * 没数据就整行不出现 —— 不制造一排「没读到」的噪音。
+ */
+@Composable
+private fun VehicleSafetyRow(st: CarStatus) {
+    val accents = LocalAccentColors.current
+
+    val bits = remember(
+        st.open_windows, st.open_windows_source,
+        st.open_doors, st.doors_source,
+        st.sentry_state, st.sentry_text, st.sentry_source,
+    ) {
+        buildList {
+            safetyBit("车窗", st.open_windows, st.open_windows_source, "扇")?.let { add(it) }
+            safetyBit("车门", st.open_doors, st.doors_source, "个")?.let { add(it) }
+            if (st.sentry_source.isNotBlank()) {
+                add(
+                    SafetyBit(
+                        "哨兵",
+                        st.sentry_text.ifBlank { "状态未知" },
+                        // ⚠️ 只有「警报触发」（官方枚举 Panic）才上红 ——
+                        // 待命 / 已布防 / 感知中 / 静默 **都不是**紧急情况。
+                        if (st.sentry_state == "panic") SafetyTone.DANGER else SafetyTone.NORMAL,
+                    )
+                )
+            }
+        }
+    }
+    if (bits.isEmpty()) return
+
+    // ⚠️ **时间诚实**：这组状态里**最旧**的一项有多旧？
+    //
+    // 超过 5 分钟才提示 —— 平时不制造噪音（与页面里「旧值」提示同口径）。
+    // 车睡着时它就是「断线前的最后已知值」的时刻 ⇒ 必须说出来。
+    val ageMin = st.vehicle_safety_at?.let {
+        java.time.Duration.between(it, java.time.Instant.now()).toMinutes()
+    } ?: Long.MAX_VALUE
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        bits.forEachIndexed { idx, bit ->
+            if (idx > 0) {
+                Text(
+                    "·",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            Text(
+                bit.label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(3.dp))
+            Text(
+                bit.text,
+                style = MaterialTheme.typography.labelMedium,
+                color = when (bit.tone) {
+                    SafetyTone.WARN -> accents.warnAmber
+                    SafetyTone.DANGER -> accents.danger
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                // ⚠️ weight(fill=false)：内容超宽时**这一项**先省略，
+                // 而不是把后面的项挤出屏幕（那样会整项消失）。
+                modifier = Modifier.weight(1f, fill = false),
+            )
+        }
+        if (ageMin in 5..Long.MAX_VALUE) {
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "· ${st.vehicle_safety_at!!.relTime()}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * 一条安全状态（车窗 / 车门 / 哨兵）。
+ */
+private class SafetyBit(val label: String, val text: String, val tone: SafetyTone)
+
+/**
+ * 状态的语气 —— 决定颜色。
+ */
+private enum class SafetyTone { NORMAL, WARN, DANGER }
+
+/**
+ * 「开着哪几个」→ 一句话 + 语气。
+ *
+ * ⚠️ **三态**：
+ * - 来源为空 ⇒ **完全没读到** ⇒ 返回 null（整项**不显示**）
+ * - 值为 null ⇒ 读了但**不知道** ⇒ 「没读到」
+ * - 空数组 ⇒ **全关**
+ * - 一个 ⇒ 「<名>开着」（点名最有用 —— 你要关的就是它）
+ * - 多个 ⇒ 「N 扇开着」（点名会太长，一行放不下）
+ */
+private fun safetyBit(
+    label: String,
+    open: List<String>?,
+    source: String,
+    unit: String,
+): SafetyBit? {
+    if (source.isBlank()) return null
+    if (open == null) return SafetyBit(label, "没读到", SafetyTone.NORMAL)
+    if (open.isEmpty()) return SafetyBit(label, "全关", SafetyTone.NORMAL)
+    if (open.size == 1) return SafetyBit(label, "${open[0]}开着", SafetyTone.WARN)
+    return SafetyBit(label, "${open.size} ${unit}开着", SafetyTone.WARN)
 }
 
 /**

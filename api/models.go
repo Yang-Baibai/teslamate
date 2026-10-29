@@ -158,6 +158,47 @@ type CarStatus struct {
 	// 语义与 OpenWindows 一致（三态：nil=不知道 / 空数组=全关 / 列表=开着这些）。
 	OpenWindowsSource string `json:"open_windows_source"`
 
+	// ⚠️ **v0.82.0**：开着的门 / 舱盖。
+	//
+	// 三态与 OpenWindows 完全一致：
+	// nil = 不知道（没读到）/ 空数组 = 知道，全关 / 列表 = 开着这些。
+	//
+	// ⚠️ 「不知道」**不能**压成空数组 —— 那是「全关」，
+	// 会让 App 显示「车门全关」而实际根本没读到。
+	OpenDoors []string `json:"open_doors"`
+
+	// ⚠️ **v0.82.0**：车门结论的**数据来源**（telemetry / poll / 空）。
+	// 语义与 OpenWindowsSource 一致。
+	DoorsSource string `json:"doors_source"`
+
+	// ⚠️ **v0.82.0**：哨兵模式。
+	//
+	// SentryState 是**归一化状态词**：
+	//
+	//	off / idle / armed / aware / panic / quiet —— 遥测侧，
+	//	      直接用官方 `enum SentryModeState` 的枚举名（小写）
+	//	on        —— 轮询侧只能分辨「开 / 关」（中国区实测是布尔）
+	//	unsupported —— 这台车不支持哨兵
+	//	unknown   —— 车自己说「不知道」
+	//
+	// ⚠️ 空串 = **完全没读到**（两个来源都没有）；
+	// "unknown" = 车报告的状态未知 ⇒ 两者都**不能**当成「未开启」。
+	SentryState string `json:"sentry_state"`
+	// SentryText 给用户看的中文（认不出来不编 ⇒ 摊「状态未知」）。
+	SentryText string `json:"sentry_text"`
+	// SentrySource 这批结论的来源（telemetry / poll / 空）。
+	SentrySource string `json:"sentry_source"`
+	// SentryAt 这批结论的**采集时刻**（两个来源里更晚的那个）。
+	SentryAt *time.Time `json:"sentry_at"`
+
+	// ⚠️ **v0.82.0**：这一组安全状态（车窗 / 车门 / 哨兵）里**最旧**的采集时刻。
+	//
+	// ⚠️ 为什么取**最旧**：一组里只要有一项是旧的，整组就不能说成「都是新的」。
+	//
+	// 这是「车睡着了 9 小时，broker 上留着断线前的最后已知值」那类场景的
+	// **时间诚实**出口 —— App 据它决定要不要提示「这是旧值」。
+	VehicleSafetyAt *time.Time `json:"vehicle_safety_at"`
+
 	// v0.7.0 新增：服务端算好的告警判定（唯一事实源，App 与推送脚本共用）
 	// 详见 alerts.go —— 阈值与判定逻辑只在服务端实现一次。
 	TpmsAlert       bool     `json:"tpms_alert"`
