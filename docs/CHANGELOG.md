@@ -5,6 +5,90 @@
 
 ---
 
+## 2026-10-29（订正 · 「developer.tesla.cn 后台有个 Fleet Telemetry 开关」—— 这句话是我编的）
+
+> 起因：我说「你去后台确认一下 Fleet Telemetry 开关」。
+> 你去看了，**后台里根本没有这个开关** ⇒ 那句话没有依据，现在订正。
+
+### 一、错在哪（三个地方，已就地改正）
+
+| 位置 | 原来写的 |
+|---|---|
+| `docs/CHANGELOG.md`（区域订正表的末行） | 「Fleet Telemetry 开关 \| ✅ account 级」 |
+| `docs/CHANGELOG.md`「还需要你做的」第 1 条 | 「去 `developer.tesla.cn` 确认「Fleet Telemetry」开关是开的」 |
+| `docs/27-FleetTelemetry接入.md`「还需要用户确认的」第 2 条 | 「`developer.tesla.cn` 后台的「Fleet Telemetry」开关是否已打开」 |
+
+⚠️ 三处都保留了删除线痕迹并指向本节（不能只在新章节里说 —— 旧章节还在，
+删掉痕迹会让人以为当初就没写过，而**教训恰恰是「写过了」**）。
+
+⚠️ **根因**：当时是**凭印象**写的，**没核官方文档** ——
+而这个项目的铁律就是「Tesla 相关的结论必须锚定官方原文」。
+⇒ 这条铁律这次被我自己破了一次，记在这里。
+
+### 二、官方口径（2026-10-29 实读原文）
+
+`developer.tesla.cn/docs/fleet-api/fleet-telemetry` 的「先决条件」**只有三条**：
+
+1. 车辆不能是 2021 年之前的 Model S 或 Model X；
+2. 车辆必须运行 **2024.26 或更高版本**的固件（传统证书签名流程的应用需 2023.20.6+）；
+3. **车队密钥必须与车辆配对**。
+
+官方仓库 `teslamotors/fleet-telemetry` 的 **12 步接入流程**里**同样没有任何门户开关**：
+建应用 → 生成 EC 私钥 → 托管公钥 → 取 partner 令牌 → 注册应用 → 配服务器 →
+`check_server_cert.sh` → **配对虚拟密钥** → 跑 command-proxy → 下发 config → 等 `synced` → 车开始推。
+
+### 三、那「开关」在哪？—— 在**车机**里，而且**只针对老款 Model S/X**
+
+官方公告（2025-06-26）原文：
+
+> 这些车辆无需虚拟密钥；相反，拥有车辆访问权限的用户必须在**车辆的安全屏幕**中启用
+> 「允许第三方应用数据流」。对于安装了所需固件版本的车辆，`fleet_status` 端点将根据开关状态返回
+> `safety_screen_streaming_toggle_enabled` 为 true 或 false。
+
+⚠️ 「这些车辆」= **配备英特尔 Atom 车载电脑的 Model S 和 Model X**（2021 年前那批）。
+那些车**不支持虚拟密钥**，所以才用「车机安全屏幕开关」替代。
+⇒ **你的 Model 3 不适用这条路**，它走的是「虚拟密钥已配对」。
+
+### 四、你这台车：三条先决条件**全部满足**，而且数据流**已经在跑**
+
+| 先决条件 | 你的车 | 证据 |
+|---|---|---|
+| 不是 2021 年前 Model S/X | ✅ Model 3 | VIN `<VIN>` |
+| 固件 ≥ 2024.26 | ✅ **2026.26.200** | `fleet_status.vehicle_info` |
+| 车队密钥已配对 | ✅ | `key_paired_vins: ["<VIN>"]`、`total_number_of_keys: 7` |
+| 车端遥测客户端 | ✅ **1.3.0** | `fleet_telemetry_version` |
+| 应用已注册（区域 cn） | ✅ HTTP 200 | `GET /api/1/partner_accounts/public_key?domain=<主机名>.<tailnet域>.ts.net` |
+| 签名私钥 ↔ Tesla 侧公钥 | ✅ **同一把**（逐字节比对 EC 点） | `scripts/tesla-partner.ps1` |
+| 配置是否被车端采纳 | ✅ **`synced: true`** | `GET /api/v1/cars/{id}/fleet_telemetry` |
+
+⚠️ `safety_screen_streaming_toggle_enabled` 在**我们车的 `fleet_status` 响应里根本不存在**
+—— 因为它只对 Intel Atom Model S/X 有意义。这本身就是「不适用」的佐证。
+
+**最硬的一条证据不是配置，是车真的在推数据**（2026-10-29 12:18 实测）：
+
+- 唤醒后 **20 秒**内连上，`synced` 由 false 变 **true**；
+- 配置 22 个字段，实际到达 **21 个**（`EstBatteryRange` 这轮值没变 ⇒ 车端按「值变了才发」没推，
+  这**不是故障**）；
+- App 上锁车状态显示「**已上锁 · 5 分钟前**」，来源标 `telemetry`；
+  胎压卡显示 3.00 / 2.93 / 2.88 bar（遥测值，与轮询值逐轮吻合）。
+
+⇒ **凡是能卡住遥测的开关，必然都已在正确状态** ——
+否则车根本不会连上我们的 mTLS 服务器、也拿不到我们签的 config。
+
+### 五、所以现在要做什么
+
+**不用做任何事。** 你去后台「能打开的都打开了」是无害的，但那一项本来就不存在。
+
+真要查授权状态，去 **Tesla 手机 App → 用户资料 → 安全与隐私 → 第三方应用**
+（官方公告 2025-05-09：车主可以在那里跟踪第三方应用的使用情况）。
+
+**换车 / 加车**时要做的是（与开关无关）：
+
+1. 用 `https://tesla.com/_ak/<主机名>.<tailnet域>.ts.net` 把虚拟密钥配到新车；
+2. 等 `fleet_status` 里出现新车 VIN 的 `fleet_telemetry_version`（非空即车端客户端就绪）；
+3. 下发配置：`POST /api/v1/cars/{id}/fleet_telemetry`；
+4. 车醒着时它会自己连上来；`synced` 变 true 即完成。
+
 ## 2026-10-29（v0.81.0 · 胎压 / 车窗 / 门 / 哨兵，不再靠 2 分钟轮询）
 
 > ⚠️ **版本号未变**（`0.79.0` / code 95）—— **App 代码零改动**。
@@ -305,7 +389,7 @@ broker 会在订阅者上线时**重发** retained
 | 数据面端点 | ✅ 走 cn | `auth.tesla.cn` / `fleet-api.prd.cn.vn.cloud.tesla.cn` |
 | OAuth 客户端 | ✅ 走 cn | `CN_…` refresh_token 配它在 `auth.tesla.cn` 能换出 token |
 | **公钥托管 URL** | ❌ **不受** | Tesla 直接去拉我们给的**完整 URL**，不查区域 |
-| Fleet Telemetry 开关 | ✅ account 级 | 车已采纳我们签的 config ⇒ **至少有一侧是开的** |
+| Fleet Telemetry「开关」 | ⚠️ **不存在** | 开发者后台**没有**这个开关（官方先决条件只有三条，见「订正」一节） |
 
 ⚠️ 公钥那条最容易想错：我们交出去的是
 `https://<主机名>/.well-known/appspecific/com.tesla.3p.public-key.pem`
@@ -360,9 +444,10 @@ broker 会在订阅者上线时**重发** retained
 
 ### 六、还需要你做的
 
-1. 去 **`developer.tesla.cn`**（不是 `.com`）确认「Fleet Telemetry」开关是开的
-   —— 若 `.com` 与 `.cn` 是两套账号，`.cn` 这侧也要开一次，
-   否则**以后换车 / 加车会拿不到配置**。
+1. ~~去 **`developer.tesla.cn`** 确认「Fleet Telemetry」开关是开的~~ ——
+   **这条是错的，已订正**（见「订正 ·「Fleet Telemetry 开关」这个说法是错的」一节）：
+   开发者后台**没有**这个开关；官方先决条件只有三条（车型 / 固件 / **虚拟密钥已配对**），
+   我们**全部满足**，`synced` 已为 true。⇒ **这条不用做**。
 2. **不要**在 `.cn` 后台新建 OAuth 客户端（见第二节）。
 3. 「允许的源」保持**完整主机名**
    `https://<主机名>.<tailnet域>.ts.net`
