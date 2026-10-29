@@ -659,17 +659,54 @@ def teslamate_charge_curve(charge_id: int) -> dict:
 # --------------------------------------------------------------------------
 
 
+def _param_howto(specs):
+    """把服务端的**参数规格**翻译成 LLM 能直接照抄的样子。
+
+    ⚠️ **v0.87.0**：以前清单只给「参数名」（`["driver_temp"]`）⇒
+    LLM 不知道范围，只能猜 —— 而车控**不可逆**，猜错有代价。
+
+    ⇒ 现在每个参数都带上：类型、是否必填、可填范围、每个取值的含义、完整说明。
+    例：座椅加热的 `seat_position` 会告诉模型
+    「0=主驾、1=副驾、2~6 第二排、7~8 第三排」，
+    而不是让人自己猜「1 到底是副驾还是第二排」。
+    """
+    out = []
+    for p in specs or []:
+        if not isinstance(p, dict):
+            continue
+        d = {
+            "参数名": p.get("name"),
+            "类型": p.get("type"),
+            "必填": bool(p.get("required")),
+            "说明": p.get("description"),
+        }
+        lo, hi = p.get("min"), p.get("max")
+        if lo is not None and hi is not None:
+            d["可填范围"] = "%s~%s" % (lo, hi)
+        opts = p.get("options") or []
+        if opts:
+            d["可选值"] = "、".join(
+                "%s=%s" % (o.get("value"), o.get("label")) for o in opts if isinstance(o, dict)
+            )
+        out.append(d)
+    return out
+
+
 @mcp.tool()
 def teslamate_command_catalog() -> dict:
-    """列出这台车**支持哪些车控动作**，每个动作的风险等级与需要的参数。
+    """列出这台车**支持哪些车控动作**，每个动作的风险等级与参数该怎么填。
 
-    **什么时候用**：用户问「车能做什么」「有没有鸣笛」「怎么远程启动」；
-    或者你要下发动作前**先查参数名**（参数拼错会失败）。
+    **什么时候用**：用户问「车能做什么」「有没有座椅加热」「怎么远程启动」；
+    或者你要下发动作前**先查参数怎么填**（参数名拼错会失败，取值填错更糟）。
 
-    风险等级：high（解锁车门 / 开合尾门 / 远程启动）/ medium / low。
+    风险等级：high（解锁车门 / 打开尾门 / 打开前备箱 / 远程启动）/ medium / low。
 
     每个动作还带一个 `完成后是什么样`（「锁车」→「已锁车」）——
     下发成功后**直接用这一句**告诉用户，别自己拼。
+
+    ⚠️ **每个动作都有 `参数怎么填`**（v0.87.0 新增）——
+    里面有类型、是否必填、可填范围、每个取值代表什么。
+    **照着填，不要猜**。
     """
     d = _get(f"/api/v1/cars/{CAR_ID}/commands")
     if not isinstance(d, dict) or "error" in d:
@@ -682,6 +719,7 @@ def teslamate_command_catalog() -> dict:
             "完成后是什么样": a.get("done"),
             "风险": a.get("risk"),
             "参数": a.get("params") or [],
+            "参数怎么填": _param_howto(a.get("param_specs")),
             "会唤醒车": a.get("wakes_vehicle"),
         } for a in (d.get("actions") or [])],
     }
@@ -689,13 +727,16 @@ def teslamate_command_catalog() -> dict:
 
 @mcp.tool()
 def teslamate_vehicle_command(action: str, params: dict | None = None) -> dict:
-    """给这台车**下发一条命令**：锁车 / 解锁 / 空调 / 充电上限 / 闪灯 / 鸣笛 / 尾门 / 远程启动 / 唤醒…
+    """给这台车**下发一条命令**：锁车 / 解锁 / 空调 / 座椅加热 / 方向盘加热 /
+    车窗通风 / 充电上限 / 闪灯 / 鸣笛 / 尾门 / 前备箱 / 远程启动 / 唤醒…
 
-    **什么时候用**：用户**明确要求**某个动作时（「把车锁了」「打开空调」「鸣一下笛」）。
+    **什么时候用**：用户**明确要求**某个动作时
+    （「把车锁了」「打开空调」「把主驾座椅加热开到高档」「把车窗开条缝」「打开前备箱」）。
 
-    ⚠️ **高危动作**（door_unlock / actuate_trunk / remote_start_drive）
+    ⚠️ **高危动作**（door_unlock / actuate_trunk / open_frunk / remote_start_drive）
     请**先向用户确认**再调用。
-    ⚠️ 动作名与参数名先查 `teslamate_command_catalog`，别猜。
+    ⚠️ 动作名与**参数怎么填**先查 `teslamate_command_catalog`，别猜
+    （那儿有类型、范围、每个取值的含义 —— 座椅加热的座位号、档位都在里面）。
     ⚠️ 车在休眠时命令发不出去 —— 会返回「车在休眠或离线，先唤醒再试」。
     ⚠️ 唤醒（wake_up）本身会耗电、也可能被 Tesla 计费。
 

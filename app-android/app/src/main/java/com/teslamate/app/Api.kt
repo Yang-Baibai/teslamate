@@ -1644,6 +1644,52 @@ class Api private constructor(private val base: String, private val token: Strin
 // ── 车控模型（v0.66.0）──────────────────────────────────────────
 
 /**
+ * 车控参数的**一个取值**及其人话标签。
+ *
+ * ⚠️ **v0.87.0**：由服务端给（`param_specs[].options`）——
+ * 例：座椅加热的座位号「0 = 主驾、1 = 副驾…」。
+ * 没有它，用户就得对着「0~8」猜哪个是自己的座位。
+ */
+@Serializable
+data class CommandParamOption(
+    val value: String = "",
+    val label: String = "",
+)
+
+/**
+ * 车控参数的**严谨规格**：类型、是否必填、范围、可选值、说明。
+ *
+ * ⚠️ **v0.87.0**：由服务端给（`api/tesla_command.go` 的 `teslaCommandParamSpec`）。
+ *
+ * ## 为什么规格住在服务端
+ *
+ * 「参数合法范围」与「参数怎么填」是**同一个知识**，抄成两份必然漂移
+ * （App 一份 Kotlin 表、服务端一份校验）。
+ * 而车控**不可逆** —— 漂移的代价是「把「关」发成「高档」。
+ *
+ * ⇒ 服务端是唯一事实源：App 照它渲染控件，服务端自己照它校验。
+ */
+@Serializable
+data class CommandParamSpec(
+    val name: String = "",
+    /** int / bool / password / string */
+    val type: String = "string",
+    val required: Boolean = false,
+    /** INT 的取值范围。 */
+    val min: Int? = null,
+    val max: Int? = null,
+    /** PASSWORD 的长度范围。 */
+    val min_length: Int? = null,
+    val max_length: Int? = null,
+    /** INT 的可选值（服务端给了就渲染成选择器）。 */
+    val options: List<CommandParamOption> = emptyList(),
+    /** 界面上的短标签。 */
+    val label: String = "",
+    /** 完整说明（喂给 LLM 的那一份）。 */
+    val description: String = "",
+)
+
+/**
  * 一个车控动作。
  *
  * ⚠️ `risk` 由**服务端**给（low / medium / high）——
@@ -1660,6 +1706,13 @@ data class VehicleCommand(
     val done: String = "",
     val risk: String = "low",
     val params: List<String> = emptyList(),
+    /**
+     * ⚠️ **v0.87.0**：参数的**严谨规格**。
+     *
+     * 与 `params` 并存：`params` 回答「要哪些参数名」，
+     * `param_specs` 回答「每个参数该怎么填」。
+     */
+    val param_specs: List<CommandParamSpec> = emptyList(),
     val wakes_vehicle: Boolean = false,
 )
 

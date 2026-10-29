@@ -5,6 +5,154 @@
 
 ---
 
+## 2026-10-30（v0.87.0 · Hermes 车控补齐：座椅加热 / 方向盘加热 / 车窗通风 / 前备箱，参数规格收归服务端）
+
+这一轮是**使命书 §2.1「全量控车指令可调」**的补齐 ——
+之前能控的动作里缺了座椅加热、后备箱/前备箱、车窗通风（App 里同样没有）。
+同时把**车控参数规格（范围、每个取值代表什么）收归服务端唯一事实源**，
+让 App 和 Hermes 都照着填，而不是各写一份、靠猜。
+
+⚠️ 全部端点与 payload 取自 **`teslamotors/vehicle-command` 官方源码原文**
+（`pkg/proxy/proxy.go` / `pkg/vehicle/actions.go` / `pkg/vehicle/climate.go`），
+**不采信**第三方博客与「记忆里的端点名」。
+
+### 一、官方源码查证 —— 端点与 payload 逐字对照
+
+| 能力 | 官方端点 | 官方 body | 备注 |
+|---|---|---|---|
+| 座椅加热 | `remote_seat_heater_request` | `{"seat_position": 0~8, "level": 0~3}` | 两个字段**都必填** |
+| 方向盘加热 | `remote_steering_wheel_heater_request` | `{"on": true/false}` | 官方默认 `true` |
+| 车窗通风 | `window_control` | `{"command": "vent"}` | 官方只认 `vent` / `close` |
+| 关闭全部车窗 | `window_control` | `{"command": "close"}` | 同上 |
+| 前备箱 | `actuate_trunk` | `{"which_trunk": "front"}` | 可选字段，缺省 `rear` |
+| 尾门 | `actuate_trunk` | `{"which_trunk": "rear"}` | 官方**只有开，没有关** |
+
+- **`seat_position` 是官方 `seatPositions` 切片下标**
+  （0=主驾 / 1=副驾 / 2~6 第二排（左右后为背向座）/ 7~8 第三排）；
+- **`level` 就是官方 `pkg/vehicle/climate.go` 的 `type Level int`**
+  （`LevelOff=0` / `Low=1` / `Med=2` / `High=3`）；
+- ⚠️ **前备箱官方确实支持** —— `actuate_trunk` 的 `which_trunk="front"` 走 `OpenFrunk`
+  （此前以为「没有前备箱端点」是**错的**，本轮已在源码里纠正）；
+- ⚠️ 官方 `pkg/vehicle/actions.go` 对 `OpenFrunk` 的注释原文：
+  **"There is no remote way to close the frunk!"**
+  ⇒ **前备箱远程开得了、关不了** ⇒ 文案如实写「打开前备箱（远程关不了）」，
+  **不做**一个「关前备箱」的假按钮；
+- ⚠️ 官方 `pkg/proxy/proxy.go` 注释原文：`open_tonneau` / `close_tonneau` / `stop_tonneau`
+  是 *"opens/closes/stop a Cybetruck's tonneau. **Has no effect on other vehicles.**"*
+  ⇒ **tonneau 是 Cybertruck 的货箱盖，不是尾门** ⇒ 本轮**不暴露**这三个端点，
+  并且写进单测的**禁用名单**，防止以后被当成「开合尾门」接进去。
+
+### 二、重大 bug：「开启空调 / 关闭空调」这两个按钮**从来没有生效过**
+
+⚠️ `set_climate_on` / `set_climate_off` 是 **Fleet API 的命令名**，
+在官方 `tesla-http-proxy` 的端点表里**根本不存在** ⇒ 请求必然被回 `400 invalid_command`。
+且官方 proxy **不会回退 Fleet API** ⇒ 按钮点了没反应，且没有任何可见报错。
+
+⇒ **修法**：对外 action 名**保持不变**（不破坏已有调用方），
+只把 `Endpoint` 换成官方的 `auto_conditioning_start` / `auto_conditioning_stop`。
+
+⚠️ 这类错误**光看文案看不出来** —— 文案、参数、返回值全都正常，
+只有把端点对着官方源码逐个核，才发现「名字对、端点不对」。
+⇒ 这也是 ADR #34（端点白名单硬编码进单测）存在的理由。
+
+### 三、参数规格收归服务端唯一事实源（ADR #33）
+
+服务端在 `teslaCommandSpec.ParamSpecs` 里声明每个动作的参数：
+**类型 / 必填 / 取值范围 / 每个取值的中文标签与说明**，
+随 `GET /api/v1/cars/{id}/commands` 一起下发。
+
+| 消费者 | 怎么用这份规格 |
+|---|---|
+| 服务端 | 收到参数先做**范围与类型校验**，越界直接 400 |
+| App | **照着规格渲染输入控件**：有 `options` ⇒ 选择器（chip），纯 int ⇒ 数字框，bool ⇒ 开关，password ⇒ 掩码框 |
+| Hermes / MCP | 把同一份规格翻译成「**参数怎么填**」：`0=主驾、1=副驾…`、`0 关 / 1 低档 / 2 中档 / 3 高档` |
+
+⚠️ **App 原来的 Kotlin 硬编码参数表降级为「服务端没给规格时的兜底」**，
+不再是第二事实源。
+
+⇒ 动作数 **16 → 21**，新增 5 个：
+`open_frunk`（前备箱）/ `seat_heater`（座椅加热）/ `steering_wheel_heater`（方向盘加热）/
+`window_vent`（车窗通风）/ `window_close`（关闭全部车窗）。
+
+⚠️ **官方端点的固定取值写死在服务端**（`which_trunk`、`command` **不暴露成参数**）
+⇒ LLM 不可能填错，也不用记。
+
+### 四、App 端：参数弹窗改成规格驱动
+
+| 控件 | 触发条件 |
+|---|---|
+| 选择器（chip） | 参数是 int **且**规格给了 `options` |
+| 数字输入框 | 参数是 int **且**没有 `options` |
+| 开关 | 参数是 bool |
+| 掩码输入框 | 参数是 password |
+
+⚠️ **控件顺序固定为 INT → PASSWORD → BOOL → TEXT**
+⇒ 既有 16 个动作的弹窗版面**逐字不变**（模拟器实测「驾驶位温度 ℃（15~28）」/
+「副驾温度 ℃（15~28）」标签与旧版完全一致）。
+
+⚠️ **顺手修掉一个既有毛病**：弹窗正文**不再重复一遍动作说明**
+—— 标题已经写了「设定座舱温度（℃）」，正文又来一遍，同一屏出现两次。
+
+⚠️ 选中的 chip 改用 `primaryContainer` / `onPrimaryContainer`
+⇒ 默认 M3 浅灰在白底弹窗上**几乎看不出选了哪个**。
+
+⚠️ 弹窗内容加 `verticalScroll` ⇒ 13 个 chip 在 200% 字号下也能滚到。
+
+⚠️ 车控卡新增「**车窗**」分组；座椅加热 / 方向盘加热归入「**空调与温度**」。
+
+### 五、实测取证（模拟器 `emulator-5554`，1440×3200）
+
+| 项 | 实测 |
+|---|---|
+| 分区 | 空调与温度（开启空调 / 关闭空调 / 设定座舱温度（℃）/ **座椅加热** / **方向盘加热开关**）· 充电 · **车窗**（车窗通风（开一条缝）/ 关闭全部车窗）· 其他 · 高危动作 |
+| 座椅加热弹窗 | 标题 + 「座位」9 个 chip + 「加热档位」4 个 chip（关 / 低档 / 中档 / 高档） |
+| 未选值时 | 「确定座椅加热」**disabled** |
+| 选「主驾」+「中档」后 | 「确定座椅加热」`enabled=true`；选中 chip 呈 `primaryContainer` |
+| 老动作版面 | 「设定座舱温度（℃）」两个数字框，标签**逐字**与旧版一致 |
+| 200% 字号 | 9 个座位 chip **无一截断**；内容区可滚（滚一次后「高档」完整可见）；取消/确定按钮**始终常驻** |
+
+⚠️ 全程**没有点过「确定」** ⇒ 没有对真车发出任何命令。
+
+### 六、明确**不做**的事（反幻觉铁律）
+
+| 不做 | 原因 |
+|---|---|
+| **座椅冷却** | 官方注释写「API 用 0-3」，但官方代码路径是 `vehicle.Level(level-1)` + `E(level+1)` ⇒ **实际等价于 1~4**，且座位是 protobuf 枚举序号（1=FrontLeft）而非 0 基下标。**官方注释与官方代码自相矛盾** ⇒ 未实测前不暴露 |
+| **关尾门** | 官方 `CloseTrunk` 存在，但 proxy **没有**对应端点 ⇒ 只能开不能关 |
+| **关前备箱** | 官方注释原文：远程关不了 |
+| **tonneau 三个端点** | Cybertruck 货箱盖，对 Model 3/Y 无效 ⇒ 写进单测禁用名单 |
+| **改 `remote_start_drive` 的 PIN** | 官方 proxy 的 `remote_start_drive` **不读任何参数** ⇒ 现有 `password` body 字段被 proxy 忽略。**本轮只记录，未改**（改了也不能让 proxy 认） |
+
+### 七、影响面 / 回滚
+
+| 项 | 说明 |
+|---|---|
+| 服务端 | `api/tesla_command.go`（参数规格表 + 5 个新动作 + 修正 2 个空调端点）、`api/tesla_command_params_test.go`（新增）、`api/tesla_command_test.go` |
+| MCP | `mcp/teslamate_mcp.py`（`_param_howto` + 清单新增「参数怎么填」）、`mcp/check_tool_fields.py`（新增 `check_command_catalog_params`） |
+| App | `Api.kt`（`CommandParamSpec`）、`ui/CommandParams.kt`（新增）、`ui/VehicleControlCard.kt`（规格驱动弹窗 + 分区） |
+| 文档 | ADR #33 / #34 |
+| 版本 | versionCode 99 → **100**，versionName 0.86.0 → **0.87.0** |
+| 回滚 | `git revert` 本次提交；`/api/v1/cars/{id}/commands` 的 `param_specs` 字段缺失时 App 自动回落到旧 Kotlin 表 |
+
+### 八、闸门
+
+| 闸门 | 结果 |
+|---|---|
+| Go `gofmt -e` / `go vet` / `go test` | 通过（**218** 条用例） |
+| 客户端闸门 `scripts/client-gates.sh` | **9 过 / 0 败** |
+| 服务端闸门 `scripts/server-gates.sh` | **5 过 / 0 败** |
+| 冒烟 `scripts/smoke.sh` | **39 过 / 0 败** |
+| MCP 字段自检 `mcp/check_tool_fields.py` | **0 项不合规**（16 个工具都写了「什么时候用」，每个动作都带「参数怎么填」） |
+| Kotlin 单测 | **136 通过 / 0 失败**（127 既有 + 9 新增） |
+
+⚠️ **已知遗留（HEAD 里就有，非本轮引入）**：`gofmt -l` 在
+`api/battery_decay.go` 等 **11 个本轮未改动**的文件上仍有格式漂移
+（注释重排 / 对齐空格）。服务端闸门用的是 `gofmt -e`（只解析不格式化）⇒ 不会拦。
+本轮**刻意不重排**（会把 v0.87.0 的 diff 撑成 22 个文件），
+列为**下一轮第一个候选**。
+
+---
+
 ## 2026-10-30（v0.86.0 · 用户点名的五处版面：叠印的证据行、找不到的「收起」、不成列的数字、一堵小字墙）
 
 > 这一轮是**用户点名**的五处版面问题（2026-10-29 提的，2026-10-30 修完）：

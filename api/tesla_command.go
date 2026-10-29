@@ -87,7 +87,13 @@ const (
 )
 
 // 参数取值范围（与 Tesla App 的舒适区一致；车端会拒越界值）。
-const (
+//
+// ⚠️ **v0.87.0：这块从 `const` 改成 `var`** —— 因为参数规格
+// （`teslaCommandParamSpec`）要把范围**放进 JSON**（喂给 App 的输入控件
+// 与 MCP 的 JSON Schema），而 Go **不能对常量取地址**。
+//
+// 改成 var 之后，「校验用的数字」与「对外公布的数字」是**同一份**，不会漂移。
+var (
 	teslaChargeLimitMin = 50
 	teslaChargeLimitMax = 100
 	teslaTempMin        = 15
@@ -96,7 +102,55 @@ const (
 	teslaAmpsMax        = 48
 	teslaCredMinLen     = 4
 	teslaCredMaxLen     = 20
+	// ⚠️ **v0.87.0**：座椅位置与加热档位的取值范围。
+	//
+	// 官方锚点：teslamotors/vehicle-command
+	//   · `pkg/proxy/command.go` → `seatPositions` 切片（9 个座位，下标 0~8）
+	//   · `pkg/vehicle/climate.go` → `type Level int`（LevelOff/Low/Med/High = 0/1/2/3）
+	teslaSeatPositionMin = 0
+	teslaSeatPositionMax = 8
+	teslaSeatLevelMin    = 0
+	teslaSeatLevelMax    = 3
 )
+
+// teslaCommandParamOption 一个**具体取值**及其人话标签。
+//
+// ⚠️ **为什么连取值标签都要给**：车控参数不是「随便一个整数」，
+// 它有官方枚举（例：座椅加热的档位 0=关 / 1=低 / 2=中 / 3=高）。
+// 只给「范围 0~3」的话，调用方（LLM / 人）不知道 0 是什么意思
+// ⇒ 要么猜，要么试错 —— 而车控**不可逆**。
+type teslaCommandParamOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// teslaCommandParamSpec 一个参数的严谨描述。
+//
+// ⚠️ **v0.87.0：参数规格搬进服务端**。
+//
+// 「参数合法范围」与「参数怎么填」是**同一个知识**，抄成两份必然漂移
+// （App 一份 Kotlin 表、MCP 一份描述、服务端一份校验）。
+// 而车控不可逆 —— 漂移的代价是「把「关」发成「高档」。
+//
+// ⇒ 现在服务端是唯一事实源：
+//
+//	· 服务端校验读它（`buildTeslaCommandBody`）
+//	· App 的输入控件读它（标签、范围、可选值）
+//	· MCP 的 JSON Schema 读它（LLM 照着填，零失误）
+type teslaCommandParamSpec struct {
+	Name string `json:"name"`
+	// Type：int / bool / password / string
+	Type     string `json:"type"`
+	Required bool   `json:"required"`
+	Min      *int   `json:"min,omitempty"`
+	Max      *int   `json:"max,omitempty"`
+	// Options 取值清单（int 参数的每个合法取值 + 它的人话标签）。
+	Options []teslaCommandParamOption `json:"options,omitempty"`
+	// Label 界面上的短标签（App 的输入控件用这个）。
+	Label string `json:"label"`
+	// Description 完整说明（喂给 LLM 的 JSON Schema 用这个）。
+	Description string `json:"description"`
+}
 
 // teslaCommandSpec 一个可下发的动作的静态描述。
 type teslaCommandSpec struct {
@@ -109,6 +163,15 @@ type teslaCommandSpec struct {
 	Risk         string   `json:"risk"`
 	Params       []string `json:"params"`
 	WakesVehicle bool     `json:"wakes_vehicle"`
+	// ⚠️ **v0.87.0**：参数的**严谨规格**（类型、范围、可选值、人话标签）。
+	//
+	// 与 `Params` 并存，职责不同：
+	//   · `Params` 回答「要哪些参数名」
+	//   · `ParamSpecs` 回答「每个参数该怎么填」
+	//
+	// 两者必须**逐条对齐**（有测试钉死）—— 只给名字不给规格，
+	// LLM 只能猜范围；只给规格不给名字，App 不知道要渲染什么。
+	ParamSpecs []teslaCommandParamSpec `json:"param_specs"`
 }
 
 // MarshalJSON 保证「无参数」输出 **[]** 而不是 **null**。
@@ -130,10 +193,132 @@ func (s teslaCommandSpec) MarshalJSON() ([]byte, error) {
 	if out.Params == nil {
 		out.Params = []string{}
 	}
+	// ⚠️ **v0.87.0**：同上 —— `param_specs` 也不能是 null。
+	// kotlinx.serialization 遇到**显式 null** 会抛异常（它只对**缺失**的键用默认值），
+	// 整个车控清单就解析不出来了。
+	if out.ParamSpecs == nil {
+		out.ParamSpecs = []teslaCommandParamSpec{}
+	}
 	return json.Marshal(out)
 }
 
-// teslaCommandCatalog 全部 16 个动作。
+// --------------------------------------------------------------------------
+// 参数规格（**唯一事实源**）
+// --------------------------------------------------------------------------
+//
+// ⚠️ **v0.87.0**：这些规格**同时**喂给三方：
+//
+//	· 服务端校验 —— `buildTeslaCommandBody` 读的是这里的数字
+//	· App 输入控件 —— 标签、范围、可选值都照这里渲染
+//	· MCP JSON Schema —— LLM 照着填，零失误
+//
+// ⇒ 范围只在**这一处**写死。
+//
+// 官方锚点：teslamotors/vehicle-command
+//
+//	· `pkg/proxy/command.go` —— 端点名与 body 字段
+//	· `pkg/vehicle/climate.go` —— `Level` 枚举与座位枚举
+//	· `pkg/protocol/protobuf/carserver` —— 座位/档位的底层枚举
+var (
+	// teslaSpecOn 布尔开关（哨兵 / 代客 / 方向盘加热共用）。
+	teslaSpecOn = teslaCommandParamSpec{
+		Name:        "on",
+		Type:        "bool",
+		Required:    false,
+		Label:       "开启",
+		Description: "true = 开启，false = 关闭",
+	}
+	// teslaSpecPassword 代客模式 / 远程启动的 PIN。
+	teslaSpecPassword = teslaCommandParamSpec{
+		Name:        "password",
+		Type:        "password",
+		Required:    true,
+		Label:       "PIN（4~20 位）",
+		Description: "车主的 4~20 位数字 PIN（代客模式 / 远程启动用）",
+	}
+	teslaSpecDriverTemp = teslaCommandParamSpec{
+		Name:        "driver_temp",
+		Type:        "int",
+		Required:    true,
+		Min:         &teslaTempMin,
+		Max:         &teslaTempMax,
+		Label:       "驾驶位温度 ℃（15~28）",
+		Description: "主驾座舱目标温度，单位摄氏度，可设 15~28",
+	}
+	teslaSpecPassengerTemp = teslaCommandParamSpec{
+		Name:        "passenger_temp",
+		Type:        "int",
+		Required:    false,
+		Min:         &teslaTempMin,
+		Max:         &teslaTempMax,
+		Label:       "副驾温度 ℃（15~28）",
+		Description: "副驾座舱目标温度，单位摄氏度，可设 15~28；不填就跟着主驾",
+	}
+	teslaSpecChargeLimit = teslaCommandParamSpec{
+		Name:        "percent",
+		Type:        "int",
+		Required:    true,
+		Min:         &teslaChargeLimitMin,
+		Max:         &teslaChargeLimitMax,
+		Label:       "充电上限 %（50~100）",
+		Description: "充电停机上限，单位百分比，可设 50~100",
+	}
+	teslaSpecChargingAmps = teslaCommandParamSpec{
+		Name:        "charging_amps",
+		Type:        "int",
+		Required:    true,
+		Min:         &teslaAmpsMin,
+		Max:         &teslaAmpsMax,
+		Label:       "充电电流 A（5~48）",
+		Description: "充电电流，单位安培，可设 5~48",
+	}
+	// teslaSpecSeatPosition 座椅加热的座位序号。
+	//
+	// ⚠️ **官方 `seat_position` 是下标，不是「座位名」** ——
+	// 锚点：官方 `pkg/proxy/command.go` 的 `seatPositions` 切片顺序。
+	// 顺序改了，这些标签就全错 ⇒ 只认官方顺序。
+	teslaSpecSeatPosition = teslaCommandParamSpec{
+		Name:     "seat_position",
+		Type:     "int",
+		Required: true,
+		Min:      &teslaSeatPositionMin,
+		Max:      &teslaSeatPositionMax,
+		Options: []teslaCommandParamOption{
+			{Value: "0", Label: "主驾"},
+			{Value: "1", Label: "副驾"},
+			{Value: "2", Label: "第二排左座"},
+			{Value: "3", Label: "第二排左后座"},
+			{Value: "4", Label: "第二排中座"},
+			{Value: "5", Label: "第二排右座"},
+			{Value: "6", Label: "第二排右后座"},
+			{Value: "7", Label: "第三排左座"},
+			{Value: "8", Label: "第三排右座"},
+		},
+		Label:       "座位",
+		Description: "官方座位序号：0 主驾 / 1 副驾 / 2~6 第二排（左右后为背向座）/ 7~8 第三排",
+	}
+	// teslaSpecSeatLevel 座椅加热的档位。
+	//
+	// 锚点：官方 `pkg/vehicle/climate.go` 的 `type Level int`
+	//（LevelOff / LevelLow / LevelMed / LevelHigh = 0 / 1 / 2 / 3）。
+	teslaSpecSeatLevel = teslaCommandParamSpec{
+		Name:     "level",
+		Type:     "int",
+		Required: true,
+		Min:      &teslaSeatLevelMin,
+		Max:      &teslaSeatLevelMax,
+		Options: []teslaCommandParamOption{
+			{Value: "0", Label: "关"},
+			{Value: "1", Label: "低档"},
+			{Value: "2", Label: "中档"},
+			{Value: "3", Label: "高档"},
+		},
+		Label:       "加热档位",
+		Description: "加热档位（官方 Level 枚举）：0 关 / 1 低档 / 2 中档 / 3 高档",
+	}
+)
+
+// teslaCommandCatalog 全部 21 个动作。
 //
 // ⚠️ 顺序 = App 与 MCP 展示的顺序（按风险从高到低排）。
 //
@@ -142,30 +327,220 @@ func (s teslaCommandSpec) MarshalJSON() ([]byte, error) {
 // 用户看结果条的时候要的是后者。
 // 它住在服务端（跟 `risk` 一样是安全/语义策略，只该有一处），
 // App 与 MCP 都直接用，不各自抄一份。
+//
+// ⚠️ **v0.87.0：每个动作多了 `ParamSpecs`** —— 参数**怎么填**。
+// `Params` 只回答「要哪些参数名」，`ParamSpecs` 回答
+// 「每个参数的类型、范围、可选值和人话标签」。
+// ⇒ MCP 照它出 JSON Schema（LLM 零失误），App 照它渲染控件。
 var teslaCommandCatalog = []teslaCommandSpec{
-	{Action: "door_unlock", Endpoint: "door_unlock", Description: "解锁车门", Done: "已解锁", Risk: teslaCmdRiskHigh},
-	{Action: "actuate_trunk", Endpoint: "actuate_trunk", Description: "开合尾门", Done: "尾门已动作", Risk: teslaCmdRiskHigh},
-	{Action: "remote_start_drive", Endpoint: "remote_start_drive", Description: "远程启动（无钥匙驾驶 2 分钟）", Done: "已远程启动", Risk: teslaCmdRiskHigh,
-		Params: []string{"password"}},
-	{Action: "set_valet_mode", Endpoint: "set_valet_mode", Description: "代客模式开关", Done: "代客模式已切换", Risk: teslaCmdRiskMedium,
-		Params: []string{"on", "password"}},
-	{Action: "set_temperature", Endpoint: "set_temps", Description: "设定座舱温度（℃）", Done: "温度已设定", Risk: teslaCmdRiskMedium,
-		Params: []string{"driver_temp", "passenger_temp"}},
-	{Action: "set_climate_on", Endpoint: "set_climate_on", Description: "开启空调", Done: "空调已开启", Risk: teslaCmdRiskMedium},
-	{Action: "set_climate_off", Endpoint: "set_climate_off", Description: "关闭空调", Done: "空调已关闭", Risk: teslaCmdRiskMedium},
-	{Action: "set_charge_limit", Endpoint: "set_charge_limit", Description: "设置充电上限（%）", Done: "充电上限已设定", Risk: teslaCmdRiskMedium,
-		Params: []string{"percent"}},
-	{Action: "set_charging_amps", Endpoint: "set_charging_amps", Description: "设置充电电流（A）", Done: "充电电流已设定", Risk: teslaCmdRiskMedium,
-		Params: []string{"charging_amps"}},
-	{Action: "charge_start", Endpoint: "charge_start", Description: "开始充电", Done: "已开始充电", Risk: teslaCmdRiskMedium},
-	{Action: "charge_stop", Endpoint: "charge_stop", Description: "停止充电", Done: "已停止充电", Risk: teslaCmdRiskMedium},
-	{Action: "wake_up", Endpoint: "wake_up", Description: "唤醒车辆（会耗电、可能计费）", Done: "已唤醒", Risk: teslaCmdRiskMedium,
-		WakesVehicle: true},
-	{Action: "door_lock", Endpoint: "door_lock", Description: "锁车", Done: "已锁车", Risk: teslaCmdRiskMedium},
-	{Action: "honk_horn", Endpoint: "honk_horn", Description: "鸣笛", Done: "已鸣笛", Risk: teslaCmdRiskLow},
-	{Action: "flash_lights", Endpoint: "flash_lights", Description: "闪灯", Done: "已闪灯", Risk: teslaCmdRiskLow},
-	{Action: "set_sentry_mode", Endpoint: "set_sentry_mode", Description: "哨兵模式开关", Done: "哨兵模式已切换", Risk: teslaCmdRiskMedium,
-		Params: []string{"on"}},
+	// ── 高危：会动车、会开孔、会把人放进车里 ──
+	{
+		Action:      "door_unlock",
+		Endpoint:    "door_unlock",
+		Description: "解锁车门",
+		Done:        "已解锁",
+		Risk:        teslaCmdRiskHigh,
+	},
+	{
+		// ⚠️ **v0.87.0：动作名保留，文案被修正**。
+		//
+		// 官方 `pkg/vehicle/actions.go` 只有 `OpenTrunk`；而官方 proxy
+		// **根本没有**关尾门的端点（`CloseTrunk` 没有对应的 `case`）⇒
+		// 「开合尾门」这个说法**是错的** —— 它只能开。
+		//
+		// ⇒ 名字保留（对外稳定 ID，不破坏已有调用方），文案改成「打开尾门」。
+		Action:      "actuate_trunk",
+		Endpoint:    "actuate_trunk",
+		Description: "打开尾门",
+		Done:        "尾门已打开",
+		Risk:        teslaCmdRiskHigh,
+	},
+	{
+		// ⚠️ **v0.87.0：新增「打开前备箱」** —— 使命书 §2.1 点名的能力。
+		//
+		// 官方 proxy 的 `actuate_trunk` 端点带一个可选字段 `which_trunk`
+		//（"front" → `OpenFrunk`，"rear" → `OpenTrunk`）
+		// ⇒ 前备箱**不是另一个端点**，而是同一个端点的另一个取值。
+		//
+		// ⚠️ 官方注释写明 "There is no remote way to close the frunk!"
+		// ⇒ **只能开、远程关不了** —— 这条写进文案，别让人以为能来回开合。
+		Action:      "open_frunk",
+		Endpoint:    "actuate_trunk",
+		Description: "打开前备箱（远程关不了）",
+		Done:        "前备箱已打开",
+		Risk:        teslaCmdRiskHigh,
+	},
+	{
+		Action:      "remote_start_drive",
+		Endpoint:    "remote_start_drive",
+		Description: "远程启动（无钥匙驾驶 2 分钟）",
+		Done:        "已远程启动",
+		Risk:        teslaCmdRiskHigh,
+		Params:      []string{"password"},
+		ParamSpecs:  []teslaCommandParamSpec{teslaSpecPassword},
+	},
+	// ── 中危：改设置、动设置，但不动人 ──
+	{
+		Action:      "set_valet_mode",
+		Endpoint:    "set_valet_mode",
+		Description: "代客模式开关",
+		Done:        "代客模式已切换",
+		Risk:        teslaCmdRiskMedium,
+		Params:      []string{"on", "password"},
+		ParamSpecs:  []teslaCommandParamSpec{teslaSpecOn, teslaSpecPassword},
+	},
+	{
+		Action:      "set_temperature",
+		Endpoint:    "set_temps",
+		Description: "设定座舱温度（℃）",
+		Done:        "温度已设定",
+		Risk:        teslaCmdRiskMedium,
+		Params:      []string{"driver_temp", "passenger_temp"},
+		ParamSpecs:  []teslaCommandParamSpec{teslaSpecDriverTemp, teslaSpecPassengerTemp},
+	},
+	{
+		// ⚠️ **v0.87.0：端点被修正**（这是个**一直坏着**的功能）。
+		//
+		// 原端点写的是 `set_climate_on` —— 那是 **Fleet API** 的命令名，
+		// 而本项目走的是 **vehicle-command proxy**，官方 proxy 的端点叫
+		// `auto_conditioning_start`（见官方 `pkg/proxy/command.go`）。
+		//
+		// 官方 proxy 遇到不认识的命令名会**立刻 400 invalid_command**
+		//（`ExtractCommandAction` 的 default 分支）—— **不会**回退到 Fleet API
+		//（回退只在「车不支持该协议」或「命令声明要用 REST API」时发生）。
+		// ⇒ 「开启空调」这个按钮**从来没有生效过**，只是回读车况时看不出差别。
+		Action:      "set_climate_on",
+		Endpoint:    "auto_conditioning_start",
+		Description: "开启空调",
+		Done:        "空调已开启",
+		Risk:        teslaCmdRiskMedium,
+	},
+	{
+		// ⚠️ 同上：`set_climate_off` → `auto_conditioning_stop`。
+		Action:      "set_climate_off",
+		Endpoint:    "auto_conditioning_stop",
+		Description: "关闭空调",
+		Done:        "空调已关闭",
+		Risk:        teslaCmdRiskMedium,
+	},
+	{
+		// ⚠️ **v0.87.0：新增座椅加热** —— 使命书 §2.1 点名的能力。
+		//
+		// 官方 `pkg/proxy/command.go`：
+		//   case "remote_seat_heater_request":
+		//       setting, err := params.settingForHeatSeatPosition()
+		// ⇒ body 必须是 `{"seat_position": <0~8>, "level": <0~3>}`，**两个都要**。
+		Action:      "seat_heater",
+		Endpoint:    "remote_seat_heater_request",
+		Description: "座椅加热",
+		Done:        "座椅加热已设定",
+		Risk:        teslaCmdRiskMedium,
+		Params:      []string{"seat_position", "level"},
+		ParamSpecs:  []teslaCommandParamSpec{teslaSpecSeatPosition, teslaSpecSeatLevel},
+	},
+	{
+		// ⚠️ **v0.87.0：新增方向盘加热**。
+		// 官方端点 `remote_steering_wheel_heater_request`，body 只有 `{"on": bool}`。
+		Action:      "steering_wheel_heater",
+		Endpoint:    "remote_steering_wheel_heater_request",
+		Description: "方向盘加热开关",
+		Done:        "方向盘加热已切换",
+		Risk:        teslaCmdRiskMedium,
+		Params:      []string{"on"},
+		ParamSpecs:  []teslaCommandParamSpec{teslaSpecOn},
+	},
+	{
+		// ⚠️ **v0.87.0：新增车窗通风**。
+		//
+		// 官方端点 `window_control`，body 是 `{"command": "vent" | "close"}`
+		// —— **只有这两个值**，其它值官方直接报
+		// `command must be 'vent' or 'close'`。
+		//
+		// ⇒ 这里把取值**写死在服务端**，不暴露成参数 ⇒
+		// 调用方（LLM / 人）不可能填错，也不用去记「vent 而不是 open」。
+		Action:      "window_vent",
+		Endpoint:    "window_control",
+		Description: "车窗通风（开一条缝）",
+		Done:        "车窗已通风",
+		Risk:        teslaCmdRiskMedium,
+	},
+	{
+		Action:      "window_close",
+		Endpoint:    "window_control",
+		Description: "关闭全部车窗",
+		Done:        "车窗已关闭",
+		Risk:        teslaCmdRiskMedium,
+	},
+	{
+		Action:      "set_charge_limit",
+		Endpoint:    "set_charge_limit",
+		Description: "设置充电上限（%）",
+		Done:        "充电上限已设定",
+		Risk:        teslaCmdRiskMedium,
+		Params:      []string{"percent"},
+		ParamSpecs:  []teslaCommandParamSpec{teslaSpecChargeLimit},
+	},
+	{
+		Action:      "set_charging_amps",
+		Endpoint:    "set_charging_amps",
+		Description: "设置充电电流（A）",
+		Done:        "充电电流已设定",
+		Risk:        teslaCmdRiskMedium,
+		Params:      []string{"charging_amps"},
+		ParamSpecs:  []teslaCommandParamSpec{teslaSpecChargingAmps},
+	},
+	{
+		Action:      "charge_start",
+		Endpoint:    "charge_start",
+		Description: "开始充电",
+		Done:        "已开始充电",
+		Risk:        teslaCmdRiskMedium,
+	},
+	{
+		Action:      "charge_stop",
+		Endpoint:    "charge_stop",
+		Description: "停止充电",
+		Done:        "已停止充电",
+		Risk:        teslaCmdRiskMedium,
+	},
+	{
+		Action:       "wake_up",
+		Endpoint:     "wake_up",
+		Description:  "唤醒车辆（会耗电、可能计费）",
+		Done:         "已唤醒",
+		Risk:         teslaCmdRiskMedium,
+		WakesVehicle: true,
+	},
+	{
+		Action:      "door_lock",
+		Endpoint:    "door_lock",
+		Description: "锁车",
+		Done:        "已锁车",
+		Risk:        teslaCmdRiskMedium,
+	},
+	{
+		Action:      "honk_horn",
+		Endpoint:    "honk_horn",
+		Description: "鸣笛",
+		Done:        "已鸣笛",
+		Risk:        teslaCmdRiskLow,
+	},
+	{
+		Action:      "flash_lights",
+		Endpoint:    "flash_lights",
+		Description: "闪灯",
+		Done:        "已闪灯",
+		Risk:        teslaCmdRiskLow,
+	},
+	{
+		Action:      "set_sentry_mode",
+		Endpoint:    "set_sentry_mode",
+		Description: "哨兵模式开关",
+		Done:        "哨兵模式已切换",
+		Risk:        teslaCmdRiskMedium,
+		Params:      []string{"on"},
+		ParamSpecs:  []teslaCommandParamSpec{teslaSpecOn},
+	},
 }
 
 // teslaCommandByAction 动作名 → 规格。
@@ -251,8 +626,40 @@ func buildTeslaCommandBody(action string, p map[string]any) (map[string]any, err
 		return map[string]any{"on": true}, nil
 	case "set_climate_off":
 		return map[string]any{"on": false}, nil
-	case "actuate_trunk", "charge_start", "charge_stop", "wake_up":
+	case "charge_start", "charge_stop", "wake_up":
 		return map[string]any{}, nil
+	case "actuate_trunk":
+		// ⚠️ **v0.87.0**：官方 `actuate_trunk` 端点用 `which_trunk`
+		// 区分前后（"front" → 前备箱 / "rear" → 尾门），省略时官方默认后尾门。
+		// 这里**写明**而不是靠默认值 —— 默认值会变，写明不会。
+		return map[string]any{"which_trunk": "rear"}, nil
+	case "open_frunk":
+		// ⚠️ 同一个端点的另一个取值（官方 `pkg/proxy/command.go`）。
+		return map[string]any{"which_trunk": "front"}, nil
+	case "window_vent":
+		// ⚠️ 官方 `window_control` 只认 "vent" / "close" 两个字面值，
+		// 其它值官方直接报错 ⇒ 这里写死，不让调用方填。
+		return map[string]any{"command": "vent"}, nil
+	case "window_close":
+		return map[string]any{"command": "close"}, nil
+	case "steering_wheel_heater":
+		on, err := teslaCmdBool(p, "on", true)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"on": on}, nil
+	case "seat_heater":
+		// ⚠️ 官方 `remote_seat_heater_request` 的 body
+		// → `{"seat_position": <0~8>, "level": <0~3>}`，**两个都是必填**。
+		seat, err := teslaCmdInt(p, "seat_position", teslaSeatPositionMin, teslaSeatPositionMax, nil)
+		if err != nil {
+			return nil, err
+		}
+		level, err := teslaCmdInt(p, "level", teslaSeatLevelMin, teslaSeatLevelMax, nil)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"seat_position": seat, "level": level}, nil
 	case "set_temperature":
 		driver, err := teslaCmdInt(p, "driver_temp", teslaTempMin, teslaTempMax, nil)
 		if err != nil {

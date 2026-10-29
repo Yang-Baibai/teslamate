@@ -25,7 +25,8 @@ func TestBuildTeslaCommandBody_StaticBodies(t *testing.T) {
 		{"flash_lights", map[string]any{}},
 		{"charge_start", map[string]any{}},
 		{"charge_stop", map[string]any{}},
-		{"actuate_trunk", map[string]any{}},
+		// ⚠️ **v0.87.0**：官方 `actuate_trunk` 用 `which_trunk` 区分前后，缺省是后尾门 ⇒ 服务端写明。
+		{"actuate_trunk", map[string]any{"which_trunk": "rear"}},
 		{"wake_up", map[string]any{}},
 	}
 	for _, c := range cases {
@@ -140,8 +141,10 @@ func TestBuildTeslaCommandBody_SentryMode(t *testing.T) {
 func TestTeslaCommandCatalog_RiskLevels(t *testing.T) {
 	// ⚠️ 高危名单必须与文案一致 —— 解锁/尾门/远程启动会动车或开孔。
 	high := map[string]bool{
-		"door_unlock":        true,
-		"actuate_trunk":      true,
+		"door_unlock":   true,
+		"actuate_trunk": true,
+		// ⚠️ **v0.87.0**：开前备箱也是高危（开了就开了，远程关不了）。
+		"open_frunk":         true,
 		"remote_start_drive": true,
 	}
 	for _, s := range teslaCommandCatalog {
@@ -155,8 +158,9 @@ func TestTeslaCommandCatalog_RiskLevels(t *testing.T) {
 			t.Errorf("%s 不该是 high", s.Action)
 		}
 	}
-	if len(teslaCommandCatalog) != 16 {
-		t.Errorf("动作数 = %d，期望 16", len(teslaCommandCatalog))
+	// ⚠️ **v0.87.0**：16 → 22（新增座椅加热 / 方向盘加热 / 车窗通风 / 车窗关闭 / 前备箱）。
+	if len(teslaCommandCatalog) != 21 {
+		t.Errorf("动作数 = %d，期望 21", len(teslaCommandCatalog))
 	}
 }
 

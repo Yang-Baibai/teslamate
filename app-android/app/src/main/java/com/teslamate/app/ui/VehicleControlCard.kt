@@ -7,6 +7,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,12 +19,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -47,6 +53,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -304,9 +311,17 @@ fun VehicleControlCard(
                     rest.filter { it.action in actions }
                         .sortedBy { actions.indexOf(it.action) }
 
-                val climate = groupOf("空调与温度", listOf("set_climate_on", "set_climate_off", "set_temperature"))
+                // ⚠️ **v0.87.0**：座椅加热 / 方向盘加热归「空调与温度」——
+                // 用户想的是「我要把座位弄暖和」，不是「这动作算哪一档」。
+                val climate = groupOf(
+                    "空调与温度",
+                    listOf("set_climate_on", "set_climate_off", "set_temperature",
+                        "seat_heater", "steering_wheel_heater"),
+                )
                 val charging = groupOf("充电", listOf("charge_start", "charge_stop", "set_charge_limit", "set_charging_amps"))
-                val known = climate + charging
+                // ⚠️ 车窗单独一组 —— 「开窗」和「开空调」在用户脑子里是两件事。
+                val windows = groupOf("车窗", listOf("window_vent", "window_close"))
+                val known = climate + charging + windows
                 val others = rest.filter { it !in known }
 
                 if (climate.isNotEmpty()) {
@@ -314,6 +329,9 @@ fun VehicleControlCard(
                 }
                 if (charging.isNotEmpty()) {
                     ActionSection("充电", charging, running, pending?.action, ::request)
+                }
+                if (windows.isNotEmpty()) {
+                    ActionSection("车窗", windows, running, pending?.action, ::request)
                 }
                 if (others.isNotEmpty()) {
                     ActionSection("其他", others, running, pending?.action, ::request)
@@ -726,14 +744,16 @@ private fun CommandConfirmDialog(
     onConfirm: (Map<String, Any>) -> Unit,
 ) {
     val accents = LocalAccentColors.current
-    // 参数：数字 / 密码 / 开关
-    var numValues = remember { mutableStateOf(mapOf<String, String>()) }
-    var password = remember { mutableStateOf("") }
-    var onOff = remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
-
-    val needNum = cmd.params.filter { it == "driver_temp" || it == "passenger_temp" || it == "percent" || it == "charging_amps" }
-    val needPwd = cmd.params.contains("password")
-    val needOn = cmd.params.contains("on")
+    // ⚠️ **v0.87.0**：参数不再按**名字**硬编码，而是照**服务端给的规格**渲染。
+    //
+    // 原来那张表（needNum / needPwd / needOn）只认 4 个参数名 ——
+    // 来了新参数（座椅加热的座位号、档位）它就不认识了 ⇒
+    // 弹窗里一个控件都没有，用户点「确定」只会被服务端拒掉。
+    //
+    // ⚠️ `remember(cmd.action)`：按动作名重置 ——
+    // 否则关掉 A 的弹窗再开 B 的，上一个动作的输入会**残留**。
+    val fields = remember(cmd.action) { resolveParamFields(cmd) }
+    var values by remember(cmd.action) { mutableStateOf(initialParamValues(fields)) }
     val isHigh = cmd.risk == "high"
 
     AlertDialog(
@@ -744,7 +764,13 @@ private fun CommandConfirmDialog(
             Text(if (isHigh) "确认${cmd.description}" else cmd.description)
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // ⚠️ **v0.87.0**：内容可滚动。
+            // 座椅加热的座位有 9 个（选择器），加上档位 4 个 ——
+            // 不给滚动容器，200% 字号下会直接**顶出弹窗**。
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 if (isHigh) {
                     Text(
                         "这是「高危动作」，执行后不能自动撤销。",
@@ -759,57 +785,25 @@ private fun CommandConfirmDialog(
                         color = accents.warnAmber,
                     )
                 }
-                if (!isHigh && cmd.description.isNotBlank()) {
-                    Text(
-                        cmd.description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // ⚠️ **v0.87.0**：正文**不再重复**动作说明。
+                //
+                // 标题已经写了 `cmd.description`（高危动作是「确认X」），
+                // 正文再来一遍 ⇒ 同一屏出现两次同样的字
+                //（「设定座舱温度（℃）」占两行，却只多了一个信息量）。
+                // ⇒ 标题说过的，正文不再说。
+                fields.forEach { f ->
+                    ParamFieldRow(
+                        field = f,
+                        value = values[f.key] ?: "",
+                        onValueChange = { v -> values = values + (f.key to v) },
                     )
-                }
-                needNum.forEach { key ->
-                    OutlinedTextField(
-                        value = numValues.value[key] ?: "",
-                        onValueChange = { v ->
-                            numValues.value = numValues.value + (key to v.filter { it.isDigit() })
-                        },
-                        label = { Text(paramLabel(key)) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    )
-                }
-                if (needPwd) {
-                    OutlinedTextField(
-                        value = password.value,
-                        onValueChange = { password.value = it },
-                        label = { Text("PIN（4~20 位）") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                    )
-                }
-                if (needOn) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("开启", style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.weight(1f))
-                        Switch(
-                            checked = onOff.value["on"] ?: true,
-                            onCheckedChange = { v -> onOff.value = onOff.value + ("on" to v) },
-                        )
-                    }
                 }
             }
         },
         confirmButton = {
             TextButton(
-                enabled = !running && paramsReady(cmd, needNum, numValues.value, needPwd, password.value),
-                onClick = {
-                    val p = mutableMapOf<String, Any>()
-                    needNum.forEach { key ->
-                        numValues.value[key]?.toIntOrNull()?.let { p[key] = it }
-                    }
-                    if (needPwd && password.value.isNotBlank()) p["password"] = password.value
-                    if (needOn) p["on"] = onOff.value["on"] ?: true
-                    onConfirm(p)
-                },
+                enabled = !running && paramFieldsReady(fields, values),
+                onClick = { onConfirm(paramFieldsToParams(fields, values)) },
             ) { Text(if (isHigh) "确认${cmd.description}" else "确定${cmd.description}") }
         },
         dismissButton = {
@@ -818,32 +812,80 @@ private fun CommandConfirmDialog(
     )
 }
 
-/** 参数齐了吗（缺必填参数就别让用户点确认）。 */
-private fun paramsReady(
-    cmd: VehicleCommand,
-    needNum: List<String>,
-    numValues: Map<String, String>,
-    needPwd: Boolean,
-    pwd: String,
-): Boolean {
-    needNum.forEach { key ->
-        val v = numValues[key]?.toIntOrNull() ?: return false
-        val range = when (key) {
-            "driver_temp", "passenger_temp" -> 15..28
-            "percent" -> 50..100
-            "charging_amps" -> 5..48
-            else -> null
+/**
+ * 一个参数控件。
+ *
+ * ⚠️ **v0.87.0**：控件**照服务端给的规格**渲染，三种形态：
+ *
+ * | 参数形态        | 控件 | 为什么 |
+ * |-----------------|------|--------|
+ * | 有可选值（int） | **选择器**（一排小标签） | 「座位号 0~8」让人自己填数字是折磨；给名字才能选对 |
+ * | 数字（无取值）  | 数字输入框 | 温度、电流这类连续量 |
+ * | 布尔            | 开关 | 开 / 关本来就该是开关 |
+ * | 口令            | 掩码输入框 | PIN 不该明文显示 |
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ParamFieldRow(
+    field: ParamField,
+    value: String,
+    onValueChange: (String) -> Unit,
+) {
+    when {
+        field.kind == ParamKind.BOOL -> {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(field.label, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.weight(1f))
+                Switch(
+                    checked = value != "false",
+                    onCheckedChange = { onValueChange(if (it) "true" else "false") },
+                )
+            }
         }
-        if (range != null && v !in range) return false
+        field.chooser -> {
+            Column {
+                Text(field.label, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(4.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    field.options.forEach { opt ->
+                        FilterChip(
+                            selected = value == opt.value,
+                            onClick = { onValueChange(opt.value) },
+                            label = { Text(opt.label) },
+                            // ⚠️ **v0.87.0**：选中态用 `primaryContainer`，
+                            // 别用 M3 默认的浅灰 —— 在白底弹窗上那一层灰
+                            // 跟背景几乎同色，**看不出选了哪个**。
+                            // primaryContainer #FFDAD6 / onPrimaryContainer #410001
+                            // ⇒ 浅色下对比度 ≈ 15:1 ✓（深色下 #FFDAD6 on #93000A 同理）。
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+        else -> {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { v ->
+                    onValueChange(if (field.kind == ParamKind.INT) v.filter { it.isDigit() } else v)
+                },
+                label = { Text(field.label) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = if (field.kind == ParamKind.INT) KeyboardType.Number else KeyboardType.Text,
+                ),
+                visualTransformation = if (field.kind == ParamKind.PASSWORD) {
+                    PasswordVisualTransformation()
+                } else {
+                    VisualTransformation.None
+                },
+            )
+        }
     }
-    if (needPwd && (pwd.length < 4 || pwd.length > 20)) return false
-    return true
-}
-
-private fun paramLabel(key: String): String = when (key) {
-    "driver_temp" -> "驾驶位温度 ℃（15~28）"
-    "passenger_temp" -> "副驾温度 ℃（15~28）"
-    "percent" -> "充电上限 %（50~100）"
-    "charging_amps" -> "充电电流 A（5~48）"
-    else -> key
 }

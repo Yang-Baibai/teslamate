@@ -135,6 +135,43 @@ def resolve(obj, path):
     return cur, None
 
 
+def check_command_catalog_params() -> list:
+    """车控清单必须**每个动作都带**「参数怎么填」，且条数与「参数」一致。
+
+    ⚠️ **v0.87.0**：这是「LLM 零失误调用」的**契约**。
+
+    以前清单只给参数名 ⇒ 模型只能猜范围（比如把座椅加热的档位当成 1~3 而不是 0~3，
+    于是「关」永远发不出去）。现在服务端给了完整规格，
+    MCP 必须**原样透出** —— 少透一条，这个检查立刻红。
+    """
+    bad = []
+    cat = T.teslamate_command_catalog()
+    actions = cat.get("动作") or []
+    if not actions:
+        return ["车控清单里一个动作都没有"]
+    with_params = 0
+    for a in actions:
+        name = a.get("动作名")
+        if "参数怎么填" not in a:
+            bad.append("%s 少了「参数怎么填」" % name)
+            continue
+        howto = a.get("参数怎么填")
+        names = a.get("参数") or []
+        if not isinstance(howto, list):
+            bad.append("%s 的「参数怎么填」不是数组" % name)
+            continue
+        if len(howto) != len(names):
+            bad.append("%s 的「参数怎么填」有 %d 条，参数名有 %d 个" % (name, len(howto), len(names)))
+        for h in howto:
+            if not h.get("说明"):
+                bad.append("%s 的参数 %s 缺说明" % (name, h.get("参数名")))
+        if names:
+            with_params += 1
+    if with_params == 0:
+        bad.append("一个带参数的动作都没有 —— 「参数怎么填」这条链路是空的")
+    return bad
+
+
 def check_descriptions() -> list:
     """每个工具的 description 必须写明「什么时候用」。
 
@@ -215,6 +252,13 @@ def main() -> int:
         print("  ✗ charge_outcome→charge_curve 串联异常 %r" % e)
 
     # description 体检：模型靠它选工具
+    cat_bad = check_command_catalog_params()
+    for b in cat_bad:
+        print("  ✗ %s" % b)
+    if not cat_bad:
+        print("  ✓ %-26s %-24s 每个动作都带「参数怎么填」" % ("teslamate_command_catalog", "参数规格透出"))
+    bad.extend(cat_bad)
+
     desc_bad = check_descriptions()
     for b in desc_bad:
         print("  ✗ %s" % b)
