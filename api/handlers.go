@@ -59,10 +59,10 @@ func handleHealthDetailed(w http.ResponseWriter, _ *http.Request) {
 
 	// ③ Fleet 实时状态
 	fleet := map[string]any{
-		"enabled":  teslaFleetEnabled(),
-		"state":    teslaFleetState(),
-		"last_ok":  teslaFleetLastOK(),
-		"error":    teslaFleetError(),
+		"enabled": teslaFleetEnabled(),
+		"state":   teslaFleetState(),
+		"last_ok": teslaFleetLastOK(),
+		"error":   teslaFleetError(),
 	}
 	out["fleet"] = fleet
 
@@ -109,22 +109,22 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var (
-		s            CarStatus
-		chargeID     *int
-		chargeStart  *time.Time
-		chargeAdded  *float64
-		chargePower  *int
-		chargeVolt   *int
-		chargeAmps   *int
-		chargePhase  *int
-		chargeFast   *bool
-		chargeSoc    *int
+		s           CarStatus
+		chargeID    *int
+		chargeStart *time.Time
+		chargeAdded *float64
+		chargePower *int
+		chargeVolt  *int
+		chargeAmps  *int
+		chargePhase *int
+		chargeFast  *bool
+		chargeSoc   *int
 		// ⚠️ v0.78.0：最近一次**已结束**的充电会话（充电结局判定用）。
-		lastChargeID       *int
-		lastChargeEndedAt  *time.Time
-		lastChargeEndSoc   *int
-		lastChargeEnergy   *float64
-		lastChargeMinutes  *int
+		lastChargeID      *int
+		lastChargeEndedAt *time.Time
+		lastChargeEndSoc  *int
+		lastChargeEnergy  *float64
+		lastChargeMinutes *int
 		// ⚠️ v0.78.0：收尾曲线的两个数（末次非零功率 / 本场峰值）。
 		// 判「充到上限」还是「拔枪走人」靠它们，**不靠充电上限**。
 		lastChargeLastPower *int
@@ -803,13 +803,15 @@ func handleRouteProfile(w http.ResponseWriter, r *http.Request) {
 // ⚠️ v0.26.0。
 //
 // 为什么上限是 400 而不是默默截断：
-//   截断会让 App 画出一条**缺尾巴的路线** ——
-//   用户会以为「电就是在第 400 段那里用完的」，而真实原因只是被砍掉了。
-//   那种错比直接报错危险得多，所以超限直接报错。
+//
+//	截断会让 App 画出一条**缺尾巴的路线** ——
+//	用户会以为「电就是在第 400 段那里用完的」，而真实原因只是被砍掉了。
+//	那种错比直接报错危险得多，所以超限直接报错。
 //
 // 为什么要去重：
-//   重复的 id 会让同一段在剖面里出现两次，
-//   曲线会突然回折，看着像「电量涨了」—— 那是假的。
+//
+//	重复的 id 会让同一段在剖面里出现两次，
+//	曲线会突然回折，看着像「电量涨了」—— 那是假的。
 func parseDriveIDs(raw string) ([]int32, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -848,7 +850,8 @@ func parseDriveIDs(raw string) ([]int32, error) {
 // clampStepKm 解析 step_km：默认 5，范围 [1, 50]。
 //
 // ⚠️ v0.26.0。下限是 1 而不是 0.5：
-//   0.5 公里的分箱会让 200 段路线的采样点涨到 40 万个，App 根本画不动。
+//
+//	0.5 公里的分箱会让 200 段路线的采样点涨到 40 万个，App 根本画不动。
 //
 // 越界夹到边界、解析不了就用默认值 —— 和 handleSocProfile 一个口径，
 // 免得同一个参数在两个端点上有两套脾气。
@@ -873,9 +876,10 @@ func clampStepKm(raw string) float64 {
 // round2 保留两位小数。
 //
 // ⚠️ v0.26.0。为什么要在服务端舍入：
-//   里程是 double8，98176.421376 − 98176.4 这种浮点噪声会原样传给 App，
-//   画到图上就是「0.0000001 公里」的毛刺，还得让客户端自己去修。
-//   误差 ≤ 0.005 公里（5 毫米），对「还剩多少电」的判断毫无影响。
+//
+//	里程是 double8，98176.421376 − 98176.4 这种浮点噪声会原样传给 App，
+//	画到图上就是「0.0000001 公里」的毛刺，还得让客户端自己去修。
+//	误差 ≤ 0.005 公里（5 毫米），对「还剩多少电」的判断毫无影响。
 func round2(v float64) float64 {
 	return math.Round(v*100) / 100
 }
@@ -1587,8 +1591,8 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 			// K 与 `cars.efficiency` **无关**（能量反推口径不需要 kWh/km 常数），
 			// 所以用它推出的「出厂满电标定续航」不受那个可改常数影响。
 			// 实测本机 K = 6.8686 km/kWh
-		// （严格档满充点 16 个，其中 15 个有能量口径 —— 有一个 ΔSOC=4 被 SQL 的 `ΔSOC>=5` 过滤掉；
-		//  离散度：MAD/中位数 = 0.59%，σ/中位数 = 1.33%）。
+			// （严格档满充点 16 个，其中 15 个有能量口径 —— 有一个 ΔSOC=4 被 SQL 的 `ΔSOC>=5` 过滤掉；
+			//  离散度：MAD/中位数 = 0.59%，σ/中位数 = 1.33%）。
 			// ⚠️ **v0.62.0 修正**：只用**严格档**（充到 100%）的点。
 			//
 			// 90~98% 的点里，`rated_range_km` 是**那一刻的读数**（不是满电读数），
@@ -1879,7 +1883,7 @@ type drivingProfileRaw struct {
 	NightN     int
 	Kwh        float64
 	// ⚠️ v0.29.0：毛耗电（不含回充抵扣）—— 评分用它
-	KwhGross   float64
+	KwhGross float64
 }
 
 // drivingProfileDerived 派生指标 + 评分（纯函数，可单测）。
@@ -1891,14 +1895,15 @@ type drivingProfileDerived struct {
 	OverSpeedPct  float64
 	WhPerKm       float64
 	// ⚠️ v0.29.0：毛耗电（Wh/km）—— 评分的能耗项用它
-	WhPerKmGross  float64
+	WhPerKmGross float64
 }
 
 // deriveDrivingProfile 由原始计数算出派生指标与评分（**纯函数**）。
 //
 // ⚠️ 为什么把「原始计数 → 派生指标」这一步留在 Go 侧：
-//   这样评分公式能被单元测试直接覆盖（sql 里写死了就只能在库里验），
-//   而且口径改了只要改这一处，SQL 只负责取数。
+//
+//	这样评分公式能被单元测试直接覆盖（sql 里写死了就只能在库里验），
+//	而且口径改了只要改这一处，SQL 只负责取数。
 func deriveDrivingProfile(r drivingProfileRaw) drivingProfileDerived {
 	var d drivingProfileDerived
 	if r.DistanceKm > 0 {
@@ -1953,8 +1958,9 @@ func drivingScore(d drivingProfileDerived) float64 {
 // parseDrivingProfileLimit 解析 limit 参数：默认 20，范围 [1, 60]。
 //
 // ⚠️ 为什么越界要报错而不是默默夹到边界：
-//   默默夹断会让 App 以为「就这么多趟了」，
-//   而真实原因只是被砍掉了 —— 那种错比直接报错危险得多。
+//
+//	默默夹断会让 App 以为「就这么多趟了」，
+//	而真实原因只是被砍掉了 —— 那种错比直接报错危险得多。
 func parseDrivingProfileLimit(raw string) (int, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -2062,11 +2068,11 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	var (
-		scores    []float64
-		whPerKms  []float64
+		scores        []float64
+		whPerKms      []float64
 		whPerKmsGross []float64
-		nightPcts []float64
-		overPcts  []float64
+		nightPcts     []float64
+		overPcts      []float64
 	)
 	for rows.Next() {
 		var (
@@ -2106,20 +2112,20 @@ func handleDrivingProfile(w http.ResponseWriter, r *http.Request) {
 		}
 		d := deriveDrivingProfile(raw)
 		out.Drives = append(out.Drives, DrivingProfileDrive{
-			DriveID:      driveID,
-			StartDate:    startDate,
+			DriveID:   driveID,
+			StartDate: startDate,
 			// 里程保留 2 位小数（与 route_profile 同一口径），
 			// 其余（分数、各比率）保留 1 位 —— 小数点后面拖 8 位只会让人怀疑服务端在乱算。
-			DistanceKm:   round2(distanceKm),
-			DurationMin:  durationMin,
-			Score:        round1(d.Score),
-			HardBrake:    hardBrake,
-			HardAccel:    hardAccel,
+			DistanceKm:    round2(distanceKm),
+			DurationMin:   durationMin,
+			Score:         round1(d.Score),
+			HardBrake:     hardBrake,
+			HardAccel:     hardAccel,
 			BrakePer100Km: round1(d.BrakePer100Km),
 			AccelPer100Km: round1(d.AccelPer100Km),
-			NightPct:     round1(d.NightPct),
-			OverSpeedPct: round1(d.OverSpeedPct),
-			WhPerKm:      round1(d.WhPerKm),
+			NightPct:      round1(d.NightPct),
+			OverSpeedPct:  round1(d.OverSpeedPct),
+			WhPerKm:       round1(d.WhPerKm),
 			// ⚠️ v0.29.0：毛耗电也下发（App 的能耗分项要用它）
 			WhPerKmGross: round1(d.WhPerKmGross),
 			DescentM:     descent,
@@ -2329,10 +2335,11 @@ func handleStayPoints(w http.ResponseWriter, r *http.Request) {
 // mergeStayPointsByDistance 把相距不超过 maxMeters 的停留点合并成一个。
 //
 // ⚠️ 合并口径：
-//   · visits / total_hours **相加**（本来就是同一处的停留）；
-//   · max_hours 取**较大**的（最长的一次停多久）；
-//   · avg_hours 用「合并后的总时长 ÷ 合并后的次数」重算（不能把两个均值再平均）；
-//   · name 取**停得更多**的那一行的（更可能是用户认识的那个名字）。
+//
+//	· visits / total_hours **相加**（本来就是同一处的停留）；
+//	· max_hours 取**较大**的（最长的一次停多久）；
+//	· avg_hours 用「合并后的总时长 ÷ 合并后的次数」重算（不能把两个均值再平均）；
+//	· name 取**停得更多**的那一行的（更可能是用户认识的那个名字）。
 func mergeStayPointsByDistance(points []StayPoint, maxMeters float64) []StayPoint {
 	if len(points) < 2 {
 		return points

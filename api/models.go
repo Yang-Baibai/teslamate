@@ -146,10 +146,10 @@ type CarStatus struct {
 	//
 	// 同样不能用 omitempty：nil 必须原样输出成 null，
 	// 否则 App 分不清「没读到」和「读到 0」（0 bar 是不可能值）。
-	TpmsLiveFL *float64 `json:"tpms_live_fl"`
-	TpmsLiveFR *float64 `json:"tpms_live_fr"`
-	TpmsLiveRL *float64 `json:"tpms_live_rl"`
-	TpmsLiveRR *float64 `json:"tpms_live_rr"`
+	TpmsLiveFL *float64   `json:"tpms_live_fl"`
+	TpmsLiveFR *float64   `json:"tpms_live_fr"`
+	TpmsLiveRL *float64   `json:"tpms_live_rl"`
+	TpmsLiveRR *float64   `json:"tpms_live_rr"`
 	TpmsLiveAt *time.Time `json:"tpms_live_at"` // 这批实时值的采集时刻
 
 	// 实时胎压的告警判定（与服务端算好的 tpms_alert* 同口径，但只针对 live 值）。
@@ -324,30 +324,30 @@ type Drive struct {
 	// 实测「永丰社区」与「新湖路」相距 **300 米**（同一个小区，被地理编码拆成两个地址），
 	// 原来 App 把 6227 公里的**往返**显示成「永丰社区 → 新湖路」的**单程** ——
 	// 客户端靠这两个 key 相等与否判断「是不是回到了同一个地方」。
-	StartPlaceKey *string `json:"start_place_key"`
-	EndPlaceKey   *string `json:"end_place_key"`
-	StartSoc    *int       `json:"start_soc"`
-	EndSoc      *int       `json:"end_soc"`
-	EnergyKwh   *float64   `json:"energy_kwh"`
-	WhPerKm     *float64   `json:"wh_per_km"`
-	SpeedMax    *int       `json:"speed_max"`
-	OutsideTemp *float64   `json:"outside_temp_avg"`
-	OdoStart    *float64   `json:"odometer_start"`
-	OdoEnd      *float64   `json:"odometer_end"`
+	StartPlaceKey *string  `json:"start_place_key"`
+	EndPlaceKey   *string  `json:"end_place_key"`
+	StartSoc      *int     `json:"start_soc"`
+	EndSoc        *int     `json:"end_soc"`
+	EnergyKwh     *float64 `json:"energy_kwh"`
+	WhPerKm       *float64 `json:"wh_per_km"`
+	SpeedMax      *int     `json:"speed_max"`
+	OutsideTemp   *float64 `json:"outside_temp_avg"`
+	OdoStart      *float64 `json:"odometer_start"`
+	OdoEnd        *float64 `json:"odometer_end"`
 	// v0.1.2 新增
-	AvgSpeedKph      *int     `json:"avg_speed_kph"`
-	AscentM          *int     `json:"ascent_m"`
-	DescentM         *int     `json:"descent_m"`
-	InsideTempAvg    *float64 `json:"inside_temp_avg"`
-	PowerMaxKw       *int     `json:"power_max_kw"`
-	PowerMinKw       *int     `json:"power_min_kw"`
-	StartRatedKm     *float64 `json:"start_rated_range_km"`
-	EndRatedKm       *float64 `json:"end_rated_range_km"`
-	StartIdealKm     *float64 `json:"start_ideal_range_km"`
-	EndIdealKm       *float64 `json:"end_ideal_range_km"`
-	StartGeofence    *string  `json:"start_geofence"`
-	EndGeofence      *string  `json:"end_geofence"`
-	HasSupercharger  bool     `json:"has_supercharger"`
+	AvgSpeedKph     *int     `json:"avg_speed_kph"`
+	AscentM         *int     `json:"ascent_m"`
+	DescentM        *int     `json:"descent_m"`
+	InsideTempAvg   *float64 `json:"inside_temp_avg"`
+	PowerMaxKw      *int     `json:"power_max_kw"`
+	PowerMinKw      *int     `json:"power_min_kw"`
+	StartRatedKm    *float64 `json:"start_rated_range_km"`
+	EndRatedKm      *float64 `json:"end_rated_range_km"`
+	StartIdealKm    *float64 `json:"start_ideal_range_km"`
+	EndIdealKm      *float64 `json:"end_ideal_range_km"`
+	StartGeofence   *string  `json:"start_geofence"`
+	EndGeofence     *string  `json:"end_geofence"`
+	HasSupercharger bool     `json:"has_supercharger"`
 	// v0.7.1 新增：行程终点附近是否发生过充电（含交流慢充）。
 	// has_supercharger 只表示「终点附近有直流快充」，两者语义不同，别混用。
 	ChargeAfterTrip bool `json:"charge_after_trip"`
@@ -501,11 +501,11 @@ type RouteProfilePoint struct {
 //
 // ## 两个系数要分开看
 //
-// - [CUpWhPerM]：上坡每米多耗的电（Wh/m）。实测约 **6.4**，
-//   隐含传动效率约 **78%** —— 落在物理区间内，可宣称「本车实测」。
-// - [CRegenWhPerM]：下坡每米回充抵扣（Wh/m）。实测约 **3.4**，
-//   但纯下坡样本只有 5 趟 → [CRegenTrustworthy] = false，
-//   客户端应改用 [ConservativeCRegen]（分裂半下界，偏保守）。
+//   - [CUpWhPerM]：上坡每米多耗的电（Wh/m）。实测约 **6.4**，
+//     隐含传动效率约 **78%** —— 落在物理区间内，可宣称「本车实测」。
+//   - [CRegenWhPerM]：下坡每米回充抵扣（Wh/m）。实测约 **3.4**，
+//     但纯下坡样本只有 5 趟 → [CRegenTrustworthy] = false，
+//     客户端应改用 [ConservativeCRegen]（分裂半下界，偏保守）。
 //
 // ⚠️ **净爬升（毛爬升 − 毛下降）不能用于修正** ——
 // 实测那条 6227 公里的线毛爬升 51,791 米但净爬升只有 +3,278 米。
@@ -580,10 +580,10 @@ type ClimbModel struct {
 	// 标定法口径的下坡系数（Wh/m，正数 = 下坡每米回充抵扣）
 	CRegenCalibNet float64 `json:"c_regen_calib_net_wh_per_m"`
 	// 上面两个系数的标准误（抽样不确定度）
-	CUpCalibNetSE float64 `json:"c_up_calib_net_se"`
+	CUpCalibNetSE    float64 `json:"c_up_calib_net_se"`
 	CRegenCalibNetSE float64 `json:"c_regen_calib_net_se"`
 	// 上面两个系数的 95% 置信区间（[下界, 上界]）
-	CUpCalibNetCI95 []float64 `json:"c_up_calib_net_ci95"`
+	CUpCalibNetCI95    []float64 `json:"c_up_calib_net_ci95"`
 	CRegenCalibNetCI95 []float64 `json:"c_regen_calib_net_ci95"`
 	// 参与标定法拟合的行程数
 	NCalib int `json:"n_calib"`
@@ -623,9 +623,9 @@ type TypicalGrade struct {
 // 所有阈值都随 params 一起下发：分数是**有口径的**，
 // 用户可以自己核对服务端是怎么算的，不必相信一个神秘数字。
 type DrivingProfile struct {
-	Drives  []DrivingProfileDrive  `json:"drives"`
-	Summary DrivingProfileSummary  `json:"summary"`
-	Params  DrivingProfileParams   `json:"params"`
+	Drives  []DrivingProfileDrive `json:"drives"`
+	Summary DrivingProfileSummary `json:"summary"`
+	Params  DrivingProfileParams  `json:"params"`
 }
 
 // DrivingProfileDrive 一趟行程的驾驶风格画像。
@@ -657,8 +657,8 @@ type DrivingProfileDrive struct {
 	// ⚠️ v0.29.0：WhPerKmGross 每公里**毛耗电**（Wh/km，不含回充抵扣）
 	// —— 评分里的「能耗」项用它，净值会被下坡拉出假象（下坡白送分）
 	WhPerKmGross float64 `json:"wh_per_km_gross"`
-	DescentM int `json:"descent_m"`
-	AscentM  int `json:"ascent_m"`
+	DescentM     int     `json:"descent_m"`
+	AscentM      int     `json:"ascent_m"`
 }
 
 // DrivingProfileSummary 最近 N 趟行程的汇总。
@@ -742,18 +742,18 @@ type Charge struct {
 	// ⚠️ v0.24.0：**是不是特斯拉超充** ——
 	// 官方 App 的核心区分（超充 / 国标直流 / 交流），
 	// 原来只有「直流 / 交流」两档，用户没法判断「这个桩是不是超充」。
-	IsTeslaSC bool `json:"is_tesla_sc"`
-	MapLat      *float64   `json:"map_lat"`
-	MapLng      *float64   `json:"map_lng"`
-	IsDC        bool       `json:"is_dc"`
+	IsTeslaSC bool     `json:"is_tesla_sc"`
+	MapLat    *float64 `json:"map_lat"`
+	MapLng    *float64 `json:"map_lng"`
+	IsDC      bool     `json:"is_dc"`
 	// v0.1.2 新增
-	GeofenceName  *string  `json:"geofence_name"`
-	StartRangeKm  *float64 `json:"start_range_km"`  // start_rated_range_km
-	EndRangeKm    *float64 `json:"end_range_km"`    // end_rated_range_km
-	StartOdoKm    *float64 `json:"start_odometer_km"`
-	EndOdoKm      *float64 `json:"end_odometer_km"`
-	PeakPowerKw   *int     `json:"peak_power_kw"`
-	AvgPowerKw    *int     `json:"avg_power_kw"`
+	GeofenceName *string  `json:"geofence_name"`
+	StartRangeKm *float64 `json:"start_range_km"` // start_rated_range_km
+	EndRangeKm   *float64 `json:"end_range_km"`   // end_rated_range_km
+	StartOdoKm   *float64 `json:"start_odometer_km"`
+	EndOdoKm     *float64 `json:"end_odometer_km"`
+	PeakPowerKw  *int     `json:"peak_power_kw"`
+	AvgPowerKw   *int     `json:"avg_power_kw"`
 	// ⚠️ v0.21.0：**时间加权**平均功率（kW）—— 真正的「这个桩平均能跑多少 kW」。
 	//
 	// `avg_power_kw` 是**按采样点数**的算术平均，而采样间隔不均匀
@@ -762,23 +762,23 @@ type Charge struct {
 	// 功率高估 45% 就意味着**等待时间低估 31%**。
 	//
 	// 保留旧字段是为了兼容旧客户端；新代码请用这个。
-	AvgPowerKwTrue *int `json:"avg_power_kw_true"`
-	PeakVoltage   *int     `json:"peak_voltage"`
-	AvgVoltage    *int     `json:"avg_voltage"`
-	PeakCurrent   *int     `json:"peak_current"`
-	AvgCurrent    *int     `json:"avg_current"`
-	StartOutsideT *float64 `json:"start_outside_temp"`
-	EndOutsideT   *float64 `json:"end_outside_temp"`
-	StartIndoorT  *float64 `json:"start_indoor_temp"`
-	EndIndoorT    *float64 `json:"end_indoor_temp"`
-	ChargerPhases *int     `json:"charger_phases"`
-	ChargerVolts  *int     `json:"charger_voltage"` // 末尾充电采样（最近一次）
-	ChargerAmps   *int     `json:"charger_current"`
+	AvgPowerKwTrue *int     `json:"avg_power_kw_true"`
+	PeakVoltage    *int     `json:"peak_voltage"`
+	AvgVoltage     *int     `json:"avg_voltage"`
+	PeakCurrent    *int     `json:"peak_current"`
+	AvgCurrent     *int     `json:"avg_current"`
+	StartOutsideT  *float64 `json:"start_outside_temp"`
+	EndOutsideT    *float64 `json:"end_outside_temp"`
+	StartIndoorT   *float64 `json:"start_indoor_temp"`
+	EndIndoorT     *float64 `json:"end_indoor_temp"`
+	ChargerPhases  *int     `json:"charger_phases"`
+	ChargerVolts   *int     `json:"charger_voltage"` // 末尾充电采样（最近一次）
+	ChargerAmps    *int     `json:"charger_current"`
 	// v0.5.0 新增
-	OutsideTempAvg *float64 `json:"outside_temp_avg"`              // 充电全程平均车外温度
-	CableType      *string  `json:"cable_type,omitempty"`          // GB_AC / GB_DC / Tesla
-	ChargerBrand   *string  `json:"charger_brand,omitempty"`       // fast_charger_brand
-	LossPercent    *float64 `json:"loss_percent,omitempty"`        // (表计-充入)/表计 ×100
+	OutsideTempAvg *float64 `json:"outside_temp_avg"`        // 充电全程平均车外温度
+	CableType      *string  `json:"cable_type,omitempty"`    // GB_AC / GB_DC / Tesla
+	ChargerBrand   *string  `json:"charger_brand,omitempty"` // fast_charger_brand
+	LossPercent    *float64 `json:"loss_percent,omitempty"`  // (表计-充入)/表计 ×100
 	// ⚠️ **v0.31.0（第 20 轮充电系统数据专家 P0-1）：本场「实测」从起始 SOC 充到 80% 的分钟数。**
 	//
 	// ## 口径
@@ -885,8 +885,8 @@ type BatteryHealth struct {
 	// 即：**这台车相对出厂衰减约 15%**，这是事实，不该被说成「不是衰减」。
 	//
 	// 真正需要担心的不是这个数，而是它的**分子依赖 `cars.efficiency`**（见下）。
-	HealthPercent *float64 `json:"health_percent"` // 当前实测可用容量 ÷ 出厂标称可用容量 × 100 ＝ 电池健康度 SOH
-	Series             []*BatteryPoint `json:"series"`
+	HealthPercent *float64        `json:"health_percent"` // 当前实测可用容量 ÷ 出厂标称可用容量 × 100 ＝ 电池健康度 SOH
+	Series        []*BatteryPoint `json:"series"`
 
 	// ⚠️ **v0.35.0（第 21 轮数据口径审计 P1-D + 独立复算）：电池容量衰减的判定。**
 	//
@@ -959,8 +959,8 @@ type BatteryHealth struct {
 	// ⚠️ P0-3：**数据覆盖范围** —— 电池曲线只覆盖车龄的一小段，
 	// 却没有任何说明（车主会以为那条下滑的线就是电池的全部历史）。
 	// 实测本机只覆盖 83 天 / 9,936 公里 = 车龄的 10%，且**没有任何冬季数据**。
-	SeriesSpanDays *int     `json:"series_span_days"`  // 序列覆盖的天数
-	OdometerSpanKm *float64 `json:"odometer_span_km"`  // 序列覆盖的里程
+	SeriesSpanDays *int     `json:"series_span_days"` // 序列覆盖的天数
+	OdometerSpanKm *float64 `json:"odometer_span_km"` // 序列覆盖的里程
 }
 
 type BatteryPoint struct {

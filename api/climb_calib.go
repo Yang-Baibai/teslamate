@@ -50,11 +50,11 @@ var climbSpeedEdges = []int{0, 60, 90, 110, 130, 0}
 
 // climbCalibRow 一趟行程的拟合输入。
 type climbCalibRow struct {
-	driveID                     int
-	km, minutes                 float64
-	avgSpeedKph                 float64
-	ascentM, descentM           float64
-	whPerKm                     float64
+	driveID           int
+	km, minutes       float64
+	avgSpeedKph       float64
+	ascentM, descentM float64
+	whPerKm           float64
 }
 
 // computeClimbCalib 拟合**标定法口径**的系数与每档基准坡度。
@@ -118,16 +118,16 @@ func computeClimbCalib(carID int) (ClimbModel, error) {
 	typ := climbTypicalGrades(list)
 
 	return ClimbModel{
-		Basis:             "calib_net",
-		CUpCalibNet:       round3(cUp),
-		CRegenCalibNet:    round3(cRegen),
-		CUpCalibNetSE:     round3(se[2]),
-		CRegenCalibNetSE:  round3(se[3]),
-		CUpCalibNetCI95:   ciUp,
+		Basis:              "calib_net",
+		CUpCalibNet:        round3(cUp),
+		CRegenCalibNet:     round3(cRegen),
+		CUpCalibNetSE:      round3(se[2]),
+		CRegenCalibNetSE:   round3(se[3]),
+		CUpCalibNetCI95:    ciUp,
 		CRegenCalibNetCI95: ciRegen,
-		NCalib:            len(ys),
-		R2Calib:           round3(r2),
-		TypicalGrade:      typ,
+		NCalib:             len(ys),
+		R2Calib:            round3(r2),
+		TypicalGrade:       typ,
 	}, nil
 }
 
@@ -164,11 +164,11 @@ func climbTypicalGrades(list []climbCalibRow) []TypicalGrade {
 			maxKph = 0 // 开区间
 		}
 		out = append(out, TypicalGrade{
-			MinKph:        lo,
-			MaxKph:        maxKph,
-			GradeUpTyp:    round3(medianOf(ups)),
-			GradeDownTyp:  round3(medianOf(downs)),
-			N:             len(ups),
+			MinKph:       lo,
+			MaxKph:       maxKph,
+			GradeUpTyp:   round3(medianOf(ups)),
+			GradeDownTyp: round3(medianOf(downs)),
+			N:            len(ups),
 		})
 	}
 	return out

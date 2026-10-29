@@ -114,14 +114,14 @@ type BatteryDecay struct {
 	DroppedEmpty int `json:"dropped_empty"`
 	// 覆盖的里程跨度（公里）与天数
 	SpanKm   float64 `json:"span_km"`
-	SpanDays int    `json:"span_days"`
+	SpanDays int     `json:"span_days"`
 
 	// ── 朴素线性（整段一条直线）──────────────────────────
-	NaivePer1000Km  float64 `json:"naive_per_1000km"`
-	NaiveCiLo       float64 `json:"naive_ci_lo"`
-	NaiveCiHi       float64 `json:"naive_ci_hi"`
-	NaiveSignificant bool   `json:"naive_significant"`
-	R2Linear        float64 `json:"r2_linear"`
+	NaivePer1000Km   float64 `json:"naive_per_1000km"`
+	NaiveCiLo        float64 `json:"naive_ci_lo"`
+	NaiveCiHi        float64 `json:"naive_ci_hi"`
+	NaiveSignificant bool    `json:"naive_significant"`
+	R2Linear         float64 `json:"r2_linear"`
 
 	// ── 一次阶跃 ──────────────────────────────────────────
 	HasStep         bool    `json:"has_step"`
@@ -136,18 +136,18 @@ type BatteryDecay struct {
 	NaiveOverstate float64 `json:"naive_overstate"`
 
 	// ── 扣掉阶跃后的连续速率 ──────────────────────────────
-	UnderlyingPer1000Km  float64 `json:"underlying_per_1000km"`
-	UnderlyingCiLo       float64 `json:"underlying_ci_lo"`
-	UnderlyingCiHi       float64 `json:"underlying_ci_hi"`
-	UnderlyingSignificant bool  `json:"underlying_significant"`
+	UnderlyingPer1000Km   float64 `json:"underlying_per_1000km"`
+	UnderlyingCiLo        float64 `json:"underlying_ci_lo"`
+	UnderlyingCiHi        float64 `json:"underlying_ci_hi"`
+	UnderlyingSignificant bool    `json:"underlying_significant"`
 
 	// ── 阶跃前后两段各自的速率 ────────────────────────────
-	PrePer1000Km   float64 `json:"pre_per_1000km"`
-	PreSignificant bool    `json:"pre_significant"`
-	PreN           int     `json:"pre_n"`
-	PostPer1000Km  float64 `json:"post_per_1000km"`
-	PostSignificant bool   `json:"post_significant"`
-	PostN          int     `json:"post_n"`
+	PrePer1000Km    float64 `json:"pre_per_1000km"`
+	PreSignificant  bool    `json:"pre_significant"`
+	PreN            int     `json:"pre_n"`
+	PostPer1000Km   float64 `json:"post_per_1000km"`
+	PostSignificant bool    `json:"post_significant"`
+	PostN           int     `json:"post_n"`
 
 	// ── ⚠️ v0.41.0：气温混杂 ──────────────────────────────
 	// 气温系数（度/°C，模型 y = a + b·km + c·T）
@@ -158,15 +158,15 @@ type BatteryDecay struct {
 	TempN int `json:"temp_n"`
 
 	// ── ⚠️ v0.41.0：加气温 + 阶跃后的连续速率 ────────────
-	AdjustedPer1000Km  float64 `json:"adjusted_per_1000km"`
-	AdjustedCiLo       float64 `json:"adjusted_ci_lo"`
-	AdjustedCiHi       float64 `json:"adjusted_ci_hi"`
-	AdjustedSignificant bool   `json:"adjusted_significant"`
+	AdjustedPer1000Km   float64 `json:"adjusted_per_1000km"`
+	AdjustedCiLo        float64 `json:"adjusted_ci_lo"`
+	AdjustedCiHi        float64 `json:"adjusted_ci_hi"`
+	AdjustedSignificant bool    `json:"adjusted_significant"`
 
 	// ── ⚠️ v0.41.0：留一法稳健性 ─────────────────────────
 	// 去掉任意一个点重算时，连续速率的取值范围
-	LeaveOneOutMin         float64 `json:"leave_one_out_min"`
-	LeaveOneOutMax         float64 `json:"leave_one_out_max"`
+	LeaveOneOutMin float64 `json:"leave_one_out_min"`
+	LeaveOneOutMax float64 `json:"leave_one_out_max"`
 	// 留一法里「仍然显著」的次数 / 总次数
 	LeaveOneOutSignificant int `json:"leave_one_out_significant"`
 	LeaveOneOutTotal       int `json:"leave_one_out_total"`
@@ -322,11 +322,11 @@ func meanTempOf(pts []decayPoint) float64 {
 // @param droppedEmpty 没实际充电的场次数
 func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int, droppedEmpty int) *BatteryDecay {
 	out := &BatteryDecay{
-		N:           len(strict),
-		StrictN:     len(strict),
-		ExcludedN:   excluded,
+		N:            len(strict),
+		StrictN:      len(strict),
+		ExcludedN:    excluded,
 		DroppedEmpty: droppedEmpty,
-		SpanDays:    spanDays,
+		SpanDays:     spanDays,
 		Method: "严格档（充到 100%）按里程做最小二乘；先检验是否存在一次性落差（y = a + b·km + c·D），" +
 			"再给出扣掉落差后的连续速率；显著性用 t 检验（95% 置信区间）。" +
 			"⚠️ v0.41.0：额外做了**加充电时气温**的模型与**留一法**稳健性检查，结论强度见 conclusion 字段。",
@@ -589,7 +589,7 @@ func decayCaveat(d *BatteryDecay) string {
 				"序列里有一个疑似落差（%s，%.0f 公里处，%.3f 度），但**统计上不显著**，仅供参考",
 				d.StepDate, d.StepKm, d.StepKwh))
 		}
-		parts = append(parts, "它**可能不是**电池变化 —— 也可能是车机重新标定了续航估值；" +
+		parts = append(parts, "它**可能不是**电池变化 —— 也可能是车机重新标定了续航估值；"+
 			"本 App 分不清这两者，别把它当成「电池掉了一次」")
 		if d.NaiveOverstate > 1.15 {
 			parts = append(parts, fmt.Sprintf(

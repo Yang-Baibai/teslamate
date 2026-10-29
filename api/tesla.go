@@ -281,6 +281,7 @@ func teslaOpenWindows() []string {
 // 有了时刻，才能和遥测那份比「谁更新」（见 pickNewerWindows）。
 //
 // ⚠️ 时刻取的是**我们拉到的时刻**（rawFetchedAt）——
+//
 //	它比车端 timestamp 晚几十毫秒，但两边都是 UTC，可比。
 func teslaOpenWindowsAt() ([]string, *time.Time) {
 	if tesla == nil {

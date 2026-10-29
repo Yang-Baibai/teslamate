@@ -84,8 +84,8 @@ const MgWhPerM = MassKg * 9.81 / 3600.0
 
 // 样本量门槛
 const (
-	climbMinDrives      = 30 // 上坡系数可宣称「本车实测」的最小行程数
-	climbMinPureDown    = 8  // 回充系数可宣称「本车实测」的最小**纯下坡**行程数
+	climbMinDrives      = 30  // 上坡系数可宣称「本车实测」的最小行程数
+	climbMinPureDown    = 8   // 回充系数可宣称「本车实测」的最小**纯下坡**行程数
 	climbPureGradeMPerK = 5.0 // 「纯上坡 / 纯下坡」的坡度门槛（m/km）
 	climbPureOtherMPerK = 1.5 // 「纯上坡 / 纯下坡」时另一侧的最大坡度（m/km）
 )
@@ -139,9 +139,9 @@ var errClimbNotEnough = errors.New("样本不足，算不出爬升系数")
 
 // 缓存：按 (car_id, min_km) 缓存 30 分钟。
 var (
-	climbCacheMu   sync.Mutex
-	climbCache     = map[string]climbCacheEntry{}
-	climbCacheTTL  = 30 * time.Minute
+	climbCacheMu  sync.Mutex
+	climbCache    = map[string]climbCacheEntry{}
+	climbCacheTTL = 30 * time.Minute
 )
 
 type climbCacheEntry struct {
@@ -287,30 +287,30 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 	}
 
 	out := ClimbModel{
-		CUpWhPerM:            round2(cUp),
-		CRegenWhPerM:         round2(cRegen),
-		ImpliedEtaUp:         round3(MgWhPerM / math.Abs(cUp)),
-		ImpliedEtaRegen:      round3(math.Abs(cRegen) / MgWhPerM),
-		NDrive:               len(list),
-		NPureUp:              pureUp,
-		NPureDown:            pureDown,
-		R2Gross:              round3(r2Up),
-		R2Regen:              round3(r2Dn),
-		SplitHalfCUp:         roundAll(splitUp),
-		SplitHalfCRegen:      roundAll(splitRegen),
-		MinKm:                minKm,
-		CUpTrustworthy:       upTrustworthy,
-		CRegenTrustworthy:    regenTrustworthy,
-		Method:               "口径 calib_net：y = (Δ标定续航) × cars.efficiency × 1000 / 里程（与客户端能耗底档同源）；回归式 wh_per_km ~ 1 + 车速 + 上坡坡度(m/km) + 下坡坡度(m/km) + 时长(h)；修正用 delta-grade（相对该车速档的典型坡度）。⚠️ 车速项与时长项不独立（km = kph × h），模型不可外推；时长项做的是摊销每趟固定开销，不是空调。另有车轮功率毛耗电口径（positions.power 积分）作物理交叉核对。",
-		Caveat:               climbCaveat(upTrustworthy, regenTrustworthy, pureDown),
-		ConservativeCRegen:   round2(conservativeRegen(splitRegen, cRegen, regenTrustworthy)),
-		ImpliedEtaNote:       "⚠️ 隐含效率**不可信**：drives.ascent 不是物理高差（能量自洽性实测 142% > 100%），系数只能当经验标定值看，不要解读成传动效率。",
+		CUpWhPerM:          round2(cUp),
+		CRegenWhPerM:       round2(cRegen),
+		ImpliedEtaUp:       round3(MgWhPerM / math.Abs(cUp)),
+		ImpliedEtaRegen:    round3(math.Abs(cRegen) / MgWhPerM),
+		NDrive:             len(list),
+		NPureUp:            pureUp,
+		NPureDown:          pureDown,
+		R2Gross:            round3(r2Up),
+		R2Regen:            round3(r2Dn),
+		SplitHalfCUp:       roundAll(splitUp),
+		SplitHalfCRegen:    roundAll(splitRegen),
+		MinKm:              minKm,
+		CUpTrustworthy:     upTrustworthy,
+		CRegenTrustworthy:  regenTrustworthy,
+		Method:             "口径 calib_net：y = (Δ标定续航) × cars.efficiency × 1000 / 里程（与客户端能耗底档同源）；回归式 wh_per_km ~ 1 + 车速 + 上坡坡度(m/km) + 下坡坡度(m/km) + 时长(h)；修正用 delta-grade（相对该车速档的典型坡度）。⚠️ 车速项与时长项不独立（km = kph × h），模型不可外推；时长项做的是摊销每趟固定开销，不是空调。另有车轮功率毛耗电口径（positions.power 积分）作物理交叉核对。",
+		Caveat:             climbCaveat(upTrustworthy, regenTrustworthy, pureDown),
+		ConservativeCRegen: round2(conservativeRegen(splitRegen, cRegen, regenTrustworthy)),
+		ImpliedEtaNote:     "⚠️ 隐含效率**不可信**：drives.ascent 不是物理高差（能量自洽性实测 142% > 100%），系数只能当经验标定值看，不要解读成传动效率。",
 		// ⚠️ **v0.36.0（第 21 轮口径审计 P1-6）：补上标准误与 95% 置信区间。**
 		// 原来只上报分裂半（±2.3%），而真实抽样不确定度是 ±14.5% —— 差 6 倍。
-		CUpSE:       round3(seUp[2]),
-		CRegenSE:    round3(seDn[2]),
-		CUpCI95:     ci95Of(bUp[2], seUp[2], len(list)-len(bUp)),
-		CRegenCI95:  ci95Of(bDn[2], seDn[2], len(list)-len(bDn)),
+		CUpSE:      round3(seUp[2]),
+		CRegenSE:   round3(seDn[2]),
+		CUpCI95:    ci95Of(bUp[2], seUp[2], len(list)-len(bUp)),
+		CRegenCI95: ci95Of(bDn[2], seDn[2], len(list)-len(bDn)),
 		// ── v0.34.0：标定法口径（客户端唯一该用的那套） ──
 		Basis:              calib.Basis,
 		CUpCalibNet:        calib.CUpCalibNet,

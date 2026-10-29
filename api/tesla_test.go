@@ -554,11 +554,12 @@ func TestMaskSecretText(t *testing.T) {
 // TestWriteEnvValueOnBindMount 在「宿主机挂进来的 .env」上真写一次。
 //
 // 为什么要有这个测试：
-//   .env 挂进容器有两种挂法，行为完全不同——
-//     - 挂目录（.env 是目录里的普通文件）：rename 覆盖可用，是原子的
-//     - 挂单个文件（.env 本身是挂载点）：Linux 上 rename 覆盖会 EBUSY，
-//       必须退化成原地覆写
-//   两种挂法都必须保证「写对了、且没把 .env 写坏」。
+//
+//	.env 挂进容器有两种挂法，行为完全不同——
+//	  - 挂目录（.env 是目录里的普通文件）：rename 覆盖可用，是原子的
+//	  - 挂单个文件（.env 本身是挂载点）：Linux 上 rename 覆盖会 EBUSY，
+//	    必须退化成原地覆写
+//	两种挂法都必须保证「写对了、且没把 .env 写坏」。
 //
 // 路径由 TESLA_TEST_ENV_PATH 指定（不设就跳过），容器里跑：
 //
