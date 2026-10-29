@@ -5,6 +5,91 @@
 
 ---
 
+## 2026-10-29（v0.79.0 · 3/3 订正：开发者后台是 `.cn`，不是 `.com`）
+
+> 本轮版本：`0.79.0`，versionCode 95（**未改版本号** —— 没有新功能，
+> 只是把一个**指错了地方的后台地址**改正，外加清掉一个重复配置项）。
+
+⚠️ **背景**：v0.79.0 3/3 的待办里写的是「developer.tesla.com 后台」——
+那是**海外区**门户。中国区的开发者后台是 **`developer.tesla.cn`**。
+
+这跟本项目一贯的「中国区端点优先」是同一条线，而且**数据面早就用对了**
+（`auth.tesla.cn` / `fleet-api.prd.cn.vn.cloud.tesla.cn`），
+错的只是**控制面后台地址** —— 也就是说，之前指引你去的后台，
+根本不是这台中国区车所对应的那套账号。
+
+### 一、哪些东西**不受**区域影响（最容易误判的一处）
+
+| 项 | 受区域影响？ | 实证 |
+|---|---|---|
+| 数据面端点 | ✅ 走 cn | `auth.tesla.cn` / `fleet-api.prd.cn.vn.cloud.tesla.cn` |
+| OAuth 客户端 | ✅ 走 cn | `CN_…` refresh_token 配它在 `auth.tesla.cn` 能换出 token |
+| **公钥托管 URL** | ❌ **不受** | Tesla 直接去拉我们给的**完整 URL**，不查区域 |
+| Fleet Telemetry 开关 | ✅ account 级 | 车已采纳我们签的 config ⇒ **至少有一侧是开的** |
+
+⚠️ 公钥那条最容易想错：我们交出去的是
+`https://<主机名>/.well-known/appspecific/com.tesla.3p.public-key.pem`
+这样的**完整 URL**，Tesla 云直接拉它 —— 所以它**不查区域**。
+也正因为车端必须先拿到公钥才会采纳我们签的 config，
+⇒ **公钥链路早已实证生效**（车连上并推了 6 条消息）。
+
+### 二、OAuth 客户端：原地改，**不要新建**
+
+`.env` 里的 `TESLA_CLIENT_ID` / `TESLA_CLIENT_SECRET`
+与后台那套**完全一致**（`<client_id>……` / `ta-secret.…<已脱敏>`），
+且中国区的 `CN_…` refresh_token 配它在 `auth.tesla.cn` 能换出 token
+⇒ **它就是中国区在用的那套凭据**。
+
+⚠️ 在 `.cn` 后台**另建**一套 client = 多出第二份凭据，
+以后换车 / 加车就会配错 client —— 那种错**不报错**，只是 401。
+
+### 三、顺带清掉一个「谁赢看心情」的重复配置
+
+`.env` 里 `TESLA_REGION` 出现了**两次**（值都是 `cn`）。
+⚠️ 这不是「重复了没关系」：
+
+- 我们的 Go 代码取**第一个**
+- Docker `env_file` 取**最后一个**
+
+两边规则不一致 ⇒ 值一旦不同，就是「**容器跑的区域**」和
+「**代码以为的区域**」悄悄分家，而且**不报错**。
+⇒ 已删除重复项（其余行**逐行校验未变**，备份在 `%TEMP%\env.bak.before_dedup`）。
+
+⚠️ 这个坑跟 v0.66.0 的「YAML 重复顶层键」是同一个家族：
+**重复键的「谁赢」取决于谁在读**，不是取决于谁写得晚。
+
+### 四、改了什么
+
+- 仓库里 **10 处** `developer.tesla.com` → `developer.tesla.cn`
+  （`api/fleet_telemetry.go` 3、`api/tesla_command.go` 2、
+  `api/tesla_command_test.go` 1、`app-android/…/CommandOutcomeTest.kt` 1、
+  `docs/27-FleetTelemetry接入.md` 2、`docs/CHANGELOG.md` 1）
+
+  ⚠️ 全部用**字节级**替换 —— `edit` 工具在 Windows 上会把 LF 文件写成 CRLF，
+  这轮已经踩过一次（`models.go` / `handlers.go` 被整体转 CRLF，
+  产生全文件 diff）。
+- `docs/27-FleetTelemetry接入.md` 的「还需要用户确认的」按实证重写成 5 条
+- `.env` 删除重复的 `TESLA_REGION`（本地文件，不入库）
+
+### 五、验证
+
+- `developer.tesla.cn/docs/fleet-api` 与 `/docs/fleet-api/fleet-telemetry` ⇒ HTTP 200
+- `go vet` + `go test` 全绿；服务端闸门 **4/4**、客户端闸门 **9/9**
+- 重建部署 API 后实测：`/status` 的 `telemetry` 键在、broker 已连、5 个主题订阅就绪
+- `.env` 在 API 回写 refresh_token 之后复核：重复项**没回来**、行尾/行数未变、无 U+FFFD
+
+### 六、还需要你做的
+
+1. 去 **`developer.tesla.cn`**（不是 `.com`）确认「Fleet Telemetry」开关是开的
+   —— 若 `.com` 与 `.cn` 是两套账号，`.cn` 这侧也要开一次，
+   否则**以后换车 / 加车会拿不到配置**。
+2. **不要**在 `.cn` 后台新建 OAuth 客户端（见第二节）。
+3. 「允许的源」保持**完整主机名**
+   `https://<主机名>.<tailnet域>.ts.net`
+   （根域 `<tailnet域>.ts.net` 连 DNS 名称都没有、没有证书，后台会当场报红）。
+
+---
+
 ## 2026-10-28（v0.79.0 · 3/3：让车把故障码交给我们）
 
 > 本轮版本：`0.79.0`，versionCode 95。
@@ -257,7 +342,7 @@ v0.78.0 的主判据是「收尾曲线比值」：
 
 ### 六、计费确认（顺带查清）
 
-官方 Fleet API 计费（developer.tesla.com）：
+官方 Fleet API 计费（developer.tesla.cn）：
 
 | 类型 | 单价 | $10/月免费额度 ≈ |
 |---|---|---|

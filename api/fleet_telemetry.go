@@ -6,7 +6,7 @@ package main
 //
 //	官方明确写了「This endpoint **should be called through the Vehicle Command Proxy**.
 //	The configured private key will be used to sign the configuration.」
-//	（developer.tesla.com → Fleet API → Vehicle Endpoints → fleet_telemetry_config create）
+//	（developer.tesla.cn → Fleet API → Vehicle Endpoints → fleet_telemetry_config create）
 //
 //	直接打 Fleet API 需要自己造 JWS（Schorr/P-256 签名），而且官方不推荐。
 //	而 command-proxy 里已经有那把私钥 —— 它会替我们签，然后转成
@@ -67,7 +67,7 @@ const (
 // ⚠️ 字段名必须与官方 vehicle_data.proto 里的键**完全一致** ——
 //
 //	写错不报错，只是那个字段永远不来。
-//	这里全部取自官方文档给的示例配置（developer.tesla.com → Fleet Telemetry
+//	这里全部取自官方文档给的示例配置（developer.tesla.cn → Fleet Telemetry
 //	→ Overview → Example Configuration），不自己发明。
 //
 // ⚠️ `interval_seconds` 是**最小间隔**，不是发送频率：
@@ -446,7 +446,7 @@ func deployFleetTelemetry(ctx context.Context, vin string) (*deployFleetTelemetr
 
 // telemetrySkipReason 官方给出的「没配上」原因 → 人话。
 //
-// ⚠️ 只翻官方列出来的那几种（developer.tesla.com → fleet_telemetry_config create
+// ⚠️ 只翻官方列出来的那几种（developer.tesla.cn → fleet_telemetry_config create
 //
 //	的原文：missing_key / unsupported_hardware / unsupported_firmware / max_configs）。
 //	没收录的原样摊开 —— 前缀猜含义就是幻觉。

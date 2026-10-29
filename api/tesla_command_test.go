@@ -237,7 +237,7 @@ func TestTeslaCommandCatalog_NoNullParams(t *testing.T) {
 // 车没照做，App 却说搞定了 —— 用户会以为车没听指挥，**然后再点一次**
 // （而「开始充电」这种命令点两次是有副作用的）。
 //
-// ⇒ 官方响应形状（developer.tesla.com → Vehicle Commands）：
+// ⇒ 官方响应形状（developer.tesla.cn → Vehicle Commands）：
 //
 //	{"response": {"result": true|false, "reason": "..."}}
 //

@@ -402,7 +402,7 @@ const (
 // teslaCommandReasonText 车端原因码 → 人话。
 //
 // ⚠️ **只收官方文档里逐条列出来过的原因码**
-// （developer.tesla.com → Fleet API → Vehicle Commands，各命令的说明里
+// （developer.tesla.cn → Fleet API → Vehicle Commands，各命令的说明里
 //
 //	明确写了 "This command may return already_started / is_charging / …"）。
 //
@@ -474,7 +474,7 @@ func teslaCommandReasonChinese(reason string) string {
 
 // parseTeslaCommandOutcome 解析 Tesla 的命令响应，取车端的**执行结果**。
 //
-// 官方响应形状（developer.tesla.com → Vehicle Commands）：
+// 官方响应形状（developer.tesla.cn → Vehicle Commands）：
 //
 //	{"response": {"result": true|false, "reason": "..."}}
 //

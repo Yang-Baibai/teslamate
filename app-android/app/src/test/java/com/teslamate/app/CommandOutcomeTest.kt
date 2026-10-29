@@ -20,7 +20,7 @@ import com.teslamate.app.ui.commandOutcome
  * 用户会以为车没听指挥，**然后再点一次**
  * （而「开始充电」点两次是有副作用的）。
  *
- * ⇒ 官方响应形状（developer.tesla.com → Fleet API → Vehicle Commands）：
+ * ⇒ 官方响应形状（developer.tesla.cn → Fleet API → Vehicle Commands）：
  * `{"response": {"result": true|false, "reason": "..."}}`
  *
  * ⇒ 三态必须分清：

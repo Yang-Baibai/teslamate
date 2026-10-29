@@ -13,7 +13,7 @@
 | 故障码 | **拿不到** | 有（alerts 记录） |
 | 尾流费 | 按唤醒计 | 按信号量计，远低 |
 
-官方口径：`https://developer.tesla.com/docs/fleet-api/fleet-telemetry`
+官方口径：`https://developer.tesla.cn/docs/fleet-api/fleet-telemetry`
 
 ## 架构
 
@@ -132,11 +132,31 @@ Funnel 允许的公网端口只有 `443` / `8443` / `10000`，所以 8443 是唯
 
 ## 还需要用户确认的
 
-1. **developer.tesla.com 后台**：app 上的「Fleet Telemetry」开关是否已打开，
-   「允许的源 URL」里是不是**完整主机名** `https://<主机名>.<tailnet域>.ts.net`
-   （不是根域 —— 根域没有证书，后台会当场报红）。
-   ⚠️ 数据流已实证生效（车端用我们的配置连上并推送），但后台开关状态仍需人工看一眼。
-2. **确认车辆固件 ≥ 2024.26**（走车控代理的要求）。
+> ⚠️ **后台域名是 `developer.tesla.cn`（中国区），不是 `developer.tesla.com`（海外区）。**
+> 两者文档同路径同内容（`.cn/docs/fleet-api/fleet-telemetry` 实测 200），
+> 但**账号、开关、客户端是分开的两套** —— 中国区的车只认 `.cn` 那侧。
+
+1. **OAuth 客户端：原地改，不要新建。**
+   `.env` 里的 `TESLA_CLIENT_ID` / `TESLA_CLIENT_SECRET` 与后台那套**完全一致**
+   （`<client_id>……` / `ta-secret.…<已脱敏>`），且中国区的 `CN_…` refresh_token
+   配它在 `auth.tesla.cn` 能换出 token ⇒ **它就是中国区在用的那套凭据**。
+   ⚠️ 在 `.cn` 后台**另建**一套 client，等于多出第二份凭据，
+   以后换车 / 加车就会配错 client —— 那种错**不报错**，只是 401。
+
+2. **`developer.tesla.cn` 后台的「Fleet Telemetry」开关**是否已打开。
+   ⚠️ 数据流已实证生效（车端用我们的配置连上并推送了 6 条消息）
+   ⇒ **至少有一侧是开的**；要确认的是「你登录的这一个域名」下也是开的。
+
+3. **「允许的源」**里填的是**完整主机名**
+   `https://<主机名>.<tailnet域>.ts.net`
+   （不是根域 —— 根域 `<tailnet域>.ts.net` 连 DNS 名称都没有、没有证书，后台会当场报红）。
+
+4. **公钥托管 URL**（Tesla 云来拉，不带客户端证书）：
+   `https://<主机名>.<tailnet域>.ts.net/.well-known/appspecific/com.tesla.3p.public-key.pem`
+   ⚠️ 这一条**不受区域影响** —— Tesla 直接去拉我们给的这个完整 URL，
+   所以它已经实证生效（车端拿到了公钥才会采纳我们签的 config）。
+
+5. **确认车辆固件 ≥ 2024.26**（走车控代理的要求）。
    本机实测 `2026.26.200` ✓，可不用再查。
 
 ## 恢复步骤（Funnel 配置丢了时）
