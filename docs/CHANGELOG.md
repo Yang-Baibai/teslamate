@@ -138,6 +138,13 @@ v0.87.0 让人能**设**空调 / 座椅加热 / 方向盘加热（官方 21 个�
   布尔与温度 / 最旧时刻与 stale / 官方枚举编号 / 固件门槛 / 下发字段被请求）；
 - ⚠️ **新闸门先证明自己能报红**：注入 3 个故障（档位映射 1→高档、把 Unknown 当关、方向盘编「中档」）
   ⇒ `go test` **真实退出码 1** 且命中对应用例；还原后 **rc=0**。
+- MCP **stdio 端到端**：握手 → `tools/list` 16 个 → `tools/call teslamate_status`
+  ⇒ 返回里含「座舱」，且 `座舱.空调.是否开着 = "不知道"`（**不是**「关着」）；
+- **Hermes 网关已重启**（改了 MCP 实现**必须**重启网关才生效）：
+  PID **20056 → 5248**、MCP 子进程 **28380 → 13004**（12:34:55 起 ⇒ 跑的是新代码）；
+  日志 `MCP server 'teslamate' (stdio): registered 20 tool(s)`、
+  `MCP: registered 26 tool(s) from 2 server(s)`、
+  `Gateway running with 2 platform(s)`（**飞书 + 微信均已重连**）。
 
 ### 八、影响与回滚
 
