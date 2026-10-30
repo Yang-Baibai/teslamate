@@ -30,7 +30,26 @@ cmd //c "robocopy C:\tm-app\teslamate-app\app\src\main app-android\app\src\main 
 cp "$APP_DIR/app/build.gradle.kts" app-android/app/build.gradle.kts
 
 echo "══ 4/6 升 .env 元数据 ══"
-sed -i "s/^APP_VERSION_CODE=.*/APP_VERSION_CODE=$NEW_CODE/; s/^APP_VERSION_NAME=.*/APP_VERSION_NAME=$NEW_NAME/; s/^APP_RELEASE_NOTES=.*/APP_RELEASE_NOTES=$MSG/" .env
+# ⚠️ **v0.91.0**：原来用 `sed "s/.../.../"` 改这三行 ——
+# **更新说明里只要出现一个 `/`（太常见了：「标题/告警文案/轮子颜色」），
+# sed 就把替换文本里的 `/` 当成自己的分隔符** ⇒ `unknown option to 's'`，
+# 而脚本是 `set -e` ⇒ **发版流程在第 4 步直接中断**，
+# 后面的「重建镜像 + 冒烟验证」一步都没跑 ——
+# 又一次「以为发出去了，其实没发」（本轮真的踩到了）。
+#
+# 现在改成**逐行整行重写**：任何字符（`/` `&` `|` `\` 空格）都安全。
+# ⚠️ 用 `cat >` 而不是 `mv`：`mv` 会把 .env 的权限换成 mktemp 文件的 600。
+ENV_TMP="$(mktemp)"
+while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+        APP_VERSION_CODE=*)  printf 'APP_VERSION_CODE=%s\n'  "$NEW_CODE" >> "$ENV_TMP" ;;
+        APP_VERSION_NAME=*)  printf 'APP_VERSION_NAME=%s\n'  "$NEW_NAME" >> "$ENV_TMP" ;;
+        APP_RELEASE_NOTES=*) printf 'APP_RELEASE_NOTES=%s\n' "$MSG"     >> "$ENV_TMP" ;;
+        *)                   printf '%s\n' "$line" >> "$ENV_TMP" ;;
+    esac
+done < .env
+cat "$ENV_TMP" > .env
+rm -f "$ENV_TMP"
 grep "^APP_VERSION" .env
 
 echo "══ 5/6 重启 API（先重建镜像）══"

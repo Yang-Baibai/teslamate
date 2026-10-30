@@ -74,6 +74,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.teslamate.app.ActiveCharge
@@ -1597,14 +1598,31 @@ private fun LocationCard(
 }
 
 /**
- * 胎压卡：俯视车辆 + 四轮数值。
+ * 胎压卡：俯视车辆 + 一个结论。
  *
- * 俯视图是本 App **唯一能超越官方 Tesla App** 的地方（官方不展示四轮胎压）。
- * 异常轮用危险红实心 + 呼吸动画，接近阈值用琥珀，正常用中性灰。
- * 判定完全由服务端算好（api/alerts.go），App 只读结果——阈值也只有服务端一份。
+ * 俯视图是本 App **唯一能超越官方 Tesla App** 的地方（官方不展示四轮胎压）——
+ * 它留着；但**四个读数不再与它并排铺开**。
+ *
+ * ⚠️ **v0.91.0（Apple CDO 轮）**：原来「胎压正常时」也把四个数一字排开，
+ * 还常驻一句阈值科普 —— 正是使命书 §2.1 点名的反面教材
+ * （胎压正常时不需要四个轮胎飙绿字刷存在感）。
+ * 现在：
+ * - **正常** ⇒ 表层只给一个结论「胎压正常」+ 一行实测区间；
+ *   逐轮数值与阈值说明折进「更多明细」。
+ * - **异常 / 接近阈值** ⇒ 结论升级成告警行（红 / 琥珀），
+ *   逐轮数值**留在表层** —— 车主要靠它分清「一胎漏气」还是「四胎都低」。
+ *
+ * ⚠️ **本轮修的口径不一致（真问题）**：标题、告警文案、轮子颜色以前各读各的字段 ——
+ * 标题读旧源 `tpms_alert`、告警文案读旧源 `tpms_alert_detail`
+ * （实时源的 `tpms_live_alert_detail` **从来没被读过**）、颜色读「实时 + 旧」的合并结果。
+ * ⇒ 实时源报警而 TeslaMate 恰好没采样时，
+ * **轮子会变红、标题却还是「轮胎胎压」、告警文案一片空白**。
+ * 现在三者统一走 `reading.isAlerting` / `reading.isNear` ——
+ * 与服务端 `api/alerts.go` 同一套阈值、同一套口径。
  */
 @Composable
 private fun TpmsCard(st: CarStatus) {
+    val accents = LocalAccentColors.current
     // ⚠️ v0.8.5：优先用 **Fleet API 的实时胎压**（车醒着时每 2 分钟一条，明显比
     // TeslaMate 的稀疏采样新鲜），没有才回退 TeslaMate 的值。
     val fl = st.tpms_live_fl ?: st.tpms_fl
@@ -1645,43 +1663,132 @@ private fun TpmsCard(st: CarStatus) {
         warnWheels = warnWheels,
     )
 
+    // ⚠️ **v0.91.0：标题 / 告警文案 / 轮子颜色必须是同一个口径。**
+    // 三者统一问 `reading`：这个轮到底算不算异常 / 算不算接近阈值 ——
+    // 与服务端 `api/alerts.go` 用的是同一套阈值。
+    val wheels = listOf("左前" to fl, "右前" to fr, "左后" to rl, "右后" to rr)
+    val badWheels = wheels.filter { (label, v) -> reading.isAlerting(v, label) }
+    val nearWheels = wheels.filter { (label, v) -> reading.isNear(v, label) }
+    val alerting = badWheels.isNotEmpty()
+    val warning = !alerting && nearWheels.isNotEmpty()
+
+    // 告警文案：**实时源优先**（跟「实时数值优先」同一条规则），旧源兜底，
+    // 最后本地拼 —— 取第一个非空。
+    val alertText = st.tpms_live_alert_detail.takeIf { it.isNotBlank() }
+        ?: st.tpms_alert_detail.takeIf { it.isNotBlank() }
+        ?: badWheels.joinToString("  ") { (label, v) -> "$label ${v.fmt(2)} bar" }
+    // 接近阈值：服务端只给轮名，数值从**同一批读数**里取（不另算）。
+    val warnText = nearWheels.joinToString("  ") { (label, v) -> "$label ${v.fmt(2)} bar" }
+
+    // 实测区间：只统计**真的有数**的轮 —— 说「四轮」就得真的有四轮。
+    val measured = wheels.mapNotNull { (_, v) -> v }
+    val loS = measured.minOrNull()?.fmt(2).orEmpty()
+    val hiS = measured.maxOrNull()?.fmt(2).orEmpty()
+    // ⚠️ 比较**格式化之后**的字符串 —— 2.900000043 与 2.9 会显示成同一个「2.90」，
+    // 按原值比会印出「2.90–2.90 bar」这种一眼假的区间。
+    val rangeText = if (loS == hiS) "$loS bar" else "$loS–$hiS bar"
+    val rangeLabel = if (measured.size == 4) {
+        "四轮 $rangeText"
+    } else {
+        "仅测到 ${measured.size} 轮 · $rangeText"
+    }
+
+    // ⚠️ **v0.91.0**：阈值说明在**正常时**是「规则」而不是「当下」⇒ 折进二级；
+    // 有异常时它就是**行动依据** ⇒ 留在表层。
+    val rangeHint = "冷胎标准 ${st.tpms_min_bar}–${st.tpms_max_bar} bar · 超出这个范围需要检查"
+
     SectionCard(
-        title = if (st.tpms_alert) "轮胎胎压 · 建议检查" else "轮胎胎压",
+        title = when {
+            alerting -> "轮胎胎压 · 建议检查"
+            warning -> "轮胎胎压 · 接近阈值"
+            else -> "轮胎胎压"
+        },
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             VehicleTopView(reading = reading, modifier = Modifier.weight(0.9f))
             Column(Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                TpmsValue("左前", fl, reading.isAlerting(fl, "左前"))
-                TpmsValue("右前", fr, reading.isAlerting(fr, "右前"))
-                TpmsValue("左后", rl, reading.isAlerting(rl, "左后"))
-                TpmsValue("右后", rr, reading.isAlerting(rr, "右后"))
+                if (alerting || warning) {
+                    // ⚠️ **v0.91.0**：异常时**必须更醒目** ——
+                    // 结论升成告警行（红 / 琥珀），轮子颜色之外还有文字（WCAG 1.4.1）。
+                    val noticeColor =
+                        if (alerting) MaterialTheme.colorScheme.error else accents.warnAmber
+                    val noticeText = if (alerting) alertText else warnText
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Filled.WarningAmber,
+                            contentDescription = null,
+                            tint = noticeColor,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            noticeText,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = noticeColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        rangeLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    // ⚠️ **v0.91.0**：没事就安静 —— 一个结论 + 一行实测区间。
+                    // 四个读数与阈值说明折进下面的「更多明细」。
+                    BigStat("胎压正常", rangeLabel, mid = true)
+                }
             }
         }
-        // 告警不能只靠颜色（WCAG 1.4.1）——服务端已算好这句文案，直接用
-        st.tpms_alert_detail?.takeIf { it.isNotBlank() }?.let {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.WarningAmber,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(16.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+        if (alerting || warning) {
+            // 有事时明细**留在表层**（不折）—— 车主要靠它分清「一胎漏气」还是「四胎都低」。
+            TpmsDetailGrid(fl, fr, rl, rr, reading)
+            Text(
+                rangeHint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            CollapsibleSection(label = "更多明细") {
+                // ⚠️ **AnimatedVisibility 的内容 lambda 不是 ColumnScope** ——
+                // 多个 composable 直接并列会**全部叠在同一位置**（只看得见最后一行）。
+                // 必须自己包一层 Column。
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TpmsDetailGrid(fl, fr, rl, rr, reading)
+                    Text(
+                        rangeHint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
-        Text(
-            // ⚠️ v0.9.0（新手车主复核）：新手「完全不懂 bar」。
-            // 补一句「超出会怎样」，让它变成一个**能据此行动**的信息，
-            // 而不是一个需要背下来的单位。
-            "正常 ${st.tpms_min_bar}–${st.tpms_max_bar} bar（冷胎）· 超出这个范围需要检查",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    }
+}
+
+/**
+ * 四轮读数（**两列**排布：左轮一列、右轮一列 —— 与俯视图的左右一致，
+ * 不用读者再把「左前」对到图上的左上角）。
+ */
+@Composable
+private fun TpmsDetailGrid(
+    fl: Double?,
+    fr: Double?,
+    rl: Double?,
+    rr: Double?,
+    reading: TpmsReadingUi,
+) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            TpmsValue("左前", fl, reading.isAlerting(fl, "左前"))
+            TpmsValue("左后", rl, reading.isAlerting(rl, "左后"))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            TpmsValue("右前", fr, reading.isAlerting(fr, "右前"))
+            TpmsValue("右后", rr, reading.isAlerting(rr, "右后"))
+        }
     }
 }
 
