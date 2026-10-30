@@ -383,6 +383,17 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.SentrySource = sentrySource
 	s.SentryAt = sentryAt
 
+	// ⚠️ **v0.88.0**：座舱状态（空调 / 座椅加热 / 方向盘加热）。
+	//
+	//	来自**同一次**遥测读库（telSafety），不多查一次 DB。
+	//
+	//	⚠️ **不覆盖** `s.IsClimateOn`（轮询侧那个）：
+	//	官方把遥测 `HvacPower` 与轮询 `climate_state.is_climate_on` 列为**同一个量**，
+	//	但两者采集时刻不同 ⇒ 谁更新用谁需要单独合并（ADR #24）。
+	//	这一轮**先只把遥测这一份如实给出**，合并留给下一轮 ——
+	//	宁可两个来源都摆出来，也不要偷偷替用户挑一个。
+	s.Cabin = telSafety.Cabin
+
 	// ⚠️ **v0.84.0：固件版本 + 有没有可装的固件**。
 	//
 	// 固件版本两个来源：遥测 `Version`（官方 68，**车睡着也有**）

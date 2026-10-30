@@ -214,6 +214,11 @@ type CarStatus struct {
 	// **时间诚实**出口 —— App 据它决定要不要提示「这是旧值」。
 	VehicleSafetyAt *time.Time `json:"vehicle_safety_at"`
 
+	// ⚠️ **v0.88.0**：座舱状态（空调 / 座椅加热 / 方向盘加热）。
+	//
+	//	**每个可空字段 nil = 没读到**，≠「关」（ADR #25）。
+	Cabin CabinState `json:"cabin"`
+
 	// v0.7.0 新增：服务端算好的告警判定（唯一事实源，App 与推送脚本共用）
 	// 详见 alerts.go —— 阈值与判定逻辑只在服务端实现一次。
 	TpmsAlert       bool     `json:"tpms_alert"`

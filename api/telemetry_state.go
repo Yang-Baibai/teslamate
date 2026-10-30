@@ -77,6 +77,18 @@ var telemetryFieldNames = map[string]string{
 	"TpmsHardWarnings":    "胎压硬告警",
 	"TpmsSoftWarnings":    "胎压软告警",
 	"IsolationResistance": "高压绝缘电阻",
+	// ⚠️ **v0.88.0** 座舱这批（官方 proto 的 enum Field 编号见 fleet_telemetry.go）。
+	"SeatHeaterLeft":              "主驾座椅加热",
+	"SeatHeaterRight":             "副驾座椅加热",
+	"HvacACEnabled":               "空调压缩机",
+	"HvacAutoMode":                "空调模式",
+	"HvacFanSpeed":                "空调风速",
+	"HvacFanStatus":               "空调送风档位",
+	"HvacLeftTemperatureRequest":  "主驾设定温度",
+	"HvacRightTemperatureRequest": "副驾设定温度",
+	"HvacPower":                   "空调电源状态",
+	"HvacSteeringWheelHeatAuto":   "方向盘加热自动",
+	"HvacSteeringWheelHeatLevel":  "方向盘加热档位",
 }
 
 // --------------------------------------------------------------------------

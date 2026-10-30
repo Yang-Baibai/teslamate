@@ -5,6 +5,152 @@
 
 ---
 
+## 2026-10-30（v0.88.0 · 座舱状态回读：空调 / 座椅加热 / 方向盘加热，现在读得到吗）
+
+> ⚠️ **版本号未变**（`0.87.0` / code 100）—— **App 代码零改动**。
+> 本轮是**纯服务端 + Hermes 侧**增强 ⇒ **用户不需要升级 App**，打开就是新的。
+> （沿用 v0.80.0 / v0.81.0 / v0.83.0 三个纯服务端轮次的既有约定。）
+
+v0.87.0 让人能**设**空调 / 座椅加热 / 方向盘加热（官方 21 个车控动作），
+但**读不回来**——Hermes 被问「座椅加热现在开着吗」「方向盘加热开了没」「空调设到几度」，
+此前只能答「不知道」⇒ 使命书 §2.1「状态双向同步」只做了一半。
+
+这一轮把**座舱的当下状态**从 Fleet Telemetry 接进来，补上「**设 → 读回**」的闭环。
+
+### 一、官方取证：11 个字段逐字对齐（不是猜的）
+
+官方 Fleet Telemetry「Available Data」表 + 官方 proto（`enum Field`，共 278 项）：
+
+| 字段 | 官方编号 | 类型 | 官方描述原文 |
+|---|---|---|---|
+| `SeatHeaterLeft` | 87 | integer | "The level of the front left seat heater. **Values range from 0 (off) to 3 (high).**" |
+| `SeatHeaterRight` | 88 | integer | 同上（副驾） |
+| `HvacACEnabled` | 196 | boolean | "If AC is enabled." |
+| `HvacAutoMode` | 197 | `HvacAutoModeState` | 空调自动模式 |
+| `HvacFanSpeed` | 198 | integer | "The HVAC fan speed." |
+| `HvacFanStatus` | 199 | integer | 送风档位 |
+| `HvacLeftTemperatureRequest` | 200 | real | "…Reported in celsius." |
+| `HvacPower` | 201 | `HvacPowerState` | "The power state of the HVAC system." |
+| `HvacRightTemperatureRequest` | 202 | real | 副驾设定温度（℃） |
+| `HvacSteeringWheelHeatAuto` | 203 | boolean | 方向盘加热是否设为自动 |
+| `HvacSteeringWheelHeatLevel` | 204 | integer | "The level of steering wheel heat." |
+
+官方枚举取值**来自 proto，不是文档表格**——官方 Available Data 页**只有两张表，不含枚举取值**：
+
+- `HvacPowerState`：`Unknown=0` / `Off=1` / `On=2` / `Precondition=3` / `OverheatProtect=4`
+- `HvacAutoModeState`：`Unknown=0` / `On=1` / `Override=2`
+
+⚠️ **固件门槛（官方 proto 注释原文）**：
+
+> "fields 180-183, 185-228 are first available in firmware version 2024.44.25 and 2024.45.25"
+
+⇒ 196~204 这一段要 **2024.44.25+**；本车实测固件 **2026.26.200** ✓（87/88 在更早的段 ⇒ 无门槛）。
+⇒ 这条门槛**写成了可执行断言**（`TestCabinFieldsWithinFirmwareReach`：下发字段的官方编号必须 < 260）——
+「官方有 ≠ 本车有」以后会**红**，不会悄悄。
+
+⚠️ 官方「Vehicle Data Equivalent」列把遥测逐字对到了轮询键：
+
+| 遥测字段 | 轮询侧等价键 |
+|---|---|
+| `HvacPower` | `climate_state.is_climate_on` |
+| `HvacAutoMode` | `climate_state.hvac_auto_request` |
+| `HvacFanStatus` | `climate_state.fan_status` |
+| `HvacSteeringWheelHeatAuto` | `climate_state.auto_steering_wheel_heat` |
+| `HvacSteeringWheelHeatLevel` | `climate_state.steering_wheel_heat_level` |
+| `SeatHeaterLeft` / `SeatHeaterRight` | `climate_state.seat_heater_left` / `seat_heater_right` |
+
+⇒ 它们与轮询是**同一个底层状态的两份表达**，不是两个不相干的数。
+⇒ 但**本轮刻意不覆盖** `/status` 现有的 `is_climate_on` ⇒ **两个来源都摆出来**，
+不偷偷替用户挑一个（合并留给下一轮，走 ADR #24「取更新的那个」）。
+
+### 二、方向盘加热为什么只报「档位 N」
+
+⚠️ 官方对 `HvacSteeringWheelHeatLevel` 只有一句 **"The level of steering wheel heat."**——
+**中英两站文档 + 官方 proto + 官方 vehicle-command 全部没有给范围**
+（vehicle-command 的方向盘加热命令只有开关：protobuf `PowerOn: enabled`，**无档位枚举**）。
+
+⇒ 所以这里**原样给出整数**、文案写「**档位 N**」，**不编**「关 / 低档 / 中档 / 高档」。
+
+⇒ 座椅加热不同：官方**明写** 0..3 且 0=off ⇒ 可以标「关 / 低档 / 中档 / 高档」。
+
+⚠️ 这条被**单测钉死**（`TestCabinSteeringWheelHeatHasNoInventedScale`：断言文案里不出现那四个字），
+以后有人「顺手补上档位名」会立刻红。
+
+### 三、空调为什么是三态，不是 true/false
+
+`HvacPower` 的官方枚举里有一个 `Unknown=0` ⇒ **「不知道」是官方承认的一种状态**。
+
+- `Off(1)` ⇒ 关
+- `On(2)` / `Precondition(3)` / `OverheatProtect(4)` ⇒ 开
+- `Unknown(0)` ⇒ **不知道**（**不当成「关」**）
+
+⇒ 服务端用 `*bool`（nil = 不知道）；MCP 再翻成 **三态字符串**「**开着 / 关着 / 不知道**」，
+**绝不给 null**——模型拿到 null 很可能就当成「关着」报出去，那是**假安全**（ADR #25）。
+
+⚠️ 压缩机（`HvacACEnabled`）与「整个空调系统」（`HvacPower`）**不是一回事**，官方分成两个字段 ⇒ 分开报。
+
+### 四、服务端：新增 `api/cabin_state.go`
+
+`CabinState` 的一次性结构：`source` / `at` / `stale` / `climate_on` / `climate_text` / `climate_power` /
+`auto_mode` / `ac_enabled` / `fan_speed` / `driver_temp_c` / `passenger_temp_c` /
+`seat_heater` / `steering_wheel_heater` / `steering_wheel_heater_auto`。
+
+四条硬规则：
+
+1. **每个可空字段都是刻意的** —— `nil` = **没读到**（车没推 / 固件太老 / 值认不出来），
+   **≠「关」**（ADR #25）。
+2. **座椅加热只列读到的座位** —— 没读到的主驾**整项不列**，
+   免得读成「主驾没开」（ADR #25「没来源就整项不显示」）。
+3. **采集时刻取组内最旧** —— 只要有一项是旧的，整组就不能说成新的 ⇒ 任一项陈旧则整组 `stale`。
+4. **一个字段都没到 ⇒ `source` 是空串** —— 不谎称「遥测」（ADR #25）。
+
+工程细节：
+
+- `cabinStateFromTelemetry(idx)` 是**纯函数**（不碰 DB）⇒ 可以直接单测；
+  这里错一次，飞书就会把「没读到」说成「关着」。
+- 解析认官方 protojson 的**三形态**：裸值 / 带引号的值 / 枚举名
+  （`cabinBoolFromText` / `cabinIntFromText` / `cabinFloatFromText`）。
+- **复用 `telemetrySafetyForVIN` 的同一次读库** ⇒ `/status` **不多查一次 DB**。
+- `/status` 的 `cabin` 段**只增不改** ⇒ 旧客户端不受影响。
+
+### 五、遥测订阅：24 → 35 个字段
+
+- 新增 11 个座舱字段，`interval_seconds: 300`（官方口径是**最小间隔，值变了才发**；这批都是变化慢的量）。
+- `POST /api/v1/cars/1/fleet_telemetry` ⇒ `{"sent":true,"accepted":true,"synced":false}`；
+  线上实测 `configured: true`、`limit_reached: false`、`firmware_version: 2026.26.200`。
+- ⚠️ **车自 2026-10-29 14:57 起休眠离线** ⇒ 座舱字段的**真实值本轮拿不到**；
+  已用**合成遥测行**做完整单测 + 配置下发确认 ⇒ 车下次连上后端即生效。
+
+### 六、MCP：`teslamate_status` 多出「座舱」
+
+- 新增 `_cabin_cn()`：`座舱.空调.是否开着` 是**三态字符串**；`座舱.座椅加热` 是**字典、只列读到的座位**；
+  `座舱.方向盘加热.档位` 是**原始整数**。
+- 工具说明里写死三条：**「不知道」≠「关着」**、字典里没有的座位 = **没读到**、
+  方向盘档位**不要自己翻译**成「关 / 低档 / 中档 / 高档」。
+- `mcp/check_tool_fields.py` 新增 `check_cabin_contract()`（断言三态字符串 + 方向盘文案不含档位名）。
+
+### 七、闸门
+
+- Go：`gofmt -l` = **0**、`go vet` OK、`go test ./...` **rc=0**；
+- 服务端闸门 **5/5** · 客户端闸门 **9/9** · 冒烟 **39/39**；
+- MCP 自检 **16 工具 / 0 项不合规**（含新增「座舱契约」一行）；
+- 新增 **12 条**单测（档位映射 / 越界 / 只列读到的座位 / 三态 / 值认不出 / 不编档位名 /
+  布尔与温度 / 最旧时刻与 stale / 官方枚举编号 / 固件门槛 / 下发字段被请求）；
+- ⚠️ **新闸门先证明自己能报红**：注入 3 个故障（档位映射 1→高档、把 Unknown 当关、方向盘编「中档」）
+  ⇒ `go test` **真实退出码 1** 且命中对应用例；还原后 **rc=0**。
+
+### 八、影响与回滚
+
+- 影响：`/status` **只增字段不改字段**（新增 `cabin` 段）；**App 零改动**、不需要升级；
+  遥测订阅多 11 个字段（车端负担可忽略）。
+- 回滚：`git revert` 本提交
+  + `docker compose --profile control up -d --build api`
+  + 重新下发一次遥测配置（字段清单收回 24 个）。
+- ⚠️ **未验证项**：座舱字段的**真实值**要等车下次连上遥测后端才能核对
+  （并顺带核对 `HvacPower` 与轮询 `is_climate_on` 是否一致）。
+
+---
+
 ## 2026-10-30（v0.87.0 · Hermes 车控补齐：座椅加热 / 方向盘加热 / 车窗通风 / 前备箱，参数规格收归服务端）
 
 这一轮是**使命书 §2.1「全量控车指令可调」**的补齐 ——

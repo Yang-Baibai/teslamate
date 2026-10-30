@@ -193,6 +193,58 @@ def check_descriptions() -> list:
     return bad
 
 
+def check_cabin_contract() -> list:
+    """座舱三态契约（v0.88.0）。
+
+    ⚠️ 这条守的是**模型最容易犯的那个错**：
+    把「没读到」当成「关着」。
+
+    ⇒ `座舱.空调.是否开着` 必须是 **开着 / 关着 / 不知道** 三态字符串，
+      **绝不能是 null** —— 模型拿到 null 很可能直接说「空调关着」，
+      而真相是「车根本没推这批字段」。那是**假安全**（ADR #25）。
+
+    ⚠️ 同时守**反幻觉**：方向盘加热的档位官方（中英两站 + proto +
+      vehicle-command）**都没给范围** ⇒ 文案里**不许**出现
+      「关 / 低档 / 中档 / 高档」这种自己编的档位名。
+    """
+    bad = []
+    try:
+        res = T.teslamate_status()
+    except Exception as e:
+        return ["teslamate_status 调用异常 %r" % (e,)]
+
+    cab = res.get("座舱")
+    if not isinstance(cab, dict):
+        return ["座舱 不是字典（字段名对不上？）"]
+
+    for key in ("数据来源", "采集于", "数据是旧的"):
+        if key not in cab:
+            bad.append("座舱 缺字段「%s」" % key)
+
+    cl = cab.get("空调")
+    if not isinstance(cl, dict):
+        bad.append("座舱.空调 不是字典")
+    else:
+        v = cl.get("是否开着")
+        if v not in ("开着", "关着", "不知道"):
+            bad.append("座舱.空调.是否开着 必须是三态字符串（开着/关着/不知道），实际 %r" % (v,))
+
+    seats = cab.get("座椅加热")
+    if not isinstance(seats, dict):
+        bad.append("座舱.座椅加热 不是字典（应是「座位 → 档位」）")
+
+    wh = cab.get("方向盘加热")
+    if not isinstance(wh, dict):
+        bad.append("座舱.方向盘加热 不是字典")
+    else:
+        text = wh.get("说明") or ""
+        for forbidden in ("低档", "中档", "高档"):
+            if forbidden in text:
+                bad.append("座舱.方向盘加热.说明 含 %q —— 官方没定义这个范围，编档位名就是造事实"
+                           % forbidden)
+    return bad
+
+
 def main() -> int:
     print("=== MCP 工具字段映射自检 ===")
     bad = []
@@ -258,6 +310,13 @@ def main() -> int:
     if not cat_bad:
         print("  ✓ %-26s %-24s 每个动作都带「参数怎么填」" % ("teslamate_command_catalog", "参数规格透出"))
     bad.extend(cat_bad)
+
+    cab_bad = check_cabin_contract()
+    for b in cab_bad:
+        print("  ✗ %s" % b)
+    if not cab_bad:
+        print("  ✓ %-26s %-24s 三态字符串 + 不编方向盘档位名" % ("teslamate_status", "座舱契约"))
+    bad.extend(cab_bad)
 
     desc_bad = check_descriptions()
     for b in desc_bad:

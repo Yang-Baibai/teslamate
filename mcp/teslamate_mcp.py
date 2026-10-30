@@ -163,6 +163,61 @@ def _source_cn(v: Any) -> str:
     return _SOURCE_CN.get(v, str(v))
 
 
+def _cabin_cn(cabin: Any) -> dict:
+    """把服务端的座舱状态翻成中文（**不编**）。
+
+    ⚠️ **v0.88.0**：v0.87.0 让人能**设**空调 / 座椅加热 / 方向盘加热，
+    这一轮补上「**读回**」⇒ Hermes 才答得出「座椅加热现在开着吗」。
+
+    ⚠️ **三态字符串是刻意的**：
+    「是否开着」给 **开着 / 关着 / 不知道** 三种字符串，
+    **绝不给 null** ——
+    模型拿到 null 很可能就当成「关着」报出去，那是**假安全**（ADR #25）。
+    """
+    if not isinstance(cabin, dict):
+        return {}
+
+    out = {
+        "数据来源": _source_cn(cabin.get("source")),
+        "采集于": cabin.get("at"),
+        "数据是旧的": bool(cabin.get("stale")),
+    }
+
+    # ── 空调 ──────────────────────────────────────────────
+    on = cabin.get("climate_on")
+    out["空调"] = {
+        "是否开着": "不知道" if on is None else ("开着" if on else "关着"),
+        "状态": cabin.get("climate_text") or "状态未知",
+        # ⚠️ 压缩机（True/False/None）与「整个空调系统」不是一回事 ——
+        #    官方把 HvacACEnabled（压缩机）与 HvacPower（系统电源）分成两个字段。
+        "压缩机": cabin.get("ac_enabled"),
+        "模式": cabin.get("auto_mode") or "",
+        "风速": cabin.get("fan_speed"),
+        "主驾设定温度℃": cabin.get("driver_temp_c"),
+        "副驾设定温度℃": cabin.get("passenger_temp_c"),
+    }
+
+    # ── 座椅加热 ──────────────────────────────────────────
+    # ⚠️ 只列**读到**的座位（服务端就是这么给的）⇒
+    #    字典里没有「主驾」= **没读到主驾**，不是「主驾没开」。
+    seats = {}
+    for s in cabin.get("seat_heater") or []:
+        if isinstance(s, dict) and s.get("seat"):
+            seats[s["seat"]] = s.get("text")
+    out["座椅加热"] = seats
+
+    # ── 方向盘加热 ────────────────────────────────────────
+    wh = cabin.get("steering_wheel_heater") or {}
+    out["方向盘加热"] = {
+        "档位": wh.get("level"),
+        # ⚠️ 官方（中英两站 + proto + vehicle-command）**都没给**这个档位的范围
+        #    ⇒ 只报原值，**不编**「关 / 低档 / 中档 / 高档」。
+        "说明": wh.get("text") or "",
+        "自动": cabin.get("steering_wheel_heater_auto"),
+    }
+    return out
+
+
 # --------------------------------------------------------------------------
 # 查数据
 # --------------------------------------------------------------------------
@@ -186,6 +241,19 @@ def teslamate_status() -> dict:
     ⚠️ 当来源是遥测、且 `锁车状态是旧的` = true 时，
     那个锁车状态是**车断线那一刻**的（可能已经过了好几个小时）——
     **报给用户时必须带上这个时间**，别当成「现在锁着」。
+
+    ⚠️ **v0.88.0：座舱状态**（`座舱`）—— 空调 / 座椅加热 / 方向盘加热。
+
+    - `座舱.空调.是否开着` 是**三态字符串**：`开着` / `关着` / `不知道`。
+      ⚠️ **「不知道」≠「关着」** —— 车没推这批字段、或值认不出来，
+      就是「不知道」（ADR #25）。**别把「不知道」说成「关着」。**
+    - `座舱.座椅加热` 是字典，**只列读到过的座位**；
+      字典里没有「主驾」= 没读到主驾，不是主驾没开。
+    - `座舱.方向盘加热.档位` 是**原始整数**：官方（中英两站 + proto +
+      vehicle-command）**都没定义**这个档位的范围 ⇒ **不要**自己翻译成
+      「关 / 低档 / 中档 / 高档」。
+    - `座舱.数据是旧的` = true ⇒ 那是车断线前的最后已知值，
+      **报给用户时必须带上 `座舱.采集于` 这个时间**。
     """
     s = _get(f"/api/v1/cars/{CAR_ID}/status")
     if not isinstance(s, dict) or "error" in s:
@@ -249,6 +317,9 @@ def teslamate_status() -> dict:
         "当前固件": s.get("car_version"),
         "待安装固件": s.get("software_update_version"),
         "有可装固件": bool(s.get("update_pending")),
+        # ⚠️ **v0.88.0**：座舱状态（空调 / 座椅加热 / 方向盘加热）。
+        #    v0.87.0 让人能「设」，这一轮补上「读回」。
+        "座舱": _cabin_cn(s.get("cabin")),
         "数据滞后小时": s.get("data_age_hours"),
         "最后采集于": s.get("updated_at"),
     }

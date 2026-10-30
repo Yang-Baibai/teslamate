@@ -57,6 +57,28 @@ var telemetryOfficialFieldNumbers = map[string]int{
 	"Version":             68,
 	// ⚠️ **v0.84.0**：`SoftwareUpdateVersion` = 「可安装的固件版本」。
 	"SoftwareUpdateVersion": 220,
+	// ⚠️ **v0.88.0**：座舱这批（空调 / 座椅加热 / 方向盘加热）。
+	//
+	// 编号逐个核过官方 protos/vehicle_data.proto 的 `enum Field`：
+	//   SeatHeaterLeft=87 / SeatHeaterRight=88
+	//   HvacACEnabled=196 / HvacAutoMode=197 / HvacFanSpeed=198
+	//   HvacFanStatus=199 / HvacLeftTemperatureRequest=200 / HvacPower=201
+	//   HvacRightTemperatureRequest=202
+	//   HvacSteeringWheelHeatAuto=203 / HvacSteeringWheelHeatLevel=204
+	//
+	// ⚠️ 196~204 落在官方注释说的「2024.44.25 起可用」那一段；
+	//    87/88 在更早的段 ⇒ 都覆盖本车实测固件 2026.26.200。
+	"SeatHeaterLeft":              87,
+	"SeatHeaterRight":             88,
+	"HvacACEnabled":               196,
+	"HvacAutoMode":                197,
+	"HvacFanSpeed":                198,
+	"HvacFanStatus":               199,
+	"HvacLeftTemperatureRequest":  200,
+	"HvacPower":                   201,
+	"HvacRightTemperatureRequest": 202,
+	"HvacSteeringWheelHeatAuto":   203,
+	"HvacSteeringWheelHeatLevel":  204,
 }
 
 // TestTelemetryFieldNamesAreOfficial 我们用的每个字段名都必须在官方名单里。

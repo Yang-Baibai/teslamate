@@ -127,6 +127,39 @@ var telemetryFields = map[string]any{
 	//    混进上面那组会把整张表的排版都重排 —— 那是与本次改动无关的 diff 污染。
 	"Version":               map[string]any{"interval_seconds": 300},
 	"SoftwareUpdateVersion": map[string]any{"interval_seconds": 300},
+
+	// ⚠️ **v0.88.0 新增**：**座舱状态**（空调 / 座椅加热 / 方向盘加热）。
+	//
+	//	为什么现在才加：v0.87.0 让人能**设**座椅加热 / 方向盘加热 / 空调，
+	//	但**读不回来** ⇒ Hermes 问「座椅加热开着吗」只能答「不知道」。
+	//	这一批补上「设 → 读回」的闭环。
+	//
+	//	⚠️ 字段名与编号来自官方 proto（protos/vehicle_data.proto → enum Field）：
+	//	  SeatHeaterLeft=87  SeatHeaterRight=88
+	//	  HvacACEnabled=196  HvacAutoMode=197  HvacFanSpeed=198  HvacFanStatus=199
+	//	  HvacLeftTemperatureRequest=200  HvacPower=201
+	//	  HvacRightTemperatureRequest=202
+	//	  HvacSteeringWheelHeatAuto=203  HvacSteeringWheelHeatLevel=204
+	//
+	//	⚠️ **固件门槛（官方 proto 注释原文）**：
+	//	  "fields 180-183, 185-228 are first available in firmware version
+	//	   2024.44.25 and 2024.45.25"
+	//	⇒ 196~204 要 **2024.44.25+**；本车实测固件 2026.26.200 ✓
+	//	（87/88 在更早的段 ⇒ 无门槛）。
+	//
+	//	⚠️ `interval_seconds` 是**最小间隔**（官方口径：值变了才发）。
+	//	这批都是**变化慢**的量 ⇒ 300s，与上面那批一致。
+	"SeatHeaterLeft":              map[string]any{"interval_seconds": 300},
+	"SeatHeaterRight":             map[string]any{"interval_seconds": 300},
+	"HvacACEnabled":               map[string]any{"interval_seconds": 300},
+	"HvacAutoMode":                map[string]any{"interval_seconds": 300},
+	"HvacFanSpeed":                map[string]any{"interval_seconds": 300},
+	"HvacFanStatus":               map[string]any{"interval_seconds": 300},
+	"HvacLeftTemperatureRequest":  map[string]any{"interval_seconds": 300},
+	"HvacPower":                   map[string]any{"interval_seconds": 300},
+	"HvacRightTemperatureRequest": map[string]any{"interval_seconds": 300},
+	"HvacSteeringWheelHeatAuto":   map[string]any{"interval_seconds": 300},
+	"HvacSteeringWheelHeatLevel":  map[string]any{"interval_seconds": 300},
 }
 
 // --------------------------------------------------------------------------

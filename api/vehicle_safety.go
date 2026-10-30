@@ -389,6 +389,12 @@ func telemetrySafetyForVIN(ctx context.Context, vin string) telemetrySafety {
 			out.SentryOK = true
 		}
 	}
+
+	// ── 座舱状态（v0.88.0）────────────────────────────────────
+	//
+	//	放在这里是为了**复用同一次读库**（V 字段表）——
+	//	/status 一次读，遥测侧的所有结论都从这一份索引里出。
+	out.Cabin = cabinStateFromTelemetry(idx)
 	return out
 }
 
@@ -440,6 +446,11 @@ type telemetrySafety struct {
 	//	UpdateVersion 官方 `SoftwareUpdateVersion`（编号 220）
 	CarVersion    string
 	UpdateVersion string
+
+	// ⚠️ **v0.88.0**：座舱状态（空调 / 座椅加热 / 方向盘加热）。
+	//
+	//	与上面几组同源（同一张 V 字段表、同一次读库）。
+	Cabin CabinState
 }
 
 // --------------------------------------------------------------------------
