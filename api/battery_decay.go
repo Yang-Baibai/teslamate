@@ -329,7 +329,7 @@ func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int, droppe
 		SpanDays:     spanDays,
 		Method: "严格档（充到 100%）按里程做最小二乘；先检验是否存在一次性落差（y = a + b·km + c·D），" +
 			"再给出扣掉落差后的连续速率；显著性用 t 检验（95% 置信区间）。" +
-			"⚠️ v0.41.0：额外做了**加充电时气温**的模型与**留一法**稳健性检查，结论强度见 conclusion 字段。",
+			"⚠️ v0.41.0：额外做了加充电时气温的模型与留一法稳健性检查，结论强度见 conclusion 字段。",
 	}
 	if len(strict) >= 2 {
 		out.SpanKm = strict[len(strict)-1].km - strict[0].km
@@ -586,14 +586,14 @@ func decayCaveat(d *BatteryDecay) string {
 				d.StepDate, d.StepKm, d.StepKwh, d.StepCiLo, d.StepCiHi))
 		} else {
 			parts = append(parts, fmt.Sprintf(
-				"序列里有一个疑似落差（%s，%.0f 公里处，%.3f 度），但**统计上不显著**，仅供参考",
+				"序列里有一个疑似落差（%s，%.0f 公里处，%.3f 度），但统计上不显著，仅供参考",
 				d.StepDate, d.StepKm, d.StepKwh))
 		}
-		parts = append(parts, "它**可能不是**电池变化 —— 也可能是车机重新标定了续航估值；"+
+		parts = append(parts, "它可能不是电池变化 —— 也可能是车机重新标定了续航估值；"+
 			"本 App 分不清这两者，别把它当成「电池掉了一次」")
 		if d.NaiveOverstate > 1.15 {
 			parts = append(parts, fmt.Sprintf(
-				"⚠️ 不扣这次落差的话，表面速率会被**高估 %.1f 倍**（%.3f → %.3f 度/1000 公里）",
+				"⚠️ 不扣这次落差的话，表面速率会被高估 %.1f 倍（%.3f → %.3f 度/1000 公里）",
 				d.NaiveOverstate, d.NaivePer1000Km, d.UnderlyingPer1000Km))
 		}
 	} else {
@@ -603,16 +603,16 @@ func decayCaveat(d *BatteryDecay) string {
 	// ⚠️ v0.41.0：把「区间离 0 有多远」和**稳健性检查**说清楚。
 	if d.UnderlyingCiHi < 0 && d.UnderlyingCiHi > -0.01 {
 		parts = append(parts, fmt.Sprintf(
-			"扣掉落差后的连续速率区间上界是 %.4f —— **离 0 只有 %.4f，几乎区分不开**",
+			"扣掉落差后的连续速率区间上界是 %.4f —— 离 0 只有 %.4f，几乎区分不开",
 			d.UnderlyingCiHi, -d.UnderlyingCiHi))
 	}
 	if d.TempN >= 5 {
 		parts = append(parts, fmt.Sprintf(
-			"把**充电时气温**放进模型后：连续速率 %.3f（区间 %.3f ~ %.3f）%s",
+			"把充电时气温放进模型后：连续速率 %.3f（区间 %.3f ~ %.3f）%s",
 			d.AdjustedPer1000Km, d.AdjustedCiLo, d.AdjustedCiHi,
-			ifStr(d.AdjustedSignificant && d.AdjustedCiHi < 0, "⇒ 仍然显著", "⇒ **检不出**")))
+			ifStr(d.AdjustedSignificant && d.AdjustedCiHi < 0, "⇒ 仍然显著", "⇒ 检不出")))
 		parts = append(parts, fmt.Sprintf(
-			"气温系数 %+.5f 度/°C —— 20°C 的温差就值 %.3f 度，**与那个落差同量级**",
+			"气温系数 %+.5f 度/°C —— 20°C 的温差就值 %.3f 度，与那个落差同量级",
 			d.TempPerC, math.Abs(d.TempPerC*20)))
 	}
 	if d.LeaveOneOutTotal > 0 {
@@ -622,16 +622,16 @@ func decayCaveat(d *BatteryDecay) string {
 	}
 	if d.TempN >= 3 {
 		parts = append(parts, fmt.Sprintf(
-			"气温只解释残差方差的 **%.0f%%**（不是「大部分」）；残差里还有别的东西",
+			"气温只解释残差方差的 %.0f%%（不是「大部分」）；残差里还有别的东西",
 			d.TempR2*100))
 	}
 	if d.DroppedEmpty > 0 {
 		parts = append(parts, fmt.Sprintf(
-			"剔除了 %d 场**没有实际充电**的场次（同一场会话被拆成两段的尾巴，不是独立测量点）",
+			"剔除了 %d 场没有实际充电的场次（同一场会话被拆成两段的尾巴，不是独立测量点）",
 			d.DroppedEmpty))
 	}
 	parts = append(parts, fmt.Sprintf(
-		"容量口径是「续航估值 × 效率常数」（= 车机上报的续航估值 × 0.146，**不是物理测量**）；"+
+		"容量口径是「续航估值 × 效率常数」（= 车机上报的续航估值 × 0.146，不是物理测量）；"+
 			"结论只在这 %.0f 公里 / %d 天内有效，不能外推",
 		d.SpanKm, d.SpanDays))
 	return joinCN(parts, "；")

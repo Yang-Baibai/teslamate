@@ -13,9 +13,9 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.87.0**：App 改了（车控参数弹窗改由服务端规格驱动 + 新增 5 个车控动作）⇒ 版本号要涨。
-        versionCode = 100
-        versionName = "0.87.0"
+        // ⚠️ **v0.90.0**：App 改了（用量页「电池健康」卡重排：一个主角 + 二级披露）⇒ 版本号要涨。
+        versionCode = 101
+        versionName = "0.90.0"
     }
 
     buildTypes {

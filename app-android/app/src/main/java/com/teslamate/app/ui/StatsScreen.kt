@@ -910,53 +910,80 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                     } else if (b == null || b.current_capacity_kwh == null) {
                         Text("暂无足够数据（需要 ≥90% 的完整充电记录）", style = MaterialTheme.typography.bodySmall)
                     } else {
-                        // ⚠️ v0.9.0（新手车主复核）：「铭牌容量」是术语。
-                        // 车主原话：「'铭牌'是出厂标称；健康度＝还剩多少」，
-                        // 建议写法：「新电池能装 66 度，现在还能装 65.4 度（97%）」。
-                        KV("现在还能装", "${b.current_capacity_kwh?.fmt(1)} 度")
-                        // ⚠️ v0.22.0（P1-5）：**历史最好时改用严格档** ——
+
+                        // ⚠️ **v0.90.0（第 32 轮 CDO UI Polish）：这张卡重排过 —— 一个主角，其余二级披露。**
+                        //
+                        // ## 原来长什么样
+                        //
+                        // **7 行等权 KV**：现在还能装 / 历史最好时 / 新电池标称可用容量 /
+                        // 电池健康度（相对出厂）/ 近期趋势 / 满电标定续航（现在）/（出厂折算）。
+                        // 缩略到 200px 宽、灰度化后**指不出唯一的主角** ——
+                        // 这正是使命书 §2.1 点名的反面教材（表显续航 / 额定续航 / 可用容量 /
+                        // 压差 / 电池温度 / 循环次数）：工程指标一视同仁地铺开，没有落点。
+                        //
+                        // ## 现在
+                        //
+                        // - **表层**：一个主角（电池健康度）+ 一行副标题（还能装多少度）
+                        //   + 趋势图 + 一句结论；
+                        // - **二层**：「更多明细」折叠区（4 行）+「怎么算的」折叠区（原有）。
+                        //
+                        // ⚠️ **主角用 26sp 而不是 44sp**：本页的主角是顶部汇总卡的 44sp 里程，
+                        // 而本仓库的硬标准是「两个锚点拉开 ≥25% 字号差」——
+                        // 44:34 = **1.29×** 正是 v0.35.0 明确判为「缩略后分不出主次」的比例。
+                        // 同型先例（RangeSegments / DriveScoreCard / StayPointsCard）都用 26sp。
+                        //
+                        // ⚠️ **不许自造分级**：原来的注解写「新车即约 95%，低于 90% 才需要关注」——
+                        // 那个 95% **全项目找不到任何来源**。本轮一个阈值也不新增，
+                        // 只用服务端已经给出的三个事实：健康度%、相对首测的变化量、衰减结论强度。
+                        //
+                        // ⚠️ **分母口径的老账**（v0.22.0 P0-2 / v0.62.0 第 31 轮出厂态核查）：
+                        // `nominal_capacity_kwh` 存的是**出厂可用容量**，
+                        // 分子（实测可用容量）分母（出厂可用容量）**同一口径**，
+                        // 比值就是**电池健康度（SOH）**，一个标准指标。
+                        // 旧名「占铭牌」恰恰把它说成了别的意思，
+                        // 还让车主以为自己读到的是「不是衰减」——
+                        // 于是 84.9% 会被读成「还有 84.9%」而不是「衰减了 15%」。
+                        val strictMax = b.max_capacity_kwh_strict ?: b.max_capacity_kwh
+                        val nominalKwh = b.nominal_capacity_kwh
+                        // ⚠️ v0.22.0（P1-5）：**历史最好时用严格档** ——
                         // 严格档只取**充到 100%** 的测量点。
                         // 原来取的是全部「≥90%」的点里的最大值，
                         // 而 e_soc 90~98 的点**系统性偏高 0.56%**
                         // （从 94% 线性外推到 100% 会高估 —— 车机的续航-电量曲线顶部是平的）。
                         // 实测那个 66.7 度正是一个 e_soc=96 的点。
-                        val strictMax = b.max_capacity_kwh_strict ?: b.max_capacity_kwh
-                        KV("历史最好时", "${strictMax?.fmt(1)} 度")
-                        // ⚠️ **v0.63.0（R31 视觉复审 P1-4）**：「新电池」原来一个词指两个量 ——
-                        // 「新电池标称 76.8 度」和下面「新电池同口径 527 km」单位不同、换算系数没给，
-                        // 用户自己对不上。现在把容量那行的名字写全。
-                        b.nominal_capacity_kwh?.let { KV("新电池标称可用容量", "${it.fmt(1)} 度") }
-                        // ⚠️ v0.22.0（P0-2）：**「健康度」改名为「占铭牌」** ——
-                        //
-                        // 原来的注解写「新车即约 95%，低于 90% 才需要关注」——
-                        // 但那个 95% **全项目找不到任何来源**（ADR #11 只决策了「分母用铭牌」，
-                        // 没给这个数），而且与本车实测**自相矛盾**：
-                        // 本车历史最好的一次只有 86.9%（= 铭牌的 86.9%），
-                        // 若「新车即约 95%」成立，新车应该测得 72.96 度 ——
-                        // 比这台车**有史以来最好的一次还多 6.24 度**，而没有任何一次测量支持。
-                        //
-                        // 后果很实际：用户把「84.9%」读成「衰减了 15.1%」，
-                        // 再按注解自己的门槛判定「长期处于告警区」——
-                        // 而实测窗口内容量只掉了 1.6%。
-                        //
-                        // 现在说**可验证**的话：占铭牌多少、本车实测上限是多少。
-                        if (b.health_percent != null) {
-                            // ⚠️ **v0.62.0（第 31 轮电池出厂态核查）**：
-                            // 原来叫「占铭牌」，还配了一句「它不是衰减了多少」——
-                            // **那句话是错的**。
-                            //
-                            // `nominal_capacity_kwh` 存的就是**出厂可用容量**，
-                            // 分子（实测可用容量）分母（出厂可用容量）**同一口径**，
-                            // 比值就是**电池健康度（SOH）**，一个标准指标。
-                            // 旧名「占铭牌」恰恰把标准指标说成了别的意思，
-                            // 还让车主以为自己读到的是「不是衰减」——
-                            // 于是 84.9% 会被读成「还有 84.9%」而不是「衰减了 15%」。
-                            // ⚠️ **v0.68.0（R32 真机复核）**：口径 ⓘ 挂在**它解释的那一行行尾**
-                            // （`KV` 的 `note` 参数）—— 不再在卡底堆三个一模一样的裸 ⓘ：
-                            // 真机上三个角标竖排在一起，谁也说不清哪个解释哪个指标。
-                            KV(
+                        val baselineDate = b.series.orEmpty()
+                            .take(3)
+                            .sortedBy { it.capacity_kwh }
+                            .getOrNull(1)?.date?.fmtDate()
+                        val latestFullPoint = b.series.orEmpty()
+                            .filter { it.end_soc != null && it.end_soc!! >= 100 && it.rated_range_km != null }
+                            .maxByOrNull { it.date }
+                        val nowRatedKm = latestFullPoint?.rated_range_km
+                        val factoryKm = b.factory_rated_range_km
+
+                        // ── 表层：一个主角 + 一行副标题 ──────────────────────────
+                        val health = b.health_percent
+                        if (health != null) {
+                            BigStat(
+                                "${health.fmt(1)}%",
                                 "电池健康度（相对出厂）",
-                                "${b.health_percent!!.fmt(1)}%",
+                                mid = true,
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            // ⚠️ **副标题给的是「还能装多少度」** ——
+                            // 百分比是**比值**，单看没有锚点；车主真正关心的是「还能装多少电」。
+                            // 「现在还能装 65.2 度 · 新电池标称 78.4 度」——
+                            // 两个数一摆出来，83.1% 自己就会算了。
+                            //
+                            // ⚠️ **v0.68.0（R32 真机复核）**：口径 ⓘ 挂在**它解释的那一行行尾**
+                            // —— 不再在卡底堆三个一模一样的裸 ⓘ：
+                            // 真机上三个角标竖排在一起，谁也说不清哪个解释哪个指标。
+                            // 现在 ⓘ 挂在副标题上，而副标题字面就是这条口径的两个操作数。
+                            TextWithNote(
+                                text = buildString {
+                                    append("现在还能装 ${b.current_capacity_kwh!!.fmt(1)} 度")
+                                    nominalKwh?.let { append(" · 新电池标称 ${it.fmt(1)} 度") }
+                                },
                                 note = buildString {
                                     append("「电池健康度」= 现在还能装的度 ÷ 新电池标称的度 —— ")
                                     append("两边都是「可用容量」，同一口径，")
@@ -969,16 +996,18 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     // 不说清楚，读者会以为它是「测出来的」。
                                     append("分子里的效率常数（cars.efficiency）可在服务端改，改了这个数就变。")
                                     // ⚠️ **v0.63.0（R31 视觉复审 P0-3）**：原来这里写「本车实测上限 86.4%」——
-                                    // 改名为「（相对出厂）」之后，它和上面的 84.9% **成了同一个口径的两个数**，
+                                    // 改名为「相对出厂」之后，它和上面的 84.9% **成了同一个口径的两个数**，
                                     // 用户会以为有一个是错的。现在把关系写进句子里：
                                     // 它是「天花板」，不是第二个健康度。
-                                    val nominalKwh = b.nominal_capacity_kwh
                                     if (nominalKwh != null && strictMax != null) {
                                         append("这台车有史以来最好的一次，也只到出厂的 ")
                                         append((strictMax * 100 / nominalKwh).fmt(1))
                                         append("%。")
                                     }
                                 },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                a11yLabel = "电池健康度的口径",
                             )
                         } else {
                             Text(
@@ -987,105 +1016,10 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        // ⚠️ v0.22.0（P1-1）：**相对首测** ——
-                        // 这是**唯一不受** `cars.efficiency` 影响的健康指标
-                        // （分子分母同比例缩放）。
-                        // 它回答的才是车主真正想知道的那句：「电池比刚开始测的时候差了多少」。
-                        //
-                        // ⚠️ **v0.28.0（第 17 轮新手车主 P0-3）：必须带**首测日期**。**
-                        //
-                        // 原来只写「相对首测 98.4%」，用户会读成「新车容量到现在只剩 98.4%」——
-                        // 而首测是 **2026-08-02**，那台车**已经开了 4 个月**，
-                        // 分母**本身已经衰减过**。
-                        //
-                        // 评审原话：「首测不是新车容量，只回答『比 8 月 2 号那次低了多少』」。
-                        val baselineDate = b.series.orEmpty().take(3)
-                            .sortedBy { it.capacity_kwh }
-                            .getOrNull(1)?.date?.fmtDate()
-                        b.health_percent_of_baseline?.let {
-                            // ⚠️ **v0.63.0（R31 视觉复审 P1-1）**：**数字的形状本身就是误读入口**。
-                            //
-                            // 「98.4%」这个形状会被读成「电池还有 98.4%」——
-                            // 改名字不够，**必须换形状**：显示**变化量** −1.6%。
-                            // 换完之后整张卡**只有 84.9% 一个百分比**，主角唯一。
-                            //
-                            // 语义不变：它仍然只是「比首测那次低了多少」，
-                            // 首测时车**已经开了 4 个月**（见下面说明）。
-                            val delta = 100.0 - it
-                            KV(
-                                "近期趋势（自 " + (baselineDate?.let { d -> d } ?: "首测") + "）",
-                                (if (delta >= 0) "−" else "+") + kotlin.math.abs(delta).fmt(1) + "%",
-                                // ⚠️ **v0.68.0（R32 真机复核）**：口径 ⓘ 挂在**它解释的那一行行尾**。
-                                //
-                                // 「近期趋势 = 当前容量 ÷ 首测容量…和『相对出厂』不是同一段时间」——
-                                // 这是**口径**不是数据 ⇒ 折（v0.65.0），且必须贴着这一行（v0.68.0）。
-                                note = buildString {
-                                    append("「近期趋势」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
-                                    append("不受行驶能耗常数影响。")
-                                    append("它只衡量这段时间里的变化，和上面的「相对出厂」不是同一段时间 —— ")
-                                    append("要回答「相对出厂衰减了多少」，看的是上面那个健康度。")
-                                    if (baselineDate != null) {
-                                        append("注意：首测（$baselineDate）不是新车容量 —— ")
-                                        append("它只回答「比 $baselineDate 那次测的低了多少」。")
-                                    }
-                                },
-                            )
-                        }
-                        // ⚠️ **v0.62.0（第 31 轮电池出厂态核查）**：**满电标定续航**。
-                        //
-                        // 车主最关心的单位（「公里」）。
-                        //
-                        // ⚠️ **v0.63.0（R31 视觉复审 P0-2 / P1-5）**：原来把
-                        // 「现在 / 出厂折算 / 少多少」全塞进**一个值**里 ——
-                        // 29 个字符在 15sp 的值列里撑破布局：标签和值只隔 3.5dp
-                        // （比值内部的词间距 6.1dp 还小，看着像粘成一个词），
-                        // 第二行只剩「81 km）」孤零零右对齐。
-                        // 现在拆成**两行同名**（现在 / 出厂折算），每个值都很短，
-                        // 「少多少」降级到下面的说明里。
-                        val latestFullPoint = b.series.orEmpty()
-                            .filter { it.end_soc != null && it.end_soc!! >= 100 && it.rated_range_km != null }
-                            .maxByOrNull { it.date }
-                        val nowRatedKm = latestFullPoint?.rated_range_km
-                        if (nowRatedKm != null) {
-                            val factoryKm = b.factory_rated_range_km
-                            // ⚠️ **v0.68.0（R32 真机复核）**：口径 ⓘ 挂在**它解释的那一行行尾**。
-                            //
-                            // ⚠️ **v0.63.0（R31 视觉复审 P1-3）**：「少 81 km」是**精确值假象** ——
-                            // 满充读数本身有 445~455 km 的温度波动，同一份数据可能算出 73~82 km。
-                            // 所以改成「约 80 km」，并把日期与波动区间一起说清楚。
-                            KV(
-                                "满电标定续航（现在）",
-                                "${nowRatedKm.toInt()} km",
-                                note = buildString {
-                                    append("「满电标定续航」= 车机在满电时自己报的读数")
-                                    latestFullPoint?.date?.let { append("（${it.fmtDate()} 那次满充）") }
-                                    append("。")
-                                    if (factoryKm != null) {
-                                        val gapKm = factoryKm - nowRatedKm
-                                        append("按出厂容量折算，同一把尺子下新电池应是 ")
-                                        append(factoryKm.toInt())
-                                        append(" km —— 大约少 ")
-                                        append((gapKm / 5.0 * 5.0).toInt())
-                                        append(" km。")
-                                        append("满充读数本身有 445~455 km 的温度波动，所以这个差是一个区间，不是一个精确值。")
-                                    }
-                                    append("官方标称续航是新车认证值，不是这台车这把尺子上的读数，两者不能直接相除。")
-                                },
-                            )
-                            factoryKm?.let { fk ->
-                                KV("满电标定续航（出厂折算）", "${fk.toInt()} km")
-                            }
-                        }
-                        // ⚠️ **v0.68.0（R32 真机复核）**：卡底那三个裸 ⓘ **删掉了**。
-                        //
-                        // 它们的内容已各自上移，挂到**对应的指标行行尾**
-                        // （`KV(..., note = …)`）：健康度口径 → 「电池健康度（相对出厂）」行，
-                        // 趋势口径 → 「近期趋势」行，续航口径 → 「满电标定续航（现在）」行。
-                        //
-                        // 为什么不能留在卡底：三个一模一样的小圆圈竖排在一起，
-                        // **没有任何视觉线索说明哪个解释哪个** —— 真机复核时的原话就是
-                        // 「三个裸 ⓘ 竖排堆在卡底、脱离各自行」。
-                        // 一屏一个主角数字、装饰宁删勿留 ⇒ 角标必须贴着它解释的那一行。
+
+                        // ⚠️ **v0.90.0**：口径 ⓘ **仍然是贴着它解释的那一行**（v0.68.0 起）：
+                        // 健康度口径 → 副标题；趋势口径 → 「更多明细」里的「近期趋势」行；
+                        // 续航口径 → 「更多明细」里的「满电续航（现在）」行。
                         val series = b.series.orEmpty().map { it.capacity_kwh?.toFloat() }
                         if (series.count { it != null } >= 2) {
                             // ⚠️ v0.9.2（口径审计 S3-3）：**不再传基准线**。
@@ -1096,7 +1030,7 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             //
                             // 现在：不传锚点 → 折线图在**细窄范围**下自动贴住数据
                             // （65–67 度），趋势一眼可见；
-                            // 基准值由上面的「新电池标称」那一行承担。
+                            // 基准值由上面副标题里的「新电池标称」承担。
                             LineChart(
                                 values = series,
                                 color = MaterialTheme.colorScheme.secondary,
@@ -1135,48 +1069,149 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // ⚠️ **v0.35.0：电池衰减结论由**服务端**判定**（严格档 + t 检验 + 阶跃检测），
                             // 客户端只负责把它说清楚。
                             //
-                            // 原来这里有一份客户端侧的线性回归（v0.29.0），
-                            // 用的「效应/噪声」比值**不是显著性检验**，
-                            // 而且混用了系统性偏高 0.56% 的 90~98% 满充点 ——
-                            // 实测把衰减速率**高估了 2.3 倍**。
+                            // ⚠️ **v0.69.0（真机 UI 树实测）**：**结论常驻，其余折进 ⓘ**。
+                            //
+                            // 原先是**四段直接可见的灰字**：样本量 / 衰减结论 / 那次落差 / 容量口径，
+                            // 合计 **101 个汉字** —— 真机滚到电池卡底部时占了半屏，
+                            // 而其中三段都是「结论的依据」，不是结论本身。
+                            //
+                            // 现在只有结论（衰减速率）留在外面，
+                            // 依据（样本 / 落差 / 口径）折进 ⓘ，点开在下面就地展开。
+                            // 一段文字都没删，只是换了位置。
                             b.decay?.let { d ->
-                                // ⚠️ **v0.69.0（真机 UI 树实测）**：**结论常驻，其余折进 ⓘ**。
-                                //
-                                // 原先是**四段直接可见的灰字**：样本量 / 衰减结论 / 那次落差 / 容量口径，
-                                // 合计 **101 个汉字** —— 真机滚到电池卡底部时占了半屏，
-                                // 而其中三段都是「结论的依据」，不是结论本身。
-                                //
-                                // 现在只有结论（衰减速率）留在外面，
-                                // 依据（样本 / 落差 / 口径）折进 ⓘ，点开在下面就地展开。
-                                // 一段文字都没删，只是换了位置。
                                 TextWithNote(
                                     text = BatteryDecayText.headline(d),
                                     note = BatteryDecayText.note(d),
                                     style = MaterialTheme.typography.labelSmall,
                                     a11yLabel = "电池衰减结论的依据",
                                 )
-                                // ⚠️ **v0.41.0（第 24 轮对抗性审计 ②③④）：完整推导进折叠区。**
-                                //
-                                // 服务端的 `caveat` / `method` 从 v0.35.0 起就在下发，
-                                // 但客户端**从来没渲染过它们** ——
-                                // 于是界面上留着的是客户端自己写的那句
-                                // 「残差里大部分是充电时气温」（实测只有 12%）。
-                                //
-                                // 现在：口径提示与服务端判定**同一份**，
-                                // 完整推导（气温系数、留一法、方差解释比例）
-                                // 收进「怎么算的」—— 数据一点没丢，但不占常驻版面。
-                                val detail = BatteryDecayText.detailLines(d)
-                                if (detail.isNotEmpty()) {
-                                    Spacer(Modifier.height(4.dp))
-                                    CollapsibleSection("怎么算的") {
-                                        Column {
-                                            detail.forEach { line ->
-                                                Text(
-                                                    line,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                )
-                                            }
+                            }
+                        }
+
+                        // ⚠️ **v0.90.0：二级披露 —— 4 行明细折进「更多明细」。**
+                        //
+                        // 这 4 行是**结论怎么来的**，不是结论本身：
+                        // 「历史最好时」是天花板、「近期趋势」是变化量、
+                        // 「满电续航」是另一把尺子上的读数。
+                        // 数据一点没丢 —— API 与 Hermes（飞书）侧全都还在
+                        // （见 mcp/teslamate_mcp.py 的 teslamate_battery 工具）。
+                        //
+                        // ⚠️ **「近期趋势」为什么也折进来**：
+                        // 它是 −1.6%，而服务端对衰减的判定是「与 0 区分不开」——
+                        // 也就是说这个数**在统计上和 0 没法区分**。
+                        // 放在表层，读者会先看到一个「−1.6%」再读到那句结论，
+                        // 顺序正好反了（v0.74.0 的原则：**先给出结论，数字只当证据**）。
+                        // 现在结论在表层、数字在折叠区，顺序对了。
+                        // ⚠️ **v0.41.0（第 24 轮对抗性审计 ②③④）：完整推导也在这个折叠区里。**
+                        //
+                        // 服务端的 `caveat` / `method` 从 v0.35.0 起就在下发，
+                        // 但客户端**从来没渲染过它们** ——
+                        // 于是界面上留着的是客户端自己写的那句
+                        // 「残差里大部分是充电时气温」（实测只有 12%）。
+                        //
+                        // 现在：口径提示与服务端判定**同一份**，
+                        // 完整推导（气温系数、留一法、方差解释比例）
+                        // 收进「更多明细」—— 数据一点没丢，但不占常驻版面。
+                        //
+                        // ⚠️ **v0.90.0**：原来它和「更多明细」是**两个**折叠入口，
+                        // 两个入口之间会留下一段**说不清的空白**
+                        // （收起的折叠区自己还占着高度），整张卡看着像多了一截。
+                        // 本仓库的规矩是「默认态只留一个折叠入口」
+                        // （见 RangeSegments v0.29.0 P1-9）⇒ 合成一个。
+                        val decayDetail = b.decay?.let { BatteryDecayText.detailLines(it) }.orEmpty()
+                        val hasDetails = strictMax != null ||
+                            b.health_percent_of_baseline != null ||
+                            nowRatedKm != null ||
+                            decayDetail.isNotEmpty()
+                        if (hasDetails) {
+                            CollapsibleSection("更多明细") {
+                                Column {
+                                    strictMax?.let { KV("历史最好时", "${it.fmt(1)} 度") }
+                                    // ⚠️ v0.22.0（P1-1）：**相对首测** ——
+                                    // 这是**唯一不受** `cars.efficiency` 影响的健康指标
+                                    // （分子分母同比例缩放）。
+                                    // 它回答的才是车主真正想知道的那句：
+                                    // 「电池比刚开始测的时候差了多少」。
+                                    //
+                                    // ⚠️ **v0.28.0（第 17 轮新手车主 P0-3）：必须带**首测日期**。**
+                                    //
+                                    // 原来只写「相对首测 98.4%」，用户会读成
+                                    // 「新车容量到现在只剩 98.4%」——
+                                    // 而首测时车**已经开了 4 个月**，分母**本身已经衰减过**。
+                                    b.health_percent_of_baseline?.let {
+                                        // ⚠️ **v0.63.0（R31 视觉复审 P1-1）**：**数字的形状本身就是误读入口**。
+                                        //
+                                        // 「98.4%」这个形状会被读成「电池还有 98.4%」——
+                                        // 改名字不够，**必须换形状**：显示**变化量** −1.6%。
+                                        val delta = 100.0 - it
+                                        KV(
+                                            "近期趋势（自 " + (baselineDate ?: "首测") + "）",
+                                            (if (delta >= 0) "−" else "+") +
+                                                kotlin.math.abs(delta).fmt(1) + "%",
+                                            // ⚠️ **v0.68.0（R32 真机复核）**：口径 ⓘ 挂在
+                                            // **它解释的那一行行尾**。
+                                            note = buildString {
+                                                append("「近期趋势」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
+                                                append("不受行驶能耗常数影响。")
+                                                append("它只衡量这段时间里的变化，和上面的「相对出厂」不是同一段时间 —— ")
+                                                append("要回答「相对出厂衰减了多少」，看的是上面那个电池健康度。")
+                                                if (baselineDate != null) {
+                                                    append("注意：首测（$baselineDate）不是新车容量 —— ")
+                                                    append("它只回答「比 $baselineDate 那次测的低了多少」。")
+                                                }
+                                            },
+                                        )
+                                    }
+                                    if (nowRatedKm != null) {
+                                        // ⚠️ **v0.62.0（第 31 轮电池出厂态核查）**：**满电续航**。
+                                        //
+                                        // 车主最关心的单位（「公里」）。
+                                        //
+                                        // ⚠️ **v0.63.0（R31 视觉复审 P0-2 / P1-5）**：原来把
+                                        // 「现在 / 出厂折算 / 少多少」全塞进**一个值**里 ——
+                                        // 29 个字符在 15sp 的值列里撑破布局。
+                                        // 现在拆成**两行同名**（现在 / 按出厂折算），每个值都很短，
+                                        // 「少多少」降级到下面的说明里。
+                                        //
+                                        // ⚠️ **v0.90.0**：标签去掉「标定」这个术语 ——
+                                        // 「标定」是工程词，车主读不出它跟「续航」是什么关系；
+                                        // 口径说明里已经写明它是「车机在满电时自己报的读数」。
+                                        KV(
+                                            "满电续航（现在）",
+                                            "${nowRatedKm.toInt()} km",
+                                            note = buildString {
+                                                append("「满电续航」= 车机在满电时自己报的读数")
+                                                latestFullPoint?.date?.let { append("（${it.fmtDate()} 那次满充）") }
+                                                append("。")
+                                                if (factoryKm != null) {
+                                                    val gapKm = factoryKm - nowRatedKm
+                                                    append("按出厂容量折算，同一把尺子下新电池应是 ")
+                                                    append(factoryKm.toInt())
+                                                    append(" km —— 大约少 ")
+                                                    append((gapKm / 5.0 * 5.0).toInt())
+                                                    append(" km。")
+                                                    append("满充读数本身有 445~455 km 的温度波动，所以这个差是一个区间，不是一个精确值。")
+                                                }
+                                                append("官方标称续航是新车认证值，不是这台车这把尺子上的读数，两者不能直接相除。")
+                                            },
+                                        )
+                                        factoryKm?.let { fk ->
+                                            KV("满电续航（按出厂折算）", "${fk.toInt()} km")
+                                        }
+                                    }
+                                    if (decayDetail.isNotEmpty()) {
+                                        Spacer(Modifier.height(10.dp))
+                                        Text(
+                                            "怎么算的",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                        decayDetail.forEach { line ->
+                                            Text(
+                                                line,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
                                         }
                                     }
                                 }

@@ -2631,7 +2631,7 @@ func handleEnergyProfile(w http.ResponseWriter, r *http.Request) {
 	out := EnergyProfile{
 		Bands: []EnergyBand{},
 		Note: "车轮功率梯形积分（1 km 分箱，按箱内里程表跨度算距离）；" +
-			"wh_per_km 是**净值**（下坡回充会抵扣），wh_per_km_gross 是**毛耗电**（不含回充抵扣）—— " +
+			"wh_per_km 是净值（下坡回充会抵扣），wh_per_km_gross 是毛耗电（不含回充抵扣）—— " +
 			"「最省电的速度」必须看毛耗电，净值会被下坡拉出假象",
 	}
 	var best *EnergyBestBand

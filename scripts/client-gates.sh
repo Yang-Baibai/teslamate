@@ -33,9 +33,26 @@ echo "══ 客户端闸门 ══"
 # 而 v0.30.0 又在同一文件里写了 `**最长一段 348 公里**` —— 同一类错误。
 #
 # 所以把它固化成闸门：**字符串字面量里出现 `**` 就失败**（注释不算）。
+#
+# ⚠️ **v0.90.0：这道闸门原来只扫 `.kt`，漏了服务端。**
+#
+# App 有一批文案**不在 App 里**，而是服务端下发、客户端原样印出来的
+# （电池衰减的 `caveat` / `method`、能耗档位的 `Note`……）。
+# 服务端那些中文里也带着 Markdown 粗体标记 —— 真机实测（模拟器 1440×3200）：
+# 电池卡「怎么算的」里整段印着 `它**可能不是**电池变化`、`⇒ **检不出**`。
+# **客户端闸门全是绿的，而手机上有星号。**
+#
+# ⇒ 这道闸门现在同时扫两侧：
+#   · 客户端 `.kt` 的字符串字面量；
+#   · 服务端 `.go` 的字符串字面量（它会原样进到界面上）。
+#
+# ⚠️ **例外**：`***` 是密钥打码用的掩码（api/tesla.go、api/tesla_command.go），
+# 那是**故意的**，不是 Markdown —— 所以先去掉 `***` 再判 `**`。
 TMP=$(mktemp)
 "$PY" - > "$TMP" <<'PYEOF'
 import re, pathlib, sys
+
+# ── 客户端 .kt ──────────────────────────────────────────────
 root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
 bad = []
 for p in root.rglob('*.kt'):
@@ -45,14 +62,27 @@ for p in root.rglob('*.kt'):
             continue
         for lit in re.findall(r'"((?:[^"\\]|\\.)*)"', line):
             if '**' in lit:
-                bad.append('%s:%d: %s' % (p.name, i, lit[:70]))
+                bad.append('app-android/%s:%d: %s' % (p.name, i, lit[:70]))
+
+# ── 服务端 .go（它下发的中文会被 App 原样印出来）─────────────
+groot = pathlib.Path('api')
+for p in groot.rglob('*.go'):
+    for i, line in enumerate(p.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+        s = line.strip()
+        if s.startswith('//') or s.startswith('*') or s.startswith('/*'):
+            continue
+        for lit in re.findall(r'"((?:[^"\\]|\\.)*)"', line):
+            # `***` 是打码掩码，不是 Markdown ⇒ 先摘掉再判
+            if '**' in lit.replace('***', ''):
+                bad.append('api/%s:%d: %s' % (p.name, i, lit[:70]))
+
 if bad:
     print('界面文案里出现 Markdown 星号（Compose 不解析，会原样显示）:')
     for b in bad[:8]:
         print('   ', b)
     sys.exit(1)
 PYEOF
-if [ $? -eq 0 ]; then ok "界面文案无 Markdown 星号"; else fail "界面文案出现 Markdown 星号（Compose 不解析，会原样显示）"; cat "$TMP"; fi
+if [ $? -eq 0 ]; then ok "界面文案无 Markdown 星号（客户端 .kt + 服务端 .go）"; else fail "界面文案出现 Markdown 星号（Compose 不解析，会原样显示）"; cat "$TMP"; fi
 rm -f "$TMP"
 
 # ── 闸门 2：电量环几何金标准 ────────────────────────────────────

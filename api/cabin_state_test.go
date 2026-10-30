@@ -249,7 +249,7 @@ func TestCabinUsesOldestAtAndPropagatesStale(t *testing.T) {
 		t.Fatalf("采集时刻不该是 nil")
 	}
 	if !st.At.Equal(older) {
-		t.Errorf("采集时刻应取**最旧**的那个（%s），实际 %s", older, st.At)
+		t.Errorf("采集时刻应取最旧的那个（%s），实际 %s", older, st.At)
 	}
 	if !st.Stale {
 		t.Errorf("只要有一项是旧的，整组就应标 stale")

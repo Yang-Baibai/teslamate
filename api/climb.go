@@ -304,7 +304,7 @@ func computeClimbModel(carID int, minKm float64) (ClimbModel, error) {
 		Method:             "口径 calib_net：y = (Δ标定续航) × cars.efficiency × 1000 / 里程（与客户端能耗底档同源）；回归式 wh_per_km ~ 1 + 车速 + 上坡坡度(m/km) + 下坡坡度(m/km) + 时长(h)；修正用 delta-grade（相对该车速档的典型坡度）。⚠️ 车速项与时长项不独立（km = kph × h），模型不可外推；时长项做的是摊销每趟固定开销，不是空调。另有车轮功率毛耗电口径（positions.power 积分）作物理交叉核对。",
 		Caveat:             climbCaveat(upTrustworthy, regenTrustworthy, pureDown),
 		ConservativeCRegen: round2(conservativeRegen(splitRegen, cRegen, regenTrustworthy)),
-		ImpliedEtaNote:     "⚠️ 隐含效率**不可信**：drives.ascent 不是物理高差（能量自洽性实测 142% > 100%），系数只能当经验标定值看，不要解读成传动效率。",
+		ImpliedEtaNote:     "⚠️ 隐含效率不可信：drives.ascent 不是物理高差（能量自洽性实测 142% > 100%），系数只能当经验标定值看，不要解读成传动效率。",
 		// ⚠️ **v0.36.0（第 21 轮口径审计 P1-6）：补上标准误与 95% 置信区间。**
 		// 原来只上报分裂半（±2.3%），而真实抽样不确定度是 ±14.5% —— 差 6 倍。
 		CUpSE:      round3(seUp[2]),
@@ -374,9 +374,9 @@ func climbCaveat(upOK, regenOK bool, pureDown int) string {
 		parts = append(parts, "回充系数为本车标定值")
 	} else {
 		parts = append(parts, "回充系数纯下坡样本仅 "+strconv.Itoa(pureDown)+
-			" 趟（<8），按分裂半下界的保守值处理，**不是纯实测**")
+			" 趟（<8），按分裂半下界的保守值处理，不是纯实测")
 	}
-	parts = append(parts, "坡度取 drives.ascent/descent 原样，**不是物理高差**；客户端修正用 delta 口径（相对该车速档的典型坡度）")
+	parts = append(parts, "坡度取 drives.ascent/descent 原样，不是物理高差；客户端修正用 delta 口径（相对该车速档的典型坡度）")
 	return joinCN(parts, "；")
 }
 

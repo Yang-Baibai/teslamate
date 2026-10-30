@@ -33,7 +33,14 @@ echo "══ 4/6 升 .env 元数据 ══"
 sed -i "s/^APP_VERSION_CODE=.*/APP_VERSION_CODE=$NEW_CODE/; s/^APP_VERSION_NAME=.*/APP_VERSION_NAME=$NEW_NAME/; s/^APP_RELEASE_NOTES=.*/APP_RELEASE_NOTES=$MSG/" .env
 grep "^APP_VERSION" .env
 
-echo "══ 5/6 重启 API ══"
+echo "══ 5/6 重启 API（先重建镜像）══"
+# ⚠️ **v0.90.0**：`docker compose up -d api` **不会**重建已存在的镜像 ——
+# 它只是拿旧镜像重新起一个容器。本机实测：改了 api/*.go 跑完整个发版流程，
+# 线上**仍然**在返回旧文案（容器是新的，镜像还是 6 小时前那版）——
+# 于是「以为发出去了，其实没发」。
+#
+# 所以必须显式 `build`；源码没变时命中 Docker 层缓存，几秒就完。
+docker compose build api 2>&1 | tail -1
 docker compose up -d api 2>&1 | tail -1
 sleep 3
 

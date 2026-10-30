@@ -361,6 +361,13 @@ def teslamate_battery() -> dict:
         "现在还能装(度)": b.get("current_capacity_kwh"),
         "健康度%(相对出厂可用容量)": b.get("health_percent"),
         "新电池标称(度)": b.get("nominal_capacity_kwh"),
+        # ⚠️ **v0.90.0**：补上「历史最好时」——
+        # App 的用量页把这一行折进了「更多明细」（默认看不见），
+        # 而使命书要求「UI 折叠掉的数据必须在 Hermes Tools 里 100% 保留」。
+        # 取**服务端**的严格档（只取充到 100% 的测量点），
+        # **不要**在这里自己从 series 里求最大值 —— 那是另一套口径，
+        # 客户端复算必然与服务端漂移（本仓库的老账）。
+        "历史最好时(度)": b.get("max_capacity_kwh_strict"),
         "近期趋势%(相对首测)": b.get("health_percent_of_baseline"),
         "首测容量(度)": b.get("baseline_capacity_kwh"),
         "满电标定续航·现在(km)": None,
