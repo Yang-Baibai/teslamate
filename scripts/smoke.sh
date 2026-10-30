@@ -99,6 +99,31 @@ if v is not None:
 " 2>/dev/null \
   && ok "status 含 open_windows（三态：null=不知道 / []=全关）" || fail "status 含 open_windows"
 
+# 4a. v0.89.0：空调开关的**双源合并**（ADR #24）——
+# App 读顶层 is_climate_on，Hermes 读 cabin.climate_on ⇒ 必须永远是同一个值，
+# 否则两个渠道会对「空调开着没有」给出相反的答案。
+echo "$S" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+assert 'cabin' in d, 'missing cabin'
+c=d['cabin']
+assert isinstance(c,dict), 'cabin must be an object'
+assert 'climate_on' in c, 'missing cabin.climate_on'
+a=d.get('is_climate_on')
+b=c.get('climate_on')
+assert (a is None) == (b is None), 'is_climate_on and cabin.climate_on disagree on null'
+if a is not None:
+    assert a == b, 'is_climate_on=%r but cabin.climate_on=%r' % (a,b)
+# 出处必须如实给出（telemetry / poll / 空）
+assert 'climate_source' in c, 'missing cabin.climate_source'
+assert c['climate_source'] in ('','telemetry','poll'), 'bad source: '+repr(c['climate_source'])
+# 方向盘加热档位不能编中文档位名（官方没给范围）
+wh=c.get('steering_wheel_heater') or {}
+for bad in ('低档','中档','高档'):
+    assert bad not in (wh.get('text') or ''), 'invented wheel-heater scale: '+bad
+" 2>/dev/null \
+  && ok "status 空调开关是双源合并后的同一个值（ADR #24）" || fail "status 空调开关双源合并"
+
 # 5. 充电列表含损耗率
 CH=$(curl -s -m 8 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charges?limit=3")
 echo "$CH" | python -c "import json,sys;d=json.load(sys.stdin);assert len(d)>0 and 'loss_percent' in d[0]" 2>/dev/null \

@@ -188,11 +188,24 @@ def _cabin_cn(cabin: Any) -> dict:
     out["空调"] = {
         "是否开着": "不知道" if on is None else ("开着" if on else "关着"),
         "状态": cabin.get("climate_text") or "状态未知",
+        # ⚠️ **v0.89.0**：出处与时刻（ADR #24 双源合并）。
+        #
+        #    空调开关是「遥测 HvacPower ↔ 轮询 is_climate_on」**合并后的一个值**
+        #    ⇒ 它与 App 顶层的 `is_climate_on` **永远是同一个**，
+        #    两个渠道不会再给出相反的答案。
+        #
+        #    ⚠️ 报给用户时**要带上 `采集于`**：来源是「服务端轮询」时，
+        #    那个值可能是车睡着前的最后已知值（`数据是旧的` = true）。
+        "出处": _source_cn(cabin.get("climate_source")),
+        "采集于": cabin.get("climate_at"),
+        "数据是旧的": bool(cabin.get("climate_stale")),
         # ⚠️ 压缩机（True/False/None）与「整个空调系统」不是一回事 ——
         #    官方把 HvacACEnabled（压缩机）与 HvacPower（系统电源）分成两个字段。
         "压缩机": cabin.get("ac_enabled"),
         "模式": cabin.get("auto_mode") or "",
         "风速": cabin.get("fan_speed"),
+        # ⚠️ 官方没给 HvacFanStatus 的范围 ⇒ 只报原始整数，**不编**档位名。
+        "送风档位": cabin.get("fan_status"),
         "主驾设定温度℃": cabin.get("driver_temp_c"),
         "副驾设定温度℃": cabin.get("passenger_temp_c"),
     }
@@ -252,6 +265,12 @@ def teslamate_status() -> dict:
     - `座舱.方向盘加热.档位` 是**原始整数**：官方（中英两站 + proto +
       vehicle-command）**都没定义**这个档位的范围 ⇒ **不要**自己翻译成
       「关 / 低档 / 中档 / 高档」。
+    - `座舱.空调.出处` = 「车主动推（遥测）」/「服务端轮询」/「未知」——
+      这是**双源合并后**那个值的出处（ADR #24）。
+      ⚠️ 来源是「服务端轮询」时那个值可能是**车睡着前**的，
+      ⇒ 报给用户时**要带上 `座舱.空调.采集于`**。
+    - ⚠️ `座舱.空调.是否开着` 与 **App 界面上那个空调格子是同一个值**
+      （服务端合并后的权威值）⇒ 两边不会给出相反的答案。
     - `座舱.数据是旧的` = true ⇒ 那是车断线前的最后已知值，
       **报给用户时必须带上 `座舱.采集于` 这个时间**。
     """

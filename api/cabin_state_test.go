@@ -331,3 +331,202 @@ func TestCabinConfiguredFieldsAreRequested(t *testing.T) {
 
 // boolp 造一个 *bool。
 func boolp(b bool) *bool { return &b }
+
+// --------------------------------------------------------------------------
+// v0.89.0：空调开关的**双源合并**（ADR #24）
+// --------------------------------------------------------------------------
+//
+// ⚠️ 这组测试守的是**一个渠道一个答案**：
+//
+//	App 读顶层 `is_climate_on`，Hermes 读 `座舱.空调.是否开着`（cabin.climate_on）
+//	⇒ 两者**必须永远是同一个值**，否则两个渠道会对同一件事给出相反的答案。
+//
+//	合并规则（与 pickNewerDoors / pickNewerWindows 同构）：
+//	- 一边「不知道」⇒ 用另一边（**不能**把「读不到」当成「关」—— ADR #25）
+//	- 口径冲突 ⇒ 以**遥测**（官方 HvacPowerState 枚举）为准
+//	- 口径一致 ⇒ 取采集时刻**更新**的那个
+// --------------------------------------------------------------------------
+
+func TestPickNewerClimateBothUnknown(t *testing.T) {
+	on, src, at := pickNewerClimate(nil, nil, nil, nil)
+	if on != nil || src != "" || at != nil {
+		t.Fatalf("两边都不知道 ⇒ 期望 (nil, \"\", nil)，得到 (%v, %q, %v)", on, src, at)
+	}
+}
+
+func TestPickNewerClimateTelemetryUnknownFallsBackToPoll(t *testing.T) {
+	// ⚠️ 遥测的 Unknown(0) 在解析层就是 nil（车自己说「不知道」）
+	//    ⇒ 它**不能**覆盖轮询侧的确切值。
+	pollAt := time.Now().Add(-time.Hour)
+	telAt := time.Now()
+	on, src, at := pickNewerClimate(boolPtr(false), &pollAt, nil, &telAt)
+	if on == nil || *on != false {
+		t.Fatalf("遥测说不知道 ⇒ 应退回轮询侧的值，得到 %v", on)
+	}
+	if src != "poll" {
+		t.Fatalf("出处应是 poll，得到 %q", src)
+	}
+	if at == nil || !at.Equal(pollAt) {
+		t.Fatalf("时刻应是轮询侧的 %v，得到 %v", pollAt, at)
+	}
+}
+
+func TestPickNewerClimateOnlyOneSide(t *testing.T) {
+	telAt := time.Now()
+	on, src, at := pickNewerClimate(nil, nil, boolPtr(true), &telAt)
+	if on == nil || !*on || src != "telemetry" || at == nil || !at.Equal(telAt) {
+		t.Fatalf("只有遥测 ⇒ 期望 (true, telemetry, telAt)，得到 (%v, %q, %v)", on, src, at)
+	}
+}
+
+func TestPickNewerClimateConflictPrefersTelemetry(t *testing.T) {
+	// ⚠️ 官方 `HvacPower` 是官方 `HvacPowerState` 枚举的**逐字**编码
+	//    ⇒ 冲突时它配当裁判，**即使轮询侧更新**（ADR #24）。
+	pollAt := time.Now()
+	telAt := time.Now().Add(-time.Minute)
+	on, src, _ := pickNewerClimate(boolPtr(true), &pollAt, boolPtr(false), &telAt)
+	if on == nil || *on != false {
+		t.Fatalf("口径冲突 ⇒ 应以遥测为准（false），得到 %v", on)
+	}
+	if src != "telemetry" {
+		t.Fatalf("出处应是 telemetry，得到 %q", src)
+	}
+}
+
+func TestPickNewerClimateSameValueTakesNewer(t *testing.T) {
+	pollAt := time.Now().Add(-time.Hour)
+	telAt := time.Now()
+	on, src, at := pickNewerClimate(boolPtr(false), &pollAt, boolPtr(false), &telAt)
+	if on == nil || *on != false || src != "telemetry" || at == nil || !at.Equal(telAt) {
+		t.Fatalf("口径一致且遥测更新 ⇒ 应取遥测，得到 (%v, %q, %v)", on, src, at)
+	}
+	pollAt2 := time.Now()
+	telAt2 := time.Now().Add(-time.Hour)
+	on, src, at = pickNewerClimate(boolPtr(false), &pollAt2, boolPtr(false), &telAt2)
+	if on == nil || *on != false || src != "poll" || at == nil || !at.Equal(pollAt2) {
+		t.Fatalf("口径一致且轮询更新 ⇒ 应取 poll，得到 (%v, %q, %v)", on, src, at)
+	}
+}
+
+func TestMergeCabinClimateKeepsOfficialEnumText(t *testing.T) {
+	// ⚠️ 遥测侧带的是**官方枚举文案**（「预热中」）
+	//    ⇒ 合并**不能**把它降级成「开启」—— 那是比官方更粗的说法。
+	at := time.Now()
+	cabin := cabinStateFromTelemetry(cabinIdx(at, "HvacPower", "HvacPowerStatePrecondition"))
+	merged := mergeCabinClimate(cabin, nil, nil, false)
+	if merged.ClimateText != "预热中" {
+		t.Fatalf("官方枚举文案被降级了：%q", merged.ClimateText)
+	}
+	if merged.ClimateSource != "telemetry" {
+		t.Fatalf("出处应是 telemetry，得到 %q", merged.ClimateSource)
+	}
+}
+
+func TestMergeCabinClimateFromPollUsesSimpleText(t *testing.T) {
+	at := time.Now()
+	cabin := cabinStateFromTelemetry(cabinIdx(at))
+	pollAt := at.Add(-time.Hour)
+	merged := mergeCabinClimate(cabin, boolPtr(true), &pollAt, true)
+	if merged.ClimateOn == nil || !*merged.ClimateOn {
+		t.Fatalf("应取轮询侧的值，得到 %v", merged.ClimateOn)
+	}
+	if merged.ClimateSource != "poll" {
+		t.Fatalf("出处应是 poll，得到 %q", merged.ClimateSource)
+	}
+	if merged.ClimateText != "开启" {
+		t.Fatalf("轮询侧文案应是「开启」，得到 %q", merged.ClimateText)
+	}
+	if merged.ClimateAt == nil || !merged.ClimateAt.Equal(pollAt) {
+		t.Fatalf("空调这一项的时刻应是轮询侧的 %v，得到 %v", pollAt, merged.ClimateAt)
+	}
+	if !merged.ClimateStale {
+		t.Fatal("轮询侧是睡着前的快照 ⇒ 应标陈旧")
+	}
+	// ⚠️ 组级时刻取**更旧的**那个（与 v0.88.0 的口径一致）。
+	if merged.At == nil || !merged.At.Equal(pollAt) {
+		t.Fatalf("组级时刻应取更旧的 %v，得到 %v", pollAt, merged.At)
+	}
+	if !merged.Stale {
+		t.Fatal("组里有一项是旧的 ⇒ 整组应标陈旧")
+	}
+}
+
+func TestMergeCabinClimateOneAnswerForAllChannels(t *testing.T) {
+	// ⚠️ **契约**：合并后顶层 `is_climate_on`（App 读）与
+	//    `cabin.climate_on`（Hermes 读）**必须是同一个值**。
+	//    两个渠道对同一件事给出相反的答案，是 v0.88.0 之后最大的口子。
+	at := time.Now()
+	cases := []struct {
+		name   string
+		poll   *bool
+		tel    string
+		pollAt *time.Time
+	}{
+		{"两边都说关", boolPtr(false), "HvacPowerStateOff", &at},
+		{"遥测说开轮询说关", boolPtr(false), "HvacPowerStateOn", &at},
+		{"遥测说不知道", boolPtr(true), "", &at},
+		{"两边都没有", nil, "", nil},
+	}
+	for _, tc := range cases {
+		cabin := cabinStateFromTelemetry(cabinIdx(at, "HvacPower", tc.tel))
+		merged := mergeCabinClimate(cabin, tc.poll, tc.pollAt, false)
+		// ⚠️ 这一句就是 handlers.go 里的赋值 —— 两处必须永远相等。
+		isClimateOn := merged.ClimateOn
+		if (isClimateOn == nil) != (merged.ClimateOn == nil) {
+			t.Fatalf("%s：顶层与座舱段的可空性不一致", tc.name)
+		}
+		if isClimateOn != nil && *isClimateOn != *merged.ClimateOn {
+			t.Fatalf("%s：顶层 %v ≠ 座舱段 %v", tc.name, *isClimateOn, *merged.ClimateOn)
+		}
+	}
+}
+
+func TestApplyCabinClimateKeepsTopLevelInSync(t *testing.T) {
+	// ⚠️ **契约**：`applyCabinClimate` 回填给顶层 `is_climate_on` 的值，
+	//    必须与 `cabin.climate_on` **是同一个**。
+	//    App 读顶层、Hermes 读座舱段 ⇒ 两边不一致 = 两个渠道各说各话。
+	at := time.Now()
+	cases := []struct {
+		name   string
+		poll   *bool
+		tel    string
+		pollAt *time.Time
+	}{
+		{"两边都说关", boolPtr(false), "HvacPowerStateOff", &at},
+		{"遥测说开轮询说关", boolPtr(false), "HvacPowerStateOn", &at},
+		{"遥测说不知道", boolPtr(true), "", &at},
+		{"两边都没有", nil, "", nil},
+	}
+	for _, tc := range cases {
+		cabin := cabinStateFromTelemetry(cabinIdx(at, "HvacPower", tc.tel))
+		merged, topLevel := applyCabinClimate(cabin, tc.poll, tc.pollAt, false)
+		if (topLevel == nil) != (merged.ClimateOn == nil) {
+			t.Fatalf("%s：顶层与座舱段的可空性不一致", tc.name)
+		}
+		if topLevel != nil && *topLevel != *merged.ClimateOn {
+			t.Fatalf("%s：顶层 %v ≠ 座舱段 %v", tc.name, *topLevel, *merged.ClimateOn)
+		}
+	}
+}
+
+func TestPollSnapshotStale(t *testing.T) {
+	// ⚠️ 判据用 TeslaMate 的车况（states.status 枚举只有 online / offline / asleep）。
+	if pollSnapshotStale("online") {
+		t.Fatal("车在线 ⇒ 轮询快照不该是陈旧的")
+	}
+	for _, s := range []string{"asleep", "offline", "", "unknown"} {
+		if !pollSnapshotStale(s) {
+			t.Fatalf("%q ⇒ 应判为陈旧（宁可说旧的，也不把旧值说成现在的样子）", s)
+		}
+	}
+}
+
+func TestCabinFanStatusIsRawInteger(t *testing.T) {
+	// ⚠️ 官方 `HvacFanStatus` 只说 "The HVAC fan status."，**没给范围**
+	//    ⇒ 原样给出，**不编**档位名（和方向盘加热同一个道理）。
+	at := time.Now()
+	cabin := cabinStateFromTelemetry(cabinIdx(at, "HvacFanStatus", "3"))
+	if cabin.FanStatus == nil || *cabin.FanStatus != 3 {
+		t.Fatalf("HvacFanStatus 应原样给出 3，得到 %v", cabin.FanStatus)
+	}
+}

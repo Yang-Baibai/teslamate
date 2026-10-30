@@ -5,6 +5,146 @@
 
 ---
 
+## 2026-10-30（v0.89.0 · 空调状态双源合并：App 与 Hermes 现在给同一个答案）
+
+> ⚠️ **版本号未变**（`0.87.0` / code 100）—— **App 代码零改动**。
+> 本轮是**纯服务端 + Hermes 侧**增强 ⇒ **用户不需要升级 App**，打开就是新的。
+> （沿用 v0.80.0 / v0.81.0 / v0.83.0 / v0.88.0 四个纯服务端轮次的既有约定。）
+>
+> ⚠️ **但 `is_climate_on` 的语义变了**：从「轮询侧原值」升级为
+> 「**双源合并后的权威值**」。旧客户端读的是**同一个字段** ⇒ **自动受益**，
+> 界面上**不多显示任何一行字**。
+
+v0.88.0 把座舱状态接进来了，但**刻意**没覆盖 `/status` 顶层的 `is_climate_on`
+⇒ 于是同一个物理状态，**App 显示的空调格子**（读顶层）与
+**Hermes 说的空调状态**（读 `座舱`）**可能是两个答案**。
+
+这正是 ADR #24 要治的病：**同一指标多来源时，必须收敛成一个口径**。
+这一轮把空调也并进去。
+
+### 一、为什么必须合并（分家长什么样）
+
+| 渠道 | 读哪个字段 | 值的来源 |
+|---|---|---|
+| App（车况页空调格子） | `/status` 顶层 `is_climate_on` | 轮询（`positions` 最新一行，**97% 的行为 NULL**）|
+| Hermes（`座舱.空调.是否开着`） | `/status` 的 `cabin` 段 | 遥测 `HvacPower` |
+
+官方 Fleet Telemetry「Vehicle Data Equivalent」列**明写**
+`HvacPower` ↔ `climate_state.is_climate_on`
+⇒ 它们是**同一个量的两份表达**，不是两个不相干的数。
+
+v0.88.0 刻意两个都摆出来、不替用户挑（把合并留给下一轮，走 ADR #24）
+⇒ 这一轮**挑**：**冲突以遥测为准** ——
+官方 `HvacPower` 是 `HvacPowerState` 枚举的**逐字编码**，
+轮询侧的 legacy 布尔**没有官方枚举可依** ⇒ 官方编码那份配当裁判。
+
+### 二、合并规则（与 `pickNewerDoors` / `pickNewerWindows` **完全同构**）
+
+1. 一边**不知道**（nil）⇒ 直接用另一边
+   （**不能**因为「读不到」就当成「关」—— ADR #25）
+2. 两边**冲突** ⇒ 以**遥测**为准
+3. 两边**一致** ⇒ 按采集时刻取**更新的**那个
+4. 遥测 `Unknown(0)` **不算「知道了」**（同 `pickNewerSentry`）
+   ⇒ 不会拿「不知道」去覆盖轮询侧的确切值
+
+轮询侧陈旧判据用 **TeslaMate 的 `states.status`**（枚举只有 `online`/`offline`/`asleep`）：
+`online` ⇒ 不陈旧；`asleep`/`offline`/认不出的值 ⇒ **陈旧**
+（宁可说「这是旧的」，也不把旧值说成现在的样子）。
+
+### 三、官方取证订正：v0.88.0 注释里有一句转述是**错的**
+
+官方 Fleet Telemetry「System Behavior」**原文**：
+
+> "Each field's value is only sent to the event collector once two conditions are met: interval_seconds has elapsed since the field was last emitted and the field's value has changed."
+
+⇒ **两个条件同时满足**（间隔已过 **且** 值变了），**不是**「最小间隔（值变了才发）」。
+v0.88.0 在 `api/fleet_telemetry.go` 里有**三处**注释写成了后者
+⇒ 本轮**逐字订正**（注释转述官方口径必须逐字准确）。
+
+同页另两句：
+
+> "All fields are received shortly after startup."
+> "Immediately push to event collector since no value has been seen previously."
+
+⇒ **车每次连上会把配置里的全部字段推一遍**。
+
+⚠️ 官方「值不变不发」对我们**无害**：库里存的是每字段**最新值**（`UNIQUE(vin, field)`）
+⇒ 值没变时，库里的值**仍然是当前值**。
+
+### 四、现场证据：为什么之前「读不到座舱」
+
+- 车 **2026-10-29 14:58 UTC** 起休眠；`states` 最后一行 14:58:55、
+  `positions` 最后一行 14:49:04 ⇒ 轮询数据 **16 小时**旧
+- **2026-10-30 04:18:37 UTC** 有 23 个遥测字段到达，但 `tm_telemetry_connectivity`
+  **没有**当天记录 ⇒ 那是 **broker retained 重放**，**不是**车连接
+- API 日志（UTC）：车端遥测到达 `04:18:37` ⇒ 我方遥测配置 POST 在 `04:19:29`
+  ⇒ **车比我早 52 秒就用旧配置发完了**（配置没赶上）
+- ⇒ 07:09:39 发 `wake_up`（官方一等公民端点，`executed: true` / 车端 `result: true`）
+  → 07:09:50 CONNECTED → **34 个字段到达，11 个座舱字段一个不缺**
+  （9 个 `Hvac*` + 2 个 `SeatHeater*`；官方枚举名形态 `HvacPowerStateOff` / `HvacAutoModeStateOn` …）
+  ⇒ `synced: true` / `state: online` / `firmware 2026.26.200`
+
+### 五、顺带证明的一件事：陈旧标记在生产里**真的会亮**
+
+容器重建后 broker 把 retained 重发了一遍（收到时刻 `07:25:09`，**晚于**车断线时刻 `07:21:38`）
+⇒ 服务端把真实采集时刻**回填成断线时刻**，并把「数据是旧的」标成 `true`：
+
+```
+顶层 is_climate_on  = False
+cabin.climate_on    = False        ← 与顶层同值（合并生效）
+cabin.climate_source = 'telemetry'
+cabin.climate_at    = '2026-10-30T07:21:38Z'
+cabin.climate_stale = True
+cabin.climate_text  = '关闭'
+cabin.fan_status    = 0
+```
+
+⇒ 「**这是车断线前的最后已知值**」不是口号，是真的会亮出来的。
+
+### 六、改了什么
+
+| 文件 | 改了什么 |
+|---|---|
+| `api/cabin_state.go` | 新增 `ClimateSource` / `ClimateAt` / `ClimateStale` / `FanStatus`；新增 `pickNewerClimate` / `pollSnapshotStale` / `mergeCabinClimate` / `applyCabinClimate`；解析层记 `HvacPower` **自己**的时刻与陈旧；新增 `HvacFanStatus` 解析（**只报原值**，官方没给范围）|
+| `api/handlers.go` | `/status` 的 `is_climate_on` = `applyCabinClimate(...)` 的合并结果 |
+| `api/fleet_telemetry.go` | **三处**官方 `interval_seconds` 语义订正 |
+| `api/cabin_state_test.go` | **+9 条**单测 |
+| `scripts/smoke.sh` | **+1 条**端到端断言（「status 空调开关是双源合并后的同一个值（ADR #24）」）|
+| `mcp/teslamate_mcp.py` | `座舱.空调` 加「出处 / 采集于 / 数据是旧的 / 送风档位」；docstring 说明出处含义与「与 App 同一个值」 |
+| `mcp/check_tool_fields.py` | 出处**存在性** + 出处**白名单** + **与顶层 `is_climate_on` 对账** |
+
+⚠️ **「回填顶层」必须收进可单测的纯函数**（`applyCabinClimate`）——
+否则它在 handler 里赋值，够不着，契约会被**静默**破坏。
+
+### 七、验证（全部有据）
+
+- Go：`gofmt -l` = 0 · `go vet` OK · `go test ./...` rc=0
+- **注入式报红** 3 项（把规则改坏 ⇒ 必须红）：
+  ① 冲突改成轮询赢 ⇒ 红（`TestPickNewerClimateConflictPrefersTelemetry`）
+  ② 遥测说「不知道」也覆盖轮询 ⇒ 红（2 条）
+  ③ **回填顶层时丢掉合并值** ⇒ 红（`TestApplyCabinClimateKeepsTopLevelInSync`）
+  ⇒ 还原后 rc=0
+- 客户端闸门 **9/9** · 服务端闸门 **5/5** · 冒烟 **40/40**（含本轮新断言）
+- MCP 字段自检 **0 项不合规**，**并证明这条新断言自己会报红**：
+  ① 注入「顶层与座舱分家」⇒ 报「App 与 Hermes 对同一件事给出了不同答案（ADR #24）」
+  ② 注入「出处=外星基站」⇒ 报「出处不是已知来源」
+  ③ 还原 ⇒ 0 条
+- MCP **stdio 端到端**：握手 → 16 工具 → `座舱.空调` 带出处 / 采集于 / 陈旧 / 送风档位
+  → **与顶层同值**（`是否开着=关着` ↔ 顶层 `空调开着=False`）
+- **Hermes 网关已重启**（改了 MCP 实现 ⇒ 常驻子进程还在跑旧代码）：
+  网关 PID `5248 → 16912`；teslamate MCP 子进程 `13004 → 31304`
+  （15:32:34 起，**晚于** MCP 文件修改时间 ⇒ 跑的是新代码）；
+  日志 `MCP server 'teslamate' (stdio): registered 20 tool(s)` +
+  `MCP: registered 26 tool(s) from 2 server(s)`；
+  `Gateway running with 2 platform(s)`，**飞书 / 微信均已重连**
+
+### 八、影响与回滚
+
+- **影响**：App **零改动**；界面上**不多显示任何一行字**。
+  ⚠️ `is_climate_on` 的**值**可能与升级前不同
+  （升级前是轮询原值、多数时候是 NULL，现在是**更准的那一份**）—— 这是**修正**，不是回归。
+- **回滚**：`git revert` 本次提交 → `docker compose up -d --build api` → 重启 Hermes 网关。
+
 ## 2026-10-30（v0.88.0 · 座舱状态回读：空调 / 座椅加热 / 方向盘加热，现在读得到吗）
 
 > ⚠️ **版本号未变**（`0.87.0` / code 100）—— **App 代码零改动**。

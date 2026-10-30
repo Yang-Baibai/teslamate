@@ -45,6 +45,39 @@ package main
 //	HvacLeftTemperatureRequest  real  "…Reported in celsius."
 //	HvacSteeringWheelHeatLevel integer  "The level of steering wheel heat."
 //
+// ## 官方「什么时候才发」—— 变化驱动，不是定时驱动
+//
+// ⚠️ **v0.89.0 订正**：v0.88.0 的注释把官方语义转述反了（说成「最小间隔」）。
+//
+// 官方「System Behavior」原文（developer.tesla.com/docs/fleet-api/fleet-telemetry）：
+//
+//	"Each field's value is only sent to the event collector once two conditions
+//	 are met: interval_seconds has elapsed since the field was last emitted
+//	 and the field's value has changed."
+//
+// ⇒ **两个条件必须同时满足**：间隔已过 **且** 值变了。
+// ⇒ 所以「值不变的字段**永远不会再发**」——
+//	「空调一直关着」这个状态，车只会说一次，之后就不再说了。
+//
+// ⚠️ 但**首次不会漏**：同一篇文档的状态转换表写着
+//
+//	"0ms   Process starts. Begin listening for field changes.
+//	        **All fields are received shortly after startup.**"
+//	"100ms Receive speed of 0mph. **Immediately push to event collector
+//	        since no value has been seen previously.**"
+//
+// ⇒ 车每次连上遥测后端，都会把配置里的**全部**字段推一遍
+//	（「之前没见过这个值」⇒ 立即推）。
+// ⇒ 这正是座舱那 11 个字段能到达的原因：**车一连上就全给**。
+//
+// ⚠️ 实测（2026-10-30 15:09，唤醒后 12 秒）：
+//
+//	唤醒 07:09:39 → CONNECTED 07:09:50 → 34 个字段 07:09:51 全部到达，
+//	其中 11 个座舱字段一个不缺（官方枚举名形态，如 `HvacPowerStateOff`）。
+//
+// ⇒ 我们库里存的是**每个字段的最新值**（UNIQUE(vin, field)），
+//   所以「值没变就不发」对我们**无害**：值没变 ⇒ 库里的值仍然就是当前值。
+//
 // ⚠️ **官方「Vehicle Data Equivalent」列把遥测逐字对到了轮询键**：
 //
 //	HvacPower            ↔ climate_state.is_climate_on
@@ -70,6 +103,7 @@ package main
 // --------------------------------------------------------------------------
 
 import (
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -171,7 +205,19 @@ type CabinState struct {
 	// ⚠️ 口径：`HvacPower` 官方明确等价于 `climate_state.is_climate_on`。
 	//   Off ⇒ 关；On / Precondition / OverheatProtect ⇒ 开；
 	//   Unknown(0) ⇒ **不知道**（不当成「关」）。
+	//
+	// ⚠️ **v0.89.0**：这个字段现在是**双源合并后的权威值**
+	//   （遥测 `HvacPower` ↔ 轮询 `climate_state.is_climate_on`，
+	//   规则见 pickNewerClimate / ADR #24）。
+	//   ⇒ **顶层 `is_climate_on` 与它永远是同一个值** ——
+	//     App 与 Hermes 不会再对同一件事给出两个答案。
 	ClimateOn *bool `json:"climate_on"`
+	// ClimateSource 这个结论的出处（"telemetry" / "poll" / ""）。
+	ClimateSource string `json:"climate_source"`
+	// ClimateAt 这个结论**自己**的采集时刻（不是整组的）。
+	ClimateAt *time.Time `json:"climate_at"`
+	// ClimateStale 这个结论是不是「车断线前的最后已知值」。
+	ClimateStale bool `json:"climate_stale"`
 	// ClimateText 给用户看的中文（认不出来不编 ⇒ 摊「状态未知」）。
 	ClimateText string `json:"climate_text"`
 	// ClimatePower 官方 `HvacPowerState` 的原始编号（"0"~"4"）。
@@ -182,6 +228,11 @@ type CabinState struct {
 	ACEnabled *bool `json:"ac_enabled"`
 	// FanSpeed 风速（`HvacFanSpeed`，nil = 不知道）。
 	FanSpeed *int `json:"fan_speed"`
+	// FanStatus 送风档位（`HvacFanStatus`，nil = 不知道）。
+	//
+	// ⚠️ **官方没给这个字段的范围** ⇒ 只报**原始整数**，**不编**档位名。
+	//   （官方 Vehicle Data Equivalent 说它等价于 `climate_state.fan_status`。）
+	FanStatus *int `json:"fan_status"`
 	// DriverTempC 主驾设定温度（`HvacLeftTemperatureRequest`，摄氏度）。
 	DriverTempC *float64 `json:"driver_temp_c"`
 	// PassengerTempC 副驾设定温度（`HvacRightTemperatureRequest`，摄氏度）。
@@ -240,6 +291,9 @@ func cabinStateFromTelemetry(idx map[string]telemetryFieldView) CabinState {
 		if known {
 			out.ClimatePower = code
 			out.ClimateText = text
+			// ⚠️ 空调这一个量**自己**的时刻（组级 At 是「最旧的那个」）。
+			out.ClimateAt = f.At
+			out.ClimateStale = f.Stale
 			switch code {
 			case "1": // Off
 				b := false
@@ -275,6 +329,17 @@ func cabinStateFromTelemetry(idx map[string]telemetryFieldView) CabinState {
 		used = append(used, f)
 		if n, known := cabinIntFromText(f.Text); known {
 			out.FanSpeed = &n
+		}
+	}
+
+	// ── 送风档位 ──────────────────────────────────────────────
+	//
+	// ⚠️ 官方 `HvacFanStatus` 只说 "The HVAC fan status."，**没给范围**
+	// ⇒ 只报原始整数，**不编**档位名（和方向盘加热同一个道理）。
+	if f, ok := idx["HvacFanStatus"]; ok {
+		used = append(used, f)
+		if n, known := cabinIntFromText(f.Text); known {
+			out.FanStatus = &n
 		}
 	}
 
@@ -428,4 +493,142 @@ func cabinFloatFromText(raw string) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// --------------------------------------------------------------------------
+// 双源合并：空调开关（v0.89.0 · ADR #24）
+// --------------------------------------------------------------------------
+
+// pickNewerClimate 在「轮询」与「遥测」两份空调开关结论里挑**一份**。
+//
+// ⚠️ 规则与 pickNewerDoors / pickNewerWindows **完全同构**：
+//
+//   - 一边是 nil（不知道）⇒ 直接用另一边
+//     （**不能**因为「读不到」就当成「关」—— ADR #25）
+//   - 两边口径**冲突** ⇒ 以**遥测**为准
+//     （官方 `HvacPower` 是官方 `HvacPowerState` 枚举的逐字编码；
+//     轮询侧的 legacy 布尔没有官方枚举可依 ⇒ 官方编码那份配当裁判）
+//   - 两边口径**一致** ⇒ 按采集时刻取**更新的**那个
+//
+// ⚠️ **遥测的 Unknown(0) 不算「知道了」**（同 pickNewerSentry）：
+//
+//	车自己说「不知道」时，遥测侧就是 nil ⇒ 走「一边 nil」的分支，
+//	**不会**拿「不知道」去覆盖轮询侧的确切值。
+//
+// 返回：结论 / 出处（telemetry / poll / 空）/ 该结论的采集时刻。
+func pickNewerClimate(poll *bool, pollAt *time.Time, tel *bool, telAt *time.Time) (on *bool, source string, at *time.Time) {
+	switch {
+	case poll == nil && tel == nil:
+		return nil, "", nil
+	case tel == nil:
+		return poll, "poll", pollAt
+	case poll == nil:
+		return tel, "telemetry", telAt
+	}
+	if *poll != *tel {
+		log.Printf("⚠️ 空调口径冲突：轮询=%v 遥测=%v ⇒ 以遥测（官方 HvacPowerState 枚举）为准", *poll, *tel)
+		return tel, "telemetry", telAt
+	}
+	if telAt != nil && (pollAt == nil || telAt.After(*pollAt)) {
+		return tel, "telemetry", telAt
+	}
+	return poll, "poll", pollAt
+}
+
+// pollSnapshotStale 轮询快照是不是「车睡着前的最后已知值」。
+//
+// ⚠️ 判据用 **TeslaMate 的车况**（`states.status`，枚举只有 online / offline / asleep）：
+//
+//	车 asleep / offline ⇒ 轮询拉不到，库里那行是**睡着前**的快照 ⇒ 陈旧；
+//	车 online ⇒ 轮询值是新鲜的。
+//
+// ⚠️ **不知道**（state 为空或不是这三个值）⇒ 保守当陈旧
+//
+//	（宁可说「这是旧的」，也不把旧值说成现在的样子）。
+func pollSnapshotStale(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "online":
+		return false
+	default:
+		return true
+	}
+}
+
+// applyCabinClimate 合并空调结论，并把结果**回填顶层字段**。
+//
+// ⚠️ **为什么要把「回填」也放进这个函数**：
+//
+//	顶层 `is_climate_on`（App 读）与 `cabin.climate_on`（Hermes 读）
+//	**必须是同一个值** —— 否则两个渠道会对「空调开着没有」给出**相反**的答案。
+//
+//	如果回填写在 handler 里，单测就够不着（handler 要 DB）⇒ 这条契约会被静默破坏。
+//	收进纯函数后，单测能直接守住它。
+//
+// 返回：合并后的座舱状态 + **要写进顶层 `is_climate_on` 的那个值**。
+func applyCabinClimate(cabin CabinState, pollOn *bool, pollAt *time.Time, pollStale bool) (CabinState, *bool) {
+	cabin = mergeCabinClimate(cabin, pollOn, pollAt, pollStale)
+	return cabin, cabin.ClimateOn
+}
+
+// mergeCabinClimate 把轮询侧的空调开关并进座舱状态（ADR #24）。
+//
+// ⚠️ **为什么要合**：
+//
+//	v0.88.0 之后，「空调开着没有」有**两个**答案 ——
+//	顶层 `is_climate_on`（轮询侧）与 `cabin.climate_on`（遥测侧）。
+//	⇒ App 读前一个、Hermes 读后一个，**两边可能给出相反的答案**。
+//
+// ⚠️ 官方「Vehicle Data Equivalent」列明写
+//
+//	HvacPower ↔ climate_state.is_climate_on
+//
+// ⇒ 它们是**同一个量**的两份表达 ⇒ 合并没有口径问题，
+//
+//	只需按 ADR #24 的规则挑一份。
+//
+// ⚠️ 合并后**顶层 `is_climate_on` 与 `cabin.climate_on` 必然相同**
+//
+//	⇒ App 端**零改动**就自动拿到更准、更新的那份，也不必多显示任何一行字。
+func mergeCabinClimate(cabin CabinState, pollOn *bool, pollAt *time.Time, pollStale bool) CabinState {
+	on, source, at := pickNewerClimate(pollOn, pollAt, cabin.ClimateOn, cabin.ClimateAt)
+
+	cabin.ClimateOn = on
+	cabin.ClimateSource = source
+	cabin.ClimateAt = at
+	cabin.ClimateStale = false
+
+	switch source {
+	case "telemetry":
+		// ⚠️ 保留**官方 HvacPowerState 的枚举文案**（「预热中」/「防过热保护」…）
+		//   —— 那是比「开/关」更精确的官方说法，不能被我们自己降级。
+		cabin.ClimateStale = cabin.ClimateStale || cabin.Stale
+		if cabin.ClimateText == "" {
+			cabin.ClimateText = "状态未知"
+		}
+	case "poll":
+		// 轮询侧只有布尔 ⇒ 文案就只能是开/关。
+		cabin.ClimateStale = pollStale
+		switch {
+		case on == nil:
+			cabin.ClimateText = "状态未知"
+		case *on:
+			cabin.ClimateText = "开启"
+		default:
+			cabin.ClimateText = "关闭"
+		}
+	default:
+		cabin.ClimateText = "状态未知"
+	}
+
+	// ⚠️ 若空调这一项来自轮询，它比遥测这批更旧 ⇒
+	//   组级时刻取**更旧的**那个，整组标陈旧（与 v0.88.0 的口径一致）。
+	if source == "poll" && pollAt != nil {
+		if cabin.At == nil || pollAt.Before(*cabin.At) {
+			cabin.At = pollAt
+		}
+		if pollStale {
+			cabin.Stale = true
+		}
+	}
+	return cabin
 }

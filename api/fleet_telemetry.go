@@ -70,9 +70,24 @@ const (
 //	这里全部取自官方文档给的示例配置（developer.tesla.cn → Fleet Telemetry
 //	→ Overview → Example Configuration），不自己发明。
 //
-// ⚠️ `interval_seconds` 是**最小间隔**，不是发送频率：
+// ⚠️ **`interval_seconds` 的官方口径**（v0.89.0 订正 —— 原注释把原文转述反了）：
 //
-//	官方口径是「值变了才发，且不比间隔更频繁」。
+//	"Each field's value is only sent to the event collector once two conditions
+//	 are met: interval_seconds has elapsed since the field was last emitted
+//	 and the field's value has changed."
+//
+// ⇒ **两个条件同时满足**：间隔已过 **且** 值变了。
+// ⇒ 所以「值不变的字段**永远不会再发**」。
+//
+// ⚠️ 但**车每次连上都会把全部字段推一遍**
+//
+//	（"All fields are received shortly after startup" +
+//	  "Immediately push to event collector since no value has been seen previously"）
+//
+// ⇒ 这批「变化慢」的量，在**车一连上时就全到**；之后只有变了才再发。
+// ⇒ 我们库里存的是**每个字段的最新值** ⇒ 值没变时，库里的值仍然就是当前值。
+//
+//	出处：developer.tesla.com/docs/fleet-api/fleet-telemetry → System Behavior。
 var telemetryFields = map[string]any{
 	"Soc":                 map[string]any{"interval_seconds": 60},
 	"Locked":              map[string]any{"interval_seconds": 60},
@@ -95,7 +110,7 @@ var telemetryFields = map[string]any{
 	//	写错**不报错**，只是那个字段永远不来（静默失效）。
 	//	`TestTelemetryConfiguredFieldsAreOfficial` 会当场变红。
 	//
-	// ⚠️ `interval_seconds` 是**最小间隔**（官方口径：值变了才发，且不比间隔更频繁）。
+	// ⚠️ `interval_seconds` ：**间隔已过 且 值变了**才发（官方原文见文件头）。
 	//	这批都是变化慢的量 ⇒ 300s。**不要**为了「更实时」调小 ——
 	//	车端有速率限制，调小只会把别的字段挤掉。
 	"TpmsPressureFl":      map[string]any{"interval_seconds": 300},
@@ -147,7 +162,7 @@ var telemetryFields = map[string]any{
 	//	⇒ 196~204 要 **2024.44.25+**；本车实测固件 2026.26.200 ✓
 	//	（87/88 在更早的段 ⇒ 无门槛）。
 	//
-	//	⚠️ `interval_seconds` 是**最小间隔**（官方口径：值变了才发）。
+	//	⚠️ `interval_seconds` ：**间隔已过 且 值变了**才发（官方原文见文件头）。
 	//	这批都是**变化慢**的量 ⇒ 300s，与上面那批一致。
 	"SeatHeaterLeft":              map[string]any{"interval_seconds": 300},
 	"SeatHeaterRight":             map[string]any{"interval_seconds": 300},

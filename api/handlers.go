@@ -387,12 +387,23 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	//
 	//	来自**同一次**遥测读库（telSafety），不多查一次 DB。
 	//
-	//	⚠️ **不覆盖** `s.IsClimateOn`（轮询侧那个）：
-	//	官方把遥测 `HvacPower` 与轮询 `climate_state.is_climate_on` 列为**同一个量**，
-	//	但两者采集时刻不同 ⇒ 谁更新用谁需要单独合并（ADR #24）。
-	//	这一轮**先只把遥测这一份如实给出**，合并留给下一轮 ——
-	//	宁可两个来源都摆出来，也不要偷偷替用户挑一个。
-	s.Cabin = telSafety.Cabin
+	// ⚠️ **v0.89.0**：空调开关改成**双源合并**后的权威值（ADR #24）。
+	//
+	//	遥测 `HvacPower` ↔ 轮询 `climate_state.is_climate_on`
+	//	（官方「Vehicle Data Equivalent」列明写两者是**同一个量**）。
+	//
+	//	规则：一边不知道 ⇒ 用另一边；口径冲突 ⇒ 以遥测（官方枚举）为准；
+	//	口径一致 ⇒ 取采集时刻更新的那个。
+	//
+	//	⇒ **顶层 `is_climate_on` 也跟着换成合并值** ——
+	//	  App 读的还是同一个字段，却自动拿到更准、更新的那份；
+	//	  App 端**零改动**，界面上也不必多显示任何一行字。
+	// ⚠️ `s.State` 是 **指针**（可能没有）⇒ 先摊成字符串再判。
+	pollState := ""
+	if s.State != nil {
+		pollState = *s.State
+	}
+	s.Cabin, s.IsClimateOn = applyCabinClimate(telSafety.Cabin, s.IsClimateOn, &s.UpdatedAt, pollSnapshotStale(pollState))
 
 	// ⚠️ **v0.84.0：固件版本 + 有没有可装的固件**。
 	//

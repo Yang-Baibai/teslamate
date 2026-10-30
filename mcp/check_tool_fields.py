@@ -229,6 +229,30 @@ def check_cabin_contract() -> list:
         if v not in ("开着", "关着", "不知道"):
             bad.append("座舱.空调.是否开着 必须是三态字符串（开着/关着/不知道），实际 %r" % (v,))
 
+        # ⚠️ **v0.89.0**：出处与时刻必须如实给出（ADR #24）。
+        for key in ("出处", "采集于", "数据是旧的"):
+            if key not in cl:
+                bad.append("座舱.空调 缺字段「%s」" % key)
+        if cl.get("出处") not in ("未知", "车主动推（遥测）", "服务端轮询"):
+            bad.append("座舱.空调.出处 不是已知来源：%r" % (cl.get("出处"),))
+
+    # ⚠️ **v0.89.0**：**一个渠道一个答案** ——
+    #    Hermes 读的「座舱.空调.是否开着」必须与 **App 读的顶层 is_climate_on**
+    #    是同一个值。两者分家 = App 与飞书对同一件事给出相反的答案。
+    try:
+        raw = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
+    except Exception as e:
+        raw = None
+        bad.append("取原始 status 失败 %r（无法核对「一个渠道一个答案」）" % (e,))
+    if isinstance(raw, dict) and "error" not in raw:
+        top = raw.get("is_climate_on")
+        mine = (cl or {}).get("是否开着") if isinstance(cl, dict) else None
+        expect = "不知道" if top is None else ("开着" if top else "关着")
+        if mine != expect:
+            bad.append("座舱.空调.是否开着=%r，但顶层 is_climate_on=%r ⇒ "
+                       "App 与 Hermes 对同一件事给出了不同答案（ADR #24）"
+                       % (mine, top))
+
     seats = cab.get("座椅加热")
     if not isinstance(seats, dict):
         bad.append("座舱.座椅加热 不是字典（应是「座位 → 档位」）")
