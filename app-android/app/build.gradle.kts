@@ -13,9 +13,9 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.94.0**：App 改了（车况页里程表行移出窄栏 → 整宽，限定语独立成节点）⇒ 版本号要涨。
-        versionCode = 105
-        versionName = "0.94.0"
+        // ⚠️ **v0.95.0**：App 改了（车况页续航结论区移出窄栏 → 整宽）⇒ 版本号要涨。
+        versionCode = 106
+        versionName = "0.95.0"
     }
 
     buildTypes {

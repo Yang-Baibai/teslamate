@@ -606,6 +606,12 @@ fun StatusScreen(
                         // 所以阈值定在 **1.35**：两条公式下主角都还有余量，
                         // 超过就切竖排（主角独占整行，绝不会被裁）。
                         val fontScale = LocalDensity.current.fontScale
+                        // ⚠️ **v0.95.0（本轮手术点）**：续航的**主角**与**结论区**分开渲染。
+                        //
+                        // 原来两者都在 `RangeBlock` 里，而它整个渲染在电量环右侧的**窄栏**
+                        // （真机实测约 171dp）⇒ 结论行放不下 ⇒ 被折成「88 条实」+「测」。
+                        // 现在：**窄栏只放主角**（一屏一焦点），**结论区整宽**。
+                        val rangeModel = buildRangeModel(st, consumption, recentAscent, fallbackSpeed)
                         if (fontScale >= 1.35f) {
                             Column(
                                 Modifier
@@ -613,7 +619,8 @@ fun StatusScreen(
                                     .padding(vertical = 8.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                RangeBlock(st, consumption, recentAscent, fallbackSpeed, Modifier.fillMaxWidth())
+                                RangeHero(rangeModel, Modifier.fillMaxWidth())
+                                RangeConclusions(rangeModel)
                                 Spacer(Modifier.height(14.dp))
                                 // ⚠️ v0.30.0：两种布局用**同一个**环尺寸，
                                 // 否则切布局时环会「跳」一下。
@@ -623,13 +630,21 @@ fun StatusScreen(
                                 )
                             }
                         } else {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
                             ) {
-                                SocRing(st.battery_level, charging = st.active_charge != null)
-                                Spacer(Modifier.width(28.dp))
-                                RangeBlock(st, consumption, recentAscent, fallbackSpeed, Modifier.weight(1f))
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    SocRing(st.battery_level, charging = st.active_charge != null)
+                                    Spacer(Modifier.width(28.dp))
+                                    RangeHero(rangeModel, Modifier.weight(1f))
+                                }
+                                // ⚠️ **v0.95.0**：结论区**整宽**（原来在上面的窄栏里）。
+                                RangeConclusions(rangeModel)
                             }
                         }
                         // ⚠️ **v0.94.0**：里程表那一行**整宽**渲染（原来在右侧窄栏里）。
@@ -812,198 +827,356 @@ fun StatusScreen(
 }
 
 /**
- * 续航 + 「怎么算的」折叠区。
+ * 续航结论区的**计算结果**（与渲染分开）。
  *
- * ⚠️ v0.9.0：从 StatusScreen 里抽出来 —— 因为首屏改成**弹性布局**后，
- * 这一块要能在「左右两栏」与「上下两栏」两种排法里复用。
- *
- * ⚠️ **v0.94.0**：**里程表那一行搬走了**（它原来在这里）⇒
- * 函数名里的 "AndOdometer" 已经是骗人的，改名 `RangeBlock`。
- * 里程表现在由 [OdometerLine] **整宽**渲染（原因见那里的注释）。
+ * ⚠️ **v0.95.0**：抽成数据类，是因为「主角」与「结论区」现在**渲染在两个地方**
+ * （窄栏 / 整宽），两处必须共用**同一份**计算 —— 两份算法迟早会漂移。
  */
-@Composable
-private fun RangeBlock(
+private data class RangeModel(
+    /** 官方标称续航（km） */
+    val ratedRange: Double?,
+    /** 参考车速（km/h） */
+    val refSpeed: Double,
+    /** 参考车速是不是兜底假设值（要写进「怎么算的」） */
+    val speedAssumed: Boolean,
+    /** 真实可达（km）；null = 数据不足，退回标称 */
+    val trueRange: Double?,
+    /** 区间文案 + 区间口径（ⓘ） */
+    val band: Pair<String, String>?,
+    /** 「留 20% 保底还能开」多少公里 */
+    val floorKm: Double?,
+    /** 保底那一行自己的区间 */
+    val floorBand: Pair<Int, Int>?,
+    /** 来源自曝（如「88 条实测」）；区间存在时并进区间那一行 */
+    val scopeLine: String?,
+    /** 来源口径（ⓘ） */
+    val scopeNote: String?,
+    /** 温度可信度警告 */
+    val tempCaveat: String?,
+    /** 「怎么算的」的正文 */
+    val explainText: String,
+)
+
+/**
+ * 续航结论区的全部计算（纯函数，不碰界面）。
+ *
+ * ⚠️ **v0.95.0**：从旧的 `RangeBlock` 里抽出来的 —— 主角与结论区现在分两处渲染，
+ * 两边共用这一份计算。
+ */
+private fun buildRangeModel(
     st: CarStatus,
     consumption: ConsumptionModel?,
     recentAscent: Int?,
-    /** 最近一次行程的均速（参考车速的最后一档兜底） */
-    fallbackSpeedKph: Double? = null,
-    modifier: Modifier = Modifier,
-) {
-    val accents = LocalAccentColors.current
-    Column(modifier) {
-        // ── 续航：显示**真实可达**，不再显示骗人的「预估」 ──
-        //
-        // 原来取 est → ideal → rated 三级降级，实测这条链塌缩成一个值：
-        // ideal 与 rated 在 55,669 行里逐行相同，est 全库只有 0.085% 有值。
-        // 屏幕上写「预估续航」，实际是 EPA 标定值 —— 夏季高速会乐观 25%~40%。
-        //
-        // 现在用你自己跑出来的 Wh/km 折算：
-        //   真实可达 = 标定续航 × 146 ÷ 实测 Wh/km × 温度修正 × 爬升修正 × 0.9 余量
-        val ratedRange = st.rated_range_km ?: st.ideal_range_km
-        // 参考车速：行驶中用实时车速；停车时用**巡航速度**
-        //（近期高速行程的均速中位数 —— 长途党复核指出
-        //  整段均速会让人在高速时按市区桶估，偏乐观约 12 km）。
-        val refSpeed = st.speed?.takeIf { it > 5 }?.toDouble()
-            ?: consumption?.cruiseKph
-            ?: fallbackSpeedKph
-            ?: 60.0
-        // ⚠️ v0.9.2（口径审计 S2-4）：**参考车速的来源要说清楚**。
-        // 原来的兜底链最后落到硬编码 60.0 —— 而 60 km/h 恰好落在**最低档**
-        // （171.8 Wh/km，是最乐观的一档），却和「实测巡航速度」用同一句话表述。
-        val speedAssumed = consumption?.cruiseKph == null && fallbackSpeedKph == null
-        val whSample = consumption?.whSample(refSpeed)
-        // ⚠️ **v0.33.0**：这里原来传 `ascentM = recentAscent`（最近一趟行程的爬升），
-        // 而模型里是 `if (ascentM >= 200) 1.05 else 1.0` —— 二值饱和且乘性，
-        // 且口径不对（用已走过的山路修未来的续航）。
-        // 现在模型里**没有**爬升项了（见 `ConsumptionModel.trueRangeKm` 的说明）。
-        // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：主角数字必须**常驻**自曝来源。**
-        //
-        // 原来「怎么算的」要**点开**才看得到 —— 但新手车主恰恰是那个
-        // **分不清「实测」和「标称」**的人，他不会去点那个三角。
-        //
-        // 评审原话：「主数字下常驻『按 2026-07-31~2026-10-24 的 88 条实测
-        // （8~37°C，无冬季样本）』」——
-        // 因为界面上写着「28°C」，用户会以为**已经按气温修正过了**，
-        // 而模型其实**只做热的修正**（>22°C），10°C 以下只有 1 条样本。
-        // 也就是说：**冬天那个数是编的，而界面一个字都没说。**
-        val tempCaveat = consumption?.tempCaveat(st.outside_temp)
-        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：样本**温度区间**折进 ⓘ，来源行只留「实测」。
-        //
-        // 「按 X~Y 的 N 条实测」这半句必须**常驻**（v0.26.0 第 17 轮新手车主 P0-2）：
-        // 新手分不清「实测」和「标称」，他不会去点角标 —— 折了就等于没说清这个数是实测来的。
-        // 而后面那半句温度口径（样本区间 + ≤10°C 有几条）是**算法口径说明**，
-        // 对只想知道「现在能开多远」的人是干扰 ⇒ 折到 ⓘ 里（点开仍在原位展开）。
-        val scopeLine = consumption?.let { m ->
+    fallbackSpeedKph: Double?,
+): RangeModel {
+    // ── 续航：显示**真实可达**，不再显示骗人的「预估」 ──
+    //
+    // 原来取 est → ideal → rated 三级降级，实测这条链塌缩成一个值：
+    // ideal 与 rated 在 55,669 行里逐行相同，est 全库只有 0.085% 有值。
+    // 屏幕上写「预估续航」，实际是 EPA 标定值 —— 夏季高速会乐观 25%~40%。
+    //
+    // 现在用你自己跑出来的 Wh/km 折算：
+    //   真实可达 = 标定续航 × 146 ÷ 实测 Wh/km × 温度修正 × 爬升修正 × 0.9 余量
+    val ratedRange = st.rated_range_km ?: st.ideal_range_km
+    // 参考车速：行驶中用实时车速；停车时用**巡航速度**
+    //（近期高速行程的均速中位数 —— 长途党复核指出
+    //  整段均速会让人在高速时按市区桶估，偏乐观约 12 km）。
+    val refSpeed = st.speed?.takeIf { it > 5 }?.toDouble()
+        ?: consumption?.cruiseKph
+        ?: fallbackSpeedKph
+        ?: 60.0
+    // ⚠️ v0.9.2（口径审计 S2-4）：**参考车速的来源要说清楚**。
+    // 原来的兜底链最后落到硬编码 60.0 —— 而 60 km/h 恰好落在**最低档**
+    // （171.8 Wh/km，是最乐观的一档），却和「实测巡航速度」用同一句话表述。
+    val speedAssumed = consumption?.cruiseKph == null && fallbackSpeedKph == null
+    val whSample = consumption?.whSample(refSpeed)
+    // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：主角数字必须**常驻**自曝来源。**
+    //
+    // 原来「怎么算的」要**点开**才看得到 —— 但新手车主恰恰是那个
+    // **分不清「实测」和「标称」**的人，他不会去点那个三角。
+    //
+    // 评审原话：「主数字下常驻『按 2026-07-31~2026-10-24 的 88 条实测
+    // （8~37°C，无冬季样本）』」——
+    // 因为界面上写着「28°C」，用户会以为**已经按气温修正过了**，
+    // 而模型其实**只做热的修正**（>22°C），10°C 以下只有 1 条样本。
+    // 也就是说：**冬天那个数是编的，而界面一个字都没说。**
+    val tempCaveat = consumption?.tempCaveat(st.outside_temp)
+    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：样本**温度区间**折进 ⓘ，来源行只留「实测」。
+    //
+    // 「按 X~Y 的 N 条实测」这半句必须**常驻**（v0.26.0 第 17 轮新手车主 P0-2）：
+    // 新手分不清「实测」和「标称」，他不会去点角标 —— 折了就等于没说清这个数是实测来的。
+    // 而后面那半句温度口径（样本区间 + ≤10°C 有几条）是**算法口径说明**，
+    // 对只想知道「现在能开多远」的人是干扰 ⇒ 折到 ⓘ 里（点开仍在原位展开）。
+    val scopeLine = consumption?.let { m ->
+        buildString {
+            // ⚠️ **v0.86.0（真机复核 · 用户原话「车况页面顶部的续航预估部分小字太多」）**：
+            //
+            // 原来这里常驻的是「按 2026-07-31~2026-10-24 的 88 条实测」——
+            // **日期区间**在 12sp 下占掉**整整两行**，而它对「这个数能不能信」
+            // 没有贡献：来源自曝（v0.26.0 第 17 轮 P0-2）要回答的是
+            // 「**实测**还是**标称**」，「88 条实测」这五个字已经答完了；
+            // 日期区间是**出处**，属于**口径说明** ⇒ 折进 ⓘ（见下面的 scopeNote）。
+            //
+            // ⚠️ 数据一点没丢：日期区间现在在 scopeNote 里（ⓘ 点开仍在原位展开）。
+            append("${m.sampleCount} 条实测")
+        }
+    }
+    val scopeNote = consumption?.let { m ->
+        val tmin = m.tempMinC
+        val tmax = m.tempMaxC
+        if (tmin != null && tmax != null) {
             buildString {
-                // ⚠️ **v0.86.0（真机复核 · 用户原话「车况页面顶部的续航预估部分小字太多」）**：
-                //
-                // 原来这里常驻的是「按 2026-07-31~2026-10-24 的 88 条实测」——
-                // **日期区间**在 12sp 下占掉**整整两行**，而它对「这个数能不能信」
-                // 没有贡献：来源自曝（v0.26.0 第 17 轮 P0-2）要回答的是
-                // 「**实测**还是**标称**」，「88 条实测」这五个字已经答完了；
-                // 日期区间是**出处**，属于**口径说明** ⇒ 折进 ⓘ（见下面的 scopeNote）。
-                //
-                // ⚠️ 数据一点没丢：日期区间现在在 scopeNote 里（ⓘ 点开仍在原位展开）。
-                append("${m.sampleCount} 条实测")
-            }
-        }
-        val scopeNote = consumption?.let { m ->
-            val tmin = m.tempMinC
-            val tmax = m.tempMaxC
-            if (tmin != null && tmax != null) {
-                buildString {
-                    append("（${tmin.roundToInt()}~${tmax.roundToInt()}°C")
-                    // ⚠️ v0.28.0（复审 P1-9）：不要写「无冬季样本」——
-                    // 实测样本区间下界是 **8.3°C**，本身就是一条冬季样本。
-                    // 说「无冬季样本」与自己给的区间**自相矛盾**。
-                    // 改成说清楚**低温样本到底有几条**。
-                    // ⚠️ v0.86.0：样本**日期区间**也折进 ⓘ（常驻位只留「N 条实测」）。
-                    append("；样本区间 ")
-                    append(m.firstDrivenAt ?: "—")
-                    append("~")
-                    append(m.lastDrivenAt ?: "—")
-                    if (m.lowTempSamples >= 1) {
-                        append("，≤10°C 只有 ${m.lowTempSamples} 条")
-                    } else {
-                        append("，无 ≤10°C 样本")
-                    }
-                    append("）")
+                append("（${tmin.roundToInt()}~${tmax.roundToInt()}°C")
+                // ⚠️ v0.28.0（复审 P1-9）：不要写「无冬季样本」——
+                // 实测样本区间下界是 **8.3°C**，本身就是一条冬季样本。
+                // 说「无冬季样本」与自己给的区间**自相矛盾**。
+                // 改成说清楚**低温样本到底有几条**。
+                // ⚠️ v0.86.0：样本**日期区间**也折进 ⓘ（常驻位只留「N 条实测」）。
+                append("；样本区间 ")
+                append(m.firstDrivenAt ?: "—")
+                append("~")
+                append(m.lastDrivenAt ?: "—")
+                if (m.lowTempSamples >= 1) {
+                    append("，≤10°C 只有 ${m.lowTempSamples} 条")
+                } else {
+                    append("，无 ≤10°C 样本")
                 }
-            } else {
-                null
+                append("）")
             }
+        } else {
+            null
         }
-        val trueRange = consumption?.trueRangeKm(
+    }
+    val trueRange = consumption?.trueRangeKm(
+        ratedRangeKm = ratedRange,
+        speedKph = refSpeed,
+        outsideTempC = st.outside_temp,
+        // ⚠️ **v0.33.0**：不再传 `ascentM = recentAscent` ——
+        // 模型里的爬升项已移除（用「最近一趟」的爬升修「未来」的续航，口径不对），
+        // 爬升改在「线路余量表」里逐段算。
+    )
+    // ⚠️ **v0.14.0（长途自驾党 P0-3）：**保底余量**。**
+    //
+    // 「现在能开 204 公里」里已经留了 10% 余量；
+    // 但长途规划问的是「下一个服务区在 170 公里外，我到得了吗」——
+    // 那要按 **20% 保底**算。
+    //
+    // 这**不是另一个估计值**（不跟 204 打架），
+    // 而是同一个模型换了个阈值 —— 所以用副行呈现，不抢主角。
+    //
+    // ⚠️ **v0.28.0（复审 P0-4）：`reserveFactor` 的语义原来搞错了。**
+    //
+    // 公式是 `标定续航 × 146 ÷ 实测Wh/km × reserveFactor`，
+    // 所以 `reserveFactor = 0.80` 的含义是「**用掉** 80% 的当前续航」，
+    // 而不是「**留下** 20% 的电池」。
+    //
+    // 实测：当前 69% 电量时，原文案写「留 20% 保底还能开 197 公里」，
+    // 而实际到达电量 = 69% × 20% = **13.8%**（真正留 20% 只有 174.7 公里）。
+    // 复审原话：「`reserveFactor=0.80` 是『用掉当前电量的 80%』，
+    // 不是『留下 20% 的电池』。」
+    //
+    // 现在按**绝对电量**算：能用掉的比例 = (当前电量 − 20%) ÷ 当前电量。
+    val socPct = st.battery_level
+    val reserveFactor = if (socPct != null && socPct > 20) {
+        (socPct - 20).toDouble() / socPct
+    } else {
+        null
+    }
+    val floorKm = reserveFactor?.let { rf ->
+        consumption?.trueRangeKm(
             ratedRangeKm = ratedRange,
             speedKph = refSpeed,
             outsideTempC = st.outside_temp,
-            // ⚠️ **v0.33.0**：不再传 `ascentM` ——
-            // 模型里的爬升项已移除（用「最近一趟」的爬升修「未来」的续航，口径不对），
-            // 爬升改在「线路余量表」里逐段算。
+            ascentM = recentAscent,
+            reserveFactor = rf,
         )
+    }
+    // ⚠️ **v0.43.0（第 26 轮口径审计 S1/S2）：区间行必须**紧跟主角**，且保底行也要有区间。**
+    //
+    // 原来区间行排在「留 20% 保底还能开 174 公里」**下面** ——
+    // 读者会把「约 197 ~ 257 公里」读成 **174 公里**的区间，
+    // 而 **174 < 197**，看起来像 App 自相矛盾（实际是 223 的区间）。
+    //
+    // 而且**保底那一行也是同一个模型、同一个残差** ——
+    // 主角给了区间、下一行不给，就是 v0.42.0 刚修掉的那个 bug **原样复现**。
+    //
+    // ⚠️ 区间还必须**披露样本口径**：这个残差 P90 只用 **km ≥ 100 的长途样本**算
+    // （实测 20 条），而基数用的是 0–60 市区档 ⇒ **两个不同总体**，不说就是口径漂移。
+    // ⚠️ **v0.86.0**：`band` 的条件要拿到 `if` **外面** ——
+    // 下面「来源行」的条件要用它（区间存在时，来源已经并进区间那一行 ⇒ 不再单独出现）。
+    //
+    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：残差口径折进 ⓘ，区间数字常驻。
+    //
+    // 「约 197 ~ 257 公里」是**答案**，必须一眼看得见；
+    // 括号里那句「模型残差 90 分位，样本为 N 条 ≥100 公里行程」是
+    // **算法口径说明**（车主点名要折的那一类）⇒ 折到行尾 ⓘ 里。
+    val band = if (trueRange != null) {
+        consumption?.trueRangeBandKm(
+            ratedRangeKm = ratedRange,
+            speedKph = refSpeed,
+            outsideTempC = st.outside_temp,
+        )?.let { (lo, hi) ->
+            "约 $lo ~ $hi 公里" to
+                (consumption?.residualSamples?.takeIf { it > 0 }?.let {
+                    "（模型残差 90 分位，样本为 $it 条 ≥100 公里行程）"
+                } ?: "（模型残差 90 分位）")
+        }
+    } else null
+    val floorBand = consumption?.trueRangeBandKm(
+        ratedRangeKm = ratedRange,
+        speedKph = refSpeed,
+        outsideTempC = st.outside_temp,
+        reserveFactor = reserveFactor ?: 0.90,
+    )
+    // ⚠️ **v0.9.0（新手车主复核）：**假设链收进可展开区**。
+    //
+    // 原来主数字下面明晃晃挂着三行参数
+    // （「标定 312 km 的 66%」+「按 132 km/h 巡航 · 28°C · 实测 183 Wh/km」），
+    // 车主的反应是：
+    //   「屏幕上同时出现 206 和 312，我脑子里变成'官方说 312，
+    //     App 说 206，我到底该信哪个？' 两个数字打架，
+    //     比只给一个数字更让我拿不准。」
+    //   「多出来的信息不是让我更有信心，是让我更慌。」
+    //
+    // 现在：主数字**只给答案**，怎么算的收在一行「怎么算的 ▸」里，
+    // 点开才展开 —— 规划长途时它是关键，平时它是干扰。
+    //
+    // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-6）：整个折叠区换成 `CollapsibleSection`。**
+    //
+    // 原来这里是**手写复刻**：命中区只有 **15dp**（低于 WCAG 2.5.8 的 24dp）、
+    // 用 `▸/▾` **字符**（v0.17.0 动效评审已明确废弃字符方案）、
+    // 动画时长写死 160/220/120/180（**没有一个**对得上 `Motion.kt` 的 token）。
+    // 项目里**已经有**修过这些问题的 `CollapsibleSection`（44dp 命中区、
+    // `ExpandMore` 图标旋转、`stateDescription`、全部走 token）——
+    // 现在直接用它，不再维护第二套实现。
+    val explainText = buildString {
+        if (ratedRange != null && ratedRange > 0) {
+            append("官方标称 ${ratedRange.fmt(0)} 公里")
+        }
+        if (trueRange != null) {
+            // ⚠️ **v0.30.0（第 19 轮通勤车主评审 P0-2）：「平时」这个词是骗人的。**
+            //
+            // 原来的文案是「按平时 59 km/h 估算」——
+            // 而这个 59 是「**最近 5 趟 ≥30 公里行程**的均速中位数」，
+            // 实测那 5 趟是 10-18 与 10-24 的**长途自驾**
+            // （含一趟峰值 130 km/h 的高速趟）。
+            // 拿它当「平时」= 暗示这是日常通勤速度 —— 通勤车主每天拿它做
+            // 「够不够到公司」的判断，而它反映的是**高速速度带**。
+            //
+            // 现在说实话：说清楚它**是哪几趟**算出来的。
+            append(" · 按最近 5 趟 ≥30 公里行程的均速 ${refSpeed.roundToInt()} km/h 估算")
+            // ⚠️ v0.9.2：60 km/h 是硬编码兜底，且它落在**最乐观的一档**。
+            // 必须标成「假设」，不能和「实测巡航速度」混为一谈。
+            if (speedAssumed) append("（假设值）")
+            st.outside_temp?.let { append(" · ${it.roundToInt()}°C") }
+            // ⚠️ v0.9.2（口径审计 S2-4）：借用邻档时不能说「实测」。
+            whSample?.let { s ->
+                append(
+                    if (s.exact) {
+                        " · 实测 ${s.bucket.whPerKm.fmtKwh100()} kWh/100km（${s.bucket.label} 档）"
+                    } else {
+                        " · 参考 ${s.bucket.whPerKm.fmtKwh100()} kWh/100km（借用 ${s.bucket.label} 档）"
+                    }
+                )
+            }
+            append(" · 已留 10% 余量")
+        }
+        // ⚠️ **v0.33.0：爬升的影响在**线路余量表**里算，不在这里。**
+        // 这里算的是「现在能开多远」—— 用「最近一趟」的爬升去修「未来」的续航，
+        // 口径不对（实测那几趟是川藏滇线，爬升 2,290 米）。
+        // 具体路线的爬升影响见「记录 → 线路余量表」：那里有逐段爬升
+        // 与本车实测的爬升能耗系数。
+        append(" · 不含爬升修正（具体路线的爬升影响见「记录 → 线路余量表」）")
+        // ⚠️ **v0.26.0：温度可信度必须进「怎么算的」。**
+        // 「28°C」这个数让人以为已经按气温修正过了 —— 实际只做热的。
+        tempCaveat?.let { append(" · $it") }
+        // ⚠️ v0.14.0（单位审校 P0-4）：**换算说明**。
+        //
+        // 能耗单位从 Wh/km 换成 kWh/100km（÷10），
+        // 同一个数换了个写法 —— 不说清楚，老用户会把
+        // 「181 Wh/km」和「18.1 kWh/100km」当成两个量，
+        // 甚至以为丢了一个 0。
+        //
+        // 「怎么算的」是全 App **唯一**该出现单位口径说明的地方
+        // —— 平时它是干扰，展开时它就是答案的一部分。
+        if (trueRange != null) {
+            append(" · 能耗单位 kWh/100km 即每 100 公里的耗电量（旧版写的 Wh/km 是同一个数）")
+        }
+    }
+    return RangeModel(
+        ratedRange = ratedRange,
+        refSpeed = refSpeed,
+        speedAssumed = speedAssumed,
+        trueRange = trueRange,
+        band = band,
+        floorKm = floorKm,
+        floorBand = floorBand,
+        scopeLine = scopeLine,
+        scopeNote = scopeNote,
+        tempCaveat = tempCaveat,
+        explainText = explainText,
+    )
+}
+
+/**
+ * 续航**主角**（电量环右侧窄栏里只有它）。
+ *
+ * ⚠️ **v0.95.0**：这一块原来叫 `RangeBlock`，它同时渲染主角**和**结论区 ——
+ * 于是结论区被挤进电量环右侧的**窄栏**（真机实测约 171dp），
+ * 而结论行需要约 152dp、加上 ⓘ 徽标那一行的 20dp ⇒ **放不下** ⇒
+ * 贪心折行把「88 条实测」劈成「88 条实」+「测」（真机实测）。
+ *
+ * 现在窄栏只负责**主角**（一屏一焦点），结论区由 [RangeConclusions] 整宽渲染。
+ */
+@Composable
+private fun RangeHero(model: RangeModel, modifier: Modifier = Modifier) {
+    Column(modifier) {
         BigStat(
-            (trueRange ?: ratedRange)?.fmt(0) ?: "—",
+            (model.trueRange ?: model.ratedRange)?.fmt(0) ?: "—",
             // ⚠️ v0.9.0（新手车主复核）：「真实可达 (km)」是术语。
             // 车主原话：「'可达'太书面」「我真正要的是一句话：
             // '现在能开 206 公里，高速算的，够你回家'」。
             // 大数字 + 这行小字，读起来就是「现在能开 206 公里」。
-            if (trueRange != null) "现在能开（公里）"
+            if (model.trueRange != null) "现在能开（公里）"
             // ⚠️ **v0.26.0（第 17 轮通勤车主 P0-2）：低温样本不足时要说清为什么退回标称。**
             // 原来只写「官方标称（公里）」，用户会以为 App 出故障了。
-            else if (tempCaveat != null) "官方标称（公里）· 低温未修正"
+            else if (model.tempCaveat != null) "官方标称（公里）· 低温未修正"
             else "官方标称（公里）",
-            // ⚠️ v0.14.0（苹果 HIG P0-1）：**主角级** —— 44sp。
+            // ⚠️ **v0.14.0（苹果 HIG P0-1）：**主角级** —— 44sp。
             // 34sp 和页面标题「车况」同级，主角就不成立（每屏要有唯一视觉锚点）。
             hero = true,
         )
-        // ⚠️ v0.14.0（长途自驾党 P0-3）：**保底余量**。
-        //
-        // 「现在能开 204 公里」里已经留了 10% 余量；
-        // 但长途规划问的是「下一个服务区在 170 公里外，我到得了吗」——
-        // 那要按 **20% 保底**算。
-        //
-        // 这**不是另一个估计值**（不跟 204 打架），
-        // 而是同一个模型换了个阈值 —— 所以用副行呈现，不抢主角。
-        //
-        // ⚠️ **v0.28.0（复审 P0-4）：`reserveFactor` 的语义原来搞错了。**
-        //
-        // 公式是 `标定续航 × 146 ÷ 实测Wh/km × reserveFactor`，
-        // 所以 `reserveFactor = 0.80` 的含义是「**用掉** 80% 的当前续航」，
-        // 而不是「**留下** 20% 的电池」。
-        //
-        // 实测：当前 69% 电量时，原文案写「留 20% 保底还能开 197 公里」，
-        // 而实际到达电量 = 69% × 20% = **13.8%**（真正留 20% 只有 174.7 公里）。
-        // 复审原话：「`reserveFactor=0.80` 是『用掉当前电量的 80%』，
-        // 不是『留下 20% 的电池』。」
-        //
-        // 现在按**绝对电量**算：能用掉的比例 = (当前电量 − 20%) ÷ 当前电量。
-        val socPct = st.battery_level
-        val reserveFactor = if (socPct != null && socPct > 20) {
-            (socPct - 20).toDouble() / socPct
-        } else {
-            null
-        }
-        val trueRangeFloor = reserveFactor?.let { rf ->
-            consumption?.trueRangeKm(
-                ratedRangeKm = ratedRange,
-                speedKph = refSpeed,
-                outsideTempC = st.outside_temp,
-                ascentM = recentAscent,
-                reserveFactor = rf,
-            )
-        }
-        // ⚠️ **v0.43.0（第 26 轮口径审计 S1/S2）：区间行必须**紧跟主角**，且保底行也要有区间。**
-        //
-        // 原来区间行排在「留 20% 保底还能开 174 公里」**下面** ——
-        // 读者会把「约 197 ~ 257 公里」读成 **174 公里**的区间，
-        // 而 **174 < 197**，看起来像 App 自相矛盾（实际是 223 的区间）。
-        //
-        // 而且**保底那一行也是同一个模型、同一个残差** ——
-        // 主角给了区间、下一行不给，就是 v0.42.0 刚修掉的那个 bug **原样复现**。
-        //
-        // ⚠️ 区间还必须**披露样本口径**：这个残差 P90 只用 **km ≥ 100 的长途样本**算
-        // （实测 20 条），而基数用的是 0–60 市区档 ⇒ **两个不同总体**，不说就是口径漂移。
-        // ⚠️ **v0.86.0**：`bandTxt` 提到 `if` **外面** ——
-        // 下面「来源行」的条件要用它（区间存在时，来源已经并进区间那一行 ⇒ 不再单独出现）。
-        //
-        // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：残差口径折进 ⓘ，区间数字常驻。
-        //
-        // 「约 197 ~ 257 公里」是**答案**，必须一眼看得见；
-        // 括号里那句「模型残差 90 分位，样本为 N 条 ≥100 公里行程」是
-        // **算法口径说明**（车主点名要折的那一类）⇒ 折到行尾 ⓘ 里。
-        val bandTxt = if (trueRange != null) {
-            consumption?.trueRangeBandKm(
-                ratedRangeKm = ratedRange,
-                speedKph = refSpeed,
-                outsideTempC = st.outside_temp,
-            )?.let { (lo, hi) ->
-                "约 $lo ~ $hi 公里" to
-                    (consumption?.residualSamples?.takeIf { it > 0 }?.let {
-                        "（模型残差 90 分位，样本为 $it 条 ≥100 公里行程）"
-                    } ?: "（模型残差 90 分位）")
-            }
-        } else null
+    }
+}
+
+/**
+ * 续航**结论区**：区间 / 保底 / 「怎么算的」折叠入口。
+ *
+ * ⚠️ **v0.95.0（本轮手术点）**：它原来渲染在电量环右侧的**窄栏**里
+ * （真机实测约 171dp），而结论行「约 191 ~ 249 公里 · 88 条实测」需要约 152dp，
+ * 加上 ⓘ 徽标那一行的 20dp ⇒ **放不下** ⇒ 贪心折行把「88 条实测」劈成
+ * 「88 条实」+「测」（v0.92.0 真机实测记下，v0.93.0 / v0.94.0 顺延到本轮修掉）。
+ *
+ * ## 为什么不能靠「改文案」救
+ *
+ * CJK 允许在**任意两个汉字之间**断行 ⇒ 只要结论行和 ⓘ 徽标还在同一个窄栏里，
+ * 它就随时可能被劈开；而且窄栏宽度**随机型与字号变化**（360dp 屏更窄、
+ * 放大字号更窄）⇒ 任何「刚好放得下」的写法都是**运气**，不是结构。
+ *
+ * ⇒ 唯一的结构性解法：**结论区整宽渲染**（与 v0.94.0 的里程表同一手法）。
+ *
+ * ## 窄栏的职责只有一个：主角
+ *
+ * 主角 + 3 行灰字挤在 171dp 里 = v0.86.0 抱怨过的「同权重的灰字墙」。
+ * 整宽之后这三行各自**一行就够**（区间 ≈152dp、保底 ≈240dp，整宽 361dp 放得下）
+ * ⇒ 视觉行数从 5 行降到 3 行。
+ *
+ * ⚠️ 这个函数**故意不接 modifier** —— 结构上就不可能再把结论区塞回窄栏。
+ */
+@Composable
+private fun RangeConclusions(model: RangeModel) {
+    val accents = LocalAccentColors.current
+    Column(Modifier.fillMaxWidth()) {
         // ⚠️ **v0.86.0（真机复核 · 第二次迭代）**：**恢复 v0.43.0 的「区间紧跟主角」**。
         //
         // 第一版把「保底结论」提到区间前面（想强调「我能到哪」），
@@ -1015,9 +1188,9 @@ private fun RangeBlock(
         //
         // ⚠️ 现在这一块一共 **3 行**小字（原 5 行）：
         //   ①「约 192 ~ 251 公里 · 88 条实测」= 主角的区间 + 来源自曝（**1 行**）
-        //   ②「留 20% 保底还能开 167 公里（约 148 ~ 193 公里）」= 保底结论（**2 行**，自带区间）
+        //   ②「留 20% 保底还能开 167 公里（约 148 ~ 193 公里）」= 保底结论（**1 行**，自带区间）
         //   ③「怎么算的 ⌄」= 入口
-        if (trueRange != null) {
+        if (model.trueRange != null) {
             // ⚠️ **v0.86.0（真机复核 · 用户原话「小字太多」）**：主角下面原来有 **4~5 行**小字
             // （区间 / 保底 / 来源 / 怎么算的）⇒ 视觉上是一堵**同权重的灰字墙**。
             //
@@ -1028,24 +1201,18 @@ private fun RangeBlock(
             //    区间是 v0.65.0（车主点名要「一眼看得见」）、
             //    来源是 v0.26.0（新手分不清「实测」与「标称」）——
             //    但它们可以**并成一行**，**数据一点没丢**。
-            bandTxt?.let { (txt, note) ->
+            model.band?.let { (txt, note) ->
                 TextWithNote(
-                    text = listOfNotNull(txt, scopeLine).joinToString(" · "),
-                    note = listOfNotNull(note, scopeNote).joinToString("；"),
+                    text = listOfNotNull(txt, model.scopeLine).joinToString(" · "),
+                    note = listOfNotNull(note, model.scopeNote).joinToString("；"),
                     a11yLabel = "续航区间与实测样本的说明",
                 )
             }
         }
-        if (trueRangeFloor != null && trueRange != null) {
-            val floorBand = consumption?.trueRangeBandKm(
-                ratedRangeKm = ratedRange,
-                speedKph = refSpeed,
-                outsideTempC = st.outside_temp,
-                reserveFactor = reserveFactor ?: 0.90,
-            )
+        if (model.floorKm != null && model.trueRange != null) {
             Text(
-                "留 20% 保底还能开 ${trueRangeFloor.fmt(0)} 公里" +
-                    (floorBand?.let { (lo, hi) -> "（约 $lo ~ $hi 公里）" } ?: ""),
+                "留 20% 保底还能开 ${model.floorKm.fmt(0)} 公里" +
+                    (model.floorBand?.let { (lo, hi) -> "（约 $lo ~ $hi 公里）" } ?: ""),
                 style = MaterialTheme.typography.labelMedium,
                 // ⚠️ **v0.86.0（真机复核）**：这行是**「我能到哪」的另一个答案** ⇒
                 // 提为**半粗 + 正文色**。原来和其它小字一样是灰的 ⇒
@@ -1056,110 +1223,35 @@ private fun RangeBlock(
         }
         // ⚠️ **v0.26.0（第 17 轮新手车主 P0-2）：来源与温度可信度常驻显示。**
         // ⚠️ v0.86.0：「来源」已并进上面的区间脚注 ⇒ 这里只在**没有区间**时单独出现。
-        if (scopeLine != null && bandTxt == null) {
-            if (scopeNote != null) {
+        if (model.scopeLine != null && model.band == null) {
+            if (model.scopeNote != null) {
                 // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：温度口径折进 ⓘ，
                 // 「N 条实测」这半句仍然常驻（来源自曝是 v0.26.0 P0-2 的硬要求）。
                 TextWithNote(
-                    text = scopeLine,
-                    note = scopeNote,
+                    text = model.scopeLine,
+                    note = model.scopeNote,
                     style = MaterialTheme.typography.labelSmall,
                     a11yLabel = "续航实测样本的说明",
                 )
             } else {
                 Text(
-                    scopeLine,
+                    model.scopeLine,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
-        if (tempCaveat != null) {
+        model.tempCaveat?.let {
             Text(
-                tempCaveat,
+                it,
                 style = MaterialTheme.typography.labelSmall,
                 color = accents.warnAmberText,
             )
         }
         Spacer(Modifier.height(4.dp))
-        // ⚠️ v0.9.0（新手车主复核）：**假设链收进可展开区**。
-        //
-        // 原来主数字下面明晃晃挂着三行参数
-        // （「标定 312 km 的 66%」+「按 132 km/h 巡航 · 28°C · 实测 183 Wh/km」），
-        // 车主的反应是：
-        //   「屏幕上同时出现 206 和 312，我脑子里变成'官方说 312，
-        //     App 说 206，我到底该信哪个？' 两个数字打架，
-        //     比只给一个数字更让我拿不准。」
-        //   「多出来的信息不是让我更有信心，是让我更慌。」
-        //
-        // 现在：主数字**只给答案**，怎么算的收在一行「怎么算的 ▸」里，
-        // 点开才展开 —— 规划长途时它是关键，平时它是干扰。
-        //
-        // ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-6）：整个折叠区换成 `CollapsibleSection`。**
-        //
-        // 原来这里是**手写复刻**：命中区只有 **15dp**（低于 WCAG 2.5.8 的 24dp）、
-        // 用 `▸/▾` **字符**（v0.17.0 动效评审已明确废弃字符方案）、
-        // 动画时长写死 160/220/120/180（**没有一个**对得上 `Motion.kt` 的 token）。
-        // 项目里**已经有**修过这些问题的 `CollapsibleSection`（44dp 命中区、
-        // `ExpandMore` 图标旋转、`stateDescription`、全部走 token）——
-        // 现在直接用它，不再维护第二套实现。
-        val explainText = buildString {
-            if (ratedRange != null && ratedRange > 0) {
-                append("官方标称 ${ratedRange.fmt(0)} 公里")
-            }
-            if (trueRange != null) {
-                // ⚠️ **v0.30.0（第 19 轮通勤车主评审 P0-2）：「平时」这个词是骗人的。**
-                //
-                // 原来的文案是「按平时 59 km/h 估算」——
-                // 而这个 59 是「**最近 5 趟 ≥30 公里行程**的均速中位数」，
-                // 实测那 5 趟是 10-18 与 10-24 的**长途自驾**
-                // （含一趟峰值 130 km/h 的高速趟）。
-                // 拿它当「平时」= 暗示这是日常通勤速度 —— 通勤车主每天拿它做
-                // 「够不够到公司」的判断，而它反映的是**高速速度带**。
-                //
-                // 现在说实话：说清楚它**是哪几趟**算出来的。
-                append(" · 按最近 5 趟 ≥30 公里行程的均速 ${refSpeed.roundToInt()} km/h 估算")
-                // ⚠️ v0.9.2：60 km/h 是硬编码兜底，且它落在**最乐观的一档**。
-                // 必须标成「假设」，不能和「实测巡航速度」混为一谈。
-                if (speedAssumed) append("（假设值）")
-                st.outside_temp?.let { append(" · ${it.roundToInt()}°C") }
-                // ⚠️ v0.9.2（口径审计 S2-4）：借用邻档时不能说「实测」。
-                whSample?.let { s ->
-                    append(
-                        if (s.exact) {
-                            " · 实测 ${s.bucket.whPerKm.fmtKwh100()} kWh/100km（${s.bucket.label} 档）"
-                        } else {
-                            " · 参考 ${s.bucket.whPerKm.fmtKwh100()} kWh/100km（借用 ${s.bucket.label} 档）"
-                        }
-                    )
-                }
-                append(" · 已留 10% 余量")
-            }
-            // ⚠️ **v0.33.0：爬升的影响在**线路余量表**里算，不在这里。**
-            // 这里算的是「现在能开多远」—— 用「最近一趟」的爬升去修「未来」的续航，
-            // 口径不对（实测那几趟是川藏滇线，爬升 2,290 米）。
-            // 具体路线的爬升影响见「记录 → 线路余量表」：那里有逐段爬升
-            // 与本车实测的爬升能耗系数。
-            append(" · 不含爬升修正（具体路线的爬升影响见「记录 → 线路余量表」）")
-            // ⚠️ **v0.26.0：温度可信度必须进「怎么算的」。**
-            // 「28°C」这个数让人以为已经按气温修正过了 —— 实际只做热的。
-            tempCaveat?.let { append(" · $it") }
-            // ⚠️ v0.14.0（单位审校 P0-4）：**换算说明**。
-            //
-            // 能耗单位从 Wh/km 换成 kWh/100km（÷10），
-            // 同一个数换了个写法 —— 不说清楚，老用户会把
-            // 「181 Wh/km」和「18.1 kWh/100km」当成两个量，
-            // 甚至以为丢了一个 0。
-            //
-            // 「怎么算的」是全 App **唯一**该出现单位口径说明的地方
-            // —— 平时它是干扰，展开时它就是答案的一部分。
-            if (trueRange != null) {
-                append(" · 能耗单位 kWh/100km 即每 100 公里的耗电量（旧版写的 Wh/km 是同一个数）")
-            }
-        }
         CollapsibleSection("怎么算的") {
             Text(
-                explainText.ifBlank { "暂无足够数据估算" },
+                model.explainText.ifBlank { "暂无足够数据估算" },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

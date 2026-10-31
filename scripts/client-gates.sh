@@ -779,6 +779,118 @@ PYEOF
 if [ $? -eq 0 ]; then ok "里程表限定语独立成段（不许拼回一整串）"; else fail "里程表限定语独立成段"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 11：续航结论区必须**整宽**（不许回到电量环右侧窄栏）────────────
+#
+# ⚠️ **v0.95.0（真机实测的折行缺陷）**
+#
+# 「约 191 ~ 249 公里 · 88 条实测」原来渲染在电量环右侧**窄栏**（实测约 171dp）里 ——
+# 它需要约 152dp，加 ⓘ 徽标那一行的 20dp ⇒ **放不下** ⇒ 贪心折行把「88 条实测」
+# 劈成「88 条实」+「测」（真机截图；v0.92.0 记下，v0.93.0/v0.94.0 顺延到 v0.95.0 修掉）。
+#
+# CJK 允许在**任意两个汉字之间**断行 ⇒ 窄栏里**没有任何写法**能保证不被劈开；
+# 而且窄栏宽度**随机型与字号变化**（360dp 屏更窄、放大字号更窄）
+# ⇒ 任何「刚好放得下」的写法都是**运气**，不是结构。
+#
+# ⇒ 这道闸门守住两件事：
+#   ① 窄栏（`RangeHero`）里**不许**再出现结论行（ⓘ 口径行 / 保底行 / 折叠入口）；
+#   ② 结论区（`RangeConclusions`）**必须**撑满整宽。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+P = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/StatusScreen.kt')
+src = P.read_text(encoding='utf-8')
+
+
+def mask(text):
+    """把注释换成空格（字符串原样保留）—— 括号配对时不该被注释里的花括号带偏。"""
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if ch == '\\' and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '/' and i + 1 < n and text[i + 1] == '/':
+            j = text.find('\n', i)
+            j = n if j < 0 else j
+            out.append(' ' * (j - i))
+            i = j
+            continue
+        if ch == '/' and i + 1 < n and text[i + 1] == '*':
+            j = text.find('*/', i + 2)
+            j = n if j < 0 else j + 2
+            out.append(''.join(c if c == '\n' else ' ' for c in text[i:j]))
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
+masked = mask(src)
+
+
+def body_of(sig):
+    """取某个函数的**函数体**（注释已屏蔽 ⇒ 里面的花括号不会干扰配对）。"""
+    i = masked.find(sig)
+    if i < 0:
+        return None
+    j = masked.find('{', i)
+    if j < 0:
+        return None
+    depth = 0
+    k = j
+    while k < len(masked):
+        if masked[k] == '{':
+            depth += 1
+        elif masked[k] == '}':
+            depth -= 1
+            if depth == 0:
+                return masked[j:k + 1]
+        k += 1
+    return None
+
+
+bad = []
+hero = body_of('private fun RangeHero(')
+if hero is None:
+    bad.append('找不到 `private fun RangeHero(` —— 窄栏主角函数改名了？这道闸门要跟着改')
+else:
+    for token in ('TextWithNote(', 'CollapsibleSection(', '留 20% 保底'):
+        if token in hero:
+            bad.append('窄栏 `RangeHero` 里又出现了结论行（%s）—— 窄栏只许有主角' % token)
+
+conc = body_of('private fun RangeConclusions(')
+if conc is None:
+    bad.append('找不到 `private fun RangeConclusions(`')
+elif 'fillMaxWidth()' not in conc:
+    bad.append('`RangeConclusions` 没有撑满整宽（缺 fillMaxWidth()）')
+
+if bad:
+    print('续航结论区又回到窄栏了 %d 处 —— 它必须**整宽**：' % len(bad))
+    for b in bad:
+        print('   ', b)
+    print('   ⇒ 窄栏只放主角（RangeHero），结论区整宽（RangeConclusions）')
+    sys.exit(1)
+print('续航结论区整宽（窄栏里没有结论行，结论区撑满整宽）')
+PYEOF
+if [ $? -eq 0 ]; then ok "续航结论区整宽（不许回到窄栏）"; else fail "续航结论区整宽"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
