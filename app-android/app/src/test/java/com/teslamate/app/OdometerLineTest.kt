@@ -55,6 +55,32 @@ class OdometerLineTest {
         assertEquals("里程表 — 公里（GPS 估算）", s)
     }
 
+    /**
+     * ⚠️ **v0.94.0**：限定语必须与数字**拆成两半**。
+     *
+     * 原来整行是一个字符串、渲染在电量环右侧**窄栏**里 ——
+     * 而「里程表 101,537 公里（GPS 估算）」需要约 168dp、窄栏只有约 171dp，
+     * **差 2dp** ⇒ 贪心折行把限定语劈成「（GPS 估」+「算）」（真机实测）。
+     *
+     * CJK 允许在**任意两个汉字之间**断行 ⇒ 只有**独立成段**才不会被劈开。
+     */
+    @Test
+    fun `限定语必须与数字拆成两半`() {
+        val (num, qualifier) = odometerParts(gpsKm = 101477.4, vehicleKm = null)
+        assertEquals("里程表 101,477 公里", num)
+        assertEquals("（GPS 估算）", qualifier)
+        assertFalse("数字那半不该含限定语", num.contains("估算"))
+        assertFalse("限定语那半不该含数字", qualifier.contains("101"))
+    }
+
+    @Test
+    fun `车端分支的限定语也独立且不带 GPS`() {
+        val (num, qualifier) = odometerParts(gpsKm = 101477.4, vehicleKm = 63055.1)
+        assertEquals("里程表 63,055 公里", num)
+        assertEquals("（车端）", qualifier)
+        assertFalse("有车端时限定语里不该出现 GPS", qualifier.contains("GPS"))
+    }
+
     @Test
     fun `保养提醒不能拿被污染的 GPS 绝对值去算`() {
         // ⚠️ 保养基准是**仪表盘上的数**（车端）。

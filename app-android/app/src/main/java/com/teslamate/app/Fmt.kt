@@ -208,12 +208,38 @@ fun stateCn(s: String?): String = when (s) {
  * - **车端有值** ⇒ 只显示车端（那才是仪表盘上的里程表）；
  * - **车端读不到**（车休眠 / 没配 Fleet 凭据）⇒ 显示 GPS 估算，并**明说它是估算**。
  */
-fun odometerLine(gpsKm: Double?, vehicleKm: Double?): String =
+/**
+ * ⚠️ **v0.94.0**：里程表那一行拆成**数字部分**与**限定语**两半。
+ *
+ * 原来它是一个字符串、渲染在电量环右侧**窄栏**里 ——
+ * 而「里程表 101,537 公里（GPS 估算）」需要约 168dp、窄栏只有约 171dp，
+ * **差 2dp** ⇒ 贪心折行把限定语劈成「（GPS 估」+「算）」（真机实测）。
+ *
+ * ## 为什么限定语必须**独立成节点**
+ *
+ * CJK 的折行规则允许在**任意两个汉字之间**断行 ⇒ 只要限定语和数字在**同一个段落**里，
+ * 它就可能被劈开（「估算」→「估」+「算」）。
+ * 加空格、加不换行空格都**挡不住**（汉字之间本来就没有空格可断，
+ * 而不换行空格插在汉字之间会**多出一个空隙**）。
+ * 唯一的结构性解法：**限定语单独一个 Text 节点**（独立段落 ⇒ 只有整体换行，没有内部断点）。
+ *
+ * @return (数字部分, 限定语)
+ */
+fun odometerParts(gpsKm: Double?, vehicleKm: Double?): Pair<String, String> =
     if (vehicleKm != null) {
-        "里程表 ${vehicleKm.fmtThousands()} 公里（车端）"
+        "里程表 ${vehicleKm.fmtThousands()} 公里" to "（车端）"
     } else {
-        "里程表 ${gpsKm.fmtThousands() ?: "—"} 公里（GPS 估算）"
+        "里程表 ${gpsKm.fmtThousands() ?: "—"} 公里" to "（GPS 估算）"
     }
+
+/**
+ * 里程表那一行（完整一句话）。
+ *
+ * ⚠️ 单测盯的是它（`OdometerLineTest`）；界面用的是 [odometerParts] 的两半。
+ * 两者由**同一个函数**派生 ⇒ 不会各写各的、口径漂移。
+ */
+fun odometerLine(gpsKm: Double?, vehicleKm: Double?): String =
+    odometerParts(gpsKm, vehicleKm).let { (num, qualifier) -> num + qualifier }
 
 /**
  * 相对时间：「3 分钟前」而不是「14:30:12」。

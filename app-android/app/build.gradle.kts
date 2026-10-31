@@ -13,9 +13,9 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.93.0**：App 改了（用量页汇总卡：5 行等权 → 主角 + 副标题 + 费用 + 折叠明细）⇒ 版本号要涨。
-        versionCode = 104
-        versionName = "0.93.0"
+        // ⚠️ **v0.94.0**：App 改了（车况页里程表行移出窄栏 → 整宽，限定语独立成节点）⇒ 版本号要涨。
+        versionCode = 105
+        versionName = "0.94.0"
     }
 
     buildTypes {

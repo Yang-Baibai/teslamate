@@ -89,7 +89,7 @@ import com.teslamate.app.fmt
 import com.teslamate.app.fmtKwh100
 import com.teslamate.app.fmtShort
 import com.teslamate.app.fmtThousands
-import com.teslamate.app.odometerLine
+import com.teslamate.app.odometerParts
 import com.teslamate.app.relTime
 import java.time.Instant
 import kotlin.math.roundToInt
@@ -613,7 +613,7 @@ fun StatusScreen(
                                     .padding(vertical = 8.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
                             ) {
-                                RangeAndOdometer(st, consumption, recentAscent, fallbackSpeed, Modifier.fillMaxWidth())
+                                RangeBlock(st, consumption, recentAscent, fallbackSpeed, Modifier.fillMaxWidth())
                                 Spacer(Modifier.height(14.dp))
                                 // ⚠️ v0.30.0：两种布局用**同一个**环尺寸，
                                 // 否则切布局时环会「跳」一下。
@@ -629,9 +629,19 @@ fun StatusScreen(
                             ) {
                                 SocRing(st.battery_level, charging = st.active_charge != null)
                                 Spacer(Modifier.width(28.dp))
-                                RangeAndOdometer(st, consumption, recentAscent, fallbackSpeed, Modifier.weight(1f))
+                                RangeBlock(st, consumption, recentAscent, fallbackSpeed, Modifier.weight(1f))
                             }
                         }
+                        // ⚠️ **v0.94.0**：里程表那一行**整宽**渲染（原来在右侧窄栏里）。
+                        //
+                        // 真机实测（v0.92.0 记下、v0.93.0 顺延到本轮）：横排时右栏只有约 171dp，
+                        // 而「里程表 101,537 公里（GPS 估算）」需要约 168dp ——
+                        // **差 2dp** ⇒ 贪心折行把限定语劈成「（GPS 估」+「算）」，
+                        // 看起来像渲染坏了（v0.85.0 的老规矩：宁可不说，也不说半句）。
+                        //
+                        // 现在它**整宽**（约 320dp），且限定语是**独立 Text 节点**
+                        // ⇒ 任何字号下都**不可能**再被劈开。
+                        OdometerLine(st)
 
                         // ⚠️ v0.14.0：中性横幅**下沉到主角数字之后**。
                         // 红色告警在第一（该动手的事最靠前），中性信息让位给主角。
@@ -802,13 +812,17 @@ fun StatusScreen(
 }
 
 /**
- * 续航 + 里程表 + 「怎么算的」折叠区。
+ * 续航 + 「怎么算的」折叠区。
  *
  * ⚠️ v0.9.0：从 StatusScreen 里抽出来 —— 因为首屏改成**弹性布局**后，
  * 这一块要能在「左右两栏」与「上下两栏」两种排法里复用。
+ *
+ * ⚠️ **v0.94.0**：**里程表那一行搬走了**（它原来在这里）⇒
+ * 函数名里的 "AndOdometer" 已经是骗人的，改名 `RangeBlock`。
+ * 里程表现在由 [OdometerLine] **整宽**渲染（原因见那里的注释）。
  */
 @Composable
-private fun RangeAndOdometer(
+private fun RangeBlock(
     st: CarStatus,
     consumption: ConsumptionModel?,
     recentAscent: Int?,
@@ -1150,10 +1164,35 @@ private fun RangeAndOdometer(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.height(12.dp))
-        // ⚠️ 原来里程表也是 34sp Bold，与续航**同级** —— 一屏两个主角。
-        // 降级为一行小字：信息一点没丢，但视觉上只剩续航是主角。
+    }
+}
+
+/**
+ * 里程表那一行（**整宽**）。
+ *
+ * ⚠️ **v0.94.0**：它原来渲染在 [RangeBlock] 里 ⇒ 落在电量环右侧**窄栏**，
+ * 那儿只够放下「里程表 101,537 公里（GPS 估」——
+ * **限定语被折行劈成两半**（v0.92.0 真机实测记下，v0.93.0 顺延到本轮）。
+ *
+ * ## 为什么限定语必须**独立成节点**
+ *
+ * CJK 的折行规则允许在**任意两个汉字之间**断行 ⇒ 只要限定语和数字在**同一个段落**里，
+ * 它就可能被劈开（「估算」→「估」+「算」）。
+ * 唯一的结构性解法：**限定语单独一个 Text**（独立段落 ⇒ 只有整体换行，没有内部断点）。
+ *
+ * ⚠️ 数字那半用 `weight(1f, fill = false)`：
+ * 放得下就贴着限定语（视觉上与原来一模一样），
+ * 放不下时**数字**自己换行，限定语仍然整体不动。
+ */
+@Composable
+private fun OdometerLine(st: CarStatus) {
+    val (numText, qualifier) = odometerParts(st.odometer, st.odometer_vehicle)
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+    ) {
         Text(
+            numText,
             // ⚠️ v0.14.0（单位审校 P0-3）：**「km」→「公里」**。
             // 同一屏里保养横幅写「99000 公里」「101455 公里」，
             // 这行却写「101,455 km」—— 两种单位 + 两种数字格式，
@@ -1167,18 +1206,22 @@ private fun RangeAndOdometer(
             //   st.odometer          = TeslaMate 按 GPS 点累计（估算）
             //   st.odometer_vehicle  = 车辆自己记的（真值）
             // 说清楚来源，比只给一个数更让人放心。
-            buildString {
-                // ⚠️ **v0.75.0（查库实测）：「里程表」= 仪表盘上那个数 = 车端。**
-                // 口径与理由见 [odometerLine]（Fmt.kt）：
-                // `positions.odometer` 的**绝对值**被停车时的 GPS 抖动污染
-                // （本机实测日漂移可达 1,143 公里，全窗口偏 **38,422 公里**），
-                // 而它的窗口**跨度**是准的 —— 所以绝对值不能叫「里程表」。
-                //
-                // 原来是把两个数并列（GPS 估算 + 车端 + 差 N 公里），
-                // 那恰恰会制造 v0.21.0 想消灭的怀疑：「我拿 App 的里程表和特斯拉 App 对，
-                // 于是我怀疑车被人动了」。
-                append(odometerLine(st.odometer, st.odometer_vehicle))
-            },
+            //
+            // ⚠️ **v0.75.0（查库实测）：「里程表」= 仪表盘上那个数 = 车端。**
+            // 口径与理由见 [odometerParts]（Fmt.kt）：
+            // `positions.odometer` 的**绝对值**被停车时的 GPS 抖动污染
+            // （本机实测日漂移可达 1,143 公里，全窗口偏 **38,422 公里**），
+            // 而它的窗口**跨度**是准的 —— 所以绝对值不能叫「里程表」。
+            //
+            // 原来是把两个数并列（GPS 估算 + 车端 + 差 N 公里），
+            // 那恰恰会制造 v0.21.0 想消灭的怀疑：「我拿 App 的里程表和特斯拉 App 对，
+            // 于是我怀疑车被人动了」。
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        Text(
+            qualifier,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

@@ -739,6 +739,46 @@ PYEOF
 if [ $? -eq 0 ]; then ok "结局文案单一来源（App 不自己写充电结局）"; else fail "结局文案单一来源"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 10：里程表那一行的**限定语**不许再和数字拼成一段 ────────────
+#
+# ⚠️ **v0.94.0（真机实测的折行缺陷）**
+#
+# 「里程表 101,537 公里（GPS 估算）」原来是一个字符串，渲染在电量环右侧**窄栏**里 ——
+# 而整串需要约 168dp、窄栏只有约 171dp，**差 2dp** ⇒ 贪心折行把限定语劈成
+# 「（GPS 估」+「算）」（真机截图；v0.92.0 记下、v0.93.0 顺延到本轮修掉）。
+#
+# CJK 允许在**任意两个汉字之间**断行 ⇒ 只要限定语和数字在**同一个段落**里就可能被劈开；
+# 唯一的结构性解法是**限定语独立成段**（`odometerParts()` 的两半 + 两个 Text 节点）。
+#
+# ⇒ 这道闸门守住的就是这件事：界面里不许再直接用整串 `odometerLine(`。
+# 豁免：注释行不算；`Fmt.kt` 里的**定义**不算（那是它本来的职责）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+
+bad = []
+for p in sorted(root.rglob('*.kt')):
+    if p.name == 'Fmt.kt':
+        continue          # 它是定义处，不是界面
+    for idx, ln in enumerate(p.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+        st = ln.strip()
+        if st.startswith('//') or st.startswith('*') or st.startswith('/*'):
+            continue      # 注释是在解释，不是在界面上显示
+        if 'odometerLine(' in ln:
+            bad.append('%s:%d  界面里用了整串 odometerLine( —— 限定语会被折行劈开' % (p.name, idx))
+
+if bad:
+    print('里程表那一行又拼回一整串了 %d 处 —— 限定语必须**独立成段**：' % len(bad))
+    for b in bad[:14]:
+        print('   ', b)
+    print('   ⇒ 用 odometerParts() 的两半 + 两个 Text 节点渲染')
+    sys.exit(1)
+print('里程表那一行的限定语独立成段（界面里没有整串 odometerLine）')
+PYEOF
+if [ $? -eq 0 ]; then ok "里程表限定语独立成段（不许拼回一整串）"; else fail "里程表限定语独立成段"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
