@@ -638,7 +638,6 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // （实测全库 12 次断档合计 1459.62 公里 = 16.71%，且全在 10-01 之前）。
                             //
                             // 所以长窗口的「每公里成本」是**区间**，不是点值。
-                            val kmDrives = costSummary?.km_drives ?: 0.0
                             val kmOdo = costSummary?.km_odometer ?: 0.0
                             val perKm = costPerKm(cost, sum.km, kmOdo)
                             KV(
@@ -646,46 +645,16 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                 "≈ ${cost.totalYuan.fmtYuan()}",
                                 // ⚠️ **v0.93.0**：成本口径 + 家充判定**合并**挂到这一行 ——
                                 // 原来它们是两个**没有主题的孤儿 ⓘ**，谁也说不清哪个解释哪个。
-                                note = buildString {
-                                    // ⚠️ **v0.65.0（第 32 轮「减啰嗦」）**：成本口径折进 ⓘ。
-                                    // 「分子分母分别是什么、占比多少」是**口径**⇒ 折。
-                                    append("按你填的电价估算（家充（有围栏归属）")
-                                    append(cost.homeKwh.fmt(0))
-                                    append(" 度 / 其它交流慢充 ")
-                                    append(cost.acOtherKwh.fmt(0))
-                                    append(" 度 / 直流快充 ")
-                                    append(cost.dcKwh.fmt(0))
-                                    append(" 度）")
-                                    perKm.acSharePercent?.let { append(" · 交流慢充占 $it%") }
-                                    perKm.homeSharePercent?.let {
-                                        append(" · 其中真正在家充的占 $it%")
-                                    }
-                                    append("。")
-                                    // ⚠️ **v0.30.0（P0-3）：家充现在有**真凭据**了。**
-                                    //
-                                    // 原来的模型是「交流 ⇒ 家充」，靠充电枪类型猜地点 ——
-                                    // 实测本机 5 场交流慢充**没有一场在家**（最近的 287 公里，
-                                    // 其余 1435/1435/1481 公里，还有一场 25.6 公里但充入 0 度），
-                                    // 这个猜法 5/5 全错。
-                                    // 现在家充由 **TeslaMate 的充电围栏**判定，
-                                    // 剩下的交流（没有围栏归属）就是「不知道在哪」，
-                                    // 按你填的「其它交流慢充单价」计。
-                                    //
-                                    // ⚠️ **v0.65.0**：围栏判定的口径说明折进 ⓘ。
-                                    // 「家充按充电围栏判定」「没有归属的交流慢充按公共桩价计」——
-                                    // 两条都是**口径**⇒ 折（两态都进 note，正文只留 ⓘ）。
-                                    if (cost.homeKwh > 0.01) {
-                                        append("家充按 TeslaMate 的充电围栏判定")
-                                        append("（这段窗口里有 ${cost.homeKwh.fmt(0)} 度命中围栏）")
-                                    } else {
-                                        append("这段窗口里没有任何一场充电命中充电围栏 —— ")
-                                        append("App 分不出交流慢充是在家还是在酒店/路边")
-                                        append("（「家」围栏是 2026-10-25 才建的，之前的充电都没有归属）。")
-                                        append("没有归属的交流慢充现在按「")
-                                        append(if (rates.acUsesHomePrice) "家充电价" else "公共桩价")
-                                        append("」计（设置里可改）")
-                                    }
-                                },
+                                // ⚠️ **v0.97.0**：成本口径抽成纯函数 `noteChargeCost()`（`ui/CostNote.kt`）。
+                                //
+                                // 原来这段 buildString 拼出 **380 视觉宽度**的说明 ——
+                                // 五句话混三个话题（怎么算的 / 度数构成 / 占比 / 围栏判定 / 设置提示），
+                                // 点开 ⓘ 得到的是一堵字墙，不是「一句话结论 + 关键限定」。
+                                //
+                                // 现在压到 ≤160（≈3 行）：只留「按你填的电价 + 度数构成」
+                                // 与「围栏归属」这条**真正影响这个数能不能信**的限定。
+                                // ⚠️ 一个阈值也没新增；事实一字没丢（丢掉的是占比 —— 那是度数的派生量）。
+                                note = noteChargeCost(cost, rates.acUsesHomePrice),
                             )
                             perKm.allPerKm?.let {
                                 // ⚠️ v0.27.0：覆盖度不足时必须限定口径 ——
@@ -699,30 +668,12 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     range + if (coverageLow) "（按这 $filledBuckets $bucketUnit 算）" else "",
                                     // ⚠️ **v0.93.0**：分母说明挂到**它解释的那一行行尾**
                                     // —— 原来是一个没有主题的孤儿 ⓘ。
-                                    note = buildString {
-                                        append("分母是行驶里程 ${sum.km.fmt(0)} 公里。")
-                                        // ⚠️ **v0.31.0（P0-1）：分母有缺口时必须说清楚。**
-                                        //
-                                        // 不说的话，用户会把上界当成**确定值** ——
-                                        // 而它其实是个上界（真值低 3.4%~11.9%）。
-                                        perKm.denominatorGapPercent?.let { gap ->
-                                            if (gap >= 1) {
-                                                append("这 $filledBuckets $bucketUnit 里 App 记录到 ")
-                                                append("${kmDrives.roundToInt()} 公里行驶，")
-                                                append("而里程表走了 ${kmOdo.roundToInt()} 公里 —— ")
-                                                append("差的 $gap% 是 TeslaMate 没在记录的遥测断档")
-                                                append("（那些路车真开了，但没记行程），所以每公里成本是区间。")
-                                            }
-                                        }
-                                        // ⚠️ **v0.44.0（第 24 轮对抗性审计 ⑫）：还要说清**窗口边界**。**
-                                        //
-                                        // 分子 = 窗口内**充入的电**，分母 = 窗口内**跑的公里** ——
-                                        // 这两者**不是同一段能量**：窗口起点的存量电量、
-                                        // 窗口终点尚未消耗的电量，都被算进去了。
-                                        // 长窗口（1 年）这个偏差可以到百分之十几。
-                                        append("另外分子是窗口内充入的电、分母是窗口内跑的公里，")
-                                        append("窗口两端还剩多少电的差没有扣，所以这个数是近似值。")
-                                    },
+                                    // ⚠️ **v0.97.0**：分母口径抽成纯函数 `noteCostPerKm()`（`ui/CostNote.kt`）。
+                                    //
+                                    // 原来这段 buildString 拼出 **296 视觉宽度**的说明，
+                                    // 现在压到 ≤160（≈3 行）：分母是什么 + 缺口为什么是区间 + 为什么是近似值。
+                                    // ⚠️ 缺口 ≥1% 才说 —— 与 `costPerKm()` 给区间的口径**同一个阈值**。
+                                    note = noteCostPerKm(sum.km, perKm.denominatorGapPercent),
                                 )
                             }
                             // ⚠️ P0-3：**直流桩边际成本**必须单独给 ——

@@ -958,6 +958,125 @@ PYEOF
 if [ $? -eq 0 ]; then ok "费用块表层只有结论（证据行折进「更多明细」）"; else fail "费用块表层只有结论"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 13：ⓘ 口径说明的视觉宽度上限（棘轮）────────────────────────
+#
+# ⚠️ **v0.97.0**：ⓘ 里的口径说明**从来没有长度上限**。
+#
+# 闸门 5 的「啰嗦棘轮」只管**常驻可见**的长说明块 ——
+# 文字一旦折进 ⓘ，闸门就看不见它了。
+# 实测（v0.97.0 勘察）：用量页汇总卡那两条 ⓘ 拼出来是
+# **380 / 296 视觉宽度**（≈5 行）—— 点开 ⓘ 得到的是一堵字墙，
+# 不是「一句话结论 + 关键限定」。
+#
+# 现在给 ⓘ 立上限：**160 视觉宽度**（≈80 个全角字 ≈ 展开后 3 行）。
+# 上限只有一个真相来源：`ui/NoteBudget.kt` 的 `NOTE_WIDTH_LIMIT`
+# （与闸门 4 从 `Motion.kt` 抠动效 token 同一套路）。
+#
+# 棘轮：既有超长的登记在 `scripts/note-baseline.txt`，
+# **只许变短、不许变长**；新写的 ⓘ 必须 ≤ 上限，否则这道闸门红。
+#
+# ⚠️ **只扫「调用点字面量」**（`note = "…"` / `note = buildString {…}`）——
+# 折进提供器函数（如 `ui/CostNote.kt` 的 `noteChargeCost()`）的 ⓘ
+# 由 **JVM 单测**钉住运行时宽度（更准：它检查的是真实分支的真实文本）。
+# 静态扫提供器会把**互斥分支也相加** ⇒ 必然假阳性。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import re, pathlib, sys
+
+BUDGET = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/NoteBudget.kt')
+src = BUDGET.read_text(encoding='utf-8', errors='replace') if BUDGET.exists() else ''
+m = re.search(r'const val NOTE_WIDTH_LIMIT\s*=\s*(\d+)', src)
+if not m:
+    print('找不到 NOTE_WIDTH_LIMIT（ui/NoteBudget.kt）—— 上限常量被删了？')
+    sys.exit(1)
+LIMIT = int(m.group(1))
+
+LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+TPL = re.compile(r'\$\{[^}]*\}')
+
+
+def visual(s):
+    """视觉宽度：汉字/全角 = 2，其余 = 1（与闸门 5 同口径）。"""
+    w = 0
+    for ch in s:
+        o = ord(ch)
+        if (0x1100 <= o <= 0x115F or 0x2E80 <= o <= 0xA4CF or 0xAC00 <= o <= 0xD7A3
+                or 0xF900 <= o <= 0xFAFF or 0xFE30 <= o <= 0xFE6F or 0xFF00 <= o <= 0xFF60
+                or 0xFFE0 <= o <= 0xFFE6 or 0x4E00 <= o <= 0x9FFF):
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def plain_of(text):
+    """只留字面量，模板占位 ${…} 按 1 个字符算。"""
+    return ''.join(TPL.sub('…', lit) for lit in LIT.findall(text))
+
+
+root = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+cur = {}
+for p in sorted(root.rglob('*.kt')):
+    lines = p.read_text(encoding='utf-8', errors='replace').splitlines()
+    i = 0
+    while i < len(lines):
+        st = lines[i].strip()
+        if re.match(r'note\s*=\s*buildString\s*\{', st):
+            body, depth, j = [], 0, i
+            while j < len(lines):
+                body.append(lines[j])
+                depth += lines[j].count('{') - lines[j].count('}')
+                if depth <= 0 and j > i:
+                    break
+                j += 1
+            txt = plain_of('\n'.join(body))
+            cur['%s::%s' % (p.name, txt[:16])] = (p.name, i + 1, visual(txt), txt[:46])
+            i = j + 1
+            continue
+        if re.match(r'note\s*=\s*"', st):
+            txt = plain_of(st)
+            cur['%s::%s' % (p.name, txt[:16])] = (p.name, i + 1, visual(txt), txt[:46])
+        i += 1
+
+BASE = pathlib.Path('scripts/note-baseline.txt')
+base = {}
+if BASE.exists():
+    for ln in BASE.read_text(encoding='utf-8', errors='replace').splitlines():
+        s = ln.strip()
+        if not s or s.startswith('#'):
+            continue
+        parts = s.split('\t')
+        if len(parts) != 2:
+            print('基线格式坏了（要 <宽度>\\t<文件>::<开头16字>）：%r' % s)
+            sys.exit(1)
+        base[parts[1].strip()] = int(parts[0].strip())
+
+problems = []
+for key, (f, ln, w, prev) in cur.items():
+    if w <= LIMIT:
+        continue
+    if key not in base:
+        problems.append('%s:%d  新增超长 ⓘ（%d > %d）：%s' % (f, ln, w, LIMIT, prev))
+    elif w > base[key]:
+        problems.append('%s:%d  ⓘ 变长了（%d > 基线 %d）：%s' % (f, ln, w, base[key], prev))
+
+if problems:
+    print('ⓘ 口径说明超长/变长 %d 处 ——' % len(problems))
+    for pr in problems[:14]:
+        print('   ', pr)
+    print('   ⇒ ⓘ 只许留「一句话结论 + 关键限定」（≤ %d 视觉宽度 ≈ 3 行）' % LIMIT)
+    print('   ⇒ 确实需要这么长，就把这一行**原样**加进 %s' % BASE)
+    print('     （加基线 = 一次有记录的决策，CHANGELOG 里要写明理由）')
+    sys.exit(1)
+
+stale = [k for k in base if k not in cur]
+print('ⓘ 口径说明 %d 条，全部 ≤ %d（基线 %d 条）—— 没有新增' % (len(cur), LIMIT, len(base)))
+if stale:
+    print('   ℹ 基线里有 %d 条代码里已经没有了 —— 可以从 %s 删掉（收缩是好事）' % (len(stale), BASE))
+PYEOF
+if [ $? -eq 0 ]; then ok "ⓘ 口径文字长度上限（棘轮）"; else fail "ⓘ 口径文字长度上限"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

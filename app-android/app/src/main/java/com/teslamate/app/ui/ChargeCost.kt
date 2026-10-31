@@ -237,15 +237,9 @@ data class CostPerKm(
     /** 上界：总费用 ÷ **App 记录到的**行驶里程（`sum(drives.distance)`） */
     val allPerKm: Double?,
     val dcPerKm: Double?,
-    /** 交流慢充占总度数的百分比 */
-    val acSharePercent: Int?,
-    /**
-     * ⚠️ **v0.30.0：其中「有围栏归属」（真家充）的百分比。**
-     *
-     * 之前 App 只能说「交流慢充占 X%」，而交流慢充**不等于**家充。
-     * 现在围栏能给出真凭据，这个数才是真的「家充占比」。
-     */
-    val homeSharePercent: Int?,
+    // ⚠️ **v0.97.0**：原来的 `acSharePercent` / `homeSharePercent` **删掉了** ——
+    // 它们只被用量页那条 ⓘ 用，而那个 ⓘ 现在只给**度数构成**（占比是度数的派生量，
+    // 同一个数说两遍就是噪音）。留着就是 0 调用点的死字段。
     /**
      * ⚠️ **v0.31.0（第 20 轮费用复审 P0-1）：下界** —— 总费用 ÷ **里程表跨度**。
      *
@@ -272,18 +266,7 @@ fun costPerKm(
     /** 里程表在窗口内的跨度（km）—— 可为 null（拿不到就不给下界） */
     odometerKm: Double? = null,
 ): CostPerKm {
-    if (drivingKm <= 0.1) return CostPerKm(null, null, null, null)
-    val totalUsed = cost.totalKwh
-    val acShare = if (totalUsed > 0.01) {
-        (cost.acKwh / totalUsed * 100).roundToInt()
-    } else {
-        null
-    }
-    val homeShare = if (totalUsed > 0.01) {
-        (cost.homeKwh / totalUsed * 100).roundToInt()
-    } else {
-        null
-    }
+    if (drivingKm <= 0.1) return CostPerKm(null, null)
     // ⚠️ v0.31.0：区间只在两个分母**差得够多**时才给。
     val gapPct = if (odometerKm != null && odometerKm > drivingKm) {
         ((odometerKm - drivingKm) / drivingKm * 100).roundToInt()
@@ -298,8 +281,6 @@ fun costPerKm(
     return CostPerKm(
         allPerKm = cost.totalYuan / drivingKm,
         dcPerKm = cost.dcYuan / drivingKm,
-        acSharePercent = acShare,
-        homeSharePercent = homeShare,
         allPerKmLow = low,
         denominatorGapPercent = gapPct,
     )
