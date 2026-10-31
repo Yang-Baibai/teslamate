@@ -58,6 +58,21 @@ object BatteryDecayText {
      *
      * 结论（衰减速率）留在外面；样本量 / 那次落差 / 口径边界折进来。
      * 一段都没删，只是换了位置。
+     *
+     * ⚠️ **v0.99.0（第 9 轮）：这三段里只有第一段是「独有」的。**
+     *
+     * 原来的第 2 段（落差）与第 3 段（容量口径 + 不能外推），
+     * **服务端 `caveat` 里一字不差地已经有了** —— 而且更全
+     * （落差还带日期、公里处、「不扣它会高估 3.3 倍」；
+     * 口径还带「= 车机上报的续航估值 × 0.146」）。
+     * `caveat` 由 [detailLines] 渲染在**同一张卡**的「怎么算的」折叠区里。
+     *
+     * ⇒ 客户端这第二份副本是 **v0.41.0 注释早就警告过的漂移源**
+     * （「口径提示与服务端判定**必须是同一份**，否则必然漂移」）。
+     * ⇒ 这一轮删掉它：**不是丢信息，是去掉一个会自己跑偏的副本。**
+     *
+     * 保留第 1 段（样本与覆盖）—— 其中「12 个 90~98% 未计入」
+     * 是**服务端 `caveat` 里没有的**（`caveat` 只说了剔除 1 场空会话）。
      */
     fun note(d: BatteryDecay): String {
         val parts = mutableListOf<String>()
@@ -66,7 +81,7 @@ object BatteryDecayText {
         val sample = StringBuilder()
         sample.append(d.n).append(" 个 100% 满充点")
         if (d.excluded_n > 0) {
-            sample.append("（另有 ").append(d.excluded_n).append(" 个 90~98% 的点未计入）")
+            sample.append("（").append(d.excluded_n).append(" 个 90~98% 未计入）")
         }
         sample.append(" · ").append(d.span_km.roundToInt()).append(" 公里 / ")
             .append(d.span_days).append(" 天")
@@ -80,22 +95,15 @@ object BatteryDecayText {
         // ── 那次落差（如果检测到） ───────────────────────────
         if (d.has_step) {
             val step = StringBuilder()
-            step.append(d.step_date).append(" 前后有一次 ").append(d.step_kwh.fmt(2)).append(" 度的落差")
-            step.append("（").append(d.step_km.roundToInt()).append(" 公里处）")
-            // ⚠️ **v0.41.0：不能再说「一次性事件，不是持续衰减」** ——
-            // 那是**物理断言**，而数据分不清「电池真掉了一次」与「车机重新标定了续航估值」。
-            // v0.35.0 自己的 CHANGELOG 就写过「更像一次续航估算的重新校准」。
-            step.append(" —— 可能不是电池变化，更像车机重新标定")
-            if (d.naive_overstate > 1.15) {
-                step.append("；不扣它，表面速率会高估 ")
-                    .append(d.naive_overstate.fmt(1)).append(" 倍")
-            }
+            step.append("有一次 ").append(d.step_kwh.fmt(2)).append(" 度落差，已扣除")
+            // ⚠️ **v0.41.0：不能替用户下「只是重新标定」的判断** ——
+            // 那是**物理断言**，而数据分不清「电池真掉了一次」与
+            // 「车机重新标定了续航估值」。所以只说「分不清」。
+            // 完整的那次落差（日期 / 公里处 / 不扣它会高估几倍）由服务端
+            // `caveat` 呈现，见「怎么算的」。
+            step.append("（车机重新标定还是电池变化，分不清）。")
             parts += step.toString()
         }
-
-        // ── 容量口径与适用边界 ───────────────────────────────
-        parts += "容量口径是车机上报的续航估值换算的（不是物理测量）；" +
-            "结论只在这 ${d.span_km.roundToInt()} 公里 / ${d.span_days} 天内有效，不能外推"
 
         return parts.joinToString("\n\n")
     }

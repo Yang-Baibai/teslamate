@@ -1025,27 +1025,12 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     append("现在还能装 ${b.current_capacity_kwh!!.fmt(1)} 度")
                                     nominalKwh?.let { append(" · 新电池标称 ${it.fmt(1)} 度") }
                                 },
-                                note = buildString {
-                                    append("「电池健康度」= 现在还能装的度 ÷ 新电池标称的度 —— ")
-                                    append("两边都是「可用容量」，同一口径，")
-                                    append("所以这个比值就是相对出厂衰减了多少。")
-                                    // ⚠️ **v0.44.0（第 24 轮对抗性审计 ⑪）：分子依赖一个**用户可改的常数**。**
-                                    //
-                                    // 分子 = 车机上报的续航估值 × `cars.efficiency`（本机 0.146）。
-                                    // 那个常数是车主为修 Wh/km 显示而配的 —— **改一次，界面就变一次**
-                                    // （0.146 → 0.153 会让这个数从 84.9% 跳到 88.9%）。
-                                    // 不说清楚，读者会以为它是「测出来的」。
-                                    append("分子里的效率常数（cars.efficiency）可在服务端改，改了这个数就变。")
-                                    // ⚠️ **v0.63.0（R31 视觉复审 P0-3）**：原来这里写「本车实测上限 86.4%」——
-                                    // 改名为「相对出厂」之后，它和上面的 84.9% **成了同一个口径的两个数**，
-                                    // 用户会以为有一个是错的。现在把关系写进句子里：
-                                    // 它是「天花板」，不是第二个健康度。
-                                    if (nominalKwh != null && strictMax != null) {
-                                        append("这台车有史以来最好的一次，也只到出厂的 ")
-                                        append((strictMax * 100 / nominalKwh).fmt(1))
-                                        append("%。")
-                                    }
-                                },
+                                // ⚠️ **v0.99.0**：口径正文搬进 `ui/BatteryNote.kt` 的纯函数。
+                                //
+                                // 为什么搬：这条 ⓘ 里有**插值的数字**（那个百分比），
+                                // 静态扫描看不见它们 ⇒ 只有运行时单测才量得到真宽度。
+                                // 详见 `BatteryNote.kt` 的说明与 `BatteryNoteTest.kt`。
+                                note = noteBatteryHealth(strictMax, nominalKwh),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 a11yLabel = "电池健康度的口径",
@@ -1191,16 +1176,12 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                                 kotlin.math.abs(delta).fmt(1) + "%",
                                             // ⚠️ **v0.68.0（R32 真机复核）**：口径 ⓘ 挂在
                                             // **它解释的那一行行尾**。
-                                            note = buildString {
-                                                append("「近期趋势」= 当前容量 ÷ 首测容量（取前 3 次中位数），")
-                                                append("不受行驶能耗常数影响。")
-                                                append("它只衡量这段时间里的变化，和上面的「相对出厂」不是同一段时间 —— ")
-                                                append("要回答「相对出厂衰减了多少」，看的是上面那个电池健康度。")
-                                                if (baselineDate != null) {
-                                                    append("注意：首测（$baselineDate）不是新车容量 —— ")
-                                                    append("它只回答「比 $baselineDate 那次测的低了多少」。")
-                                                }
-                                            },
+                                            //
+                                            // ⚠️ **v0.99.0**：正文搬进 `ui/BatteryNote.kt`。
+                                            // 原来这里重复了行标题里的日期「（2026-08-02）」，
+                                            // 也重复了行本身的意思（「只回答『比那次低了多少』」）——
+                                            // **同一个数说两遍 = 噪音**。
+                                            note = noteRecentTrend(),
                                         )
                                     }
                                     if (nowRatedKm != null) {
@@ -1220,21 +1201,21 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                         KV(
                                             "满电续航（现在）",
                                             "${nowRatedKm.toInt()} km",
-                                            note = buildString {
-                                                append("「满电续航」= 车机在满电时自己报的读数")
-                                                latestFullPoint?.date?.let { append("（${it.fmtDate()} 那次满充）") }
-                                                append("。")
-                                                if (factoryKm != null) {
-                                                    val gapKm = factoryKm - nowRatedKm
-                                                    append("按出厂容量折算，同一把尺子下新电池应是 ")
-                                                    append(factoryKm.toInt())
-                                                    append(" km —— 大约少 ")
-                                                    append((gapKm / 5.0 * 5.0).toInt())
-                                                    append(" km。")
-                                                    append("满充读数本身有 445~455 km 的温度波动，所以这个差是一个区间，不是一个精确值。")
-                                                }
-                                                append("官方标称续航是新车认证值，不是这台车这把尺子上的读数，两者不能直接相除。")
-                                            },
+                                            // ⚠️ **v0.99.0**：正文搬进 `ui/BatteryNote.kt`。
+                                            // 原来这里写「按出厂容量折算，新电池应是 538 km」——
+                                            // 而**下面那行**就写着「满电续航（按出厂折算）538 km」
+                                            // ⇒ **同一个数说两遍 = 噪音**。
+                                            note = noteFullChargeRange(
+                                                latestFullPoint?.date?.fmtDate(),
+                                                // ⚠️ **用「两行的显示值之差」**，不是原始值之差 ——
+                                                // 下面那行显示 538 km、这行显示 448 km，
+                                                // 用户一眼能验的差是 **90** ⇒ ⓘ 必须写同一个数。
+                                                // 原来写 89（`(gapKm / 5.0 * 5.0).toInt()` 其实是 floor，
+                                                // 不是「取整到 5」）⇒ 与自己下面两行自相矛盾。
+                                                factoryKm?.let { fk ->
+                                                    fk.toInt() - nowRatedKm.toInt()
+                                                },
+                                            ),
                                         )
                                         factoryKm?.let { fk ->
                                             KV("满电续航（按出厂折算）", "${fk.toInt()} km")
