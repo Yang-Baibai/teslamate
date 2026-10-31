@@ -3,6 +3,7 @@ package com.teslamate.app.ui
 import com.teslamate.app.Charge
 import com.teslamate.app.ChargeRates
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -302,6 +303,28 @@ fun costPerKm(
         allPerKmLow = low,
         denominatorGapPercent = gapPct,
     )
+}
+
+/**
+ * 「直流桩边际成本」与「每公里成本」是不是**同一个数**？
+ *
+ * ⚠️ **v0.96.0**：窗口里**没有交流慢充**时，两者**恒等**
+ * （总费用 = 直流桩那部分费用 + 0）⇒ 那时它就是**同一个数的第二次出现**，
+ * 而且还顶着一个像新指标一样的标签（「直流桩边际成本」vs「每公里成本」）⇒ 更迷惑。
+ *
+ * v0.14.0 的先例：「两行『没有』说的是同一件事，比一行更让人烦」——
+ * 同理，**同一个数说两遍**也是噪音。
+ *
+ * ⇒ 相同就**不显示**那一行；不同就显示（那时它在回答一个**不同**的问题：
+ * 「如果我全用公共桩充，每公里多少钱」= 长途的边际成本）。
+ *
+ * ⚠️ 比较的是**算出来的数**，不是「有没有交流慢充」——
+ * 极端情况（填了「交流按家充电价」但家充电价是 0）两者同样恒等 ⇒ 按数判断才准。
+ */
+fun dcMarginalIsRedundant(allPerKm: Double?, dcPerKm: Double?): Boolean {
+    val a = allPerKm ?: return false
+    val d = dcPerKm ?: return false
+    return abs(a - d) < 0.0001
 }
 
 /** 金额格式（¥ + 2 位小数 + 千分位）。 */

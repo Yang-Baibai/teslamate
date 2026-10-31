@@ -555,6 +555,12 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         // ⚠️ costSummary 是 delegated property（var by remember）→ 不能 smart cast，
                         // 先取一个局部 val。
                         val cs = costSummary
+                        // ⚠️ **v0.96.0**：费用**证据行**（每度电 / 电费 / 服务费）要折进
+                        // 「更多明细」，而那个折叠区在费用块**外面** ⇒ 费用得先算好提到这里。
+                        //
+                        // ⚠️ 只在**能算**的时候算（配了电价 + 这段有行驶）——
+                        // 没配电价时算出来全是 0，界面上会出现「¥0.00」的假数。
+                        val clientCost = if (hasClientEstimate) estimateCost(costSummary!!, rates) else null
                         if (!hasClientEstimate) {
                             if (sum.cost > 0) {
                                 KV("充电费用", "${sum.cost.fmt(2)} 元")
@@ -623,7 +629,8 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         // 它用「总增加公里数」（充电量 ÷ 型号效率反推）当分母，
                         // 官方 FAQ 自己承认与里程表对不上。我们有真实里程。
                         if (hasClientEstimate) {
-                            val cost = estimateCost(costSummary!!, rates)
+                            // ⚠️ v0.96.0：用上面提上来的那一份（同一个窗口、同一份口径）。
+                            val cost = clientCost!!
                             // ⚠️ **v0.31.0（第 20 轮费用复审 P0-1）：两个分母。**
                             //
                             // `km_drives` = App 记录到的行驶里程；
@@ -721,28 +728,27 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // ⚠️ P0-3：**直流桩边际成本**必须单独给 ——
                             // 实测本车交流慢充只占 3%，混算会给人「我享受了家充电价」的错觉，
                             // 而真实情况是这车几乎全按公共桩价买的电。
-                            perKm.dcPerKm?.let {
-                                KV(
-                                    "直流桩边际成本",
-                                    "≈ ${it.fmtYuan()} /公里" +
-                                        if (coverageLow) "（按这 $filledBuckets $bucketUnit 算）" else "",
-                                )
-                            }
-                            cost.yuanPerKwh?.let {
-                                KV("实际每度电", "≈ ${it.fmtYuan()}")
-                            }
-                            // ⚠️ **v0.30.0（第 19 轮财务评审 P1-1）：「实际每度电」必须拆开。**
+                            // ⚠️ **v0.96.0**：这一行**只在它与「每公里成本」不是同一个数时**才出现。
                             //
-                            // 实测全周期 1.7689 元/度里，**0.5874（33.2%）是公共桩服务费**。
-                            // 车主拿「实际每度电」和自己的居民电价 0.53~0.83 一比，
-                            // 会以为「我的电费高了三倍」—— 却不知道其中 1/3 是停车/占位费。
-                            // 现在拆成两行：电费每度 / 服务费每度。
-                            cost.energyYuanPerKwh?.let {
-                                KV("电费每度", "≈ ${it.fmtYuan()}")
+                            // 窗口里全是直流桩时（本机今天 / 7 天段实测 100% 直流），
+                            // 「直流桩边际成本」与「每公里成本」**恒等** ⇒
+                            // 它只是**同一个数的第二次出现**，还顶着一个像新指标一样的标签 ⇒ 更迷惑。
+                            //
+                            // v0.14.0 的先例：「两行说的是同一件事，比一行更让人烦」。
+                            if (!dcMarginalIsRedundant(perKm.allPerKm, perKm.dcPerKm)) {
+                                perKm.dcPerKm?.let {
+                                    KV(
+                                        "直流桩边际成本",
+                                        "≈ ${it.fmtYuan()} /公里" +
+                                            if (coverageLow) "（按这 $filledBuckets $bucketUnit 算）" else "",
+                                    )
+                                }
                             }
-                            cost.serviceYuanPerKwh?.let {
-                                KV("服务费每度", "≈ ${it.fmtYuan()}")
-                            }
+                            // ⚠️ **v0.96.0**：「实际每度电 / 电费每度 / 服务费每度」**折进「更多明细」** ——
+                            // 它们是**证据**（这钱是怎么算出来的），不是结论。
+                            //
+                            // 表层只留「充电费用（总额）」与「每公里成本（单价）」两个答案。
+                            // （拆解的理由跟着这三行一起折进去，见下面折叠区里的注释。）
                             // ⚠️ **v0.30.0（P0-2）：服务费没填时必须说「估算偏低」。**
                             //
                             // 实测：不填服务费 → ¥2,201.17；按分钟 0.50 → ¥3,295.67，
@@ -836,6 +842,29 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     },
                                 )
                                 KV("行程 / 充电次数", "${sum.drive_count} 次 / ${sum.charge_count} 次")
+                                // ⚠️ **v0.96.0**：费用**证据行**也折在这里 ——
+                                // 「实际每度电」是这辆车**充一度电的均价**，
+                                // 「电费每度 / 服务费每度」是它的**拆解**（两者相加 = 实际每度电）。
+                                //
+                                // ⚠️ **v0.30.0（第 19 轮财务评审 P1-1）：「实际每度电」必须拆开。**
+                                //
+                                // 实测全周期 1.7689 元/度里，**0.5874（33.2%）是公共桩服务费**。
+                                // 车主拿「实际每度电」和自己的居民电价 0.53~0.83 一比，
+                                // 会以为「我的电费高了三倍」—— 却不知道其中 1/3 是停车/占位费。
+                                // 现在拆成两行：电费每度 / 服务费每度。
+                                //
+                                // ⚠️ 没配电价时**不显示**这三行（算出来是 0 ⇒ 「¥0.00」的假数）。
+                                clientCost?.let { c ->
+                                    c.yuanPerKwh?.let {
+                                        KV("实际每度电", "≈ ${it.fmtYuan()}")
+                                    }
+                                    c.energyYuanPerKwh?.let {
+                                        KV("电费每度", "≈ ${it.fmtYuan()}")
+                                    }
+                                    c.serviceYuanPerKwh?.let {
+                                        KV("服务费每度", "≈ ${it.fmtYuan()}")
+                                    }
+                                }
                             }
                         }
                     } else {

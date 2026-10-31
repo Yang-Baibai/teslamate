@@ -891,6 +891,73 @@ PYEOF
 if [ $? -eq 0 ]; then ok "续航结论区整宽（不许回到窄栏）"; else fail "续航结论区整宽"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 12：用量页费用块**表层只许有结论**，证据行折进「更多明细」──────
+#
+# ⚠️ **v0.96.0**
+#
+# 汇总卡原来把 **6 行等权**费用平铺在表层（充电费用 / 每公里成本 /
+# 直流桩边际成本 / 实际每度电 / 电费每度 / 服务费每度）——
+# 一个主角下面挂 6 行同权重小字，就是 v0.86.0 抱怨过的「灰字墙」。
+#
+# ⇒ v0.96.0：表层只留**两个结论**（总额 / 单价），
+# 「实际每度电 / 电费每度 / 服务费每度」是**证据** ⇒ 折进「更多明细」。
+#
+# 这道闸门守三件事：
+#   ① 表层不许再出现那三行证据；
+#   ② 那三行**必须还在文件里**（不许删行 —— 数据一点没丢，只是折进去）；
+#   ③ 「直流桩边际成本」必须**带条件**：它与「每公里成本」是同一个数时不该出现。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+P = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/StatsScreen.kt')
+src = P.read_text(encoding='utf-8')
+lines = src.splitlines()
+
+# 表层 = 汇总卡「更多明细」折叠入口**之前**的那段
+fold_at = None
+for i, ln in enumerate(lines):
+    if 'CollapsibleSection("更多明细")' in ln:
+        fold_at = i
+        break
+if fold_at is None:
+    print('找不到 CollapsibleSection("更多明细") —— 汇总卡的折叠入口改名了？这道闸门要跟着改')
+    sys.exit(1)
+
+surface = '\n'.join(lines[:fold_at])
+bad = []
+
+EVIDENCE = ('KV("实际每度电"', 'KV("电费每度"', 'KV("服务费每度"')
+for tok in EVIDENCE:
+    if tok in surface:
+        bad.append('表层又出现了证据行 %s —— 表层只许留结论' % tok)
+    if tok not in src:
+        bad.append('%s 不见了 —— 数据一点没丢，只是折进「更多明细」' % tok)
+
+# 「直流桩边际成本」必须带条件（找**字符串字面量**那一行，注释里的不算）
+dc_at = None
+for i, ln in enumerate(lines):
+    if '直流桩边际成本' in ln and ln.strip().startswith('"'):
+        dc_at = i
+        break
+if dc_at is None:
+    bad.append('找不到「直流桩边际成本」那一行')
+else:
+    window = '\n'.join(lines[max(0, dc_at - 14):dc_at])
+    if 'dcMarginalIsRedundant(' not in window:
+        bad.append('「直流桩边际成本」没有条件 —— 它与「每公里成本」是同一个数时不该出现')
+
+if bad:
+    print('用量页费用块的减法被回退了 %d 处：' % len(bad))
+    for b in bad:
+        print('   ', b)
+    print('   ⇒ 表层只留「充电费用 / 每公里成本」两个结论，证据行折进「更多明细」')
+    sys.exit(1)
+print('费用块表层只有结论（证据行已折进「更多明细」，冗余行已条件化）')
+PYEOF
+if [ $? -eq 0 ]; then ok "费用块表层只有结论（证据行折进「更多明细」）"; else fail "费用块表层只有结论"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
