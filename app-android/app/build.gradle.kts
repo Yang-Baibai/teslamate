@@ -13,9 +13,9 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.97.0**：App 改了（费用ⓘ口径说明收敛，并给ⓘ立长度上限）⇒ 版本号要涨。
-        versionCode = 109
-        versionName = "0.99.0"
+        // ⚠️ **v0.101.0**：App 改了（反馈可带截图 + 四态文案）⇒ 版本号要涨。
+        versionCode = 111
+        versionName = "0.101.0"
     }
 
     buildTypes {

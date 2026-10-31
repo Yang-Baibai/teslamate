@@ -31,6 +31,11 @@
 | POST | /api/v1/cars/{id}/commands/{action}?dry_run=1 | 只校验参数、不下发 |
 | POST | /api/v1/cars/{id}/commands/{action} | 下发一条车控命令（body: `{"params":{…}}`） |
 | GET | /api/v1/app/latest | App 自更新用的版本元数据（版本号 / APK 地址 / 更新说明） |
+| GET | /api/v1/feedback?limit=&status= | **用户反馈**列表（新的在前；`status` 只认 `new` / `handled`） |
+| POST | /api/v1/feedback | 提交一条用户反馈（body: `{"message":"…","screen":"…","app_version":"…","car_id":1,"car_name":"…"}`） |
+| POST | /api/v1/feedback/{id}/status | 改反馈状态 / 写评估结论（body: `{"status":"doing"}` / `{"status":"skip","note":"理由"}` / `{"status":"done"}` / `{"status":"new"}`） |
+| POST | /api/v1/feedback/{id}/image | 传一张截图（multipart/form-data，字段名 `image`，≤5 MB，只认 JPG/PNG/WebP/GIF） |
+| GET | /api/v1/feedback/{id}/image | 取截图（**要鉴权**；截图是用户自己的屏幕，绝不静态暴露） |
 
 错误统一格式：`{"error":"人类可读原因"}`，配合 HTTP 401/404/500。
 
@@ -285,6 +290,27 @@ delta 形式在「本段坡度 = 该档典型坡度」时修正恰为 0 —— *
 （被审计段算出 **142% > 100%**，物理不可能），
 所以 `c_up ÷ (m·g)` 得到的「隐含传动效率 78%」**不成立** ——
 系数只能当**经验标定值**看，必须连同口径 + CI + 样本量一起呈现。
+
+
+### ⚠️ v0.100.0：`/api/v1/feedback`（用户反馈）
+
+`GET /api/v1/feedback?limit=&status=` 返回 `{"items":[…],"total":N}`；每条：
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 反馈 id（改状态用它） |
+| `created_at` | 提交时刻 |
+| `message` | 用户写的正文。⚠️ **空内容 400**、**超过 2000 字 400**（不静默截断） |
+| `screen` | 问题出在哪个页面（客户端自动带上，可空） |
+| `app_version` | 提交时的 App 版本（可空） |
+| `car_id` / `car_name` | 当时选中的车（`car_id` 可为 `null` = 没选车） |
+| `status` | `new`（待评估）/ `doing`（要处理）/ `skip`（不处理）/ `done`（已修好） |
+| `decision_note` | 评估结论（`skip` 时**必填**；重新打开会清空） |
+| `image_path` / `image_url` | 截图的相对路径 / 取图地址（空 = 没图） |
+| `handled_at` | 标记为已处理的时刻 |
+
+`POST /api/v1/feedback` 返回提交后的那条（同上字段）；
+`POST /api/v1/feedback/{id}/status` 返回改过状态的那条（找不到 ⇒ **404**，不编一条假记录出来）。
 
 ## curl 示例（真实数据验证于 2026-10-12）
 

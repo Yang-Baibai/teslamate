@@ -530,6 +530,155 @@ L=$(curl -s -m 5 -H "Authorization: Bearer $TOKEN" $B/api/v1/app/latest)
 echo "$L" | python -c "import json,sys;d=json.load(sys.stdin);assert d['version_code'].isdigit()" 2>/dev/null \
   && ok "app/latest 元数据" || fail "app/latest 元数据"
 
+# 21. 用户反馈（v1.00.0）：提交 → 读回 → 改状态 → **清理**
+#
+# ⚠️ 这条会**真的写一条反馈** ⇒ 测完必须删掉 ——
+#    否则用户的反馈列表里会多一条「冒烟测试」，
+#    而那是最容易让人以为「真出问题了」的一种噪音。
+FB=$(curl -s -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"message":"【冒烟】用户反馈链路自测","screen":"冒烟","app_version":"0.100.0","source":"smoke"}' \
+  "$B/api/v1/feedback")
+FBID=$(echo "$FB" | python -c "import json,sys;d=json.load(sys.stdin);print(d.get('id') or 0)" 2>/dev/null)
+if [ "${FBID:-0}" -gt 0 ]; then
+  LIST=$(curl -s -m 10 -H "Authorization: Bearer $TOKEN" "$B/api/v1/feedback?limit=50")
+  echo "$LIST" | python -c "
+import json,sys
+d=json.load(sys.stdin)
+items=d.get('items') or []
+assert d.get('total') == len(items), 'total 与 items 长度对不上: %s vs %s' % (d.get('total'), len(items))
+hit=[i for i in items if i.get('id')==$FBID]
+assert hit, '刚提交的那条反馈没出现在列表里'
+assert hit[0].get('status')=='new', '新反馈的状态应是 new: %s' % hit[0].get('status')
+assert hit[0].get('message'), '反馈正文为空'
+assert 'screen' in hit[0] and 'app_version' in hit[0], '反馈缺上下文字段'
+" 2>/dev/null \
+    && ok "用户反馈：提交 → 读回（新条目在列表里、状态 new、上下文齐）" || fail "用户反馈：提交 → 读回"
+
+  # ⚠️ v0.101.0：状态是**四态**（new / doing / skip / done）——
+  #    旧两态里的 'handled' 现在**不认了**（会被 400 拒掉）。
+  curl -s -m 10 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"status":"done"}' "$B/api/v1/feedback/$FBID/status" \
+    | python -c "import json,sys;d=json.load(sys.stdin);assert d.get('status')=='done', d" 2>/dev/null \
+    && ok "用户反馈：标记已修好（done）" || fail "用户反馈：标记已修好（done）"
+
+  # 状态非法必须被拒（400），不能默默改成别的
+  SB2=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d '{"status":"handled"}' "$B/api/v1/feedback/$FBID/status")
+  [[ "$SB2" == "400" ]] && ok "用户反馈：非法状态被拒（400）" || fail "用户反馈：非法状态被拒（实际 $SB2）"
+
+  # ⚠️ **skip 必须写理由** —— 不处理而不说理由 = 把判断藏起来 ⇒ 下一轮还会重纠结
+  SB4=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d '{"status":"skip"}' "$B/api/v1/feedback/$FBID/status")
+  [[ "$SB4" == "400" ]] && ok "用户反馈：skip 不写理由被拒（400）" || fail "用户反馈：skip 不写理由被拒（实际 $SB4）"
+  SB5=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' -d '{"status":"skip","note":"这是既有限制，不是缺陷"}' \
+    "$B/api/v1/feedback/$FBID/status")
+  [[ "$SB5" == "200" ]] && ok "用户反馈：skip 带理由被记下（200）" || fail "用户反馈：skip 带理由（实际 $SB5）"
+else
+  fail "用户反馈：提交（拿不到 id）"
+fi
+
+# 空内容必须被拒（400）：空反馈是误触，不该进库
+SB3=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{"message":"   "}' "$B/api/v1/feedback")
+[[ "$SB3" == "400" ]] && ok "用户反馈：空内容被拒（400）" || fail "用户反馈：空内容被拒（实际 $SB3）"
+
+# 21b. 用户反馈的**截图**（v0.101.0）：上传 → 取回字节一致 → 假图片被拒 → 清理文件
+#
+# ⚠️ 这里真的传了一张图 ⇒ 测完要把**文件**也删掉
+#    （只删 DB 那一行的话，media/feedback/ 会越攒越多）。
+if [ "${FBID:-0}" -gt 0 ]; then
+  FBID="$FBID" python - > /tmp/fbimg.out 2>&1 <<'PYEOF'
+import io, json, os, sys, urllib.error, urllib.request, uuid, zlib
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+API = "http://127.0.0.1:8090"
+FID = int(os.environ["FBID"])
+TOKEN = ""
+for line in io.open(".env", encoding="utf-8-sig"):
+    if line.startswith("API_TOKEN="):
+        TOKEN = line.split("=", 1)[1].strip()
+        break
+H = {"Authorization": "Bearer " + TOKEN}
+
+
+def req(method, path, data=None, headers=None):
+    h = dict(H)
+    if headers:
+        h.update(headers)
+    r = urllib.request.Request(API + path, data=data, headers=h, method=method)
+    try:
+        with urllib.request.urlopen(r, timeout=20) as resp:
+            return resp.status, resp.read(), resp.headers.get("Content-Type")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), e.headers.get("Content-Type")
+
+
+def png(w=48, h=48):
+    raw = b"".join(b"\x00" + bytes((10, 120, 200)) * w for _ in range(h))
+
+    def chunk(tag, data):
+        c = tag + data
+        return (len(data).to_bytes(4, "big") + c +
+                (zlib.crc32(c) & 0xFFFFFFFF).to_bytes(4, "big"))
+
+    return (b"\x89PNG\r\n\x1a\n" +
+            chunk(b"IHDR", w.to_bytes(4, "big") + h.to_bytes(4, "big") + bytes([8, 2, 0, 0, 0])) +
+            chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def multipart(filename, content, ctype="image/png"):
+    b = "----b" + uuid.uuid4().hex
+    body = (
+        ("--%s\r\n" % b).encode() +
+        ('Content-Disposition: form-data; name="image"; filename="%s"\r\n' % filename).encode() +
+        ("Content-Type: %s\r\n\r\n" % ctype).encode() + content + b"\r\n" +
+        ("--%s--\r\n" % b).encode()
+    )
+    return body, "multipart/form-data; boundary=" + b
+
+
+data = png()
+mp, ct = multipart("shot.png", data)
+st, body, _ = req("POST", "/api/v1/feedback/%d/image" % FID, mp, {"Content-Type": ct})
+assert st == 200, "上传图片失败 HTTP %s: %s" % (st, body[:200])
+fb = json.loads(body)
+assert fb.get("image_url"), "上传后没有 image_url"
+assert fb.get("image_path", "").endswith(".png"), "image_path 不是我们生成的名字: %r" % fb.get("image_path")
+
+st, got, ctype = req("GET", "/api/v1/feedback/%d/image" % FID)
+assert st == 200, "取图失败 HTTP %s" % st
+assert got == data, "取回的字节与上传的不一致"
+assert (ctype or "").startswith("image/png"), "Content-Type 不对: %r" % ctype
+
+mp, ct = multipart("evil.png", "这不是图片，只是一段文字".encode("utf-8"))
+st, body, _ = req("POST", "/api/v1/feedback/%d/image" % FID, mp, {"Content-Type": ct})
+assert st == 400, "假图片应当被拒，实际 HTTP %s" % st
+
+# 清理文件（DB 那一行由外层 psql 删）
+for name in os.listdir(os.path.join("media", "feedback")) if os.path.isdir(os.path.join("media", "feedback")) else []:
+    if name.startswith(str(FID) + "."):
+        os.remove(os.path.join("media", "feedback", name))
+print("ok")
+PYEOF
+  if [ $? -eq 0 ]; then
+    ok "用户反馈：截图上传 / 取回字节一致 / 假图被拒 / 文件已清理"
+  else
+    fail "用户反馈：截图"
+    cat /tmp/fbimg.out | sed 's/^/    /'
+  fi
+fi
+# ⚠️ 清理：把冒烟写的那条删掉（别给用户列表留噪音）
+PU=$(grep '^POSTGRES_USER=' .env | cut -d= -f2 | tr -d '\r')
+PD=$(grep '^POSTGRES_DB=' .env | cut -d= -f2 | tr -d '\r')
+if command -v docker >/dev/null 2>&1 && [ -n "${FBID:-0}" ] && [ "$FBID" != "0" ]; then
+  docker exec -i teslamate-database-1 psql -U "$PU" -d "$PD" -c "DELETE FROM tm_user_feedback WHERE id = $FBID" >/dev/null 2>&1 \
+    && ok "用户反馈：冒烟数据已清理" || fail "用户反馈：冒烟数据清理失败（用户列表里会多一条）"
+fi
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 冒烟通过" || echo "❌ 有失败项，禁止发版"
 exit "$FAIL"

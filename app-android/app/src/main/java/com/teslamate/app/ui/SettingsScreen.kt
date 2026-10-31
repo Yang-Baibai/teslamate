@@ -2,6 +2,12 @@
 
 package com.teslamate.app.ui
 
+import android.content.Context
+import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateDpAsState
@@ -10,6 +16,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -51,6 +58,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -62,12 +71,16 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import coil.compose.SubcomposeAsyncImage
+import coil.request.ImageRequest
 import com.teslamate.app.Api
 import com.teslamate.app.AppSettings
 import com.teslamate.app.BuildConfig
 import com.teslamate.app.Car
+import com.teslamate.app.FeedbackItem
 import com.teslamate.app.Haptics
 import com.teslamate.app.HapticKind
+import com.teslamate.app.fmtShort
 import com.teslamate.app.fmtThousands
 import com.teslamate.app.saveSettings
 import kotlinx.coroutines.Dispatchers
@@ -107,6 +120,15 @@ enum class SettingsRoute {
 
     /** 怎么找到地址和令牌 */
     Help,
+
+    /**
+     * ⚠️ **v0.100.0：用户反馈**。
+     *
+     * 迭代闭环里最贵的一环是「用户发现问题 → 说清楚问题在哪 → 开发者复现 → 修」。
+     * 前两环靠**记忆 + 口头转述** ⇒ 这一页把反馈**通道长进产品里**：
+     * 当场记一条（自动附带页面 / 版本 / 车辆），迭代时逐条取出来修。
+     */
+    Feedback,
 
     /**
      * ⚠️ v0.22.0：服务器状态。
@@ -158,6 +180,13 @@ fun SettingsScreen(
     onRouteChange: (SettingsRoute?) -> Unit = {},
     /** ⚠️ v0.22.0：给「服务器状态」页用（拉 /api/v1/health）。 */
     api: com.teslamate.app.Api? = null,
+    /**
+     * ⚠️ **v0.100.0**：进设置页之前**所在的页面**（给反馈当上下文）。
+     *
+     * 用户记一条反馈时**不该**再打一遍「在哪个页面看到的」——
+     * 那正是这套东西要消除的成本 ⇒ 由 App 自动带上。
+     */
+    originScreen: String = "",
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -424,6 +453,19 @@ fun SettingsScreen(
                 BackHandler { onRouteChange(null) }
                 SettingsHelpPage(onBack = { onRouteChange(null) })
             }
+            SettingsRoute.Feedback -> {
+                BackHandler { onRouteChange(null) }
+                SettingsFeedbackPage(
+                    api = api,
+                    originScreen = originScreen,
+                    carId = settings.carId,
+                    carName = cars.firstOrNull { it.id == settings.carId }?.name.orEmpty(),
+                    // ⚠️ v0.101.0：截图要带鉴权头 ⇒ 需要服务器地址与令牌。
+                    serverUrl = settings.serverUrl,
+                    token = settings.token,
+                    onBack = { onRouteChange(null) },
+                )
+            }
             SettingsRoute.ServerStatus -> {
                 BackHandler { onRouteChange(null) }
                 SettingsServerStatusPage(
@@ -514,11 +556,19 @@ private fun SettingsRootPage(
                 }
             }
             item {
-                SectionCard("帮助", Modifier.animateItem()) {
+                SectionCard("帮助与反馈", Modifier.animateItem()) {
                     SettingRow(
                         title = "怎么找到地址和令牌？",
                         subtitle = "局域网 IP · Tailscale",
                     ) { onOpen(SettingsRoute.Help) }
+                    RowDivider()
+                    // ⚠️ **v0.100.0：用户反馈入口** ——
+                    // 反馈**通道长在产品里**：发现问题当场记一条（自动附带页面 / 版本 / 车辆），
+                    // 迭代时逐条处理 —— 不用再口头复述「问题在哪」。
+                    SettingRow(
+                        title = "用户反馈",
+                        subtitle = "记下问题与建议 · 自动附带页面与版本",
+                    ) { onOpen(SettingsRoute.Feedback) }
                 }
             }
             item {
@@ -1400,6 +1450,441 @@ private fun SettingsAboutPage(onBack: () -> Unit, modifier: Modifier = Modifier)
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * 用户反馈页（v0.100.0）。
+ *
+ * ⚠️ 这一页要解决的是**迭代闭环里最贵的一环**：
+ * 「用户发现问题 → 说清楚问题在哪 → 开发者复现 → 修」——
+ * 前两环全靠**记忆 + 口头转述**：用户得先记住「哪个页面、什么现象」，
+ * 再在聊天里复述一遍；开发者只有读到那句话才知道该看哪里。
+ *
+ * ⇒ 反馈**通道长在产品里**：这里记一条（自动附带页面 / 版本 / 车辆），
+ * 迭代时再逐条取出来修 —— 不用再复述，也不用再靠记忆。
+ *
+ * ⚠️ **「已处理」不是装饰**：没有它，「最新的反馈」只能等于「最近提交的反馈」，
+ * 用户提过的老问题会被反复当成新问题重看一遍。
+ */
+@Composable
+private fun SettingsFeedbackPage(
+    api: Api?,
+    originScreen: String,
+    carId: Int,
+    carName: String,
+    serverUrl: String,
+    token: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
+    var feedbacks by remember { mutableStateOf<List<FeedbackItem>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var draft by remember { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    var hint by remember { mutableStateOf<String?>(null) }
+    var hintIsError by remember { mutableStateOf(false) }
+    // ⚠️ **v0.101.0：截图** —— 反馈常常是「这儿不对」配一张图，光靠文字说不清。
+    var pickedImage by remember { mutableStateOf<Pair<ByteArray, String>?>(null) }
+
+    // 相册选择器（Photo Picker）：不需要相册权限，也拿不到别的照片。
+    val picker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val img = withContext(Dispatchers.IO) { loadFeedbackImage(ctx, uri) }
+            if (img == null) {
+                hint = "这张图读不出来，换一张试试"
+                hintIsError = true
+            } else {
+                pickedImage = img
+                hint = null
+            }
+        }
+    }
+
+    // ⚠️ 上下文**自动带上**：用户不该为了说清「在哪个页面看到的」再打几个字。
+    val ctxParts = mutableListOf<String>()
+    if (originScreen.isNotBlank()) ctxParts += "页面 $originScreen"
+    ctxParts += "v${BuildConfig.VERSION_NAME}"
+    if (carName.isNotBlank()) ctxParts += carName
+    val ctxLine = ctxParts.joinToString(" · ")
+
+    fun load() {
+        val a = api
+        if (a == null) {
+            error = "尚未配置服务器，请到「设置」页填地址与令牌"
+            loading = false
+            return
+        }
+        scope.launch {
+            loading = true
+            runCatching { withContext(Dispatchers.IO) { a.feedback(limit = 50) } }
+                .onSuccess {
+                    feedbacks = it.items
+                    error = null
+                }
+                .onFailure { error = it.message ?: "读取反馈失败" }
+            loading = false
+        }
+    }
+
+    LaunchedEffect(Unit) { load() }
+
+    fun submit() {
+        val a = api ?: return
+        if (draft.isBlank()) return
+        sending = true
+        hint = null
+        scope.launch {
+            // ⚠️ **文字与截图分开报结果** ——
+            // 图传失败时**文字已经存下来了**，只说「提交失败」会让用户以为白写了，
+            // 于是再写一遍 ⇒ 反馈列表里出现两条一样的。
+            val created = runCatching {
+                withContext(Dispatchers.IO) {
+                    a.submitFeedback(
+                        message = draft.trim(),
+                        screen = originScreen,
+                        appVersion = BuildConfig.VERSION_NAME,
+                        carId = carId.takeIf { it > 0 },
+                        carName = carName,
+                    )
+                }
+            }.getOrElse { e ->
+                hint = e.message ?: "提交失败"
+                hintIsError = true
+                sending = false
+                return@launch
+            }
+            feedbacks = listOf(created) + feedbacks
+            draft = ""
+
+            val img = pickedImage
+            if (img == null) {
+                hint = "已记录"
+                hintIsError = false
+            } else {
+                val up = runCatching {
+                    withContext(Dispatchers.IO) {
+                        a.uploadFeedbackImage(created.id, img.first, img.second)
+                    }
+                }
+                if (up.isSuccess) {
+                    feedbacks = feedbacks.map { if (it.id == created.id) up.getOrThrow() else it }
+                    hint = "已记录（含截图）"
+                    hintIsError = false
+                } else {
+                    hint = "文字已记下，截图没传上"
+                    hintIsError = true
+                }
+            }
+            pickedImage = null
+            sending = false
+        }
+    }
+
+    fun setStatus(id: Long, status: String) {
+        val a = api ?: return
+        scope.launch {
+            runCatching { withContext(Dispatchers.IO) { a.setFeedbackStatus(id, status) } }
+                .onSuccess { updated ->
+                    feedbacks = feedbacks.map { if (it.id == updated.id) updated else it }
+                }
+                .onFailure { error = it.message ?: "操作失败" }
+        }
+    }
+
+    Column(modifier) {
+        SecondaryTitleBar(title = "用户反馈", backLabel = "设置", onBack = onBack)
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item {
+                SectionCard("记一条") {
+                    IosFieldMultiline(
+                        label = "哪里不对？",
+                        value = draft,
+                        onValueChange = { draft = it; hint = null },
+                        placeholder = "看到什么现象、期望是什么",
+                    )
+                    // ⚠️ **v0.101.0：截图** —— 「这儿不对」这类问题，一张图顶三句话。
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(
+                            onClick = {
+                                picker.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.heightIn(min = 44.dp),
+                        ) {
+                            Text(if (pickedImage == null) "加一张截图" else "换一张截图")
+                        }
+                        pickedImage?.let { pair ->
+                            Spacer(Modifier.width(8.dp))
+                            val bmp = remember(pair) {
+                                BitmapFactory.decodeByteArray(pair.first, 0, pair.first.size)?.asImageBitmap()
+                            }
+                            if (bmp != null) {
+                                Image(
+                                    bitmap = bmp,
+                                    contentDescription = "选中的截图",
+                                    modifier = Modifier
+                                        .size(56.dp)
+                                        .clip(RoundedCornerShape(8.dp)),
+                                    contentScale = ContentScale.Crop,
+                                )
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(
+                                onClick = { pickedImage = null },
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.heightIn(min = 44.dp),
+                            ) { Text("移除") }
+                        }
+                    }
+                    Button(
+                        onClick = { submit() },
+                        enabled = !sending && draft.isNotBlank(),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 44.dp)
+                            .semantics(mergeDescendants = true) { contentDescription = "提交反馈" },
+                    ) {
+                        Text(if (sending) "提交中…" else "提交")
+                    }
+                    hint?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (hintIsError) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.tertiary
+                            },
+                        )
+                    }
+                    Text(
+                        "自动附带：$ctxLine",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (loading && feedbacks.isEmpty()) {
+                item {
+                    SectionCard {
+                        Text(
+                            "读取中…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else if (error != null && feedbacks.isEmpty()) {
+                item {
+                    SectionCard {
+                        Text(
+                            error!!,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        OutlinedButton(
+                            onClick = { load() },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.heightIn(min = 44.dp),
+                        ) { Text("重试") }
+                    }
+                }
+            } else if (feedbacks.isEmpty()) {
+                item {
+                    SectionCard {
+                        Text("还没有反馈", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "发现问题记在这里就行。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                items(feedbacks.size, key = { idx -> feedbacks[idx].id }) { idx ->
+                    val f = feedbacks[idx]
+                    // ⚠️ 别叫 `ctx` —— 页面里已经有一个 `ctx`（LocalContext，取图要用），
+                    // 这里再声明会把**外层的遮蔽掉** ⇒ ImageRequest.Builder 拿到的是个 List。
+                    val ctxParts = mutableListOf<String>()
+                    if (f.screen.isNotBlank()) ctxParts += f.screen
+                    if (f.app_version.isNotBlank()) ctxParts += "v${f.app_version}"
+                    if (f.car_name.isNotBlank()) ctxParts += f.car_name
+                    SectionCard {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                f.created_at.fmtShort(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Spacer(Modifier.weight(1f))
+                            Text(
+                                // ⚠️ **v0.101.0：四态**（new / doing / skip / done）。
+                                when (f.status) {
+                                    "doing" -> "要处理"
+                                    "skip" -> "不处理"
+                                    "done" -> "已修好"
+                                    else -> "待评估"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(f.message, style = MaterialTheme.typography.bodyMedium)
+                        // ⚠️ **v0.101.0：截图** —— 反馈里的图是**用户自己的屏幕**
+                        // （可能带车牌/位置）⇒ 只从**鉴权端点**取，不静态暴露。
+                        if (f.image_url.isNotBlank() && serverUrl.isNotBlank()) {
+                            SubcomposeAsyncImage(
+                                model = ImageRequest.Builder(ctx)
+                                    .data(serverUrl.trimEnd('/') + f.image_url)
+                                    .addHeader("Authorization", "Bearer $token")
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = "这条反馈的截图",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 240.dp)
+                                    .clip(RoundedCornerShape(12.dp)),
+                                contentScale = ContentScale.Fit,
+                            )
+                        }
+                        if (ctxParts.isNotEmpty()) {
+                            Text(
+                                ctxParts.joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        // ⚠️ v0.101.0：状态是**四态**（new / doing / skip / done）。
+                        //   已修好 ⇒ done；重新打开 ⇒ new（回到「还没评估」）。
+                        if (f.decision_note.isNotBlank()) {
+                            Text(
+                                f.decision_note,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                setStatus(f.id, if (f.status == "done") "new" else "done")
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.heightIn(min = 44.dp),
+                        ) {
+                            Text(if (f.status == "done") "重新打开" else "标记已修好")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 读一张图并压到**能上传的大小**。
+ *
+ * ⚠️ 手机原图常有 4~8 MB（12MP JPEG）⇒ 直接传会被服务端的 5 MB 上限拒掉，
+ * 而用户看到「图片太大」只会觉得功能坏了。
+ * ⇒ 超过 2 MB 就**缩到长边 ≤1600px 再压成 JPEG**；
+ * 小图（截图居多）**原样上传** —— 免得 JPEG 把小字压糊。
+ *
+ * ⚠️ `inSampleSize` 必须是 **2 的幂**（解码器只认这个）⇒ 用 while 递推。
+ *
+ * @return 字节 + MIME；读不出来返回 null。
+ */
+private fun loadFeedbackImage(context: Context, uri: Uri): Pair<ByteArray, String>? {
+    val raw = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+    }.getOrNull() ?: return null
+    if (raw.isEmpty()) return null
+    if (raw.size <= 2 * 1024 * 1024) {
+        val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+        return raw to mime
+    }
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
+    val longest = maxOf(bounds.outWidth, bounds.outHeight)
+    if (longest <= 0) return null
+    var sample = 1
+    while (longest / sample > 1600) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+    val scaled = runCatching {
+        BitmapFactory.decodeByteArray(raw, 0, raw.size, opts)
+    }.getOrNull() ?: return null
+    val out = java.io.ByteArrayOutputStream()
+    scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+    val bytes = out.toByteArray()
+    if (bytes.isEmpty()) return null
+    return bytes to "image/jpeg"
+}
+
+/**
+ * iOS 风格的**多行**输入框（与 [IosField] 同一套视觉语言）。
+ *
+ * ⚠️ **v0.100.0**：用户反馈要能写好几行 ⇒ 单行的 [IosField] 不够用。
+ * 视觉上必须与单行版**完全同源**（同一个 cardInset 底、0dp 描边、标签在上），
+ * 否则同一个页面里两种输入框会像出自两个 App。
+ *
+ * ⚠️ 最小高度给 96dp：反馈是「写一段话」，
+ * 一行的框会让人以为只能写一句 ⇒ 写不下就换行，而不是被框高骗了。
+ */
+@Composable
+fun IosFieldMultiline(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String = "",
+) {
+    val accents = LocalAccentColors.current
+    Column(modifier.fillMaxWidth()) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 96.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(accents.cardInset)
+                .padding(horizontal = 14.dp, vertical = 13.dp),
+        ) {
+            if (value.isEmpty() && placeholder.isNotEmpty()) {
+                Text(
+                    placeholder,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = false,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { contentDescription = label },
+            )
         }
     }
 }

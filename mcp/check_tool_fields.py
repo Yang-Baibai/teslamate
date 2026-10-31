@@ -42,6 +42,13 @@ import teslamate_mcp as T
 SPEC = [
     ("teslamate_status", {}, "电量%", "电量"),
     ("teslamate_status", {}, "里程表km", "里程表"),
+    # ⚠️ **v0.100.0**：用户反馈工具。
+    #    这两个**恒在**（哪怕一条反馈都没有）⇒ 可以断言。
+    #    ⚠️ 「反馈[0].内容」这种**列表元素**不能进 SPEC ——
+    #    没有反馈时数组长度为 0 ⇒ 访问下标越界 ⇒ 自检假红。
+    #    那部分交给下面的 check_feedback_items()（有数据才查）。
+    ("teslamate_feedback", {}, "条数", "反馈条数"),
+    ("teslamate_feedback", {}, "待评估", "还没评估的反馈条数"),
     ("teslamate_status", {}, "车机状态", "车机状态"),
     # ⚠️ **v0.80.0**：锁车状态的**来源**与**是否陈旧**。
     #
@@ -281,6 +288,34 @@ def check_cabin_contract() -> list:
     return bad
 
 
+def check_feedback_items() -> list:
+    """反馈**每一条**都必须带上「id / 时间 / 内容 / 状态」。
+
+    ⚠️ 为什么不能写进 SPEC：没有反馈时数组长度为 0 ⇒ 访问 `[0]` 越界 ⇒ 自检假红。
+    ⇒ 这里**有数据才查**（跟「正在充电时跳过场次id」同一个道理：
+    那不是「不合法」，是「现在没有」）。
+
+    ⚠️ 字段名写错不会报错、只会静默变 null —— 本仓库的老教训。
+    """
+    bad = []
+    try:
+        res = T.teslamate_feedback(limit=5)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    items = res.get("反馈") or []
+    if not items:
+        return bad
+    for it in items:
+        for key in ("id", "时间", "内容", "状态"):
+            if it.get(key) in (None, ""):
+                bad.append("反馈条目缺 %s（%r）" % (key, it))
+        # ⚠️ 截图字段允许为空（没附图），但**键必须在** ——
+        #    少了它，调用方就没法区分「没图」与「我们没取到」。
+        if "截图" not in it:
+            bad.append("反馈条目少了「截图」键（%r）" % (it,))
+    return bad
+
+
 def main() -> int:
     print("=== MCP 工具字段映射自检 ===")
     bad = []
@@ -361,6 +396,13 @@ def main() -> int:
         names = sorted(n for n in dir(T) if n.startswith("teslamate_"))
         print("  ✓ %-26s %-24s %d 个工具都写了「什么时候用」" % ("（description）", "工具用途说明", len(names)))
     bad.extend(desc_bad)
+
+    fb_bad = check_feedback_items()
+    for b in fb_bad:
+        print("  ✗ %s" % b)
+    if not fb_bad:
+        print("  ✓ %-26s %-24s 每条反馈都带 id / 时间 / 内容 / 状态" % ("teslamate_feedback", "条目字段"))
+    bad.extend(fb_bad)
 
     print("\n  ⇒ %s（%d 项不合规）" % ("通过" if not bad else "有问题", len(bad)))
     return 0 if not bad else 1

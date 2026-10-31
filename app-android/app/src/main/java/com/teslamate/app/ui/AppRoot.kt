@@ -111,6 +111,10 @@ fun TeslaMateApp() {
     // 而设置页是第 4 个 Tab，横幅在第 1 个 Tab 里，
     // 不把这个状态提上来就没法跳过去（可靠性复核：「401 无出口」）。
     var tab by remember { mutableStateOf(Tab.STATUS) }
+    // ⚠️ **v0.100.0**：记住**进设置页之前所在的页面** ——
+    // 用户在「设置 → 用户反馈」记一条时**不该**再打一遍「在哪个页面看到的」
+    // ⇒ 那正是这套东西要消除的成本，所以由 App 自动带上。
+    var lastContentTab by remember { mutableStateOf<Tab?>(null) }
     // ⚠️ v0.13.0（iOS 交互评审 P0-1 / P0-2）：记录页的详情选中态也提到 App 级。
     //   - 切 Tab 再回来，详情页**不会凭空消失**（iOS：每个 Tab 持有自己的导航栈）；
     //   - 「点当前 Tab = 回到根」才有地方可复位。
@@ -220,6 +224,8 @@ fun TeslaMateApp() {
                         // 它是独立的 @Composable 函数，拿不到 TeslaMateApp 的局部变量。
                         settingsRoute = settingsRoute,
                         onSettingsRouteChange = { settingsRoute = it },
+                        // ⚠️ v0.100.0：把「进设置前所在的页面」传下去（反馈的上下文）。
+                        originScreen = lastContentTab?.label ?: "",
                         onTabChange = { t ->
                             // ⚠️ v0.13.0（iOS 交互评审 P0-2）：**点当前已选中的 Tab = 回到根**。
                             //
@@ -244,6 +250,9 @@ fun TeslaMateApp() {
                             } else {
                                 Haptics.selection(ctx)
                                 tab = t
+                                // ⚠️ v0.100.0：切到**内容页**时记住它 ——
+                                // 设置页里的反馈要靠它当上下文（哪个页面看到的）。
+                                if (t != Tab.SETTINGS) lastContentTab = t
                             }
                         },
                     )
@@ -272,6 +281,8 @@ private fun MainScaffold(
     /** ⚠️ v0.20.0：设置页二级页路由（null = 根页）。 */
     settingsRoute: String? = null,
     onSettingsRouteChange: (String?) -> Unit = {},
+    /** ⚠️ v0.100.0：进设置页之前所在的页面（反馈的上下文）。 */
+    originScreen: String = "",
     onTabChange: (Tab) -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -545,6 +556,8 @@ private fun MainScaffold(
                         onRouteChange = { r -> onSettingsRouteChange(r?.name) },
                         // ⚠️ v0.22.0：给「服务器状态」二级页用。
                         api = settings.api(),
+                        // ⚠️ v0.100.0：给「用户反馈」二级页用（自动附带问题出在哪个页面）。
+                        originScreen = originScreen,
                     )
                 }
             }

@@ -82,6 +82,9 @@ func main() {
 	// ⚠️ v0.79.0 3/3：Fleet Telemetry 落地表（故障码 / 遥测错误 / 连接状态）。
 	// 建表失败不致命 —— 那样只是拿不到故障码，主服务照常。
 	ensureTelemetryTables(ctx)
+	// ⚠️ v0.100.0：用户反馈表（App「设置 → 用户反馈」写进来，迭代时逐条取）。
+	// 建表失败不致命 —— 那样只是反馈功能不可用，主服务照常。
+	ensureUserFeedbackTable(ctx)
 	// Tesla Fleet API（锁车状态）：没配凭据也照常启动，只是 locked 恒为 null（未知）
 	tesla = newTeslaClient(loadTeslaConfig())
 	if tesla.configured() {
@@ -166,6 +169,18 @@ func main() {
 	// 与上面的 telemetry_state 分工：那个给原始字段流，这个给能直接用的结论。
 	mux.HandleFunc("GET /api/v1/cars/{id}/telemetry_vehicle", auth(handleTelemetryVehicle))
 	mux.HandleFunc("GET /api/v1/app/latest", auth(handleAppLatest))
+	// ⚠️ **v0.100.0：用户反馈**（迭代闭环的「问题从哪来」）。
+	//   GET  → 读反馈列表（新的在前，可按状态筛）
+	//   POST → 提交一条（正文 + 页面/版本/车辆上下文）
+	//   POST → 改状态 / 写评估结论（要处理 / 不处理+理由 / 已修好）
+	//   POST → 传一张截图（multipart）
+	//   GET  → 看截图
+	// ⚠️ 与车况端点一样**要鉴权**：反馈与截图里可能有用户自己写的敏感内容。
+	mux.HandleFunc("GET /api/v1/feedback", auth(handleUserFeedbackList))
+	mux.HandleFunc("POST /api/v1/feedback", auth(handleUserFeedbackCreate))
+	mux.HandleFunc("POST /api/v1/feedback/{id}/status", auth(handleUserFeedbackStatus))
+	mux.HandleFunc("POST /api/v1/feedback/{id}/image", auth(handleUserFeedbackImageUpload))
+	mux.HandleFunc("GET /api/v1/feedback/{id}/image", auth(handleUserFeedbackImageGet))
 	mux.HandleFunc("GET /api/v1/app/staticmap", auth(handleStaticMap))
 	// APK 静态服务（不加 auth：DownloadManager 无法塞自定义 header；Tailscale 隧道已加密）
 	mux.Handle("/apk/", http.StripPrefix("/apk/", http.FileServer(http.Dir("/apk"))))

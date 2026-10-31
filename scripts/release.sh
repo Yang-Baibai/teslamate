@@ -7,6 +7,13 @@ cd "$(dirname "$0")/.."
 MSG="${1:-}"
 [ -z "$MSG" ] && { echo "用法: bash scripts/release.sh \"更新说明\""; exit 1; }
 
+# ══ 前置：用户反馈闸门 ══
+# ⚠️ **v0.101.0**：发版前**必须**先读未处理（待评估）的用户反馈并逐条评估。
+#    反馈通道长进产品之后，它就是**发版的输入** ⇒ 不能「想起来才看」。
+#    `set -e` ⇒ 闸门返回非 0 时本脚本直接停在这里（不会发出一个没评估过的版本）。
+echo "══ 前置：用户反馈闸门 ══"
+bash scripts/release-feedback-gate.sh
+
 APP_DIR=/c/tm-app/teslamate-app   # canonical 构建目录（ASCII 路径，原因见 README）
 echo "══ 1/6 构建 App ══"
 cd "$APP_DIR"

@@ -58,6 +58,10 @@ app-android/local.properties
 *.apk
 *.aab
 
+# ── 用户反馈的截图（v0.101.0）──────────────────────────────
+# 里面是**用户自己的屏幕**（可能带车牌/位置）⇒ 绝不进版本库。
+media/
+
 # ── IDE / OS ──
 .idea/
 .vscode/

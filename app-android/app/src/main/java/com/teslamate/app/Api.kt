@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -1468,6 +1469,103 @@ class Api private constructor(private val base: String, private val token: Strin
         }
     }
 
+    /**
+     * POST 一个 JSON 请求体并解析响应。
+     *
+     * ⚠️ **v0.100.0**：用户反馈要提交 ⇒ 需要写操作。
+     * 以前只有 `get` 与车控那条**手写**的 post ⇒ 这里补一个**统一**的，
+     * 免得每个写操作各抄一遍错误处理（抄一遍就多一个漂移点）。
+     */
+    private inline fun <reified T> post(path: String, payload: JsonObject): T {
+        val body = payload.toString().toRequestBody("application/json".toMediaType())
+        val req = Request.Builder()
+            .url(base + path)
+            .header("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    val parsed = runCatching { json.decodeFromString<ApiError>(text) }.getOrNull()
+                    val serverMsg = parsed?.error?.takeIf { it.isNotBlank() }
+                    // ⚠️ 与 get 同口径：401/403 是令牌问题（要给「去设置」的出口），
+                    // 5xx 不回显数据库内部信息。
+                    val kind = when {
+                        resp.code == 401 || resp.code == 403 -> ApiErrorKind.AUTH
+                        resp.code in 500..599 -> ApiErrorKind.SERVER
+                        else -> ApiErrorKind.OTHER
+                    }
+                    throw UserFacingException(
+                        when (resp.code) {
+                            401 -> "访问令牌无效，请到「设置」页重新填写"
+                            403 -> "没有访问权限，请到「设置」页检查令牌"
+                            in 500..599 -> "服务器内部错误，请稍后再试"
+                            else -> serverMsg ?: "提交失败（HTTP ${resp.code}）"
+                        },
+                        kind,
+                    )
+                }
+                return json.decodeFromString(text)
+            }
+        } catch (e: UserFacingException) {
+            throw e
+        } catch (e: SerializationException) {
+            throw UserFacingException(
+                "服务器返回的数据格式不对，请确认服务端是最新的版本",
+                ApiErrorKind.PARSE,
+            )
+        } catch (e: IOException) {
+            throw UserFacingException("网络异常，请稍后重试", ApiErrorKind.NETWORK)
+        }
+    }
+    /**
+     * POST 一个 **multipart** 请求体（截图上传用）。
+     *
+     * ⚠️ 与 [post] 分开：multipart 的 body 类型不同（不是 JSON），
+     * 而响应解析、错误分级完全一样 ⇒ 抽出来共用同一套口径。
+     */
+    private inline fun <reified T> postMultipart(path: String, body: MultipartBody): T {
+        val req = Request.Builder()
+            .url(base + path)
+            .header("Authorization", "Bearer $token")
+            .post(body)
+            .build()
+        try {
+            client.newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    val parsed = runCatching { json.decodeFromString<ApiError>(text) }.getOrNull()
+                    val serverMsg = parsed?.error?.takeIf { it.isNotBlank() }
+                    val kind = when {
+                        resp.code == 401 || resp.code == 403 -> ApiErrorKind.AUTH
+                        resp.code in 500..599 -> ApiErrorKind.SERVER
+                        else -> ApiErrorKind.OTHER
+                    }
+                    throw UserFacingException(
+                        when (resp.code) {
+                            401 -> "访问令牌无效，请到「设置」页重新填写"
+                            403 -> "没有访问权限，请到「设置」页检查令牌"
+                            in 500..599 -> "服务器内部错误，请稍后再试"
+                            else -> serverMsg ?: "上传失败（HTTP ${resp.code}）"
+                        },
+                        kind,
+                    )
+                }
+                return json.decodeFromString(text)
+            }
+        } catch (e: UserFacingException) {
+            throw e
+        } catch (e: SerializationException) {
+            throw UserFacingException(
+                "服务器返回的数据格式不对，请确认服务端是最新的版本",
+                ApiErrorKind.PARSE,
+            )
+        } catch (e: IOException) {
+            throw UserFacingException("网络异常，请稍后重试", ApiErrorKind.NETWORK)
+        }
+    }
+
     fun cars(): List<Car> = get("/api/v1/cars")
     fun status(carId: Int): CarStatus = get("/api/v1/cars/$carId/status")
 
@@ -1489,6 +1587,73 @@ class Api private constructor(private val base: String, private val token: Strin
         get("/api/v1/cars/$carId/stats?period=$period")
     fun battery(carId: Int): BatteryHealth = get("/api/v1/cars/$carId/battery")
     fun appLatest(): AppLatest = get("/api/v1/app/latest")
+
+    // ── 用户反馈（v0.100.0）────────────────────────────────────────
+    //
+    // ⚠️ 反馈的**上下文**（哪个页面 / 哪个版本 / 哪台车）由客户端**自动带上** ——
+    // 用户不该为了说清「问题在哪」而多打几个字（那正是这套东西要消除的成本）。
+
+    /** 读反馈列表（新的在前）。`status` 传空 = 全部。 */
+    fun feedback(limit: Int = 50, status: String = ""): FeedbackList =
+        get("/api/v1/feedback?limit=$limit&status=$status")
+
+    /**
+     * 提交一条反馈。
+     *
+     * ⚠️ 上下文是**可选**的：拿不到就空着 ⇒ 绝不能因为「没有页面名」而拦下反馈。
+     */
+    fun submitFeedback(
+        message: String,
+        screen: String = "",
+        appVersion: String = "",
+        carId: Int? = null,
+        carName: String = "",
+    ): FeedbackItem = post(
+        "/api/v1/feedback",
+        buildJsonObject {
+            put("message", message)
+            put("screen", screen)
+            put("app_version", appVersion)
+            if (carId != null) put("car_id", carId)
+            put("car_name", carName)
+            put("source", "app")
+        },
+    )
+
+    /**
+     * 改一条反馈的状态 / 写评估结论。
+     *
+     * @param status new / doing / skip / done
+     * @param note 评估理由（`skip` 时**必填**，否则服务端 400）
+     */
+    fun setFeedbackStatus(id: Long, status: String, note: String = ""): FeedbackItem = post(
+        "/api/v1/feedback/$id/status",
+        buildJsonObject {
+            put("status", status)
+            if (note.isNotBlank()) put("note", note)
+        },
+    )
+
+    /**
+     * 给一条反馈传一张截图（multipart/form-data，字段名 `image`）。
+     *
+     * ⚠️ **文件名由服务端自己生成** —— 客户端给的文件名可以带路径、可以带 `.exe`，
+     * 服务端只按**魔数**认格式（JPG/PNG/WebP/GIF），别的直接 400。
+     */
+    fun uploadFeedbackImage(id: Long, bytes: ByteArray, mimeType: String = "image/jpeg"): FeedbackItem {
+        val ext = when (mimeType.lowercase()) {
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            "image/gif" -> "gif"
+            else -> "jpg"
+        }
+        val body = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("image", "feedback.$ext", bytes.toRequestBody(mimeType.toMediaType()))
+            .build()
+        return postMultipart("/api/v1/feedback/$id/image", body)
+    }
+
 
     /**
      * ⚠️ v0.22.0：服务器健康详情（给 App 的「服务器状态」页用）。
@@ -1755,4 +1920,45 @@ data class CommandResult(
     val hint: String? = null,
     val response: JsonObject? = null,
     val at: String? = null,
+)
+// ── 用户反馈模型（v0.100.0）────────────────────────────────────────
+
+/**
+ * 一条用户反馈。
+ *
+ * ⚠️ 字段名与服务端 `api/feedback.go` 的 `UserFeedback` **逐字对应** ——
+ * 键名写错不会报错、只会静默变 null（本仓库的老教训）。
+ */
+@Serializable
+data class FeedbackItem(
+    val id: Long = 0,
+    @Serializable(with = InstantSer::class) val created_at: Instant,
+    /** 反馈正文（用户自己写的） */
+    val message: String = "",
+    /** 问题出在哪个页面（客户端自动带上，可空） */
+    val screen: String = "",
+    /** 提交时的 App 版本（客户端自动带上，可空） */
+    val app_version: String = "",
+    /** 当时选中的车（客户端自动带上，可空） */
+    val car_name: String = "",
+    /**
+     * new（还没评估）/ doing（评估过：要处理）/ skip（评估过：不处理）/ done（已修好）。
+     *
+     * ⚠️ **v0.101.0**：从两态扩到四态 —— 「评估结论」是**数据**，
+     * 不该每轮迭代都把同一批老问题重新判断一遍。
+     */
+    val status: String = "new",
+    /** 评估结论（skip 时必填；重新打开会清空） */
+    val decision_note: String = "",
+    /** 截图的取图地址（空 = 没图） */
+    val image_url: String = "",
+    /** 标记为已修好的时刻 */
+    @Serializable(with = InstantSer::class) val handled_at: Instant? = null,
+)
+
+/** 反馈列表。 */
+@Serializable
+data class FeedbackList(
+    val items: List<FeedbackItem> = emptyList(),
+    val total: Int = 0,
 )

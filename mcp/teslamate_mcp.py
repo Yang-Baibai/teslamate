@@ -1036,6 +1036,104 @@ def teslamate_alerts() -> dict:
         out["警告"] = "遥测从未接入，**拿不到**故障码 —— 这不等于「车没有故障」。"
     return out
 
+
+@mcp.tool()
+def teslamate_feedback(limit: int = 20, status: str = "") -> dict:
+    """读**用户反馈**（用户自己在 App「设置 → 用户反馈」里记下来的问题与建议）。
+
+    **什么时候用**：迭代开始前先跑这个 —— 用户在 App 里记的问题全在这儿，
+    不用再问「你是在哪个页面发现的」「当时是什么现象」。
+
+    ⚠️ `status` 传 `new` 只看**还没评估**的；空串 = 全部。
+
+    ⚠️ **反馈是用户的原话** —— 别替它改写，也别自己判断「这条其实不算问题」；
+    判断的结果请用 `teslamate_feedback_decision` **写回**（要处理 / 不处理 + 理由）。
+
+    ⚠️ 分工：车况 / 电量 → `teslamate_status`；故障码 → `teslamate_alerts`。
+    """
+    try:
+        n = max(1, min(int(limit), 200))
+    except Exception:
+        n = 20
+    # ⚠️ status 只认四个值（服务端会拒）⇒ 这里先挡一层，别把脏参数打给 API。
+    st = status if status in ("new", "doing", "skip", "done") else ""
+    data = _get("/api/v1/feedback?limit=%d&status=%s" % (n, st))
+    if not isinstance(data, dict) or "error" in data:
+        return data if isinstance(data, dict) else {"error": "返回格式异常"}
+
+    items = data.get("items") or []
+    return {
+        # ⚠️ 这两个**恒在**（哪怕一条反馈都没有）⇒ 可以被字段自检断言。
+        "条数": len(items),
+        "待评估": sum(1 for i in items if i.get("status") == "new"),
+        "反馈": [
+            {
+                "id": i.get("id"),
+                "时间": i.get("created_at"),
+                "内容": i.get("message"),
+                # ⚠️ 上下文**可能是空的**（老数据 / 客户端没带）⇒ 明说「未记录」，
+                #    不要编一个页面名出来。
+                "页面": i.get("screen") or "（未记录）",
+                "App版本": i.get("app_version") or "（未记录）",
+                "车辆": i.get("car_name") or "",
+                "状态": _feedback_status_cn(i.get("status")),
+                "评估结论": i.get("decision_note") or "",
+                # ⚠️ 截图给的是**宿主上的绝对路径** —— 这样才能直接打开看图。
+                "截图": _feedback_image_path(i.get("image_path")),
+            }
+            for i in items
+        ],
+    }
+
+
+def _feedback_status_cn(status: Any) -> str:
+    """反馈状态 → 中文（与服务端的四态一致）。"""
+    return {
+        "new": "待评估",
+        "doing": "要处理",
+        "skip": "不处理",
+        "done": "已修好",
+    }.get(status or "", "未知")
+
+
+def _feedback_image_path(image_path: Any) -> str:
+    """截图相对路径 → **宿主上的绝对路径**（agent 能直接打开看图）。"""
+    p = (image_path or "").strip()
+    if not p:
+        return ""
+    # ⚠️ 只取文件名 ⇒ 就算库里被塞进 "../../xxx" 也出不了 media 目录。
+    return str(_REPO / "media" / "feedback" / Path(p).name)
+
+
+@mcp.tool()
+def teslamate_feedback_decision(feedback_id: int, decision: str, note: str = "") -> dict:
+    """给一条用户反馈**写评估结论**（发版前的必做动作）。
+
+    **什么时候用**：每次迭代开始、读完 `teslamate_feedback` 之后，
+    对每条「待评估」的反馈给出判断 —— 要处理（doing）还是不处理（skip + 理由）。
+
+    ⚠️ **skip 必须写理由**：不处理而不说理由 ⇒ 下一轮还会有人重新纠结同一件事。
+    ⚠️ `done` = 已经修好了（改完记得回填它）。
+    """
+    d = (decision or "").strip()
+    if d not in ("doing", "skip", "done", "new"):
+        return {"error": "decision 只能是 doing / skip / done / new"}
+    if d == "skip" and not (note or "").strip():
+        return {"error": "判断为「不处理」时必须写理由"}
+    body = {"status": d}
+    if (note or "").strip():
+        body["note"] = note.strip()
+    res = _request("POST", "/api/v1/feedback/%d/status" % int(feedback_id), body)
+    if not isinstance(res, dict) or "error" in res:
+        return res if isinstance(res, dict) else {"error": "返回格式异常"}
+    return {
+        "id": res.get("id"),
+        "状态": _feedback_status_cn(res.get("status")),
+        "评估结论": res.get("decision_note") or "",
+        "内容": res.get("message"),
+    }
+
+
 # --------------------------------------------------------------------------
 # 入口
 # --------------------------------------------------------------------------
