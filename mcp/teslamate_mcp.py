@@ -543,7 +543,16 @@ def teslamate_stats(period: str = "week") -> dict:
         "周期": p,
         "服务端时区": data.get("server_timezone"),
         "里程km": summ.get("km"),
-        "行驶耗电(度)": summ.get("drive_kwh"),
+        # ⚠️ **v0.93.0（顺手修掉的真问题）**：键名是 **`kwh_used`**，不是 `drive_kwh`。
+        #
+        # 服务端 `/cars/{id}/stats` 的 `summary` 里只有 `kwh_used`（全库 grep：
+        # `drive_kwh` **只存在于本文件**，服务端从来没下过这个键）⇒
+        # 这一行**一直**是 `None` —— 飞书里问「这周用了多少电」得到的是空值，
+        # 而 App 同一屏显示「行驶耗电 15.2 度」⇒ **两边对不上**。
+        #
+        # 这正是本轮把「行驶耗电」折进「更多明细」时撞上的：
+        # App 少显示可以，但 Hermes 侧必须**一条不少**。
+        "行驶耗电(度)": summ.get("kwh_used"),
         "充入电量(度)": summ.get("charge_kwh"),
         "行程数": summ.get("drive_count"),
         "充电次数": summ.get("charge_count"),

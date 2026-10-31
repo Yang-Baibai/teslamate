@@ -860,23 +860,34 @@ internal fun ChargeDetail(
                     // 新手「完全不懂，纯 jargon」—— 但老手进阶后真的想看。
                     // 折进「电气细节」：新手不被干扰，老手数据一点没丢。
                     CollapsibleSection("电气细节") {
-                        KV("峰值电压", charge.peak_voltage?.let { "$it V" } ?: "—")
-                        KV("平均电压", charge.avg_voltage?.let { "$it V" } ?: "—")
-                        KV("峰值电流", charge.peak_current?.let { "$it A" } ?: "—")
-                        KV("平均电流", charge.avg_current?.let { "$it A" } ?: "—")
-                        val phase = charge.charger_phases
-                        val v = charge.charger_voltage
-                        val a = charge.charger_current
-                        if (phase != null && phase > 0) {
-                            KV("相数", "$phase 相（当前 ${v ?: "—"}V / ${a ?: "—"}A）")
-                        } else if (v != null && v > 0) {
-                            KV("当前电压/电流", "$v V / $a A（直流）")
-                        } else if (charge.is_dc) {
-                            Text(
-                                "本充电桩（直流快充）未上报电压与电流，仅记录功率。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                        // ⚠️ **v0.93.0（顺手修掉的真问题）：内容必须包一层 `Column { }`。**
+                        //
+                        // `CollapsibleSection` 的内容 lambda **不是 ColumnScope**
+                        // （它被塞进 `AnimatedVisibility`）⇒ 多个 composable **直接并列**
+                        // 会**全部叠在同一位置** —— 屏幕上只看得见最后一行，
+                        // 前面的行被盖住（不是「排版丑」，是**内容丢了**）。
+                        //
+                        // 本仓库其余 4 处调用点（RangeSegments / RoutePlan / StatusScreen /
+                        // StatsScreen）都已包 `Column`，只有这里漏了。
+                        Column {
+                            KV("峰值电压", charge.peak_voltage?.let { "$it V" } ?: "—")
+                            KV("平均电压", charge.avg_voltage?.let { "$it V" } ?: "—")
+                            KV("峰值电流", charge.peak_current?.let { "$it A" } ?: "—")
+                            KV("平均电流", charge.avg_current?.let { "$it A" } ?: "—")
+                            val phase = charge.charger_phases
+                            val v = charge.charger_voltage
+                            val a = charge.charger_current
+                            if (phase != null && phase > 0) {
+                                KV("相数", "$phase 相（当前 ${v ?: "—"}V / ${a ?: "—"}A）")
+                            } else if (v != null && v > 0) {
+                                KV("当前电压/电流", "$v V / $a A（直流）")
+                            } else if (charge.is_dc) {
+                                Text(
+                                    "本充电桩（直流快充）未上报电压与电流，仅记录功率。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                     }
                 }

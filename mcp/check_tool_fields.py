@@ -107,6 +107,18 @@ SPEC = [
     ("teslamate_stay_points", {"limit": 3}, "地点[0].停过次数", "停过次数"),
     ("teslamate_cost", {"period": "week"}, "直流(度)", "直流用电量"),
     ("teslamate_cost", {"period": "week"}, "行驶里程km", "行驶里程"),
+    # ⚠️ **v0.93.0**：用量汇总工具（App 的「7 天汇总」卡就是它这一份数据）。
+    #
+    # 之前**一个都没断言** ⇒ `teslamate_stats` 里「行驶耗电(度)」写成
+    # `summ.get("drive_kwh")`（服务端没这个键）也一直没人发现，
+    # 飞书侧拿到的恒是 `None`，而 App 显示 15.2 度 ⇒ 两边对不上。
+    #
+    # 现在把 5 个字段全断言上：**键名写错 ⇒ 值为 null ⇒ 闸门红**。
+    ("teslamate_stats", {"period": "week"}, "里程km", "周里程"),
+    ("teslamate_stats", {"period": "week"}, "行驶耗电(度)", "行驶耗电"),
+    ("teslamate_stats", {"period": "week"}, "充入电量(度)", "充入电量"),
+    ("teslamate_stats", {"period": "week"}, "行程数", "行程数"),
+    ("teslamate_stats", {"period": "week"}, "充电次数", "充电次数"),
     ("teslamate_energy_profile", {}, "速度档[0].毛耗电Wh/km", "能耗分档"),
     ("teslamate_driving_profile", {}, "平顺分(中位·合成指标)", "平顺分"),
     ("teslamate_command_catalog", {}, "动作[0].动作名", "动作目录"),
