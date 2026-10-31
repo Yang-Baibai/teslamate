@@ -66,8 +66,15 @@ echo "══ 5/6 重启 API（先重建镜像）══"
 # 于是「以为发出去了，其实没发」。
 #
 # 所以必须显式 `build`；源码没变时命中 Docker 层缓存，几秒就完。
+#
+# ⚠️ **v0.102.0**：还得显式 `--force-recreate` ——
+# 容器持有的是**创建那一刻**的 `.env` 快照，
+# 而这一步之前刚把 `APP_VERSION_CODE` 写进 `.env`（第 4 步）。
+# `up -d api` 若判定「镜像没变、容器还在」，就**不重建** ⇒
+# 容器里的环境变量还是**旧的** ⇒ `/api/v1/app/latest` 继续通告上一个版本号。
+# （v0.100.0 发版时真踩过：`.env` 已是 110，线上仍通告 109。）
 docker compose build api 2>&1 | tail -1
-docker compose up -d api 2>&1 | tail -1
+docker compose up -d --force-recreate api 2>&1 | tail -1
 sleep 3
 
 echo "══ 6/6 冒烟验证 ══"

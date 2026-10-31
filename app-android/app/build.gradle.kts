@@ -14,8 +14,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // ⚠️ **v0.101.0**：App 改了（反馈可带截图 + 四态文案）⇒ 版本号要涨。
-        versionCode = 111
-        versionName = "0.101.0"
+        versionCode = 112
+        versionName = "0.102.0"
     }
 
     buildTypes {

@@ -1091,6 +1091,96 @@ PYEOF
 if [ $? -eq 0 ]; then ok "ⓘ 口径文字长度上限（棘轮）"; else fail "ⓘ 口径文字长度上限"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 14：驾驶评分权重 —— 客户端与 Hermes 必须等于服务端公式 ─────────
+#
+# ⚠️ **v0.102.0**：驾驶平顺分的「权重」在**三个地方各写了一份**：
+#   ① App 副标题后面那个 ⓘ；
+#   ② 同一张卡的「怎么算的」ⓘ（公式）；
+#   ③ Hermes 的 `teslamate_driving_profile` 工具说明与「口径」字段。
+#
+# 而服务端 `api/handlers.go` 的 `drivingScore()` 是**唯一事实源**。
+# 实测发现 ① 写「60 分 / 40 分」，而 ② 的公式加起来是 **70 / 30**
+# ⇒ **同一张卡上的两条 ⓘ 互相矛盾**，而且 Hermes 那份也跟着错。
+#
+# ⇒ 这道闸门**从服务端源码里把五项封顶抠出来**，算出「平滑相关」与
+#   「能耗+夜驾」两个数，然后要求 **App 与 Hermes 写的都等于它们**。
+# ⇒ 以后谁改了服务端的封顶却忘了改两边 ⇒ 立刻报红。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import re, pathlib, sys
+
+GO = pathlib.Path('api/handlers.go')
+KT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/DriveScoreCard.kt')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+
+
+# ① 服务端：抠出五项封顶（急刹 / 急加 / 速度 / 能耗 / 夜驾）
+go = read(GO)
+m = re.search(r'func drivingScore\(.*?\n\}', go, re.S)
+if not m:
+    print('找不到 drivingScore()（api/handlers.go）—— 事实源被改名或挪走了？')
+    sys.exit(1)
+# 只认 `s -= math.Min(N, …)` 这五行扣分 ——
+# ⚠️ 末尾还有 `return math.Max(0, math.Min(100, s))` 那个**夹取**，
+# 直接扫 `math.Min(` 会把它当成第 6 个封顶。
+caps = [int(x) for x in re.findall(r's\s*-=\s*math\.Min\((\d+),', m.group(0))]
+if len(caps) != 5:
+    print('drivingScore() 的封顶项数不对（拿到 %d 个，期望 5）：%s' % (len(caps), caps))
+    sys.exit(1)
+if sum(caps) != 100:
+    print('服务端封顶加起来不是 100：%s' % caps)
+    sys.exit(1)
+smooth = caps[0] + caps[1] + caps[2]      # 急刹 + 急加 + 速度
+energy_night = caps[3] + caps[4]          # 能耗 + 夜驾
+
+problems = []
+
+
+def check_all(text, pat, want, label, where):
+    """**所有**匹配都必须等于期望值 —— 不只是第一个。"""
+    got = [int(x) for x in re.findall(pat, text)]
+    if not got:
+        problems.append('%s 找不到「%s」的权重（应写 %d 分）' % (where, label, want))
+    for g in got:
+        if g != want:
+            problems.append('%s 的%s权重是 %d 分，服务端公式是 %d 分' % (where, label, g, want))
+
+
+# ② App：noteDriveScore() 的正文
+kt = read(KT)
+fm = re.search(r'fun noteDriveScore\(.*?\n\}', kt, re.S)
+if not fm:
+    print('找不到 noteDriveScore()（DriveScoreCard.kt）—— 客户端口径函数不见了？')
+    sys.exit(1)
+body = fm.group(0)
+check_all(body, r'(\d+) 分是急刹/急加/速度', smooth, '平滑相关', 'App ⓘ')
+check_all(body, r'(\d+) 分来自能耗与夜驾', energy_night, '能耗与夜驾', 'App ⓘ')
+
+# ③ Hermes（MCP）
+mcp = read(MCP)
+check_all(mcp, r'(\d+) 分是平顺相关', smooth, '平滑相关', 'Hermes 口径')
+check_all(mcp, r'另 (\d+) 分来自能耗与夜驾', energy_night, '能耗与夜驾', 'Hermes 口径')
+check_all(mcp, r'急刹 %d \+ 急加 %d \+ 速度 (\d+)' % (caps[0], caps[1]), caps[2],
+          '速度', 'Hermes 拆解')
+
+if problems:
+    print('驾驶评分权重与服务端公式对不上 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 权威源是 api/handlers.go 的 drivingScore()：封顶 %s' % caps)
+    print('   ⇒ 平滑相关 = %d 分、能耗与夜驾 = %d 分；App 与 Hermes 都要这么写' % (smooth, energy_night))
+    sys.exit(1)
+
+print('驾驶评分权重与服务端一致（封顶 %s ⇒ 平滑 %d / 能耗夜驾 %d），App 与 Hermes 说的是同一句话'
+      % (caps, smooth, energy_night))
+PYEOF
+if [ $? -eq 0 ]; then ok "驾驶评分权重（App + Hermes = 服务端公式）"; else fail "驾驶评分权重"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

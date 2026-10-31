@@ -133,16 +133,7 @@ fun DriveScoreCard(
             // 均值挪进 ⓘ，并**明说它是均值**，免得和主角的中位数混。
             text = "按 ≥${profile.params.min_distance_km} 公里的 ${s.drive_count} 趟算" +
                 "，共 ${s.total_km.roundToInt()} 公里",
-            note = buildString {
-                append("这 100 分里只有 60 分是急刹/急加/速度，另外 40 分来自能耗与夜驾 —— ")
-                append("名字叫「平顺」，实际不是。")
-                append("卡上那个数是这 ${s.drive_count} 趟的中位数，")
-                append("平均分是 ${s.avg_score.roundToInt()} 分。")
-                if (avgKmPerTrip != null) {
-                    append("门槛 ${profile.params.min_distance_km} 公里：这 ${s.drive_count} 趟平均 ")
-                    append("$avgKmPerTrip 公里/趟，更短的行程不在里面。")
-                }
-            },
+            note = noteDriveScore(s.avg_score.roundToInt(), avgKmPerTrip),
             a11yLabel = "驾驶平顺分的算法",
         )
         Spacer(Modifier.height(10.dp))
@@ -318,6 +309,49 @@ fun DriveScoreCard(
  */
 fun driveProfileAvgKmPerTrip(totalKm: Double, driveCount: Int): Int? =
     if (driveCount <= 0) null else (totalKm / driveCount).roundToInt()
+
+/**
+ * **驾驶平顺分的口径** —— 副标题后面那个 ⓘ 的正文。
+ *
+ * ⚠️ **v0.102.0（第 10 轮 CDO Polish）：这条 ⓘ 原来把权重写错了，而且超长。**
+ *
+ * ## ① 权重是错的：60/40 ⇒ **70/30**
+ *
+ * 原文写「这 100 分里只有 **60** 分是急刹/急加/速度，另外 **40** 分来自能耗与夜驾」。
+ * 而服务端 `api/handlers.go` 的 `drivingScore()` 里五项**封顶**是
+ * 急刹 30 + 急加 20 + 速度 20 + 能耗 15 + 夜驾 15 ⇒
+ * 平滑相关 = **70**，能耗与夜驾 = **30**。
+ *
+ * ⇒ 这个 60 **从 v0.44.0 写下那天起就是错的**：
+ * 服务端的评分函数从 v0.27.0 初版起就是 30/20/20/15/15
+ * （v0.29.0 只把能耗的输入从净值换成毛耗电，没动封顶）。
+ * ⇒ 同一张卡的「怎么算的」ⓘ 写的是
+ * `急刹车(≤30) − 急加速(≤20) − ≥120km/h(≤20) − 能耗(≤15) − 夜驾(≤15)`
+ * —— **两条 ⓘ 互相矛盾**：一条说 60/40，一条的公式加起来是 70/30。
+ * ⇒ 同一句错话在 `mcp/teslamate_mcp.py` 里还有**第二份**（Hermes 侧），
+ * 本轮一并改掉，并加闸门钉住（见 `scripts/client-gates.sh` 闸门 14）。
+ *
+ * ## ② 同一屏里重复的数
+ *
+ * - 「这 20 趟」：副标题已经写着「按 ≥20 公里的 **20 趟**算」⇒ ⓘ 里再说两遍是噪音；
+ * - 「门槛 20 公里」：副标题已经写着「≥20 公里」⇒ 不重复；
+ * - 「更短的行程不在里面」**保留** —— 它是 v0.50.0 特意加的，
+ *   为的是让用户知道**自己那些短途被门槛筛掉了**
+ *   （本车 72.8% 的趟不到 20 公里，单趟中位只有 5.6 公里）。
+ *
+ * 抽成**纯函数**是为了能被 JVM 单测直接断言
+ * （与 [driveProfileAvgKmPerTrip] 同一个理由）。
+ */
+fun noteDriveScore(avgScore: Int, avgKmPerTrip: Int?): String {
+    val sb = StringBuilder()
+    sb.append("这 100 分里 70 分是急刹/急加/速度，30 分来自能耗与夜驾 —— ")
+    sb.append("名字叫「平顺」，实际不是。")
+    sb.append("卡上是中位数，平均 ").append(avgScore).append(" 分。")
+    if (avgKmPerTrip != null) {
+        sb.append("每趟平均 ").append(avgKmPerTrip).append(" 公里，更短的行程不在里面。")
+    }
+    return sb.toString()
+}
 
 private fun fmtPer100(count: Int, km: Double): String {
     if (km <= 0.1) return "—"
