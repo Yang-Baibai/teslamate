@@ -10,6 +10,27 @@ B="${REMOTE_HOST:-http://localhost:8090}"
 # ⚠️ 必须去掉行尾的 \r：.env 在 Windows 上是 CRLF，`cut` 会把 \r 一起带进值里，
 # 于是 Authorization 头变成 "Bearer xxx\r" → 401，后面每条断言都会假失败。
 TOKEN=$(grep '^API_TOKEN=' .env | cut -d= -f2 | tr -d '\r')
+
+# ⚠️ **必须显式指定 python 的 IO 编码 = UTF-8**（v0.99.1 修）。
+#
+# 本脚本有 **149 行含中文**，其中 7 处是「拿 JSON 里的中文值，与脚本里的中文常量比对」的断言。
+# 而 Windows 上 python 的 `sys.stdin.encoding` 取**区域设置**（本机 = gbk / cp936）——
+# curl 回来的 JSON 是 **UTF-8 字节** ⇒ 按 GBK 解码 ⇒
+# `左前窗` 三个字被解成乱码（末尾还多出一个 U+FFFD 替换字符）⇒
+# 与脚本常量（**源码**按 UTF-8 解码，是对的）**永远不相等**。
+#
+# ⇒ 后果是**两头都错**：
+# - **假红**：车窗开着时（`open_windows` 非空）那条断言必挂 ⇒ 整个冒烟变红、禁止发版；
+# - **假绿**：形如 `assert '某个中文短语' not in json值` 的断言，
+#   乱码的 JSON 里「查不到」那个正常短语 ⇒ **永远通过** ⇒ 护栏形同虚设。
+#
+# ⚠️ 这个 bug 潜伏了很久且**几乎不发作**：那类断言大多在「值为空或空列表」时才走到比对，
+# 平时一路绿灯。2026-11-01 凌晨车端遥测报「三扇窗开着」才第一次触发 ⇒ 冒烟 39/40。
+#
+# `scripts/client-gates.sh` 早就 export 了同一行（那边 364 行含中文，一直是对的）——
+# 本脚本漏了 ⇒ 同一个仓库里两套脚本对同一件事的处理不一致。
+export PYTHONIOENCODING=utf-8
+
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  ✗ $1"; }
