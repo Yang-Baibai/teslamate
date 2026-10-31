@@ -218,13 +218,77 @@ function Get-Alerted($state) {
 }
 
 # ── 时间工具 ──────────────────────────────────────────────────────
-function Get-SinceMinutes($iso, [datetime]$nowUtc) {
-  if (-not $iso) { return $null }
+# ⚠️ **v0.98.0：这里原先埋着一个整整 8 小时的时区 bug（已经真车发出过）。**
+#
+# 现象（2026-10-31 17:40 推送）：
+#   「⚠ 爱车 车窗未关超过 30 分钟 …… 开着的是：左前窗、右前窗（自 10-31 09:35 起）」
+#   —— 真实情况是 17:35 车刚停回家、17:40 推送，只开了 5 分钟。
+#
+# 真因（PowerShell 的一个真陷阱，三步错）：
+#   ① 状态文件里存的是 **UTC** 时间戳（$nowIso = $nowUtc.ToString('o')，带 Z）。
+#   ② `ConvertFrom-Json` 会把这种 ISO 串**变成 DateTime 对象**
+#      （Kind=Utc，墙上时钟仍是 UTC 那 9:35）。
+#   ③ 旧代码 `[string]$iso` **把它字符串化** ⇒ 时区信息在这一步被抹掉，
+#      只剩 "10/31/2026 09:35:00" 这样的**墙上时钟**；
+#      紧接着 `[datetimeoffset]::Parse(那个串)` **按本地时区**解释它
+#      ⇒ 中国区（UTC+8）就整整差 **8 小时**。
+#
+#   ⇒ 计时器读回来的起点永远比真实起点早 8 小时
+#   ⇒ 「持续 5 分钟」被算成「持续 5 + 480 = **485** 分钟」
+#   ⇒ 「超过 30 分钟」这个阈值**从第一轮起就成立** ⇒ 阈值形同虚设
+#   ⇒ 文案里的「自 XX 起」也是错的（真实 17:35 被说成 09:35）。
+#
+#   ⚠️ **受影响的不止车窗**：未锁车计时器走的是同一个函数
+#      ⇒「🔓 已解锁超过 30 分钟」同样虚报 8 小时（10-31 16:45 那条也是假的）。
+#
+# 解法：**不再把时间戳字符串化**。
+#   · DateTime 对象 ⇒ 直接用它的 Kind（Utc 按 UTC、Local 按本地）；
+#   · 纯字符串（手改过的状态文件）⇒ 按 **UTC** 解释（我们写出去的就是 UTC）。
+function ConvertTo-UtcInstant($value) {
+  if ($null -eq $value) { return $null }
+  if ($value -is [datetimeoffset]) { return ([datetimeoffset]$value).UtcDateTime }
+  if ($value -is [datetime]) {
+    $dt = [datetime]$value
+    if ($dt.Kind -eq [System.DateTimeKind]::Unspecified) {
+      # 没有时区信息的串：按 UTC 解释（脚本写出去的就是 UTC）
+      return [datetime]::SpecifyKind($dt, [System.DateTimeKind]::Utc)
+    }
+    return $dt.ToUniversalTime()
+  }
   try {
-    $dto = [datetimeoffset]::Parse([string]$iso)
-    return ($nowUtc - $dto.UtcDateTime).TotalMinutes
+    $dto = [datetimeoffset]::Parse(
+      [string]$value, [cultureinfo]::InvariantCulture,
+      [System.Globalization.DateTimeStyles]::AssumeUniversal -bor
+      [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+    return $dto.UtcDateTime
   } catch {
     return $null
+  }
+}
+
+function Get-SinceMinutes($iso, [datetime]$nowUtc) {
+  if ($null -eq $iso) { return $null }
+  try {
+    $utc = ConvertTo-UtcInstant $iso
+    if ($null -eq $utc) { return $null }
+    return ($nowUtc - $utc).TotalMinutes
+  } catch {
+    return $null
+  }
+}
+
+# 把状态里的起点转成**本地时间**文本（给推送文案用）。
+#
+# ⚠️ 必须走 ConvertTo-UtcInstant —— 直接 [string] + Parse 会再犯 8 小时那个错。
+function Get-SinceLocalText($iso) {
+  if ($null -eq $iso) { return '' }
+  try {
+    $utc = ConvertTo-UtcInstant $iso
+    if ($null -eq $utc) { return '' }
+    $local = ([datetimeoffset]::new([datetime]::SpecifyKind($utc, [System.DateTimeKind]::Utc))).ToLocalTime()
+    return $local.ToString('MM-dd HH:mm')
+  } catch {
+    return ''
   }
 }
 
@@ -539,9 +603,7 @@ Update-Alert $alerted 'service_unreachable' $false `
   "已重新读到车况数据，接下来继续盯着。"
 
 # ── 未锁车超时 ──
-$unlockedSinceText = if ($unlockedSince) {
-  ([datetimeoffset]::Parse([string]$unlockedSince)).ToLocalTime().ToString('MM-dd HH:mm')
-} else { "" }
+$unlockedSinceText = Get-SinceLocalText $unlockedSince
 Update-Alert $alerted 'unlocked_timeout' $unlockedTimeout `
   "🔓 $CarName 已解锁超过 $UnlockTimeoutMinutes 分钟" `
   "从 $unlockedSinceText 起一直没上锁。`n如果已经停好了，回 App 点一下「锁车」就行。" `
@@ -550,9 +612,7 @@ Update-Alert $alerted 'unlocked_timeout' $unlockedTimeout `
 
 # ── 车窗未关超时 ──
 $windowText = if ($openWindows -and $openWindows.Count -gt 0) { $openWindows -join '、' } else { "未知" }
-$windowSinceText = if ($windowSince) {
-  ([datetimeoffset]::Parse([string]$windowSince)).ToLocalTime().ToString('MM-dd HH:mm')
-} else { "" }
+$windowSinceText = Get-SinceLocalText $windowSince
 Update-Alert $alerted 'window_open_timeout' $windowTimeout `
   "⚠️ $CarName 车窗未关超过 $WindowTimeoutMinutes 分钟" `
   "开着的是：$windowText（自 $windowSinceText 起）。`n停在露天的话记得关窗。" `

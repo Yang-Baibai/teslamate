@@ -211,6 +211,22 @@ function Age-Timer([string]$key, [double]$minutes) {
   ($s | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $StateFile -Encoding utf8
 }
 
+# 取最后一轮「本轮结束」里的某个计时器时长（分钟）。
+#
+# ⚠ 只看**最后一行**「本轮结束」—— 历史轮次会混进来。
+# ⚠ v0.98.0：这条助手是为钉住「计时器被时区吃掉 8 小时」那个洞才加的
+#    （旧断言只问「有没有超过 30 分钟」⇒ 31 分钟和 511 分钟**都算过** ⇒ 绿灯）。
+function Get-LastElapsed([string]$label) {
+  if (-not (Test-Path -LiteralPath $LogFile)) { return $null }
+  $last = $null
+  foreach ($line in (Get-Content -LiteralPath $LogFile -Encoding utf8)) {
+    if ($line -match '本轮结束：') { $last = $line }
+  }
+  if ($null -eq $last) { return $null }
+  $m = [regex]::Match($last, [regex]::Escape($label) + '=\w+\(持续([\d\.]+)分钟')
+  if (-not $m.Success) { return $null }
+  return [double]$m.Groups[1].Value
+}
 Write-Host "══ 推送引擎自测 ══"
 
 # ═════════════════════════════════════════════════════════════════
@@ -508,6 +524,46 @@ Invoke-Watch | Out-Null
 $pushes = @(Get-Pushes)
 Assert-Eq 0 (Count-Push $pushes '故障码') "没有遥测块 —— 一条故障码相关的都不推"
 
+# ═════════════════════════════════════════════════════════════════
+# 场景 23：计时器不许被时区吃掉 8 小时（v0.98.0）
+# ═════════════════════════════════════════════════════════════════
+#
+# ⚠ 这条守的是一个**已经真的推给用户过**的错：
+#   2026-10-31 17:40 推送「⚠ 爱车 车窗未关超过 30 分钟」，
+#   正文写「自 10-31 09:35 起」—— 真实起点是 17:35，真实时长只有 5 分钟。
+#
+#   真因：状态文件存的是 UTC 时间戳（带 Z），但 `ConvertFrom-Json` 把它变成
+#   DateTime 对象后，旧代码 `[string]$iso` **字符串化**抹掉了时区，
+#   再 `[datetimeoffset]::Parse` 就按本地时区解释 ⇒ 中国区整整差 8 小时
+#   ⇒ 「5 分钟」被读成「5 + 480 = 485 分钟」。
+#
+# ⚠ 旧版为什么没被抓到：
+#   旧断言只问「有没有超过 30 分钟」⇒ **31 分钟和 511 分钟都算过** ⇒ 绿灯。
+#   ⇒ 这里必须断言**具体分钟数**，否则这个洞还会回来。
+Write-Host "── 场景 23：计时器不被时区吃掉 8 小时"
+Reset-Log
+if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force }
+Set-Status @{ locked = $false; open_windows = @('左前窗') }
+Invoke-Watch | Out-Null             # 第 1 轮：刚开着，计时从 0 起
+Age-Timer 'window_open_since' 31    # 把起点拨到 31 分钟前（写法与脚本一致：UTC + Z）
+Age-Timer 'unlocked_since' 31
+Invoke-Watch | Out-Null
+$winM = Get-LastElapsed '车窗'
+$unlM = Get-LastElapsed '未锁'
+Assert-True ($null -ne $winM -and $winM -ge 30 -and $winM -le 33) "31 分钟前开的窗 ⇒ 计时器应读出 31 分钟左右，实际 $winM 分钟（读成 511 就是那个 8 小时的时区错）"
+Assert-True ($null -ne $unlM -and $unlM -ge 30 -and $unlM -le 33) "31 分钟前解锁 ⇒ 计时器应读出 31 分钟左右，实际 $unlM 分钟"
+
+# 正文里的起点必须是**真实起点**（本地时间），不能早 8 小时。
+$winBody = ''
+foreach ($b in @(Get-Bodies)) { if ($b -match '开着的是') { $winBody = $b } }
+$m = [regex]::Match($winBody, '自 (\d\d-\d\d \d\d:\d\d) 起')
+Assert-True $m.Success "告警正文必须带上起点（实际正文：$winBody）"
+if ($m.Success) {
+  $shown = [datetime]::ParseExact($m.Groups[1].Value, 'MM-dd HH:mm', [cultureinfo]::InvariantCulture)
+  $want = (Get-Date).AddMinutes(-31)
+  $diff = [math]::Abs(($shown - $want).TotalMinutes)
+  Assert-True ($diff -le 2) "正文里的起点应≈$($want.ToString('MM-dd HH:mm'))（真实起点），实际 $($m.Groups[1].Value)—— 差 $diff 分钟"
+}
 # ═════════════════════════════════════════════════════════════════
 # 清理 + 汇总
 # ═════════════════════════════════════════════════════════════════
