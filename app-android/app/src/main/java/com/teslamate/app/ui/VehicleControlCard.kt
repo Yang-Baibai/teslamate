@@ -49,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
@@ -631,7 +632,17 @@ private fun HeroButton(
 }
 
 /**
- * 动作网格（2 列）。
+ * 动作网格。
+ *
+ * ⚠️ **v0.109.0**：**列数随字号变** —— 大字号下改成**单列**（满宽）。
+ *
+ * 2 列时按钮的文字区只有 140dp（360dp 窄屏：卡内边距 32 + 列间距 8 ÷ 2 + 按钮内边距 20），
+ * 而最长短标签「方向盘加热开关」是 7 个全角字 ⇒ 200% 字号下需要 210dp ⇒ **折成两行**
+ * ⇒「同一排一个一行、一个两行」的参差又回来了（ADR #37 的代价段 / ADR #39）。
+ * 单列时文字区 = 360 − 32 − 20 = **308dp** ⇒ 7 字一行放得下、动词也保得住。
+ *
+ * ⚠️ **不许把 `chunked(2)` 写死** —— 写死了大字号就又折行了；
+ * 列数一律走 `actionGridColumns(fontScale)`（闸门 21 盯着这一条）。
  *
  * @param danger 高危区：琥珀色描边 + 「高危」小标（不靠颜色单独承担语义）。
  */
@@ -643,8 +654,10 @@ private fun ActionGrid(
     danger: Boolean = false,
     onPick: (VehicleCommand) -> Unit,
 ) {
+    // ⚠️ **v0.109.0**：字号倍率决定列数（1 = 单列满宽，2 = 两列）。
+    val columns = actionGridColumns(LocalDensity.current.fontScale)
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        actions.chunked(2).forEach { pair ->
+        actions.chunked(columns).forEach { group ->
             // ⚠️ **v0.76.0**：一行里的两个按钮**等高**。
             //
             // ⚠️ **v0.107.0（用户反馈 #25）**：标签已是短标签，
@@ -655,7 +668,7 @@ private fun ActionGrid(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.height(IntrinsicSize.Min),
             ) {
-                pair.forEach { cmd ->
+                group.forEach { cmd ->
                     ActionButton(
                         // ⚠️ **v0.107.0（用户反馈 #25）**：按钮只印**短标签**
                         // （「车窗通风」而不是「车窗通风（开一条缝）」）
@@ -667,10 +680,15 @@ private fun ActionGrid(
                         primary = false,
                         danger = danger,
                         busy = running && runningAction == cmd.action,
-                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        modifier = if (columns == 1) {
+                            // 单列：按钮**满宽** ⇒ 文字区 308dp ⇒ 一行放得下。
+                            Modifier.fillMaxWidth()
+                        } else {
+                            Modifier.weight(1f).fillMaxHeight()
+                        },
                     )
                 }
-                if (pair.size == 1) Spacer(Modifier.weight(1f))
+                if (group.size < columns) Spacer(Modifier.weight(1f))
             }
         }
     }

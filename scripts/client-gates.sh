@@ -2244,6 +2244,99 @@ PYEOF
 if [ $? -eq 0 ]; then ok "充电统计区间口径两端一致（且客户端不自己算）"; else fail "充电统计区间口径"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 21：车控按钮网格的**列数**不许写死（大字号要改单列）────────────
+#
+# ⚠️ **v0.109.0**
+#
+# 用户反馈 #25 的诉求「把文字的布局尽量统一」在**正常字号**下已解决（v0.107.0 的短标签），
+# 但 **200% 字号**下没解决：2 列时按钮文字区只有 140dp（360dp 窄屏：卡内边距 32 +
+# 列间距 8 ÷ 2 + 按钮内边距 20），最长短标签「方向盘加热开关」7 个全角字在 200% 下
+# 需要 210dp ⇒ **折成两行** ⇒「同一排一个一行、一个两行」的参差又回来了。
+#
+# ⇒ 正解是**换布局**而不是压文案：大字号下改成**单列**（满宽 ⇒ 文字区 308dp ⇒
+#    一行放得下、动词也保得住）—— ADR #39，推导写在 `ui/CommandGrid.kt` 的注释里。
+#
+# ⇒ 这道闸门守的就是「列数由字号决定」：
+#   ① `ActionGrid` 必须走 `actionGridColumns(`；
+#   ② **不许**出现 `chunked(2)`（写死了大字号就又折行）；
+#   ③ 规则本身在**纯函数**里（可单测），且真的按 `fontScale` 与阈值比较。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+CARD = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/VehicleControlCard.kt')
+GRID = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/CommandGrid.kt')
+for p in (CARD, GRID):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_kt_comments(text):
+    """把注释换成空格（字符串原样保留）—— 说明文字里提到旧写法不算违规。"""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        if text.startswith('//', i):
+            j = text.find('\n', i)
+            j = n if j < 0 else j
+            out.append(' ' * (j - i))
+            i = j
+            continue
+        if text.startswith('/*', i):
+            j = text.find('*/', i + 2)
+            j = n if j < 0 else j + 2
+            out.append(''.join(c if c == '\n' else ' ' for c in text[i:j]))
+            i = j
+            continue
+        if text[i] == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == '\\':
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            out.append(text[i:j + 1])
+            i = j + 1
+            continue
+        out.append(text[i])
+        i += 1
+    return ''.join(out)
+
+
+card = strip_kt_comments(CARD.read_text(encoding='utf-8', errors='replace'))
+grid = strip_kt_comments(GRID.read_text(encoding='utf-8', errors='replace'))
+
+problems = []
+
+if 'actionGridColumns(' not in card:
+    problems.append('车控网格没有用 actionGridColumns( ⇒ 列数写死了 ⇒ 大字号下标签又折行')
+
+if re.search(r'chunked\s*\(\s*2\s*\)', card):
+    problems.append('车控网格里还有 `chunked(2)` ⇒ 两列写死了 ⇒ 200% 下最长标签放不下 ⇒ 又折成两行')
+
+if 'fun actionGridColumns(' not in grid:
+    problems.append('找不到 `fun actionGridColumns(` —— 规则搬家了？这道闸门要跟着改')
+else:
+    if 'fontScale' not in grid:
+        problems.append('actionGridColumns() 没有读 fontScale ⇒ 列数与字号无关')
+    if not re.search(r'fontScale\s*>=\s*[A-Za-z_][A-Za-z0-9_]*', grid):
+        problems.append('actionGridColumns() 没有按阈值比较 fontScale ⇒ 永远是同一个列数')
+
+if problems:
+    print('车控按钮网格的列数被写死了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 大字号（200%）下改单列（满宽）：文字区 308dp ⇒ 7 个字一行放得下')
+    sys.exit(1)
+
+print('车控按钮网格的列数随字号变（大字号改单列，ADR #39）')
+PYEOF
+if [ $? -eq 0 ]; then ok "车控按钮网格大字号改单列（ADR #39）"; else fail "车控按钮网格列数"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
