@@ -157,6 +157,25 @@ type teslaCommandSpec struct {
 	Action      string `json:"action"`
 	Endpoint    string `json:"-"`
 	Description string `json:"description"`
+	// ⚠️ **v0.107.0（用户反馈 #25）**：**短标签** 与 **后果说明** 拆成两个字段。
+	//
+	// 用户原话：「车辆控制这一块的各个按钮**可以不需要括号内的那些东西**。
+	// 把文字的布局尽量统一。」
+	// ⇒ 「车窗通风（开一条缝）」这种「标签里带后果」的写法，
+	// 会让同一排按钮**一个一行、一个两行** —— 看着像没对齐。
+	//
+	// ⇒ 拆开：
+	//   · `Label` —— 按钮上印的**短标签**（「车窗通风」），一律短、一行；
+	//   · `Note`  —— 括号里那段**后果 / 限制**（「会耗电、可能计费」），
+	//                 App 把它放进**确认弹窗**里（点之前能看见，事后不占版面）。
+	//
+	// ⚠️ **`Description` 一个字都不改** —— 它是给 LLM / Hermes 看的那一份，
+	//    另写一份就会漂移（v0.102.0 的教训：「60 分」那句话抄了第二份，
+	//    错了 57 个版本）。
+	// ⇒ `Label` / `Note` **从 `Description` 派生**（见 splitCommandLabel），
+	//    事实源仍然只有**一个**。
+	Label string `json:"label"`
+	Note  string `json:"note"`
 	// ⚠️ **v0.76.0**：动作**做完之后**的一句话（「锁车」→「已锁车」）。
 	// 结果条要说的是「现在的样子」，不是「我干了什么」。
 	Done         string   `json:"done"`
@@ -318,7 +337,7 @@ var (
 	}
 )
 
-// teslaCommandCatalog 全部 21 个动作。
+// teslaCommandCatalogRaw 全部 21 个动作的**字面量**（唯一手写的地方）。
 //
 // ⚠️ 顺序 = App 与 MCP 展示的顺序（按风险从高到低排）。
 //
@@ -332,7 +351,10 @@ var (
 // `Params` 只回答「要哪些参数名」，`ParamSpecs` 回答
 // 「每个参数的类型、范围、可选值和人话标签」。
 // ⇒ MCP 照它出 JSON Schema（LLM 零失误），App 照它渲染控件。
-var teslaCommandCatalog = []teslaCommandSpec{
+//
+// ⚠️ **v0.107.0：这里只写 `Description`** —— 按钮短标签与后果说明
+// **派生**（见下面 `teslaCommandCatalog`）⇒ 不会抄出第二份真相。
+var teslaCommandCatalogRaw = []teslaCommandSpec{
 	// ── 高危：会动车、会开孔、会把人放进车里 ──
 	{
 		Action:      "door_unlock",
@@ -541,6 +563,77 @@ var teslaCommandCatalog = []teslaCommandSpec{
 		Params:      []string{"on"},
 		ParamSpecs:  []teslaCommandParamSpec{teslaSpecOn},
 	},
+}
+
+// teslaCommandCatalog 对外的那一份 —— **短标签**与**后果说明**都已派生好。
+//
+// ⚠️ **v0.107.0（用户反馈 #25）**：App 的按钮只印 `Label`，
+// `Note` 挪进确认弹窗 ⇒ 按钮一律短标签、文字布局统一。
+var teslaCommandCatalog = func() []teslaCommandSpec {
+	out := make([]teslaCommandSpec, len(teslaCommandCatalogRaw))
+	copy(out, teslaCommandCatalogRaw)
+	for i := range out {
+		out[i].Label, out[i].Note = splitCommandLabel(out[i].Description)
+	}
+	return out
+}()
+
+// teslaCommandUnitHints 「括号里只是单位」的那些内容。
+//
+// ⚠️ 它们**不是后果说明** —— 「设置充电上限（%）」的「%」是单位，
+// 印进弹窗里当「后果」是驴唇不对马嘴；
+// 而且单位在**参数控件**里已经有了
+// （`teslaSpecChargeLimit.Label` = 「充电上限 %（50~100）」）。
+var teslaCommandUnitHints = map[string]bool{
+	"℃": true,
+	"%":  true,
+	"A":  true,
+}
+
+// splitCommandLabel 把 `description` 拆成 **按钮短标签** 与 **后果说明**。
+//
+// ⚠️ **为什么要拆**：用户反馈 #25 ——「各个按钮可以不需要括号内的那些东西。
+// 把文字的布局尽量统一。」标签里带括号 ⇒ 有的按钮两行、有的按钮一行，
+// 同一排看着参差不齐（真机截图里「车窗通风（开一条缝）」与「关闭全部车窗」并排，
+// 一个两行一个一行）。
+//
+// ⚠️ **为什么是「派生」而不是「另写一份」**：
+// 另写一份 = 两处真相 ⇒ 必然漂移（v0.102.0 的教训：
+// 「60 分」那句话抄了第二份，错了 57 个版本）。
+// ⇒ `description` 是**唯一**手写的地方，`label` / `note` 全从它派生。
+//
+// ⚠️ **老服务端兼容**：App 侧 `label` / `note` 有默认值 ⇒
+// 服务端是旧版时按钮退回 `description`，行为跟今天一模一样。
+func splitCommandLabel(desc string) (label string, note string) {
+	s := strings.TrimSpace(desc)
+	// ⚠️ **必须按 rune 切** —— Go 的字符串切片是**按字节**的，
+	// 而「（」「）」是 3 字节的 UTF-8 字符：
+	// `s[open+1 : len(s)-1]` 会切出**半个括号**（\xbc\x88…\xef\xbc）
+	// ⇒ note 里带着乱码字节，界面上直接显示乱码。
+	rs := []rune(s)
+	if len(rs) == 0 || rs[len(rs)-1] != '）' {
+		return s, ""
+	}
+	open := -1
+	for i := len(rs) - 1; i >= 0; i-- {
+		if rs[i] == '（' {
+			open = i
+			break
+		}
+	}
+	if open < 0 {
+		return s, ""
+	}
+	inner := strings.TrimSpace(string(rs[open+1 : len(rs)-1]))
+	head := strings.TrimSpace(string(rs[:open]))
+	if head == "" || inner == "" {
+		return s, ""
+	}
+	if teslaCommandUnitHints[inner] {
+		// 只是单位 ⇒ 按钮上也不要它（按钮一律短标签），但它**不算后果**。
+		return head, ""
+	}
+	return head, inner
 }
 
 // teslaCommandByAction 动作名 → 规格。

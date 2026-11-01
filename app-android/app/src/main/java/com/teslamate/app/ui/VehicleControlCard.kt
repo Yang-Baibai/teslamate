@@ -221,16 +221,16 @@ fun VehicleControlCard(
      * - **高危**（解锁车门 / 开合尾门 / 远程启动）→ 确认弹窗；
      * - **需要参数**（温度 / 充电上限 / 电流 / PIN / 开关）→ 参数弹窗，
      *   弹窗本身就是一次确认，不再叠第二层；
+     * - **有后果说明**（唤醒车辆：会耗电、可能计费）→ 也弹窗 ——
+     *   ⚠️ **v0.107.0（用户反馈 #25）**：后果说明已经**从按钮上挪进弹窗**了，
+     *   还直接执行的话，那行后果就**永远没人看得见** ⇒ 等于把信息悄悄删了；
      * - **其余**（锁车、空调开关、充电开始/停止、鸣笛、闪灯…）→ **直接执行**。
      *
-     * 唤醒车辆也是「直接执行」—— 它的描述里已经写着「（会耗电、可能计费）」，
-     * **后果写在标签里就不必再打断一次**。
+     * ⚠️ 判定搬到了纯函数 `commandNeedsConfirm()`（可单测），
+     * 这里只负责「弹 / 不弹」。
      */
     fun request(cmd: VehicleCommand) {
-        when {
-            cmd.risk == "high" || cmd.params.isNotEmpty() -> pending = cmd
-            else -> execute(cmd, emptyMap())
-        }
+        if (commandNeedsConfirm(cmd)) pending = cmd else execute(cmd, emptyMap())
     }
 
     SectionCard(title = "车辆控制", modifier = modifier) {
@@ -647,8 +647,9 @@ private fun ActionGrid(
         actions.chunked(2).forEach { pair ->
             // ⚠️ **v0.76.0**：一行里的两个按钮**等高**。
             //
-            // 「唤醒车辆（会耗电、可能计费）」这种长标签要能换成两行，
-            // 而同排的另一个按钮只有一行 —— 不等高就会一高一低，像没对齐。
+            // ⚠️ **v0.107.0（用户反馈 #25）**：标签已是短标签，
+            // 正常字号下一行；但 **200% 字号**下 6 个字（「关闭全部车窗」）
+            // 仍会折成两行 —— 不等高就会一高一低，像没对齐。
             // `height(IntrinsicSize.Min)` + 按钮 `fillMaxHeight()` 是 Compose 的标准做法。
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -656,7 +657,11 @@ private fun ActionGrid(
             ) {
                 pair.forEach { cmd ->
                     ActionButton(
-                        label = cmd.description.ifBlank { cmd.action },
+                        // ⚠️ **v0.107.0（用户反馈 #25）**：按钮只印**短标签**
+                        // （「车窗通风」而不是「车窗通风（开一条缝）」）
+                        // ⇒ 一律一行 ⇒ 同一排按钮的文字布局统一。
+                        // 后果说明挪进确认弹窗（`commandNoteLine`）。
+                        label = commandButtonLabel(cmd),
                         onClick = { onPick(cmd) },
                         enabled = !running,
                         primary = false,
@@ -712,15 +717,13 @@ private fun ActionButton(
                     label,
                     style = MaterialTheme.typography.bodyMedium,
                     color = content,
-                    // ⚠️ **v0.76.0**：**允许换成两行**。
+                    // ⚠️ **v0.107.0（用户反馈 #25）**：标签已经是**短标签**
+                    // （「车窗通风」而不是「车窗通风（开一条缝）」），
+                    // 正常字号下**一行**放得下 ⇒ 同一排按钮的文字布局统一。
                     //
-                    // 原来 maxLines=1 且不设 overflow ⇒ Compose 默认 **Clip**，
-                    // 于是「唤醒车辆（会耗电、可能计费）」被**拦腰砍断**成
-                    // 「唤醒车辆（会耗电、」—— 看起来像渲染坏了，
-                    // 而且**代价提示整个不见了**。
-                    //
-                    // 而 v0.71.0 的设计决定正是「后果写在标签里就不必再打断一次」
-                    // ⇒ 标签必须完整可见。
+                    // ⚠️ 但 **200% 字号**下 6 个字（「关闭全部车窗」）仍会折成两行
+                    // ⇒ 保留 maxLines = 2：maxLines=1 且不设 overflow 时
+                    // Compose 默认 **Clip** ⇒ 字被**拦腰砍断**，看起来像渲染坏了。
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center,
@@ -755,13 +758,17 @@ private fun CommandConfirmDialog(
     val fields = remember(cmd.action) { resolveParamFields(cmd) }
     var values by remember(cmd.action) { mutableStateOf(initialParamValues(fields)) }
     val isHigh = cmd.risk == "high"
+    // ⚠️ **v0.107.0（用户反馈 #25）**：弹窗里也用**短标签** ——
+    // 标题不该再印「打开前备箱（远程关不了）」这种带括号的整句。
+    // 括号里的内容由下面那一行**后果说明**单独说。
+    val dialogLabel = commandButtonLabel(cmd)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             // ⚠️ **v0.71.0**：高危动作的标题带「确认」，纯参数动作直接用动作名
             // —— 参数弹窗**本身就是**一次确认，再叠一层「确认确认」是多余的打断。
-            Text(if (isHigh) "确认${cmd.description}" else cmd.description)
+            Text(if (isHigh) "确认$dialogLabel" else dialogLabel)
         },
         text = {
             // ⚠️ **v0.87.0**：内容可滚动。
@@ -778,16 +785,27 @@ private fun CommandConfirmDialog(
                         color = accents.warnAmber,
                     )
                 }
-                if (cmd.wakes_vehicle) {
+                // ⚠️ **v0.107.0（用户反馈 #25）**：**后果说明**在这里单独一行 ——
+                // 「会耗电、可能计费」「远程关不了」「无钥匙驾驶 2 分钟」「开一条缝」…
+                //
+                // 以前它们**挤在按钮文字里**（「唤醒车辆（会耗电、可能计费）」），
+                // 把按钮撑成两行 ⇒ 同一排按钮的文字布局参差不齐。
+                // 现在按钮只印短标签，后果挪到这里 —— 点之前看得见，版面也齐了。
+                //
+                // ⚠️ **老服务端兜底**：`note` 为空但动作会唤醒车辆时，
+                // `commandNoteLine()` 顶上那句「会耗一点电，也可能被 Tesla 计费」。
+                val noteLine = commandNoteLine(cmd)
+                if (noteLine.isNotBlank()) {
                     Text(
-                        "这会「唤醒车辆」—— 会耗一点电，也可能被 Tesla 计费。",
+                        noteLine,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = accents.warnAmber,
+                        color = if (isHigh || cmd.wakes_vehicle) accents.warnAmber
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 // ⚠️ **v0.87.0**：正文**不再重复**动作说明。
                 //
-                // 标题已经写了 `cmd.description`（高危动作是「确认X」），
+                // 标题已经写了动作名（高危动作是「确认X」），
                 // 正文再来一遍 ⇒ 同一屏出现两次同样的字
                 //（「设定座舱温度（℃）」占两行，却只多了一个信息量）。
                 // ⇒ 标题说过的，正文不再说。
@@ -804,7 +822,7 @@ private fun CommandConfirmDialog(
             TextButton(
                 enabled = !running && paramFieldsReady(fields, values),
                 onClick = { onConfirm(paramFieldsToParams(fields, values)) },
-            ) { Text(if (isHigh) "确认${cmd.description}" else "确定${cmd.description}") }
+            ) { Text(if (isHigh) "确认$dialogLabel" else "确定$dialogLabel") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss, enabled = !running) { Text("取消") }

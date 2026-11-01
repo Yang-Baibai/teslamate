@@ -13,9 +13,9 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.106.0**：App 改了（记录页顶部那张卡：结论前置 + 证据折进展开卡 —— 用户反馈 #26）⇒ 版本号要涨。
-        versionCode = 116
-        versionName = "0.106.0"
+        // ⚠️ **v0.107.0**：App 改了（车控按钮只印短标签 + 后果说明挪进确认弹窗 —— 用户反馈 #25）⇒ 版本号要涨。
+        versionCode = 117
+        versionName = "0.107.0"
     }
 
     buildTypes {

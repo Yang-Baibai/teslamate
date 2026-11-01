@@ -1800,6 +1800,210 @@ PYEOF
 if [ $? -eq 0 ]; then ok "折叠态不摊回证据（用户反馈 #26）"; else fail "折叠态不摊回证据"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 18：车控按钮不许把「后果说明」印在标签里 ──────────────────
+#
+# ⚠️ **v0.107.0（用户反馈 #25）**
+#
+# 用户原话：「车辆控制这一块的各个按钮**可以不需要括号内的那些东西**。
+# 把文字的布局尽量统一。」
+#
+# 真机截图上「车窗通风（开一条缝）」与「关闭全部车窗」并排 ——
+# 一个**两行**、一个**一行** ⇒ 同排按钮的文字布局参差不齐。
+#
+# ⇒ 规矩（**结构**，不是文案）：
+#   ① 按钮**只印短标签**（`commandButtonLabel(cmd)`）—— 不许直接印 `cmd.description`；
+#   ② 弹窗标题 / 确认按钮也用短标签（不许印带括号的整句）；
+#   ③ **后果说明必须在弹窗里**（`commandNoteLine(`）——
+#      从按钮上挪走了就得有地方说，否则「会耗电、可能计费」被**悄悄删了**；
+#   ④ 「有后果说明 ⇒ 必须弹窗」（`commandNeedsConfirm` 里要有 `cmd.note.isNotBlank()`）。
+#
+# ⚠️ **关联检查，不是「短语在不在」** —— 查的是
+# 「按钮那一行**到底印的是谁**」，而不是「文件里出现过 commandButtonLabel」。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+CARD = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/VehicleControlCard.kt')
+LABELS = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/CommandLabels.kt')
+for p in (CARD, LABELS):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def mask(text):
+    """把注释换成空格（字符串原样保留）—— 括号配对时不该被注释里的花括号带偏。"""
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        if text.startswith('//', i):
+            j = text.find('\n', i)
+            j = n if j < 0 else j
+            out.append(' ' * (j - i))
+            i = j
+            continue
+        if text.startswith('/*', i):
+            j = text.find('*/', i + 2)
+            j = n if j < 0 else j + 2
+            out.append(''.join(c if c == '\n' else ' ' for c in text[i:j]))
+            i = j
+            continue
+        if text[i] == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == '\\':
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            out.append(text[i:j + 1])
+            i = j + 1
+            continue
+        out.append(text[i])
+        i += 1
+    return ''.join(out)
+
+
+def body_of(text, sig):
+    """取某个函数的**函数体**（注释已屏蔽）。
+
+    ⚠️ **必须先跳过参数表** —— 默认参数里可能有 `= {}`，
+    直接找第一个 `{` 会把**那个空 lambda**当成函数体 ⇒ 检查全部落空。
+    """
+    i = text.find(sig)
+    if i < 0:
+        return None
+    j = text.find('(', i)
+    if j < 0:
+        return None
+    depth = 0
+    k = j
+    while k < len(text):
+        if text[k] == '(':
+            depth += 1
+        elif text[k] == ')':
+            depth -= 1
+            if depth == 0:
+                break
+        k += 1
+    else:
+        return None
+    b = text.find('{', k)
+    if b < 0:
+        return None
+    depth = 0
+    m = b
+    while m < len(text):
+        c = text[m]
+        if c == '"':
+            m += 1
+            while m < len(text):
+                if text[m] == '\\':
+                    m += 2
+                    continue
+                if text[m] == '"':
+                    break
+                m += 1
+        elif c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return text[b:m + 1]
+        m += 1
+    return None
+
+
+def stmt_of(text, sig):
+    """取「**表达式体**」函数的整条语句（从签名到下一个空行为止）。
+
+    ⚠️ Kotlin 的表达式体函数（`fun f(): T = expr`）**没有花括号** ——
+    按花括号去找函数体，找到的会是**表达式里的 lambda**
+    （`cmd.label.ifBlank { … }` 那个 `{`）⇒ 检查全部落空（**假红**）。
+
+    ⚠️ 这是「取函数体必须先跳过参数表」那条教训的**姊妹坑**：
+    一个是「第一个 `{` 是空 lambda」，一个是「**根本没有**函数体的花括号」。
+    """
+    i = text.find(sig)
+    if i < 0:
+        return None
+    j = text.find('\n\n', i)
+    if j < 0:
+        j = len(text)
+    return text[i:j]
+
+
+card = mask(CARD.read_text(encoding='utf-8', errors='replace'))
+labels = mask(LABELS.read_text(encoding='utf-8', errors='replace'))
+
+problems = []
+
+# ① 按钮那一行：必须用短标签，且不许再印 `cmd.description`。
+grid = body_of(card, 'fun ActionGrid(')
+if grid is None:
+    problems.append('找不到 `fun ActionGrid(` —— 动作网格改名了？这道闸门要跟着改')
+else:
+    if 'commandButtonLabel(' not in grid:
+        problems.append('动作网格没有用 commandButtonLabel(cmd) ⇒ 按钮不是短标签')
+    if 'cmd.description' in grid:
+        problems.append('动作网格里又直接印了 cmd.description ⇒ 括号里的后果回到按钮上了')
+
+# ② + ③ 弹窗：标题/确认按钮用短标签，后果说明单独一行。
+dlg = body_of(card, 'fun CommandConfirmDialog(')
+if dlg is None:
+    problems.append('找不到 `fun CommandConfirmDialog(` —— 弹窗改名了？这道闸门要跟着改')
+else:
+    if 'commandButtonLabel(' not in dlg:
+        problems.append('弹窗没有用 commandButtonLabel(cmd) ⇒ 标题还是带括号的整句')
+    if 'cmd.description' in dlg:
+        problems.append('弹窗里又直接用了 cmd.description ⇒ 「确认打开前备箱（远程关不了）」这种又回来了')
+    if 'commandNoteLine(' not in dlg:
+        problems.append('弹窗里没有 commandNoteLine( ⇒ 后果说明从按钮挪走后没人说（信息丢了）')
+
+# ④ 点按钮的入口：判定必须走纯函数。
+req = body_of(card, 'fun request(')
+if req is None:
+    problems.append('找不到 `fun request(` —— 入口改名了？这道闸门要跟着改')
+else:
+    if 'commandNeedsConfirm(' not in req:
+        problems.append('request() 没有走 commandNeedsConfirm() ⇒ 弹窗判定各写一套')
+
+# ⑤ 纯函数本身：短标签优先、后果必须能触发弹窗。
+btn = stmt_of(labels, 'fun commandButtonLabel(')
+if btn is None:
+    problems.append('找不到 `fun commandButtonLabel(` —— 纯函数改名了？这道闸门要跟着改')
+else:
+    if 'cmd.label.ifBlank' not in btn:
+        problems.append('commandButtonLabel() 没有优先用 cmd.label ⇒ 又回去印 description 了')
+
+need = stmt_of(labels, 'fun commandNeedsConfirm(')
+if need is None:
+    problems.append('找不到 `fun commandNeedsConfirm(` —— 纯函数改名了？这道闸门要跟着改')
+else:
+    if 'cmd.note.isNotBlank()' not in need:
+        problems.append('commandNeedsConfirm() 没有把「有后果说明」算进去 ⇒ '
+                        '「会耗电、可能计费」挪进弹窗后没人看得见（等于删了信息）')
+
+note = stmt_of(labels, 'fun commandNoteLine(')
+if note is None:
+    problems.append('找不到 `fun commandNoteLine(` —— 纯函数改名了？这道闸门要跟着改')
+else:
+    if 'cmd.note.ifBlank' not in note:
+        problems.append('commandNoteLine() 没有优先用 cmd.note ⇒ 后果说明用的是别的口径')
+
+if problems:
+    print('车控按钮又把后果说明印回标签了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 按钮只印短标签；后果说明在确认弹窗里；「有后果说明 ⇒ 必须弹窗」')
+    sys.exit(1)
+
+print('车控按钮只印短标签（后果说明在确认弹窗里，且有后果说明就会弹窗）')
+PYEOF
+if [ $? -eq 0 ]; then ok "车控按钮只印短标签（后果说明在弹窗里）（用户反馈 #25）"; else fail "车控按钮只印短标签"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
