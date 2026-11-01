@@ -119,7 +119,10 @@ bash scripts/smoke.sh
 
 # 单测
 docker run --rm -v "$(pwd -W)/api:/src" -w /src golang:1.23-alpine sh -c 'gofmt -l .; go test ./...'
-gradle -p C:/tm-ws/app-android testDebugUnitTest --offline
+# ⚠️ 必须走 ASCII junction 路径 + 固定 GRADLE_USER_HOME（2026-11-02 实测能跑）
+cd /c/tm-ws && export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot' \
+ && export GRADLE_USER_HOME='C:\gradle\gradle-home' \
+ && /c/gradle/gradle-8.10.2/bin/gradle.bat -p /c/tm-ws/app-android testDebugUnitTest --console=plain --offline
 
 # 构建 App（**走 ASCII junction 路径**）
 # ⚠️ 直接用仓库路径会失败：Gradle 拒绝含非 ASCII 字符的项目路径

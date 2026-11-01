@@ -175,6 +175,44 @@
 3. 4 条用户反馈目前**全部 `done`** ⇒ 下一轮没有 `doing` 可继承 ⇒ 按本节挑一条 UI 痛点。
 
 ---
+## 2026-11-02（v0.108.0 补记 · JVM 单测在本机**能跑** —— 之前那句「环境问题」其实是**路径问题**）
+
+> 本段更正 v0.107.0 补记与 v0.108.0 段里的同一句话：
+> 「本轮 JVM 单测没能独立重跑 —— gradle worker 报 `ClassNotFoundException: GradleWorkerMain`
+> 与写文件『拒绝访问』⇒ **环境问题**（OneDrive 锁住 `app/build/` 的输出）」。
+>
+> ⚠️ **那条结论是错的。** 根因是**路径**：项目必须走 **ASCII 联接路径**
+> （`C:\tm-ws` → 仓库的 junction），而不是 OneDrive 里的真实路径。
+> 走对路径后 `testDebugUnitTest` **正常跑通**（2026-11-02 实测）。
+> ⇒ **「App 侧逻辑没有单测覆盖」这个长期缺口关闭了。**
+
+### 一、能跑的配方（已同步进 `AGENTS.md` / `docs/INDEX.md`）
+
+```bash
+cd /c/tm-ws && export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot' \
+ && export GRADLE_USER_HOME='C:\gradle\gradle-home' \
+ && /c/gradle/gradle-8.10.2/bin/gradle.bat -p /c/tm-ws/app-android testDebugUnitTest --console=plain --offline
+```
+
+三个要点：**ASCII 联接路径**（不是 OneDrive 真实路径）、**GRADLE_USER_HOME 固定**
+（别用默认的 `~/.gradle`）、`--offline`（依赖都在缓存里）。
+
+### 二、实测结果（2026-11-02）
+
+`testDebugUnitTest` → **BUILD SUCCESSFUL**，**212 个测试 / 25 个测试类，0 失败 0 错误 0 跳过**：
+
+- `ChargeStatsCardTest`（6 条，v0.108.0 新增）：区间下标映射、边界行格式
+  （近 N 天 = 窗口起止 / 全部 = 数据首尾）、无边界不给那一行、200% 宽度预算；
+- `CommandGridTest`（4 条，v0.109.0 新增）：两列在 200% 下**必须放不下**最长标签、
+  单列**必须放得下**、正常字号两列**必须够用**。
+
+### 三、影响
+
+以后每轮的 App 改动**都要能跑 JVM 单测**；把「本轮没跑成单测」写进 CHANGELOG
+**是不合格的**（除非有具体证据说明确实跑不了）。
+
+---
+
 ## 2026-11-02（v0.107.0 补记 · 车控 note 收窄：「规格」不算后果 ＋ 跨端字段名闸门 19）
 
 > 本轮手术点：**v0.107.0 的收尾** —— 上一版 CHANGELOG 的「六、下一轮建议」第 3 条

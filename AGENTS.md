@@ -76,6 +76,19 @@ python mcp/check_tool_fields.py  # MCP 字段映射自检
 gradle -p C:\tm-ws\app-android assembleDebug --console=plain --offline
 ```
 
+**跑 JVM 单测**（同样走 ASCII 路径；⚠️ `GRADLE_USER_HOME` 要固定到 `C:\gradle\gradle-home`）：
+
+```bash
+cd /c/tm-ws && export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot' \
+ && export GRADLE_USER_HOME='C:\gradle\gradle-home' \
+ && /c/gradle/gradle-8.10.2/bin/gradle.bat -p /c/tm-ws/app-android testDebugUnitTest --console=plain --offline
+```
+
+⚠️ **以前记的「JVM 单测在本机起不来（worker 报 `ClassNotFoundException: GradleWorkerMain`）」是错的**
+—— 根因是**路径**（走了 OneDrive 里的真实路径），走 ASCII 联接路径就正常
+（2026-11-02 实测：212 个测试全绿）。⇒ App 侧改动**必须**能跑单测，
+把「没跑成单测」写进 CHANGELOG 是不合格的。
+
 ⚠️ 改了 `.env` 之后 `docker compose restart` **不算数**（容器持有创建时的快照），
 必须 `docker compose up -d --force-recreate api`。
 
