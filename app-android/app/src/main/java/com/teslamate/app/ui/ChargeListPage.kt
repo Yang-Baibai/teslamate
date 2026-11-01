@@ -217,6 +217,23 @@ fun ChargeListPage(
                 }
             }
 
+            // ⚠️ **v0.110.0**：列表**只加载最近 N 条**（上限 300），
+            // 而卡片上的「全部」是**服务端全表** ⇒ 两者可能对不上（车充得多了就会）。
+            //
+            // ⇒ 诚实地把上限说出来（**不另算一套口径**）：
+            // 比服务端的总场次少时才显示这一行。
+            // （并行会话的规格：「别让客户端再数一遍」。）
+            val totalCharges = chargeStats?.ranges?.firstOrNull { it.key == chargeRangeKeys.last() }?.count
+            if (totalCharges != null && charges.size < totalCharges) {
+                item(key = "list-cap") {
+                    Text(
+                        "只列最近 ${charges.size} 条（共 $totalCharges 次）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             // ── 按月分组 ─────────────────────────────────────
             groups.forEach { (month, list) ->
                 item(key = "h-$month") {

@@ -129,6 +129,25 @@ SPEC = [
     ("teslamate_energy_profile", {}, "速度档[0].毛耗电Wh/km", "能耗分档"),
     ("teslamate_driving_profile", {}, "平顺分(中位·合成指标)", "平顺分"),
     ("teslamate_command_catalog", {}, "动作[0].动作名", "动作目录"),
+    # ⚠️ **v0.110.0**：充电统计工具（把 App 的区间能力接到 Hermes / 飞书）。
+    #
+    # 断言「窗口起点 / 窗口终点」—— 只说「近 30 天」不说边界，
+    # 用户没法核对「是哪 30 天」（并行会话给的规格）。
+    ("teslamate_charge_stats", {"period": "7d"}, "区间", "区间标签"),
+    ("teslamate_charge_stats", {"period": "7d"}, "窗口起点", "区间起点"),
+    ("teslamate_charge_stats", {"period": "7d"}, "窗口终点", "区间终点"),
+    ("teslamate_charge_stats", {"period": "7d"}, "服务器时区", "分日用的时区"),
+    ("teslamate_charge_stats", {"period": "7d"}, "场次", "区间内充电场次"),
+    ("teslamate_charge_stats", {"period": "7d"}, "充入(度)", "区间内充入电量"),
+    ("teslamate_charge_stats", {"period": "7d"}, "直流(度)", "直流充入电量"),
+    ("teslamate_charge_stats", {"period": "7d"}, "直流场次", "直流场次"),
+    ("teslamate_charge_stats", {"period": "7d"}, "交流(度)", "交流充入电量"),
+    ("teslamate_charge_stats", {"period": "7d"}, "交流场次", "交流场次"),
+    ("teslamate_charge_stats", {"period": "7d"}, "上次充满", "上次充满（没有也要说清楚）"),
+    # ⚠️ 自然月这一档必须能用 —— 「这个月充了多少度」是飞书里最常问的一句，
+    # 而「本月」**不是** 30 天（两者实测差 25.9%）。
+    ("teslamate_charge_stats", {"period": "month"}, "窗口起点", "自然月的起点"),
+    ("teslamate_charge_stats", {"period": "all"}, "场次", "全部历史的场次"),
 ]
 
 

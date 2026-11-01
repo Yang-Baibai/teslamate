@@ -2180,9 +2180,18 @@ if not m3:
     kt_keys = []
 else:
     kt_keys = re.findall(r'"([^"]+)"', m3.group(1))
-if go_keys and kt_keys and go_keys != kt_keys:
-    problems.append('区间键对不上：服务端 %s，App %s（**顺序**也要一样 —— 那就是分段控件的顺序）'
-                    % (go_keys, kt_keys))
+if go_keys and kt_keys:
+    # ⚠️ App 的区间是服务端的**子集**（服务端多一档「本月」给 Hermes 用，
+    #    App 的分段控件只有 3 格 ⇒ 塞不下第 4 档）。
+    #    但**子集的顺序**必须与服务端一致（那是分段控件的顺序）。
+    missing = [k for k in kt_keys if k not in go_keys]
+    if missing:
+        problems.append('App 的区间键 %s 服务端没有 ⇒ 切过去会拿到空' % missing)
+    else:
+        idx = [go_keys.index(k) for k in kt_keys]
+        if idx != sorted(idx):
+            problems.append('区间键顺序对不上：服务端 %s，App %s（App 取的是子集，顺序也要一致）'
+                            % (go_keys, kt_keys))
 
 # ③ 字段名（服务端 json tag ↔ App DTO 属性，且 App 端要有默认值）
 def go_struct_keys(src, name):
@@ -2335,6 +2344,132 @@ if problems:
 print('车控按钮网格的列数随字号变（大字号改单列，ADR #39）')
 PYEOF
 if [ $? -eq 0 ]; then ok "车控按钮网格大字号改单列（ADR #39）"; else fail "车控按钮网格列数"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 22：MCP 读的**服务端键名**必须在服务端结构体里存在（防静默 null）────
+#
+# ⚠️ **v0.110.0**
+#
+# 一次真实事故的同款（v0.72.0）：MCP 工具「能调通、返回 JSON」，
+# 但取的是**不存在的字段** ⇒ 9 个工具里 3 个**返回的全是 null** ——
+# 不报错、不崩、没人看得出来。
+#
+# 充电统计现在有**两个消费者**（App / MCP），读的是**同一个服务端端点**
+# ⇒ 键名对不上时必须有人喊出来（否则飞书里那句「这个月充了多少度」会答成 null）。
+#
+# ⚠️ 这道闸门查的是「MCP 读的**服务端键**」↔「服务端结构体的 json tag」——
+# **不是** MCP 的**输出中文键**（那是 MCP 自己的词表，与 App 的 DTO 字段名
+# 不是一套；拿它们互相对照会**假红**）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+MODELS = pathlib.Path('api/models.go')
+STATS = pathlib.Path('api/charge_stats.go')
+for p in (MCP, MODELS, STATS):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+mcp = MCP.read_text(encoding='utf-8', errors='replace')
+models = MODELS.read_text(encoding='utf-8', errors='replace')
+stats = STATS.read_text(encoding='utf-8', errors='replace')
+
+problems = []
+
+
+def go_struct_tags(src, name):
+    m = re.search(r'type\s+' + name + r'\s+struct\s*\{(.*?)\n\}', src, re.S)
+    if not m:
+        return None
+    return set(re.findall(r'`json:"([^"]+)"`', m.group(1)))
+
+
+server_tags = set()
+for name in ('ChargeStats', 'ChargeStatsRange', 'ChargeStatsLastFull'):
+    t = go_struct_tags(models, name)
+    if t is None:
+        problems.append('服务端找不到 type %s（api/models.go）' % name)
+    else:
+        server_tags |= t
+
+go_keys = re.findall(r'\{key:\s*"([^"]+)"', stats)
+if not go_keys:
+    problems.append('服务端的区间表（api/charge_stats.go）读不到')
+
+# ① 取 MCP 工具的函数体：**先跳参数表**（默认参数里有 `= {}` 的坑），
+#    再取到下一个 `@mcp.tool()`。
+m = re.search(r'def\s+teslamate_charge_stats\s*\(', mcp)
+body = ''
+if not m:
+    problems.append('MCP 里找不到 teslamate_charge_stats（mcp/teslamate_mcp.py）')
+else:
+    i = m.end() - 1
+    depth = 0
+    while i < len(mcp):
+        c = mcp[i]
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    colon = mcp.find(':', i)
+    rest = mcp[colon + 1:] if colon >= 0 else ''
+    nxt = rest.find('\n@mcp.tool()')
+    body = rest[:nxt] if nxt >= 0 else rest
+
+# ② 它读的**服务端键**必须都在服务端结构体里（键名写错 ⇒ 值恒 null）
+read_keys = set(re.findall(r'\.get\("([^"]+)"\)', body))
+for k in sorted(read_keys):
+    if k not in server_tags:
+        problems.append('MCP 读了服务端的 %s，但服务端结构体里没有这个键 ⇒ '
+                        '工具会静默返回 null（v0.72.0 同款事故）' % k)
+
+# ③ MCP 的两张区间表必须指向服务端真有的档位
+tm = re.search(r'_CHARGE_RANGE_CN\s*=\s*\{(.*?)\n\}', mcp, re.S)
+if not tm:
+    problems.append('MCP 里找不到 _CHARGE_RANGE_CN')
+else:
+    for k in sorted(set(re.findall(r'"([^"]+)":\s*"', tm.group(1)))):
+        if k not in go_keys:
+            problems.append('MCP 的区间标签表里有 %s，服务端没有这一档' % k)
+tm = re.search(r'_CHARGE_RANGE_ALIAS\s*=\s*\{(.*?)\n\}', mcp, re.S)
+if not tm:
+    problems.append('MCP 里找不到 _CHARGE_RANGE_ALIAS')
+else:
+    for v in sorted(set(re.findall(r':\s*"([^"]+)"', tm.group(1)))):
+        if v not in go_keys:
+            problems.append('MCP 的别名表指向区间 %s，服务端没有这一档' % v)
+
+# ④ **窗口必须出现在返回的字典里**（不是 docstring 里）——
+#    只说「近 30 天」不说边界，用户没法核对「是哪 30 天」。
+om = re.search(r'\n    out\s*=\s*\{(.*?)\n    \}', body, re.S)
+if body:
+    if not om:
+        problems.append('取不到 teslamate_charge_stats 的 out 字典 ⇒ 这道闸门要跟着改')
+    else:
+        out_block = om.group(1)
+        # ⚠️ **精确键名比对**（不能用子串！）：
+        #    把「窗口起点」改成「窗口起点被删了」时，子串判断照样命中 ⇒ **假绿**。
+        out_keys = set(re.findall(r'"([^"]+)"\s*:', out_block))
+        for k in ('窗口起点', '窗口终点'):
+            if k not in out_keys:
+                problems.append('MCP 的返回里没有「%s」⇒ 只说「近 30 天」不说边界' % k)
+
+if problems:
+    print('MCP 与服务端的键名对不上 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ MCP 读的服务端键必须在服务端结构体里存在；返回里必须带窗口起点/终点')
+    sys.exit(1)
+
+print('MCP 读的服务端键都在服务端结构体里（%d 个），区间表与返回的窗口都对得上'
+      % len(read_keys))
+PYEOF
+if [ $? -eq 0 ]; then ok "MCP 与服务端的键名一致（且返回带窗口边界）"; else fail "MCP 与服务端的键名"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"

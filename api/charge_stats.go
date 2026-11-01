@@ -51,12 +51,22 @@ type chargeRangeSpec struct {
 	key string
 	// days 窗口天数；0 = 全部历史。
 	days int
+	// calendarMonth = **自然月**（本月 1 号 00:00 起）。
+	//
+	// ⚠️ 它与 days>0 是**两种不同的口径**：「近 30 天」是滚动窗口，
+	// 「本月」是自然月（实测两者差 25.9%，见 v0.29.0）。
+	// 飞书里用户说「这个月充了多少度」指的是**自然月** ⇒ 必须有这一档。
+	calendarMonth bool
 }
 
-// chargeRangeSpecs 三个区间（顺序 = App 里分段控件的顺序）。
+// chargeRangeSpecs 四个区间。
+//
+// ⚠️ 顺序 = 服务端下发的顺序（App 与 Hermes 都按 key 取，顺序不影响取数，
+// 但闸门会检查「App 的区间键 ⊆ 服务端且相对顺序一致」）。
 var chargeRangeSpecs = []chargeRangeSpec{
 	{key: "7d", days: 7},
 	{key: "30d", days: 30},
+	{key: "month", calendarMonth: true},
 	{key: "all", days: 0},
 }
 
@@ -72,9 +82,14 @@ func buildChargeStats(loc *time.Location, now time.Time, rows []chargeStatRow) [
 // summarizeChargeRange 汇总一个区间。
 func summarizeChargeRange(spec chargeRangeSpec, loc *time.Location, now time.Time, rows []chargeStatRow) *ChargeStatsRange {
 	// 窗口起点：days>0 用 [dayWindowStart]（与 /stats 同一套）；
-	// days=0（全部）没有起点 —— 边界取数据自身的首尾。
+	// 自然月用 [monthStart]（与 /stats 的 calendar_month 同一套）；
+	// days=0 且非自然月（全部）没有起点 —— 边界取数据自身的首尾。
 	var windowStart *time.Time
-	if spec.days > 0 {
+	switch {
+	case spec.calendarMonth:
+		ms := monthStart(loc, now)
+		windowStart = &ms
+	case spec.days > 0:
 		ws := dayWindowStart(loc, now, spec.days)
 		windowStart = &ws
 	}
@@ -146,7 +161,7 @@ func summarizeChargeRange(spec chargeRangeSpec, loc *time.Location, now time.Tim
 	}
 	res.LastFull = lastFull
 
-	if spec.days > 0 {
+	if windowStart != nil {
 		res.WindowStart = utcPtr(*windowStart)
 		res.WindowEnd = utcPtr(now)
 	} else {

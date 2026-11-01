@@ -99,6 +99,8 @@ func TestChargeStatsWindowStartPinned(t *testing.T) {
 		"7d": time.Date(2026, time.October, 27, 0, 0, 0, 0, loc),
 		// 今天 00:00 往前 29 天
 		"30d": time.Date(2026, time.October, 4, 0, 0, 0, 0, loc),
+		// 自然月：本月 1 号 00:00（⚠️ 与「近 30 天」**不是**一回事）
+		"month": time.Date(2026, time.November, 1, 0, 0, 0, 0, loc),
 	}
 	for key, w := range want {
 		r := rangeByKey(ranges, key)
@@ -129,6 +131,8 @@ func TestChargeStatsWindowStartPinned(t *testing.T) {
 }
 
 // ② 与用量页 /stats 的窗口**同源**：两个端点必须调同一个函数。
+//
+// ⚠️ 「本月」也必须同源（/stats 的 calendar_month 用的是 monthStart）。
 func TestDayWindowStartPinned(t *testing.T) {
 	loc := testLoc(t)
 	now := fixedNow(t)
@@ -139,6 +143,10 @@ func TestDayWindowStartPinned(t *testing.T) {
 		{1, time.Date(2026, time.November, 2, 0, 0, 0, 0, loc)},
 		{7, time.Date(2026, time.October, 27, 0, 0, 0, 0, loc)},
 		{30, time.Date(2026, time.October, 4, 0, 0, 0, 0, loc)},
+	}
+	// 自然月的起点：**不是** dayWindowStart 的任何一天（它是本月 1 号）。
+	if got := monthStart(loc, now); !got.Equal(time.Date(2026, time.November, 1, 0, 0, 0, 0, loc)) {
+		t.Fatalf("monthStart = %s，期望 2026-11-01 00:00", got.Format("2006-01-02 15:04:05 -07:00"))
 	}
 	for _, c := range cases {
 		got := dayWindowStart(loc, now, c.days)
@@ -175,6 +183,8 @@ func TestChargeStatsAggregatesPinned(t *testing.T) {
 		"30d": {count: 3, totalKwh: 57.8, dcKwh: 37.8, dcCount: 2, acKwh: 20.0, acCount: 1, dcAvgMin: intp(35), acAvgMin: intp(300)},
 		// 全部：五场；交流有两场但只有一场有时长（另一场没时长 ⇒ 不进平均）
 		"all": {count: 5, totalKwh: 97.8, dcKwh: 67.8, dcCount: 3, acKwh: 30.0, acCount: 2, dcAvgMin: intp(37), acAvgMin: intp(300)},
+		// 自然月：只有 11-02 那场（10-31 落在上月）
+		"month": {count: 1, totalKwh: 12.9, dcKwh: 12.9, dcCount: 1, acKwh: 0, acCount: 0, dcAvgMin: intp(43), acAvgMin: nil},
 	}
 	for key, w := range cases {
 		r := rangeByKey(ranges, key)
@@ -287,8 +297,8 @@ func TestChargeStatsJSONContract(t *testing.T) {
 		}
 	}
 	rs, ok := m["ranges"].([]any)
-	if !ok || len(rs) != 3 {
-		t.Fatalf("ranges 不是三个区间: %v", m["ranges"])
+	if !ok || len(rs) != 4 {
+		t.Fatalf("ranges 不是四个区间: %v", m["ranges"])
 	}
 	first, ok := rs[0].(map[string]any)
 	if !ok {
@@ -303,8 +313,8 @@ func TestChargeStatsJSONContract(t *testing.T) {
 			t.Errorf("区间缺键 %q", k)
 		}
 	}
-	// 区间顺序固定（App 的分段控件按这个顺序渲染）。
-	wantKeys := []string{"7d", "30d", "all"}
+	// 区间顺序固定（App 与 Hermes 都按 key 取；顺序即服务端下发的顺序）。
+	wantKeys := []string{"7d", "30d", "month", "all"}
 	for i, wk := range wantKeys {
 		got := rs[i].(map[string]any)["key"]
 		if got != wk {

@@ -1410,6 +1410,16 @@ func dayWindowStart(loc *time.Location, now time.Time, days int) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, -(days - 1))
 }
 
+// monthStart **自然月**窗口的起点：本月 1 号 00:00（服务器时区）。
+//
+// ⚠️ **v0.110.0**：与充电统计的「本月」区间共用同一个定义 ——
+// 「本月」与「近 30 天」**不是一回事**（实测滚动 30 天比自然月多算 25.9%，
+// 见 v0.29.0 的记录），所以这两条口径必须各写各的、且各自唯一。
+func monthStart(loc *time.Location, now time.Time) time.Time {
+	y, m, _ := now.Date()
+	return time.Date(y, m, 1, 0, 0, 0, 0, loc)
+}
+
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -1458,8 +1468,7 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	var windowStart time.Time
 	if isCalendarMonth {
 		// 当月 1 号 00:00 → 今天（桶数 = 今天是几号）
-		y, m, _ := now.Date()
-		windowStart = time.Date(y, m, 1, 0, 0, 0, 0, loc)
+		windowStart = monthStart(loc, now)
 		buckets = now.Day()
 	} else if granularity == "day" {
 		// ⚠️ v0.108.0：窗口起点统一走 [dayWindowStart]（与充电统计同一套口径）。

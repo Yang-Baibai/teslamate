@@ -49,6 +49,7 @@ python mcp/teslamate_mcp.py            # stdio（由 MCP 客户端拉起）
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import urllib.error
@@ -425,6 +426,106 @@ def teslamate_charges(limit: int = 10) -> dict:
             "结束续航km": it.get("end_range_km"),
         })
     return {"共": len(items), "最近": rows}
+
+
+# ⚠️ **v0.110.0**：充电统计的**区间**口径也归 Hermes。
+#
+# 为什么 MCP 要有这个工具：App 里那张卡能切「近 7 天 / 近 30 天 / 全部」，
+# 飞书里却问不出来 ⇒ 用户在两个渠道拿到的能力不一样。
+# ⇒ 这里读**同一个服务端端点**（`/charge_stats`），**不另算一套**（ADR #38）。
+#
+# ⚠️ **「本月」是自然月，不是 30 天** —— 两者实测差 25.9%（v0.29.0 记录），
+# 用户说「这个月充了多少度」指的是自然月 ⇒ 服务端单列一档 `month`。
+
+# 区间 key → 中文标签（标签只说名字，**真正的边界以服务端给的窗口为准**）。
+_CHARGE_RANGE_CN = {
+    "7d": "近 7 天",
+    "30d": "近 30 天",
+    "month": "本月（自然月）",
+    "all": "全部历史",
+}
+
+# LLM 可能传的中文说法 → 服务端的区间 key。
+#
+# ⚠️ 这里是**别名**（不是第二份口径）：真正的窗口由服务端给，
+# 别名只解决「LLM 传了个近义词」这件事。
+_CHARGE_RANGE_ALIAS = {
+    "7d": "7d", "7": "7d", "week": "7d", "近7天": "7d", "近 7 天": "7d", "近一周": "7d", "一周": "7d",
+    "30d": "30d", "30": "30d", "近30天": "30d", "近 30 天": "30d", "一个月": "30d",
+    "month": "month", "本月": "month", "这个月": "month", "自然月": "month", "calendar_month": "month",
+    "all": "all", "全部": "all", "全部历史": "all", "历史": "all", "total": "all",
+}
+
+
+def _fmt_tz(ts: Any, tz: str) -> str:
+    """把服务端给的 ISO 时刻按**服务器时区**渲染（回答时直接说这个时间）。"""
+    if not ts:
+        return ""
+    try:
+        import datetime
+        from zoneinfo import ZoneInfo
+        dt = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return dt.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        # tzdata 缺失 / 时刻格式不认识 ⇒ 退回原始串（**不编时间**）。
+        return str(ts)
+
+
+@mcp.tool()
+def teslamate_charge_stats(period: str = "7d") -> dict:
+    """查**充电统计**：按区间给出充了多少度、几次、直交流拆分、平均时长、上次充满。
+
+    **什么时候用**：用户问「这个月充了多少度」「最近 30 天快充几次」「充电花了几次」
+    「我一共充过多少度」「这个月充满过几次」「最近多久没充满电了」—— 都归它。
+
+    ⚠️ **区间只有这四个**：`7d`（近 7 天）/ `30d`（近 30 天）/ `month`（**本月 = 自然月**，
+    **不是** 30 天）/ `all`（全部历史）。
+
+    ⚠️ **以返回的「窗口起点 / 窗口终点」为准** —— 那是服务端算好的区间边界
+    （服务器时区）。回答时把它说出来，别自己另算「是哪 30 天」。
+
+    ⚠️ 分工：最近几场充电的明细 → `teslamate_charges`；
+    某一场的功率曲线 → 用它的 `id` 调 `teslamate_charge_curve`。
+    """
+    key = _CHARGE_RANGE_ALIAS.get(str(period).strip().lower())
+    if key is None:
+        return {
+            "错误": "区间只能是 7d / 30d / month / all",
+            "收到": period,
+        }
+    data = _get(f"/api/v1/cars/{CAR_ID}/charge_stats")
+    if not isinstance(data, dict):
+        return {"错误": "返回格式异常"}
+    tz = data.get("server_timezone") or "Asia/Shanghai"
+    rng = next((r for r in (data.get("ranges") or []) if isinstance(r, dict) and r.get("key") == key), None)
+    if rng is None:
+        return {"错误": "服务端没有这个区间", "区间": key}
+    out = {
+        "区间": _CHARGE_RANGE_CN.get(key, key),
+        # ⚠️ **窗口必须露出来**（v0.110.0）：只说「近 30 天」不说边界，
+        # 用户没法核对「是哪 30 天」。
+        "窗口起点": _fmt_tz(rng.get("window_start"), tz),
+        "窗口终点": _fmt_tz(rng.get("window_end"), tz),
+        "服务器时区": tz,
+        "场次": rng.get("count"),
+        "充入(度)": rng.get("total_kwh"),
+        "直流(度)": rng.get("dc_kwh"),
+        "直流场次": rng.get("dc_count"),
+        "交流(度)": rng.get("ac_kwh"),
+        "交流场次": rng.get("ac_count"),
+    }
+    # 平均时长：**没有样本就是没有**（服务端给 null）⇒ 不拿 0 充数。
+    if rng.get("dc_avg_min") is not None:
+        out["直流平均(分钟)"] = rng.get("dc_avg_min")
+    if rng.get("ac_avg_min") is not None:
+        out["交流平均(分钟)"] = rng.get("ac_avg_min")
+    lf = rng.get("last_full")
+    if isinstance(lf, dict):
+        out["上次充满"] = "%s（%s%% → %s%%）" % (
+            _fmt_tz(lf.get("date"), tz), lf.get("from_soc"), lf.get("to_soc"))
+    else:
+        out["上次充满"] = "这个区间里没有充满过"
+    return out
 
 
 # ⚠️ **v0.78.0**：结局的**文案**只有服务端那一份（`verdict` / `detail`）。
