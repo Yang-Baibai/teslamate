@@ -1871,10 +1871,20 @@ private fun TpmsCard(st: CarStatus) {
             else -> "轮胎胎压"
         },
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            VehicleTopView(reading = reading, modifier = Modifier.weight(0.9f))
-            Column(Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (alerting || warning) {
+        // ⚠️ **v0.105.0（用户反馈 #24「胎压这一块不需要显示这个图标」）**：
+        // **俯视图只在「有事」时才画。**
+        //
+        // 那张俯视图在**四轮都正常**时，四个轮子全是灰的 ⇒ 它只说明「这是一辆车」，
+        // 纯装饰，却占掉卡片近一半的宽度、把「胎压正常」挤到右边
+        // （用户原话：「很难理解」「不需要显示这个图标」）。
+        // ⇒ 正常时**整行不画** ⇒ 结论独占整宽、左对齐（卡片的左边线）。
+        //
+        // ⚠️ 告警/接近阈值时**仍然画** —— 那时它是**信息**：
+        // 它标出「哪个轮子」偏了（红/琥珀），比四行文字更快被看见。
+        if (alerting || warning) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                VehicleTopView(reading = reading, modifier = Modifier.weight(0.9f))
+                Column(Modifier.weight(1.1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     // ⚠️ **v0.91.0**：异常时**必须更醒目** ——
                     // 结论升成告警行（红 / 琥珀），轮子颜色之外还有文字（WCAG 1.4.1）。
                     val noticeColor =
@@ -1902,12 +1912,13 @@ private fun TpmsCard(st: CarStatus) {
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                } else {
-                    // ⚠️ **v0.91.0**：没事就安静 —— 一个结论 + 一行实测区间。
-                    // 四个读数与阈值说明折进下面的「更多明细」。
-                    BigStat("胎压正常", rangeLabel, mid = true)
                 }
             }
+        } else {
+            // ⚠️ **v0.91.0**：没事就安静 —— 一个结论 + 一行实测区间。
+            // 四个读数与阈值说明折进下面的「更多明细」。
+            // ⚠️ **v0.105.0**：这里**不再**与俯视图并排 ⇒ 独占整宽。
+            BigStat("胎压正常", rangeLabel, mid = true)
         }
         if (alerting || warning) {
             // 有事时明细**留在表层**（不折）—— 车主要靠它分清「一胎漏气」还是「四胎都低」。
