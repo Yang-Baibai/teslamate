@@ -2004,6 +2004,102 @@ PYEOF
 if [ $? -eq 0 ]; then ok "车控按钮只印短标签（后果说明在弹窗里）（用户反馈 #25）"; else fail "车控按钮只印短标签"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 19：车控目录的**字段名**必须两端一致（防静默退化）──────────────
+#
+# ⚠️ **v0.107.1**
+#
+# App 的 `label` / `note` 有**默认值**（为了兼容老服务端）⇒
+# **服务端一旦改了 JSON 字段名，App 不会报错** ——
+# 它只会**静默退回 `description`** ⇒ 用户的界面悄悄变回
+# 「标签里带括号」的老样子：**没有报错、没有崩溃、没有日志、没人会发现**。
+#
+# ⇒ 这道闸门把**线上契约**钉死（关联检查，不是「短语在不在」）：
+#   ① 服务端 `teslaCommandSpec` 的 `json:"label"` / `json:"note"`；
+#   ② App 端 `VehicleCommand` 的 `val label` / `val note`，且**必须有默认值**
+#      （没默认值 ⇒ 老服务端返回的 JSON 缺这两个键 ⇒ kotlinx.serialization
+#        **直接抛异常** ⇒ 整张车控卡变成「读不到车控能力清单」——
+#        v0.74.0 踩过的坑）；
+#   ③ 两边的**字段名必须相等**；
+#   ④ App 的 JSON 解析必须 `ignoreUnknownKeys = true`
+#      （否则**老 App** 收到新服务端多出来的字段 ⇒ 整个清单解析失败）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+GO = pathlib.Path('api/tesla_command.go')
+KT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/Api.kt')
+for p in (GO, KT):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace')
+
+
+go = read(GO)
+kt = read(KT)
+
+problems = []
+
+# ① 服务端：teslaCommandSpec 里的两个 json tag
+m = re.search(r'type\s+teslaCommandSpec\s+struct\s*\{(.*?)\n\}', go, re.S)
+if not m:
+    print('找不到 teslaCommandSpec（api/tesla_command.go）—— 这道闸门要跟着改')
+    sys.exit(1)
+spec_body = m.group(1)
+wire = {}
+for field, key in re.findall(r'\b(Label|Note)\s+string\s+`json:"([^"]+)"`', spec_body):
+    wire[field] = key
+for field in ('Label', 'Note'):
+    if field not in wire:
+        problems.append('服务端的 teslaCommandSpec 里没有 %s 字段的 json tag ⇒ '
+                        'App 端对应的 DTO 字段会一直是空串（静默退回 description）' % field)
+
+# ② App：VehicleCommand DTO 的 label / note（且必须有默认值）
+m2 = re.search(r'data\s+class\s+VehicleCommand\s*\((.*?)\n\)', kt, re.S)
+if not m2:
+    print('找不到 data class VehicleCommand（Api.kt）—— 这道闸门要跟着改')
+    sys.exit(1)
+dto = m2.group(1)
+dto_props = {}
+for name, default in re.findall(r'val\s+(\w+)\s*:\s*String\s*(=\s*""\s*)?', dto):
+    dto_props[name] = bool(default)
+for field in ('label', 'note'):
+    if field not in dto_props:
+        problems.append('App 的 VehicleCommand 里没有 `val %s` ⇒ 服务端下发的 %s 读不到' % (field, field))
+    elif not dto_props[field]:
+        problems.append('App 的 `val %s` **没有默认值** ⇒ 老服务端（不下发这个字段）'
+                        '会让 kotlinx.serialization 抛异常 ⇒ 整张车控卡变成'
+                        '「读不到车控能力清单」（v0.74.0 踩过的坑）' % field)
+
+# ③ 两边字段名必须相等
+for field, key in wire.items():
+    lower = field[0].lower() + field[1:]
+    if lower in dto_props and key != lower:
+        problems.append('服务端的 `json:"%s"` 与 App 的 `val %s` **对不上** ⇒ '
+                        'App 读不到 ⇒ 界面静默退回带括号的老样子' % (key, lower))
+
+# ④ App 的 JSON 解析必须忽略未知字段（老 App 遇到新服务端字段不能整个挂掉）
+if 'ignoreUnknownKeys = true' not in kt:
+    problems.append('App 的 Json 没有 `ignoreUnknownKeys = true` ⇒ '
+                    '老 App 收到新服务端多出来的字段会**整个解析失败**')
+
+if problems:
+    print('车控目录的字段名两端对不上 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 服务端 json tag ↔ App DTO 字段名必须一致，且 App 端要有默认值')
+    sys.exit(1)
+
+print('车控目录字段名两端一致（服务端 %s ↔ App %s），且都带默认值' % (
+    ', '.join('%s=%s' % (k, v) for k, v in sorted(wire.items())),
+    ', '.join(sorted(k for k in dto_props if k in ('label', 'note')))))
+PYEOF
+if [ $? -eq 0 ]; then ok "车控目录字段名两端一致（防静默退化）"; else fail "车控目录字段名"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

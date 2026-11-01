@@ -586,8 +586,27 @@ var teslaCommandCatalog = func() []teslaCommandSpec {
 // （`teslaSpecChargeLimit.Label` = 「充电上限 %（50~100）」）。
 var teslaCommandUnitHints = map[string]bool{
 	"℃": true,
-	"%":  true,
-	"A":  true,
+	"%": true,
+	"A": true,
+}
+
+// teslaCommandSpecHints 「括号里只是**动作规格**」的那些内容。
+//
+// ⚠️ **v0.107.1（用户反馈 #25 收尾）**：
+// 「车窗通风（开一条缝）」里的「开一条缝」说的是**这个动作做什么**，
+// 不是**这个动作有什么代价** —— 它是**规格**，不是**后果**。
+//
+// ⇒ 而 App 的规则是「**有 note ⇒ 必须弹窗**」（ADR #37）
+// ⇒ 把它当后果 ⇒ **车窗通风平白多一次确认弹窗**
+// —— 一个**可逆**动作被无谓打断一次（Apple：只在不可逆时打断）。
+//
+// ⇒ 它对 LLM **仍然有用**（`description` 一个字未改，照旧写着「开一条缝」），
+// 只是**不该触发弹窗**。
+//
+// ⚠️ 这张表是**手工登记**的 —— 「是不是后果」是**语义判断**，没法从字符串推出来
+// ⇒ 单测把两张表的内容都**钉死**：谁想加一条，都得先想清楚。
+var teslaCommandSpecHints = map[string]bool{
+	"开一条缝": true,
 }
 
 // splitCommandLabel 把 `description` 拆成 **按钮短标签** 与 **后果说明**。
@@ -629,8 +648,9 @@ func splitCommandLabel(desc string) (label string, note string) {
 	if head == "" || inner == "" {
 		return s, ""
 	}
-	if teslaCommandUnitHints[inner] {
-		// 只是单位 ⇒ 按钮上也不要它（按钮一律短标签），但它**不算后果**。
+	if teslaCommandUnitHints[inner] || teslaCommandSpecHints[inner] {
+		// 只是单位 / 只是动作规格 ⇒ 按钮上也不要它（按钮一律短标签），
+		// 但它**不算后果** ⇒ App 不会为它多弹一次确认窗。
 		return head, ""
 	}
 	return head, inner
