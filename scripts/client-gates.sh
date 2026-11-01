@@ -1137,34 +1137,57 @@ if sum(caps) != 100:
 smooth = caps[0] + caps[1] + caps[2]      # 急刹 + 急加 + 速度
 energy_night = caps[3] + caps[4]          # 能耗 + 夜驾
 
+
+def unquote(text):
+    """剥掉 `「…」` 跨度 —— **引文是历史记录，不是当前断言**。
+
+    ⚠️ **v0.103.0**：闸门 14 扩到扫全文后，文件里那些
+    「原来写的是『…只有 60 分…』」的**历史引文**会被误判成断言 ⇒ 必须先剥引文。
+    ⇒ 剥完之后仍留在正文里的，才是**当前的说法**，必须等于服务端公式。
+    """
+    return re.sub(r'「[^」]*」', '', text)
+
+
 problems = []
 
 
-def check_all(text, pat, want, label, where):
-    """**所有**匹配都必须等于期望值 —— 不只是第一个。"""
+def check_all(text, pat, want, label, where, required=True):
+    """**所有**匹配都必须等于期望值 —— 不只是第一个。
+
+    ⚠️ `required=False`：只查「写了的对不对」，**不查「有没有写」**
+    （用来查注释里的话 —— 注释被删掉不算错，写错才算）。
+    """
     got = [int(x) for x in re.findall(pat, text)]
     if not got:
-        problems.append('%s 找不到「%s」的权重（应写 %d 分）' % (where, label, want))
+        if required:
+            problems.append('%s 找不到「%s」的权重（应写 %d 分）' % (where, label, want))
+        return
     for g in got:
         if g != want:
             problems.append('%s 的%s权重是 %d 分，服务端公式是 %d 分' % (where, label, g, want))
 
 
-# ② App：noteDriveScore() 的正文
+# ② App：**扫全文**（不只 ⓘ 函数体）——
+#
+# ⚠️ **v0.103.0**：v0.102.0 只扫 `noteDriveScore()` 的函数体 ⇒
+# 文件**注释**里 v0.44.0 抄错的「只覆盖了 60 分 / 40 分来自能耗与夜驾」**漏网**
+# （用户可见的 ⓘ 改了，旁边的注释没改）⇒ 这类「同一事实的第二份副本」最容易被漏掉。
+# ⇒ 现在扫整个 `DriveScoreCard.kt`：**注释里的错权重也会报红**。
 kt = read(KT)
-fm = re.search(r'fun noteDriveScore\(.*?\n\}', kt, re.S)
-if not fm:
+if 'fun noteDriveScore(' not in kt:
     print('找不到 noteDriveScore()（DriveScoreCard.kt）—— 客户端口径函数不见了？')
     sys.exit(1)
-body = fm.group(0)
-check_all(body, r'(\d+) 分是急刹/急加/速度', smooth, '平滑相关', 'App ⓘ')
-check_all(body, r'(\d+) 分来自能耗与夜驾', energy_night, '能耗与夜驾', 'App ⓘ')
+check_all(unquote(kt), r'(\d+) 分是急刹/急加/速度', smooth, '平滑相关', 'App')
+check_all(unquote(kt), r'(\d+) 分来自能耗与夜驾', energy_night, '能耗与夜驾', 'App')
+# ⚠️ v0.44.0 那句「「平顺分」这个名字**只覆盖了 N 分**」——
+# 同样必须等于服务端口径（**存在时**才查：它是注释，删掉不算错，写错才算）。
+check_all(unquote(kt), r'只覆盖了 (\d+) 分', smooth, '平滑相关', 'App 注释', required=False)
 
 # ③ Hermes（MCP）
 mcp = read(MCP)
-check_all(mcp, r'(\d+) 分是平顺相关', smooth, '平滑相关', 'Hermes 口径')
-check_all(mcp, r'另 (\d+) 分来自能耗与夜驾', energy_night, '能耗与夜驾', 'Hermes 口径')
-check_all(mcp, r'急刹 %d \+ 急加 %d \+ 速度 (\d+)' % (caps[0], caps[1]), caps[2],
+check_all(unquote(mcp), r'(\d+) 分是平顺相关', smooth, '平滑相关', 'Hermes 口径')
+check_all(unquote(mcp), r'另 (\d+) 分来自能耗与夜驾', energy_night, '能耗与夜驾', 'Hermes 口径')
+check_all(unquote(mcp), r'急刹 %d \+ 急加 %d \+ 速度 (\d+)' % (caps[0], caps[1]), caps[2],
           '速度', 'Hermes 拆解')
 
 if problems:
@@ -1179,6 +1202,136 @@ print('驾驶评分权重与服务端一致（封顶 %s ⇒ 平滑 %d / 能耗�
       % (caps, smooth, energy_night))
 PYEOF
 if [ $? -eq 0 ]; then ok "驾驶评分权重（App + Hermes = 服务端公式）"; else fail "驾驶评分权重"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 15：能耗口径 —— 一个事实只能有一个说法 ───────────────────────
+#
+# ⚠️ **v0.103.0**：App 的用量页 ⓘ 与 Hermes 的工具说明，
+#   **各自维护了一份**「两个能耗口径的关系」的说明 ⇒ **两份都错了**：
+#
+#   ① App（`ui/EnergyNote.kt`）说「两个都比实测电池耗电低」——
+#      那是从**净值**（≈155 Wh/km，比实测 ≈198 低 24%）推出来的，
+#      而车况页显示的是**毛耗电**（≈215~227，**高于**实测）⇒ 对显示值是**反的**；
+#      而且「实测耗电」在 App 里**从不显示**（只在费用计算内部用）⇒ 悬空引用。
+#
+#   ② Hermes（`mcp/teslamate_mcp.py`）说「毛耗电**含**回充抵扣」——
+#      而服务端 `api/handlers.go` 的 `EnergyProfile.Note` 写的是
+#      「`wh_per_km` 是净值（回充**会**抵扣），`wh_per_km_gross` 是毛耗电（**不**含回充抵扣）」
+#      ⇒ **正好相反**，而且与这个工具自己下发的两个字段自相矛盾。
+#
+# ⇒ 这道闸门盯的是**「只有一份」这个结构**，不是去复述口径内容：
+#   ① 服务端 `EnergyProfile.Note` 必须存在、非空、且**同时**说清「净值」与「毛耗电」；
+#   ② Hermes 必须**引用服务端下发的 `note`** ⇒ 不许再自己写第二份；
+#   ③ Hermes 的**字符串常量**里不许出现已知错误说法与悬空引用
+#      （用 `ast` 取字符串常量 ⇒ **注释不算**，因为注释要写清楚来龙去脉）。
+#
+# ⚠️ App 侧（`noteAvgEnergy()`）是 **provider 形态** ⇒ 静态闸门扫不到
+#   ⇒ 由 **JVM 单测** `EnergyNoteTest` 钉住（宽度 + 禁「实测耗电」+ 禁「低/高」）。
+#   这与 v0.97.0 定的分工一致：调用点归静态闸门、provider 归单测。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import ast, pathlib, re, sys
+
+GO = pathlib.Path('api/handlers.go')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+
+problems = []
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+
+
+# ① 服务端：EnergyProfile.Note 必须存在、非空、且两个口径都说到
+#
+# ⚠️ `api/handlers.go` 里**不止一个** `Note:`（驾驶评分那条也有）⇒ 必须挑对那一个：
+# 认准**含 `wh_per_km` 的那条**（EnergyProfile 的口径说明）。
+go = read(GO)
+notes = []
+for m in re.finditer(r'\bNote:\s*((?:"[^"]*"\s*\+\s*)*"[^"]*")', go, re.S):
+    lit = ''.join(re.findall(r'"([^"]*)"', m.group(1)))
+    notes.append(lit)
+note = next((n for n in notes if 'wh_per_km' in n), None)
+if note is None:
+    problems.append('api/handlers.go 里找不到 EnergyProfile 的 Note 文案'
+                    '（含 wh_per_km 的那一条）—— 服务端不再下发口径了？')
+else:
+    if len(note) < 20:
+        problems.append('服务端的 EnergyProfile.Note 太短（%d 字）：%s' % (len(note), note))
+    if '净值' not in note or '毛耗电' not in note:
+        problems.append('服务端的 EnergyProfile.Note 没有同时说清「净值」与「毛耗电」：%s' % note)
+    # ⚠️⚠️ **关联**检查（不是「短语在不在」）——
+    # 只查「回充会抵扣 / 不含回充抵扣」这两个短语在不在 ⇒
+    # 把两个口径**说反**也能蒙混过关（负向探针 P6 实测过）。
+    # ⇒ 必须检查它们**各自挨着哪个字段名**：
+    #     wh_per_km（净值）↔ 回充会抵扣
+    #     wh_per_km_gross（毛耗电）↔ 不含回充抵扣
+    if not re.search(r'wh_per_km(?!_gross)[^，。]*?回充会抵扣', note):
+        problems.append('服务端的 Note 没把「wh_per_km（净值）」与「回充会抵扣」放在一起'
+                        '（两个口径可能被说反了）：%s' % note)
+    if not re.search(r'wh_per_km_gross[^，。]*?不含回充抵扣', note):
+        problems.append('服务端的 Note 没把「wh_per_km_gross（毛耗电）」与「不含回充抵扣」放在一起'
+                        '（两个口径可能被说反了）：%s' % note)
+
+# ② Hermes：口径必须**引用服务端那份**，不许自维护第二份
+mcp_src = read(MCP)
+fm = re.search(r'def teslamate_energy_profile\(.*?\n(?=\S)', mcp_src, re.S)
+if not fm:
+    problems.append('找不到 teslamate_energy_profile()（mcp/teslamate_mcp.py）')
+else:
+    body = fm.group(0)
+    if 'd.get("note")' not in body:
+        problems.append('teslamate_energy_profile 的口径没有引用服务端下发的 note —— '
+                        '自己维护一份必然漂移（v0.103.0 就漂移了：把两个口径说反了）')
+
+# ②' Hermes 的 docstring 里也**复述**了口径（LLM 先看它）⇒ 它也必须钉住
+#     —— 用 ast 精确取出那个函数的 docstring，不受文件里别处干扰。
+try:
+    tree = ast.parse(mcp_src)
+except SyntaxError as e:
+    problems.append('mcp/teslamate_mcp.py 语法错：%s' % e)
+    tree = None
+doc = ''
+if tree is not None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == 'teslamate_energy_profile':
+            doc = ast.get_docstring(node) or ''
+if doc:
+    flat = re.sub(r'\s+', ' ', doc)
+    if not re.search(r'wh_per_km_gross.{0,80}?不抵扣', flat):
+        problems.append('Hermes 的 docstring 没把「wh_per_km_gross（毛耗电）」与「不抵扣回充」'
+                        '放在一起：%s' % flat[:160])
+    if not re.search(r'wh_per_km(?!_gross).{0,80}?回充会抵扣', flat):
+        problems.append('Hermes 的 docstring 没把「wh_per_km（净值）」与「回充会抵扣」'
+                        '放在一起：%s' % flat[:160])
+elif tree is not None:
+    problems.append('teslamate_energy_profile 没有 docstring —— LLM 看不到口径说明')
+
+# ③ Hermes 的字符串常量里不许出现已知错误说法与悬空引用
+BANNED = [
+    '实测电池耗电',   # App/Hermes 都从不显示这个数 ⇒ 悬空引用
+    '实测耗电',
+    '更接近真实电表',  # 无据的说法
+    '毛耗电含回充抵扣',  # 说反了（毛耗电**不**抵扣回充）
+]
+if tree is not None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            for b in BANNED:
+                if b in node.value:
+                    problems.append('MCP 文案里出现禁用说法「%s」：%s' % (b, node.value[:60]))
+
+if problems:
+    print('能耗口径不是一个说法 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 权威源是 api/handlers.go 的 EnergyProfile.Note；Hermes 必须引用它')
+    print('   ⇒ App 侧由 JVM 单测 EnergyNoteTest 钉（provider 形态，静态闸门扫不到）')
+    sys.exit(1)
+
+print('能耗口径只有一份说法（服务端 Note 为准，Hermes 引用它，App 由单测钉）')
+PYEOF
+if [ $? -eq 0 ]; then ok "能耗口径单一来源（App + Hermes = 服务端 Note）"; else fail "能耗口径单一来源"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"

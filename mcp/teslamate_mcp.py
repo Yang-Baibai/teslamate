@@ -668,12 +668,30 @@ def teslamate_cost(period: str = "week") -> dict:
 
 @mcp.tool()
 def teslamate_energy_profile() -> dict:
+    # ⚠️ **v0.103.0（第 11 轮 CDO Polish）：这份工具说明原来把两个口径说反了。**
+    #
+    # 原文写的是「毛耗电**含**回充抵扣」「车轮 Wh/km **不含**回充抵扣」——
+    # 而服务端 `api/handlers.go` 的 `EnergyProfile.Note` 写的是
+    # 「`wh_per_km` 是**净值**（下坡回充**会**抵扣），
+    #   `wh_per_km_gross` 是**毛耗电**（**不**含回充抵扣）」——
+    # ⇒ 两边**正好相反**，而且这个工具自己的「口径」字段与它自己下发的
+    #   `wh_per_km` / `wh_per_km_gross` 也自相矛盾。
+    #
+    # ⇒ 修法**不是**把这里改对，而是**删掉自己维护的那一份**：
+    #   口径一律引用服务端下发的 `note`（唯一事实源）⇒ 以后服务端改口径，这里自动跟着变。
+    # ⇒ 下面 docstring 里只留**两件事**：各字段对应哪个口径、看「最省电」该看哪个。
     """查**能耗-车速曲线**：每个速度档的平均 Wh/km（车轮功率 / 毛耗电）与跑了多少公里。
 
     **什么时候用**：用户问「我开多快最省电」「高速费电吗」「多少码最经济」
     —— 都归它。看 `毛耗电Wh/km` 最低的那个速度档。
 
-    ⚠️ 车轮 Wh/km 不含传动损耗与回充抵扣；**毛耗电**含回充抵扣，更接近真实电表。
+    ⚠️ **两个口径别搞反**：
+    - `毛耗电Wh/km`（服务端的 `wh_per_km_gross`）= `max(P,0)` 积分，
+      **不抵扣下坡回充** ⇒ 「最省电的速度」**只看它**；
+    - `车轮Wh/km`（服务端的 `wh_per_km`）= 梯形积分的**净值**，
+      **回充会抵扣** ⇒ 下坡趟次会把它拉低，是假象。
+
+    完整口径见返回值里的「口径」字段（由服务端下发）。
     """
     d = _get(f"/api/v1/cars/{CAR_ID}/energy_profile")
     if not isinstance(d, dict) or "error" in d:
@@ -694,7 +712,10 @@ def teslamate_energy_profile() -> dict:
     out = {"速度档": rows, "最省电的速度档": best.get("速度档kph") if best else None}
     if best:
         out["最省电的毛耗电Wh/km"] = best.get("毛耗电Wh/km")
-    out["口径"] = "车轮 Wh/km 不含传动损耗与回充抵扣；毛耗电含回充抵扣，更接近真实电表"
+    # ⚠️ **v0.103.0**：口径**不再自己维护一份** ——
+    # 服务端 `note` 字段就是权威口径（`api/handlers.go` 的 `EnergyProfile.Note`），
+    # 自己写一份必然漂移（本轮就发现这里把两个口径说反了）。
+    out["口径"] = d.get("note") or "（服务端未下发口径说明）"
     return out
 
 

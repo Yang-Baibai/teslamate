@@ -507,16 +507,17 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                     //
                                     // 标签里的「（标定法）」是**工程词** ⇒ 去掉
                                     // （同 v0.90.0 去掉「标定」），口径一字不少地写进 ⓘ。
-                                    note = buildString {
-                                        append("这个数是「标定续航差法」算的 —— ")
-                                        append("用车机重算的标定续航变化反推耗电。")
-                                        append("车况页「驾驶画像」里的能耗是车轮功率积分算的，")
-                                        append("两者不是一个口径，数值会差一截，不是有哪个算错了。")
-                                        // ⚠️ **v0.29.0（复审 P1-2）**：两个都比实测电池耗电低 ——
-                                        // 车轮功率不含传动损耗，标定法受车机重算影响。
-                                        append("而且两个都比实测电池耗电低")
-                                        append("（车轮功率不含传动损耗，标定法还受车机重算影响）。")
-                                    },
+                                    //
+                                    // ⚠️ **v0.103.0**：正文搬进 `ui/EnergyNote.kt` 的纯函数
+                                    // `noteAvgEnergy()`。
+                                    //
+                                    // 原来这段 buildString 拼出 **238 视觉宽度**，而且**最后一句是错的**：
+                                    // 「而且两个都比实测电池耗电低（车轮功率不含传动损耗，标定法还受车机重算影响）」
+                                    // —— 那句是拿**净值**（≈155，比实测 ≈198 低 24%）推出来的，
+                                    // 而车况页显示的是**毛耗电**（≈215~227，**高于**实测）。
+                                    // ⇒ 详见 `ui/EnergyNote.kt` 的注释（含完整时间线）。
+                                    // ⇒ 现在压到 **104**（≤160），且不再断言两个口径的大小关系。
+                                    note = noteAvgEnergy(),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     a11yLabel = "平均能耗的口径",
