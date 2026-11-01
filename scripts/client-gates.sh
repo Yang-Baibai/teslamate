@@ -1619,6 +1619,187 @@ PYEOF
 if [ $? -eq 0 ]; then ok "汇总卡结构（两条指标不并排 + 限定语独立成段 + FlowRow + 值与单位绑住）"; else fail "汇总卡结构"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 17：「记录」页折叠态那张卡不许把**证据**摊回表层 ──────────────────
+#
+# ⚠️ **v0.106.0（用户反馈 #26）**
+#
+# 用户原话：「记录最顶上的这一小块，**很难理解他想表达什么意思**。」
+# 真机截图上表层并排着 **22% / 30% / 20% / 13% / 15%** 五个百分数 ——
+# 「上次剩 22%」（哪一站？）、「低于 20% 保底」、「最险 … 估 13%」、
+# 「全程最低 15%」全挤在一起 ⇒ 读者分不清**哪个是结论、哪个是证据**。
+#
+# ⇒ 表层收敛成 4 行（标题 / 主角 / 结论句 / 告警），证据折进**展开卡**。
+# 这道闸门守的就是那个「折进去」：
+#   ① 折叠态**不许**再调 `verdictDetail(`（「全程最低 X%（第 N 公里…）」）；
+#   ② 折叠态的告警行**必须** `withDetail = false`（不许带「最险：…」细节）；
+#   ③ 展开卡**必须**保留完整告警行 + 插值误差提示
+#      （否则表层折掉的细节就**真丢了**；v0.54.0：数字旁边必须带不确定度）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+P = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/RoutePlan.kt')
+if not P.exists():
+    print('找不到 %s —— 这道闸门要跟着改' % P)
+    sys.exit(1)
+src = P.read_text(encoding='utf-8', errors='replace')
+
+
+def mask(text):
+    """把注释换成空格（字符串原样保留）—— 括号配对时不该被注释里的花括号带偏。"""
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if ch == '\\' and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '/' and i + 1 < n and text[i + 1] == '/':
+            j = text.find('\n', i)
+            j = n if j < 0 else j
+            out.append(' ' * (j - i))
+            i = j
+            continue
+        if ch == '/' and i + 1 < n and text[i + 1] == '*':
+            j = text.find('*/', i + 2)
+            j = n if j < 0 else j + 2
+            out.append(''.join(c if c == '\n' else ' ' for c in text[i:j]))
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
+masked = mask(src)
+
+
+def skip_string(text, i):
+    """i 指向开引号；返回闭引号之后的位置。"""
+    n = len(text)
+    i += 1
+    while i < n:
+        if text[i] == '\\':
+            i += 2
+            continue
+        if text[i] == '"':
+            return i + 1
+        i += 1
+    return i
+
+
+def body_of(sig):
+    """取某个函数的**函数体**（注释已屏蔽 ⇒ 里面的花括号不会干扰配对）。
+
+    ⚠️ **必须先跳过参数表** —— 默认参数里可能有 `= {}`
+    （如 `onSelectKey: (String) -> Unit = {}`），
+    直接找第一个 `{` 会把**那个空 lambda**当成函数体 ⇒ 检查全部落空。
+    """
+    i = masked.find(sig)
+    if i < 0:
+        return None
+    # ① 参数表：从 '(' 起做括号配平，找到它的 ')'
+    j = masked.find('(', i)
+    if j < 0:
+        return None
+    depth = 0
+    k = j
+    while k < len(masked):
+        c = masked[k]
+        if c == '"':
+            k = skip_string(masked, k)
+            continue
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                break
+        k += 1
+    else:
+        return None
+    # ② 参数表之后第一个 '{' 才是函数体
+    b = masked.find('{', k)
+    if b < 0:
+        return None
+    depth = 0
+    m = b
+    while m < len(masked):
+        c = masked[m]
+        if c == '"':
+            m = skip_string(masked, m)
+            continue
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return masked[b:m + 1]
+        m += 1
+    return None
+
+
+problems = []
+
+summary = body_of('fun RoutePlanSummaryRow(')
+if summary is None:
+    problems.append('找不到 `fun RoutePlanSummaryRow(` —— 折叠态那张卡改名了？这道闸门要跟着改')
+else:
+    if 'verdictDetail(' in summary:
+        problems.append('折叠态又把「全程最低 X%（第 N 公里 · …之后）」摊回表层了 ⇒ '
+                        '五个百分数并排，读者分不清哪个是结论（用户反馈 #26）')
+    calls = re.findall(r'belowReserveNoticeFrom\([^)]*\)', summary)
+    if not calls:
+        problems.append('折叠态没有告警行 ⇒ 到站低于保底的那些跳在表层消失了')
+    for c in calls:
+        if 'withDetail = false' not in c:
+            problems.append('折叠态的告警行没带 `withDetail = false` ⇒ 表层又出现'
+                            '「最险：哪个站 · 多少公里 · 估多少」这半句证据')
+
+card = body_of('fun RoutePlanCard(')
+if card is None:
+    problems.append('找不到 `fun RoutePlanCard(` —— 展开卡改名了？这道闸门要跟着改')
+else:
+    if 'belowReserveNoticeFrom(' not in card:
+        problems.append('展开卡里没有完整告警行 ⇒ 表层折掉的「最险」细节**真丢了**')
+    # ⚠️ **关联检查**，不是「短语在不在」——
+    # 「全程最低」那个数**旁边**必须带插值误差提示（v0.54.0：数字旁边必须带不确定度）。
+    # ⇒ 只查「`socProfileInterpolated` 在这个文件里出现过」是**假绿**：
+    #   展开卡里别处（图表说明）也提到它 ⇒ 提示被删了照样绿。
+    # ⇒ 必须查它**紧跟在 verdictDetail 那一行后面**。
+    vd = card.find('verdictDetail(')
+    if vd < 0:
+        problems.append('展开卡里找不到 verdictDetail( ⇒ 「全程最低」那行不见了')
+    elif 'socProfileInterpolated' not in card[vd:vd + 600]:
+        problems.append('展开卡里「全程最低」那个数旁边没有插值误差提示 ⇒ '
+                        '它带着 13 公里的不确定度出现，却一个字都不说'
+                        '（v0.54.0：数字旁边必须带不确定度）')
+
+if problems:
+    print('「记录」页折叠态那张卡又摊回证据了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 表层只留：标题 / 主角 / 结论句 / 短告警；证据（全程最低、最险细节）折进展开卡')
+    sys.exit(1)
+
+print('折叠态那张卡表层只留结论与短告警（证据已折进展开卡，且展开卡仍保有完整细节）')
+PYEOF
+if [ $? -eq 0 ]; then ok "折叠态不摊回证据（用户反馈 #26）"; else fail "折叠态不摊回证据"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

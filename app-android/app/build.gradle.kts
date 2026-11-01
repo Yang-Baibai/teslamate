@@ -13,9 +13,9 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.105.0**：App 改了（胎压卡：四轮正常时不再画那辆俯视图 —— 用户反馈 #24）⇒ 版本号要涨。
-        versionCode = 115
-        versionName = "0.105.0"
+        // ⚠️ **v0.106.0**：App 改了（记录页顶部那张卡：结论前置 + 证据折进展开卡 —— 用户反馈 #26）⇒ 版本号要涨。
+        versionCode = 116
+        versionName = "0.106.0"
     }
 
     buildTypes {

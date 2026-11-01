@@ -519,8 +519,17 @@ fun RoutePlan.belowReserveNotice(): String? = belowReserveNoticeFrom(0)
 
 /**
  * ⚠️ **v0.44.0**：从第 [startIdx] 站起算的告警行。
+ *
+ * ⚠️ **v0.106.0（用户反馈 #26）**：[withDetail] = false ⇒ **表层短句**。
+ *
+ * 表层（折叠态）原来带「（最险：红花园社区 → 终点 · 88 公里 · 估 13%）」——
+ * 那是**证据**（在哪个站、多少公里、估多少），
+ * 与表层另外四个百分数摆在一起 ⇒ 读者分不清哪个是结论、哪个是细节
+ * （用户原话：「很难理解他想表达什么意思」）。
+ * ⇒ 表层只留「另有 N 跳到站低于 20% 保底」；**最险那一跳的细节留在展开卡**
+ * （`withDetail = true`）—— 数据一点没丢，只是折进二级。
  */
-fun RoutePlan.belowReserveNoticeFrom(startIdx: Int): String? {
+fun RoutePlan.belowReserveNoticeFrom(startIdx: Int, withDetail: Boolean = true): String? {
     val hop = longestHopFrom(startIdx)
     val req = hop?.requiredSoc
     val longestBelow = req != null && req > 100
@@ -592,10 +601,16 @@ fun RoutePlan.belowReserveNoticeFrom(startIdx: Int): String? {
         if (arrivingBelow.isNotEmpty()) {
             if (isNotEmpty()) append(" · ")
             append("另有 ").append(arrivingBelow.size).append(" 跳到站低于 ").append(RESERVE_SOC).append("% 保底")
-            arrivingBelow.minByOrNull { it.estSoc ?: 100 }?.let { worst ->
-                append("（最险：").append(worst.fromName).append(" → ").append(worst.toName)
-                    .append(" · ").append(worst.km.roundToInt()).append(" 公里 · 估 ")
-                    .append(worst.estSoc).append("%）")
+            // ⚠️ **v0.106.0（用户反馈 #26）**：表层**不带**「最险」细节 ——
+            // 那半句是**证据**（在哪个站、多少公里、估多少），
+            // 摆在表层会让读者分不清「哪个是结论、哪个是细节」。
+            // ⇒ 展开卡用 `withDetail = true` 拿完整版，数据一点没丢。
+            if (withDetail) {
+                arrivingBelow.minByOrNull { it.estSoc ?: 100 }?.let { worst ->
+                    append("（最险：").append(worst.fromName).append(" → ").append(worst.toName)
+                        .append(" · ").append(worst.km.roundToInt()).append(" 公里 · 估 ")
+                        .append(worst.estSoc).append("%）")
+                }
             }
         }
     }
@@ -1149,8 +1164,19 @@ data class RoutePlan(
             //
             // 现在：决策句只给**中性事实**（上次剩 / 估算剩），
             // 告警与**动作**全部交给紧随其后的琥珀行。
-            if (sb.isEmpty()) sb.append("这条线路上没有站间数据")
-            return sb.toString()
+            // ⚠️ **v0.106.0（用户反馈 #26）**：加**指代锚点**「这一跳到站：」。
+            //
+            // 用户原话：「记录最顶上的这一小块，**很难理解他想表达什么意思**」。
+            // 真机截图：表层同时出现 **22% / 30% / 20% / 13% / 15%** 五个百分数
+            // —— 读者无法判断「上次剩 22%」说的是**哪一站**、哪个数是**这条线的底线**。
+            //
+            // 决策句上面就是主角「最长一段 · 中国石化 → 1个点」⇒
+            // 补上「这一跳到站」这四个字，读者立刻知道这两个数是**那一跳的终点余量**。
+            //
+            // ⚠️ 只加在**有站间数据**的那一支（`hop != null`）——
+            // 「已经到最后一站」「没有站间数据」这些兜底句自带指代，不该加。
+            if (sb.isEmpty()) return "这条线路上没有站间数据"
+            return "这一跳到站：" + sb.toString()
         }
         // ⚠️ **v0.46.0（第 27 轮验收 P0-1）**：这里原来只分两种情况，
         // 结果**选中最后一站**（那一站后面没有下一站）时掉进第二支，
@@ -2406,38 +2432,31 @@ fun RoutePlanSummaryRow(
                     // 「充满也只剩 X%，低于 20% 保底」** —— 前者是假事实。
                     // ⚠️ **v0.41.0**：告警行改成调用 [RoutePlan.belowReserveNotice] ——
                     // 纯函数，才能被 JVM 单测直接断言。
-                    plan.belowReserveNoticeFrom(startIdx)?.let { notice ->
+                    //
+                    // ⚠️ **v0.106.0（用户反馈 #26）**：`withDetail = false` ——
+                    // 表层**只留**「另有 N 跳到站低于 20% 保底」这一句；
+                    // 「最险：哪个站 · 多少公里 · 估多少」是**证据** ⇒ 留在展开卡。
+                    plan.belowReserveNoticeFrom(startIdx, withDetail = false)?.let { notice ->
                         Text(
                             notice,
                             style = MaterialTheme.typography.labelSmall,
                             color = accents.warnAmberText,
                         )
                     }
-                    // ⚠️ **v0.56.0（第 30 轮长途自驾党评审 P0-3）**：传 `startIdx` ——
-                    // 落点要**随起点站重算**（全线最低点可能在你身后）。
-                    plan.verdictDetail(startIdx).takeIf { it.isNotEmpty() }?.let {
-                        Text(
-                            // ⚠️ **v0.54.0（第 30 轮长途自驾党评审）**：
-                            // 「全程最低 X%（第 N 公里）」是**从剖面来的**
-                            // （`verdictDetail()` → `lowestPoint` → `profile`）——
-                            // 而插值剖面在山区的误差实测达 **13 公里**。
-                            //
-                            // ⚠️ v0.53.0 把提示放进了**展开卡**里那个
-                            // **还要再展开一次**的「余量口径与误差带」折叠区 ——
-                            // 而**折叠态**（出发前 5 分钟真正会看到的那一屏）
-                            // 里那个数会带着 13 公里的不确定度出现，却一个字都不说。
-                            //
-                            // 所以提示必须放在**数字旁边**。
-                            it + (if (plan.socProfileInterpolated) {
-                                "（剖面是插值的，山区误差可达 13 公里）"
-                            } else {
-                                ""
-                            }),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    // ⚠️ **v0.34.0（第 21 轮视觉评审 2.4）：总爬升**移出折叠态**。**
+                    // ⚠️ **v0.106.0（用户反馈 #26）**：「全程最低 X%（第 N 公里 · …之后）」
+                    // **从表层折进展开卡**（那里本来就有这一行）。
+                    //
+                    // 用户原话：「记录最顶上的这一小块，**很难理解他想表达什么意思**」。
+                    // 真机截图上表层并排着 **22% / 30% / 20% / 13% / 15%** 五个百分数
+                    // —— 全程最低那个数（15%）夹在中间，读者根本分不清
+                    // 「哪个是结论、哪个是这条线的底线、哪个是告警」。
+                    //
+                    // ⇒ 表层从 **5 行** 收到 **4 行**（标题 / 主角 / 结论句 / 告警），
+                    //   百分数从 **5 个** 减到 **3 个**（22% · 30% · 20% 保底）；
+                    //   「全程最低」与它的**插值误差提示**一起留在展开卡 ——
+                    //   ⚠️ v0.54.0 的规矩「数字旁边必须带不确定度」依然成立
+                    //   （见展开卡那一行）。
+                    // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-7）**：总爬升**移出折叠态**。**
                     //
                     // 复审原话：「全程爬升总计在服务区里没用 ——
                     // 我要的是"我前面这 200 公里爬多少米"，不是全程总计」。
@@ -2827,13 +2846,32 @@ fun RoutePlanCard(
             fontWeight = FontWeight.Bold,
             color = accents.energyBlue,
         )
+        // ⚠️ **v0.106.0（用户反馈 #26）**：**完整的告警行**留在展开卡 ——
+        // 表层（折叠态）只给「另有 N 跳到站低于 20% 保底」这一句，
+        // 「最险：哪个站 · 多少公里 · 估多少」这半句是**证据** ⇒ 折到这里。
+        // ⇒ 数据一点没丢，只是从表层折进二级。
+        plan.belowReserveNoticeFrom(startIdx)?.let { notice ->
+            Text(
+                notice,
+                style = MaterialTheme.typography.labelSmall,
+                color = accents.warnAmberText,
+            )
+        }
         // ⚠️ **v0.34.0（第 21 轮视觉评审 P1-7）：细节拆出来。**
         // 决策句一行说清「最长那一跳」；来源限定与全程最低是**证据**，单独一行。
         // ⚠️ **v0.56.0（第 30 轮长途自驾党评审 P0-3）**：同样传 `startIdx` ——
         // 落点要**随起点站重算**（全线最低点可能在你身后 1818 公里）。
+        //
+        // ⚠️ **v0.106.0（用户反馈 #26）**：这一行**从表层折进了这里** ⇒
+        // 它的**插值误差提示必须跟到这儿**（v0.54.0 的规矩：
+        // 「数字旁边必须带不确定度」—— 插值剖面在山区误差实测达 13 公里）。
         plan.verdictDetail(startIdx).takeIf { it.isNotEmpty() }?.let {
             Text(
-                it,
+                it + (if (plan.socProfileInterpolated) {
+                    "（剖面是插值的，山区误差可达 13 公里）"
+                } else {
+                    ""
+                }),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
