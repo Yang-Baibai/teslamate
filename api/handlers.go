@@ -1398,6 +1398,18 @@ func sanitizeVA(volts, amps **int) {
 	}
 }
 
+// dayWindowStart 「含今天在内的最近 N 个自然日」的起点（服务器时区的今天 00:00）。
+//
+// ⚠️ **v0.108.0：这是全 App 唯一的「窗口起点」定义。**
+// 以前 /stats 的窗口是就地写的（`time.Date(y, m, d, ...).AddDate(0, 0, -(buckets-1))`），
+// 充电统计（用户反馈 #27）又需要同一套窗口 ——
+// 两处各写一遍，边界迟早会漂（这正是本仓库反复吃的亏）。
+// ⇒ 抽成一个函数，/stats 与充电统计都调它。
+func dayWindowStart(loc *time.Location, now time.Time, days int) time.Time {
+	y, m, d := now.Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, -(days - 1))
+}
+
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
@@ -1450,8 +1462,8 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		windowStart = time.Date(y, m, 1, 0, 0, 0, 0, loc)
 		buckets = now.Day()
 	} else if granularity == "day" {
-		y, m, d := now.Date()
-		windowStart = time.Date(y, m, d, 0, 0, 0, 0, loc).AddDate(0, 0, -(buckets - 1))
+		// ⚠️ v0.108.0：窗口起点统一走 [dayWindowStart]（与充电统计同一套口径）。
+		windowStart = dayWindowStart(loc, now, buckets)
 	} else {
 		windowStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, -(buckets - 1), 0)
 	}

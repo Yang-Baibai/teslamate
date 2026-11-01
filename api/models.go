@@ -871,6 +871,60 @@ type Stats struct {
 	ServerTimezone string `json:"server_timezone"`
 }
 
+// ── 充电统计（区间）────────────────────────────────────────────────
+//
+// ⚠️ **v0.108.0（用户反馈 #27）**：充电记录页顶部的统计要能手动切区间
+// （近 7 天 / 近 30 天 / 全部）⇒ 区间口径与聚合**放服务端**
+// （理由见 [charge_stats.go] 的注释：窗口只能有一份、「全部」不能是客户端截断的历史）。
+
+// ChargeStatsRange 一个统计区间的充电聚合。
+type ChargeStatsRange struct {
+	// Key 区间标识："7d" / "30d" / "all"。
+	Key string `json:"key"`
+	// Days 窗口天数；0 = 全部历史。
+	Days int `json:"days"`
+	// WindowStart / WindowEnd 区间边界（UTC 下发）。
+	//
+	// ⚠️ 语义随区间而变：「7d」/「30d」是**窗口**的起止；
+	// 「all」是**数据自身**的首尾（与旧卡片那行一致）。两者都是
+	// 「这组数说的是哪段时间」⇒ App 只按服务端给的边界显示。
+	WindowStart *time.Time `json:"window_start"`
+	WindowEnd   *time.Time `json:"window_end"`
+	// Count 区间内的充电场次。
+	Count int `json:"count"`
+	// TotalKwh 区间内充入的总电量（度）。
+	TotalKwh float64 `json:"total_kwh"`
+	// DcKwh / DcCount 直流（会话级判据）。
+	DcKwh   float64 `json:"dc_kwh"`
+	DcCount int     `json:"dc_count"`
+	// DcAvgMin 直流场次的平均时长（分钟）；没有样本时为 null（不给数，不编）。
+	DcAvgMin *int `json:"dc_avg_min"`
+	// AcKwh / AcCount 交流。
+	AcKwh   float64 `json:"ac_kwh"`
+	AcCount int     `json:"ac_count"`
+	// AcAvgMin 交流场次的平均时长（分钟）；没有样本时为 null。
+	AcAvgMin *int `json:"ac_avg_min"`
+	// LastFull 区间内**真的充到 100%** 的最后一场；区间内没有充满过则为 null。
+	LastFull *ChargeStatsLastFull `json:"last_full"`
+}
+
+// ChargeStatsLastFull 「上一次充满」的那一场。
+type ChargeStatsLastFull struct {
+	Date    time.Time `json:"date"`
+	FromSoc *int      `json:"from_soc"`
+	ToSoc   *int      `json:"to_soc"`
+}
+
+// ChargeStats 充电统计（三个区间一次给全 ⇒ App 切区间不用重新请求）。
+type ChargeStats struct {
+	// ServerTimezone 服务端分日用的时区（如 "Asia/Shanghai"）。
+	ServerTimezone string `json:"server_timezone"`
+	// GeneratedAt 生成时刻。
+	GeneratedAt time.Time `json:"generated_at"`
+	// Ranges 三个区间，顺序固定：7d / 30d / all。
+	Ranges []*ChargeStatsRange `json:"ranges"`
+}
+
 type BatteryHealth struct {
 	CurrentCapacityKwh *float64 `json:"current_capacity_kwh"` // 最近一次满充实测容量
 	MaxCapacityKwh     *float64 `json:"max_capacity_kwh"`     // 记录中的最大实测值（仅供趋势参考，不是基准）

@@ -894,6 +894,25 @@ WHERE d.car_id = $1 AND d.distance >= 0.1
   AND (d.start_date AT TIME ZONE 'UTC') >= $4
 GROUP BY 1 ORDER BY 1`
 
+// 充电统计（区间聚合）—— **口径必须与 sqlCharges 一致**：
+// 同一张表、同一过滤条件（charge_energy_added > 0.01）、同一会话级直交流判据（cteChargeDC）。
+// ⇒ 卡片上的「共 N 次」与下面列表里的行是同一批充电会话。
+//
+// ⚠️ 这里**不取 limit**：区间「全部」必须是全表（客户端那份列表是有上限的，
+// 靠它算「全部」＝ 静默截断的历史）。车才几十上百场，扫全表毫无压力。
+const sqlChargeStats = `
+WITH` + cteChargeDC + `
+SELECT cp.start_date,
+       cp.charge_energy_added,
+       cp.duration_min,
+       cp.start_battery_level,
+       cp.end_battery_level,
+       COALESCE(cd.is_dc, false) AS is_dc
+FROM charging_processes cp
+LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
+WHERE cp.car_id = $1 AND cp.charge_energy_added > 0.01
+ORDER BY cp.start_date DESC`
+
 const sqlStatsCharges = `
 WITH` + cteChargeDC + `
 SELECT to_char(date_trunc($2, (cp.start_date AT TIME ZONE 'UTC') AT TIME ZONE $3), 'YYYY-MM-DD') AS bucket,

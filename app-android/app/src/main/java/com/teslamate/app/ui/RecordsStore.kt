@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import com.teslamate.app.Api
 import com.teslamate.app.ApiErrorKind
 import com.teslamate.app.Charge
+import com.teslamate.app.ChargeStats
 import com.teslamate.app.Drive
 import com.teslamate.app.UserFacingException
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +67,16 @@ class RecordsStore {
     var chargeError by mutableStateOf<UserFacingException?>(null)
         private set
 
+    /**
+     * ⚠️ **v0.108.0（用户反馈 #27）**：充电统计的**三个区间**（服务端算）。
+     *
+     * ⚠️ 为 null = 没拿到（服务端是旧版本，或这次请求失败）
+     * ⇒ 卡片显示「统计没加载出来」+ 重试，
+     * **绝不在客户端自己算一套** —— 那会变成第二个口径（同一个数两处说法）。
+     */
+    var chargeStats by mutableStateOf<ChargeStats?>(null)
+        private set
+
     /** 首次加载中（还没拿到任何数据）。 */
     var loading by mutableStateOf(true)
         private set
@@ -120,6 +131,17 @@ class RecordsStore {
             chargeError = it as? UserFacingException
                 ?: UserFacingException(it.message ?: "出错了")
         }
+        // ③ 充电统计的三个区间（v0.108.0，用户反馈 #27）
+        //
+        // ⚠️ 失败**不阻塞**记录页（下面的充电列表照常用）⇒ 只把统计清成 null，
+        // 卡片会显示「统计没加载出来」+ 重试。
+        runCatching {
+            withContext(Dispatchers.IO) { api.chargeStats(carId) }
+        }.onSuccess {
+            chargeStats = it
+        }.onFailure {
+            chargeStats = null
+        }
         loading = false
         refreshing = false
     }
@@ -130,6 +152,7 @@ class RecordsStore {
         charges = emptyList()
         error = null
         chargeError = null
+        chargeStats = null
         loading = true
         loadedFor = null
     }

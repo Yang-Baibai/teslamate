@@ -309,5 +309,34 @@ case "$GOFILE" in
   *)     fail "Go 文件名闸门自身出错（扫描器没有输出）—— 这次没检查成，不算通过" ;;
 esac
 
+# ── ⑥ Go 格式（gofmt -l 必须为空）─────────────────────────────
+#
+# ⚠️ **v0.107.1（并行会话独立复核时查出）**：闸门 ① 只跑 `gofmt -e` ——
+#    **只解析、不查格式** ⇒ **格式漂移没人管**。
+#    实测：v0.107.0 那一版的 `api/tesla_command.go` 手写的 map 对齐
+#    与 gofmt 不一致（`gofmt -l` 会列出来），而**闸门全绿**
+#    ⇒ 直到下一轮才被人偶然发现。
+#
+# ⇒ 这里跑 `gofmt -l .`：**列出所有没被格式化的文件** ⇒ 有输出就失败。
+#    （只扫 `api/` —— 本仓库的 Go 代码都在那儿。）
+if command -v docker >/dev/null 2>&1; then
+  if docker run --rm -v "${REPO_WIN}/api:/src" -w /src golang:1.23-alpine \
+       sh -c 'gofmt -l . 2>/dev/null' > /tmp/gofmt_l.out 2>&1; then
+    UNFMT=$(grep -v '^[[:space:]]*$' /tmp/gofmt_l.out | head -10)
+    if [ -z "$UNFMT" ]; then
+      ok "Go 格式（gofmt -l 为空）"
+    else
+      fail "Go 格式 —— 这些文件不是 gofmt 干净的"
+      echo "$UNFMT" | sed 's/^/    /'
+      echo "    ⇒ 在容器里跑 gofmt -w . （或本地 gofmt -w），别让格式漂移溜过去"
+    fi
+  else
+    fail "Go 格式闸门（docker 执行失败）"
+    head -5 /tmp/gofmt_l.out | sed 's/^/    /'
+  fi
+else
+  ok "Go 格式闸门跳过（本机无 docker）"
+fi
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ]

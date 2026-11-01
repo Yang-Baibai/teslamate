@@ -2100,6 +2100,150 @@ PYEOF
 if [ $? -eq 0 ]; then ok "车控目录字段名两端一致（防静默退化）"; else fail "车控目录字段名"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 20：充电统计的**区间口径**必须两端一致（且客户端不许自己算）──────
+#
+# ⚠️ **v0.108.0（用户反馈 #27）**
+#
+# 用户要「充电记录顶上这个统计能切区间（近 7 天 / 近 30 天 / 全部）」。
+# 这件事最容易出的岔子是**同一个数两处算法**：
+#
+#   · 服务端按「今天 00:00 往前 N−1 天」切窗口；
+#   · 客户端按自己的 `start_date` 再过滤一遍 ⇒ 两处边界差一天/一个时区，
+#     同一个 App 里两个页面的「7 天」对不上；
+#   · 客户端那份充电列表**有上限** ⇒ 拿它算「全部」＝**静默截断**的历史
+#     （用户以为看到的是全部，其实少了一截，而且界面不会说）。
+#
+# ⇒ 口径与聚合**只在服务端**（`/charge_stats`），App 只渲染。
+#
+# 这道闸门钉死四件事（都是**关联**检查，不是「短语在不在」）：
+#   ① 两端都真的有 charge_stats（服务端路由 ↔ App 请求路径的**同一段**路径）；
+#   ② 两端的**区间键与顺序**相同（服务端 chargeRangeSpecs ↔ App chargeRangeKeys）；
+#   ③ 两端的**字段名**相同（服务端 json tag ↔ App DTO 属性，且 App 端有默认值）；
+#   ④ **客户端不许自己算聚合**（ChargeListPage.kt 里不许再有 sumOf / is_dc 过滤）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+GO_MAIN = pathlib.Path('api/main.go')
+GO_MODELS = pathlib.Path('api/models.go')
+GO_STATS = pathlib.Path('api/charge_stats.go')
+KT_API = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/Api.kt')
+KT_PAGE = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/ChargeListPage.kt')
+for p in (GO_MAIN, GO_MODELS, GO_STATS, KT_API, KT_PAGE):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace')
+
+
+def strip_kt_comments(src):
+    """
+    剥掉 Kotlin 注释。
+
+    ⚠️ **必须剥**：本文件里的说明文字会**提到**被禁的写法
+    （例：「原来这里是客户端算的（`charges.sumOf { ... }`）—— 现在删掉」）
+    ⇒ 不剥的话，闸门会把自己写的说明当成违规 ⇒ **假红**。
+    """
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    src = re.sub(r'//[^\n]*', '', src)
+    return src
+
+
+main = read(GO_MAIN)
+models = read(GO_MODELS)
+stats = read(GO_STATS)
+kt = read(KT_API)
+page = read(KT_PAGE)
+
+problems = []
+
+# ① 路径片段：服务端路由 ↔ App 请求（同一段路径才算配对）
+m = re.search(r'mux\.HandleFunc\("GET\s+/api/v1/cars/\{[^}]+\}/(charge_stats)"', main)
+server_path = m.group(1) if m else None
+if server_path is None:
+    problems.append('服务端的路由表里没有 charge_stats（api/main.go）')
+m2 = re.search(r'get\("/api/v1/cars/\$carId/(charge_stats)"\)', kt)
+app_path = m2.group(1) if m2 else None
+if app_path is None:
+    problems.append('App 没有请求 charge_stats（Api.kt）')
+if server_path and app_path and server_path != app_path:
+    problems.append('服务端路由是 /%s，App 请求的是 /%s ⇒ 对不上' % (server_path, app_path))
+
+# ② 区间键与顺序（服务端 specs ↔ App keys）
+go_keys = re.findall(r'\{key:\s*"([^"]+)"', stats)
+m3 = re.search(r'val\s+chargeRangeKeys\s*=\s*listOf\(([^)]*)\)', page)
+if not m3:
+    problems.append('App 里找不到 chargeRangeKeys（ChargeListPage.kt）')
+    kt_keys = []
+else:
+    kt_keys = re.findall(r'"([^"]+)"', m3.group(1))
+if go_keys and kt_keys and go_keys != kt_keys:
+    problems.append('区间键对不上：服务端 %s，App %s（**顺序**也要一样 —— 那就是分段控件的顺序）'
+                    % (go_keys, kt_keys))
+
+# ③ 字段名（服务端 json tag ↔ App DTO 属性，且 App 端要有默认值）
+def go_struct_keys(src, name):
+    m = re.search(r'type\s+' + name + r'\s+struct\s*\{(.*?)\n\}', src, re.S)
+    if not m:
+        return None
+    return re.findall(r'`json:"([^"]+)"`', m.group(1))
+
+
+def kt_dto_props(src, name):
+    m = re.search(r'data\s+class\s+' + name + r'\s*\((.*?)\n\)', src, re.S)
+    if not m:
+        return None
+    props = {}
+    for prop, default in re.findall(r'val\s+(\w+)\s*:\s*[^,\n=]+(?:=\s*([^,\n]+))?', m.group(1)):
+        props[prop] = bool(default)
+    return props
+
+
+for name in ('ChargeStatsRange', 'ChargeStatsLastFull'):
+    wire = go_struct_keys(models, name)
+    props = kt_dto_props(kt, name)
+    if wire is None:
+        problems.append('服务端找不到 type %s（api/models.go）' % name)
+        continue
+    if props is None:
+        problems.append('App 找不到 data class %s（Api.kt）' % name)
+        continue
+    missing = sorted(set(wire) - set(props))
+    if missing:
+        problems.append('服务端 %s 下发了 %s，App 的 DTO 里没有 ⇒ 读不到（静默拿默认值）'
+                        % (name, ', '.join(missing)))
+    nodefault = sorted(k for k, v in props.items() if k in wire and not v)
+    if nodefault:
+        problems.append('App 的 %s.%s **没有默认值** ⇒ 老服务端缺这个字段时 '
+                        'kotlinx.serialization 会抛异常（整张卡读不出来）'
+                        % (name, ', '.join(nodefault)))
+
+# ④ 客户端不许自己算聚合（同一个数只能有一处算法）
+#    ⚠️ 扫的是**剥掉注释后**的代码 —— 说明文字里提到旧写法不算违规。
+page_code = strip_kt_comments(page)
+if 'sumOf' in page_code:
+    problems.append('ChargeListPage.kt 里还有 `sumOf` ⇒ 客户端在自己算聚合 ⇒ 与服务端成了两套算法')
+if re.search(r'filter\s*\{\s*it\.is_dc', page_code):
+    problems.append('ChargeListPage.kt 里还在按 is_dc 过滤 ⇒ 客户端自己算直交流拆分 ⇒ 与服务端成了两套算法')
+if '.total_kwh' not in page_code:
+    problems.append('ChargeListPage.kt 里没有用服务端的 total_kwh ⇒ 卡片可能还在用别处的数')
+
+if problems:
+    print('充电统计的区间口径两端对不上 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 区间口径与聚合只在服务端算；两端的路径 / 区间键 / 字段名必须一致')
+    sys.exit(1)
+
+print('充电统计区间口径两端一致（路径 %s、区间键 %s），客户端没有自己的算法'
+      % (server_path, ' '.join(kt_keys)))
+PYEOF
+if [ $? -eq 0 ]; then ok "充电统计区间口径两端一致（且客户端不自己算）"; else fail "充电统计区间口径"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

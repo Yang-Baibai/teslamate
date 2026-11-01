@@ -142,6 +142,9 @@ func main() {
 	// ⚠️ v0.25.0：充电成本构成（每公里成本用）。
 	mux.HandleFunc("GET /api/v1/cars/{id}/cost_summary", auth(handleCostSummary))
 	mux.HandleFunc("GET /api/v1/cars/{id}/charges", auth(handleCharges))
+	// ⚠️ v0.108.0（用户反馈 #27）：充电统计的三个区间（近 7 天 / 近 30 天 / 全部）。
+	//   区间口径与聚合都在服务端（App 只渲染）—— 理由见 api/charge_stats.go。
+	mux.HandleFunc("GET /api/v1/cars/{id}/charge_stats", auth(handleChargeStats))
 	mux.HandleFunc("GET /api/v1/charges/{id}/curve", auth(handleChargeCurve))
 	mux.HandleFunc("GET /api/v1/cars/{id}/stats", auth(handleStats))
 	mux.HandleFunc("GET /api/v1/cars/{id}/battery", auth(handleBattery))

@@ -463,6 +463,11 @@ fun RecordsScreen(
                     onBack = { onSelectionChange(null) },
                     // ⚠️ v0.25.0：电价（按车隔离）—— 有就显示每场充电的估算费用。
                     rates = settings.currentRates,
+                    // ⚠️ **v0.108.0（用户反馈 #27）**：统计的三个区间（服务端算）。
+                    chargeStats = store.chargeStats,
+                    onRetryStats = {
+                        scope.launch { store.load(api, settings.carId, force = true) }
+                    },
                 )
             }
             // ⚠️ v0.71.0：`edgeActive` 把投影限制在**转场期间**。

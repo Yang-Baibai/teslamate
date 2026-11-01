@@ -799,6 +799,68 @@ data class Stats(
     val server_timezone: String? = null,
 )
 
+/**
+ * ⚠️ **v0.108.0（用户反馈 #27）**：充电统计的**三个区间**。
+ *
+ * 为什么在服务端算（而不是 App 自己过滤列表）：
+ *
+ *  ① **窗口口径只能有一份** —— 用量页的 `/stats?period=week|month` 用的是
+ *     「今天 00:00 往前 N−1 天」的滚动自然日窗口。App 再自己切一遍 ⇒
+ *     两个页面的「7 天」对不上。
+ *  ② **「全部」不能是客户端那份列表** —— 列表有上限，超过就是**静默截断**的历史。
+ *  ③ **与列表同源** —— 同一张表、同一过滤、会话级直交流判据。
+ *
+ * ⇒ 三个区间一次给全：切区间**不重新请求**（秒切）。
+ */
+@Serializable
+data class ChargeStats(
+    /** 服务端分日用的时区（如 "Asia/Shanghai"）。 */
+    val server_timezone: String = "",
+    val generated_at: String = "",
+    /** 三个区间，顺序固定：7d / 30d / all。 */
+    val ranges: List<ChargeStatsRange> = emptyList(),
+)
+
+/** 一个统计区间的充电聚合。 */
+@Serializable
+data class ChargeStatsRange(
+    /** 区间标识："7d" / "30d" / "all"。 */
+    val key: String = "",
+    /** 窗口天数；0 = 全部历史。 */
+    val days: Int = 0,
+    /** 区间边界。「7d」/「30d」是窗口起止；「all」是数据自身首尾。 */
+    @Serializable(with = InstantSer::class) val window_start: Instant? = null,
+    @Serializable(with = InstantSer::class) val window_end: Instant? = null,
+    /** 区间内的充电场次。 */
+    val count: Int = 0,
+    /** 充入的总电量（度）。 */
+    val total_kwh: Double = 0.0,
+    /** 直流（会话级判据，与列表里那个「国标直流」标签同一套）。 */
+    val dc_kwh: Double = 0.0,
+    val dc_count: Int = 0,
+    /** 直流场次的平均时长（分钟）；没有样本时为 null（不给数，不编）。 */
+    val dc_avg_min: Int? = null,
+    val ac_kwh: Double = 0.0,
+    val ac_count: Int = 0,
+    val ac_avg_min: Int? = null,
+    /** 区间内**真的充到 100%** 的最后一场；没有则 null。 */
+    val last_full: ChargeStatsLastFull? = null,
+)
+
+/** 「上一次充满」的那一场。 */
+@Serializable
+data class ChargeStatsLastFull(
+    /**
+     * 充满的时刻。
+     *
+     * ⚠️ 给默认值（null）：老服务端若缺这个键，kotlinx.serialization 会**抛异常**
+     * ⇒ 整张卡读不出来。宁可显示「—」，也不让一页数据全没。
+     */
+    @Serializable(with = InstantSer::class) val date: Instant? = null,
+    val from_soc: Int? = null,
+    val to_soc: Int? = null,
+)
+
 @Serializable
 data class BatteryPoint(
     @Serializable(with = InstantSer::class) val date: Instant,
@@ -1585,6 +1647,14 @@ class Api private constructor(private val base: String, private val token: Strin
     fun curve(chargeId: Int): List<CurvePoint> = get("/api/v1/charges/$chargeId/curve")
     fun stats(carId: Int, period: String): Stats =
         get("/api/v1/cars/$carId/stats?period=$period")
+    /**
+     * 充电统计的三个区间（近 7 天 / 近 30 天 / 全部）。
+     *
+     * ⚠️ v0.108.0（用户反馈 #27）：区间口径与聚合**都在服务端**，
+     * App 只渲染（切区间不重新请求）。
+     */
+    fun chargeStats(carId: Int): ChargeStats =
+        get("/api/v1/cars/$carId/charge_stats")
     fun battery(carId: Int): BatteryHealth = get("/api/v1/cars/$carId/battery")
     fun appLatest(): AppLatest = get("/api/v1/app/latest")
 

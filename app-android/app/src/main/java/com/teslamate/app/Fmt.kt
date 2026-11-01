@@ -94,11 +94,20 @@ private val dtf = ZoneFormatter("yyyy-MM-dd HH:mm")
 private val dtfShort = ZoneFormatter("MM-dd HH:mm")
 private val df = ZoneFormatter("yyyy-MM-dd")
 private val mf = ZoneFormatter("yyyy年M月")
+// ⚠️ v0.108.0：区间边界用（只要月-日 —— 窗口是按天算的，不该带时分秒）。
+private val dfDay = ZoneFormatter("MM-dd")
 
 fun Instant?.fmtFull(): String = this?.let { dtf.format(it) } ?: "—"
 fun Instant?.fmtShort(): String = this?.let { dtfShort.format(it) } ?: "—"
 fun Instant?.fmtDate(): String = this?.let { df.format(it) } ?: "—"
 fun Instant?.fmtMonth(): String = this?.let { mf.format(it) } ?: "—"
+/**
+ * 只要「月-日」。
+ *
+ * ⚠️ v0.108.0（用户反馈 #27）：统计区间的边界用它 ——
+ * 「近 7 天」的窗口是**按天**算的，带上时分秒反而是噪声。
+ */
+fun Instant?.fmtDay(): String = this?.let { dfDay.format(it) } ?: "—"
 fun Double?.fmt(digits: Int = 1, suffix: String = ""): String =
     this?.let { String.format(Locale.CHINA, "%.${digits}f%s", it, suffix) } ?: "—"
 

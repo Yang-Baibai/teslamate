@@ -13,9 +13,9 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.107.0**：App 改了（车控按钮只印短标签 + 后果说明挪进确认弹窗 —— 用户反馈 #25）⇒ 版本号要涨。
-        versionCode = 117
-        versionName = "0.107.0"
+        // ⚠️ **v0.108.0**：App 改了（充电记录页顶部统计能切区间 —— 用户反馈 #27）⇒ 版本号要涨。
+        versionCode = 118
+        versionName = "0.108.0"
     }
 
     buildTypes {

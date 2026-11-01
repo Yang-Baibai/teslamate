@@ -679,6 +679,32 @@ if command -v docker >/dev/null 2>&1 && [ -n "${FBID:-0}" ] && [ "$FBID" != "0" 
   docker exec -i teslamate-database-1 psql -U "$PU" -d "$PD" -c "DELETE FROM tm_user_feedback WHERE id = $FBID" >/dev/null 2>&1 \
     && ok "用户反馈：冒烟数据已清理" || fail "用户反馈：冒烟数据清理失败（用户列表里会多一条）"
 fi
+# 18. v0.108.0（用户反馈 #27）：充电统计的三个区间（近 7 天 / 近 30 天 / 全部）
+#
+# ⚠️ 断言的是**结构与不变量**，不是某个具体数（数据天天在变）：
+#   · 区间键与顺序固定（7d / 30d / all）—— App 的分段控件按这个顺序渲染；
+#   · 场次必须**单调**（近 7 天 ≤ 近 30 天 ≤ 全部）—— 窗口算错就会出现反比；
+#   · 「全部」不能少于列表端点能返回的场次（那是**静默截断**的历史）；
+#   · 每个区间的字段齐全（少一个 ⇒ App 静默拿默认值）。
+CS2=$(curl -s -m 15 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charge_stats")
+CH2=$(curl -s -m 15 -H "Authorization: Bearer $TOKEN" "$B/api/v1/cars/1/charges?limit=200")
+echo "$CS2|$CH2" | python -c "
+import json,sys
+stats_raw, charges_raw = sys.stdin.read().split('|', 1)
+d = json.loads(stats_raw)
+cl = json.loads(charges_raw)
+assert d.get('server_timezone'), 'missing server_timezone'
+rs = d.get('ranges') or []
+assert [r.get('key') for r in rs] == ['7d', '30d', 'all'], '区间键/顺序不对: %s' % [r.get('key') for r in rs]
+c7, c30, call = (r.get('count') for r in rs)
+assert c7 <= c30 <= call, '场次必须单调（近7天 <= 近30天 <= 全部）: %s' % [c7, c30, call]
+assert call >= len(cl), '「全部」(%s) 少于列表能返回的场次 (%s) ⇒ 那是截断的历史' % (call, len(cl))
+for r in rs:
+    for k in ('count','total_kwh','dc_kwh','dc_count','dc_avg_min','ac_kwh','ac_count','ac_avg_min','window_start','window_end'):
+        assert k in r, '区间 %s 缺字段 %s' % (r.get('key'), k)
+" 2>/dev/null \
+  && ok "charge_stats 三个区间（键/顺序 + 场次单调 + 「全部」不截断 + 字段齐全）" || fail "charge_stats 三个区间"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 冒烟通过" || echo "❌ 有失败项，禁止发版"
 exit "$FAIL"
