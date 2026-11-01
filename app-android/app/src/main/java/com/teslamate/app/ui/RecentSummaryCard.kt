@@ -2,6 +2,8 @@ package com.teslamate.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -25,7 +27,6 @@ import com.teslamate.app.AppSettings
 import com.teslamate.app.Stats
 import com.teslamate.app.StatsBucket
 import com.teslamate.app.fmt
-import com.teslamate.app.fmtKwh100
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -104,6 +105,7 @@ fun RecentSummaryCard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SummaryContent(s: StatsBucket, driveDays: Int?) {
     SectionCard("最近 30 天") {
@@ -133,18 +135,51 @@ private fun SummaryContent(s: StatsBucket, driveDays: Int?) {
                 Stat("行程次数", "${s.drive_count} 次", Modifier.weight(1f))
             }
         }
-        if ((s.wh_per_km ?: 0.0) > 0.1) {
+        // ⚠️ **v0.104.0（真机实测的折行缺陷）**：这两条指标原来**并排**在一个 `Row` 里
+        // （左「平均能耗 …」+ 右「直流快充 …」+ 中间 weight(1f) 的 Spacer），
+        // 两条加起来需要约 **353dp**，而卡片内容区在最窄的常见屏（360dp）上只有 **296dp**
+        // ⇒ 放不下 ⇒ 右边那串被折行劈成「…（按充入电」+「量）」，
+        // Spacer 同时被挤成 0 ⇒ 两串贴死，读起来像「平均能耗 17.4 kWh/100km直流快充 93%（…）」。
+        //
+        // ⇒ **版面修法**（三条结构性结论，别再用「刚好放得下」解决）：
+        //   ① 两条指标**上下堆叠**，每条独占整宽；
+        //   ② 口径限定语「（按充入电量）」**独立成 Text 节点** ——
+        //      CJK 允许在任意两个汉字之间断行，同一段落里就会被劈开；
+        //   ③ 这两段用 **FlowRow** 排（`docs/adr.md` 第 28 条点名的机制：
+        //      **放不下就换行，绝不截断**）：
+        //      1× 放得下 ⇒ 同一行，视觉与原来一模一样；
+        //      200% 放不下 ⇒ 限定语**整体**换到下一行 ⇒ 两个整块都不劈开。
+        //
+        //      ⚠️ 为什么不能只靠 `Row` + `weight(1f, fill = false)`：
+        //      200% 时限定语要 182dp ⇒ 数字那半只剩 114dp，
+        //      而「直流快充 93%」要 158dp ⇒ 数字那半自己换行
+        //      ⇒ 「直流快充」这个**整词**被劈成「直流」+「快充 93%」。
+        //
+        // ⚠️ 文案与宽度预算在 `ui/SummaryMetrics.kt`（唯一事实源），
+        //    这里只负责摆版。
+        val avgLine = avgEnergyLine(s.wh_per_km)
+        if (avgLine != null) {
             Spacer(Modifier.padding(top = 10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    // ⚠️ v0.14.0：Wh/km → **kWh/100km**（中国车主的口径）。
-                    "平均能耗 ${s.wh_per_km?.fmtKwh100()} kWh/100km",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.weight(1f))
-                val dcPct =
-                    if (s.charge_kwh > 0) (s.dc_kwh / s.charge_kwh * 100).toInt() else 0
+            Text(
+                // ⚠️ v0.14.0：Wh/km → **kWh/100km**（中国车主的口径）。
+                //
+                // ⚠️ 值与单位之间是**不换行空格**（U+00A0，见 `avgEnergyLine`）：
+                //    200% 字号下整行要 349dp > 296dp ⇒ 必然折行，
+                //    而贪心折行取**最后一个放得下的断点**
+                //    ⇒ 断在普通空格上就会把「17.4」和「kWh/100km」拆到两行
+                //    ⇒ 数与单位分离。绑住之后只折在「平均能耗」后面。
+                avgLine,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val dcPct =
+                if (s.charge_kwh > 0) (s.dc_kwh / s.charge_kwh * 100).toInt() else 0
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                // ⚠️ 0 间距 = 括号紧贴数字（视觉与原来那个整串一模一样）。
+                horizontalArrangement = Arrangement.spacedBy(0.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
                 Text(
                     // ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-3）**：补**分母**。
                     //
@@ -156,7 +191,13 @@ private fun SummaryContent(s: StatsBucket, driveDays: Int?) {
                     // 本机 `geofence_name` 全为 null（没配充电围栏），
                     // **家充占比根本算不出来**，而「自动识别家」是明确不做的范围。
                     // 没有数据支撑的解读一律不给。
-                    "直流快充 $dcPct%（按充入电量）",
+                    dcShareLine(dcPct),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    // ⚠️ 限定语**独立成节点** ⇒ 它永远不会被折行劈开。
+                    DC_SHARE_CALIBER,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

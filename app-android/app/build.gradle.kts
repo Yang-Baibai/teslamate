@@ -13,9 +13,9 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.103.0**：App 改了（用量页「平均能耗」ⓘ 收敛 + 删掉一句错误断言）⇒ 版本号要涨。
-        versionCode = 113
-        versionName = "0.103.0"
+        // ⚠️ **v0.104.0**：App 改了（「最近 30 天」卡两条指标不再并排 + 口径限定语独立成段）⇒ 版本号要涨。
+        versionCode = 114
+        versionName = "0.104.0"
     }
 
     buildTypes {

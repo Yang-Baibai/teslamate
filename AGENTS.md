@@ -46,7 +46,7 @@ App「设置 → 帮助与反馈 → 用户反馈」  →  POST /api/v1/feedback
 ```bash
 cd /c/tm-ws
 bash scripts/server-gates.sh     # Go 语法 / 密钥扫描 / 仓库卫生
-bash scripts/client-gates.sh     # 客户端 13 道闸门（啰嗦棘轮等）
+bash scripts/client-gates.sh     # 客户端 16 道闸门（啰嗦棘轮等）
 bash scripts/smoke.sh            # 冒烟（48 项）
 python mcp/check_tool_fields.py  # MCP 字段映射自检
 ```

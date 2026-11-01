@@ -1334,6 +1334,291 @@ PYEOF
 if [ $? -eq 0 ]; then ok "能耗口径单一来源（App + Hermes = 服务端 Note）"; else fail "能耗口径单一来源"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 16：「最近 30 天」卡的两条指标不许并排 + 口径限定语必须独立成段 ────
+#
+# ⚠️ **v0.104.0（真机实测的折行缺陷）**
+#
+# 那两条指标原来**并排**在一个 `Row` 里：
+# 左「平均能耗 17.4 kWh/100km」、右「直流快充 93%（按充入电量）」，中间一个 weight(1f) 的 Spacer。
+#
+# 两条加起来需要约 **353dp**（`bodySmall` = 13sp 的实测口径），
+# 而卡片内容区在**最窄**的常见屏（360dp）上只有 **296dp**
+# ⇒ **放不下** ⇒ 右边那串被贪心折行劈成「…（按充入电」+「量）」，
+# Spacer 同时被挤成 0 ⇒ 两串贴死，读起来像「平均能耗 17.4 kWh/100km直流快充 93%（…）」。
+#
+# ⚠️ CJK 允许在**任意两个汉字之间**断行 ⇒ 只要限定语与数字在**同一个段落**里，
+# 它就可能被劈开（v0.94.0 的里程表教训：「估算」被劈成「估」+「算」）。
+#
+# ⇒ 这道闸门守的是**结构**，不是文案：
+#   ① 两条指标**不许**回到同一个容器（并排放不下 ⇒ 必须上下堆叠）；
+#   ② 口径限定语必须**独立成一个 Text 节点**（不许与数字拼回同一段）；
+#   ③ 那个容器**必须是 `FlowRow`** —— 放得下就同排，放不下就**整体换行**；
+#      ⚠️ 不能用 `Row` + `weight(1f, fill = false)`：200% 字号下限定语要 182dp，
+#      数字那半只剩 114dp 而它要 158dp ⇒ 「直流快充」这个**整词**被劈成
+#      「直流」+「快充 93%」（adr.md 第 28 条：短短语不许砍成半截话）；
+#   ④ **值与单位之间必须用不换行空格（U+00A0）绑住** ——
+#      贪心折行取**最后一个放得下的断点** ⇒ 普通空格会让 200% 下
+#      「平均能耗 17.4」/「kWh/100km」**数与单位分离**。
+#
+# ⚠️ **宽度预算**（每条自己放不放得下）由 **JVM 单测** `SummaryMetricsWidthTest` 钉住 ——
+#   静态闸门看不见实际渲染宽度。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import re, pathlib, sys
+
+CARD = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/RecentSummaryCard.kt')
+METRICS = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/SummaryMetrics.kt')
+
+problems = []
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+
+
+def mask(text):
+    """把注释换成空格（字符串原样保留）—— 括号配对时不该被注释里的花括号带偏。"""
+    out = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if ch == '\\' and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '/' and i + 1 < n and text[i + 1] == '/':
+            j = text.find('\n', i)
+            j = n if j < 0 else j
+            out.append(' ' * (j - i))
+            i = j
+            continue
+        if ch == '/' and i + 1 < n and text[i + 1] == '*':
+            j = text.find('*/', i + 2)
+            j = n if j < 0 else j + 2
+            out.append(''.join(c if c == '\n' else ' ' for c in text[i:j]))
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return ''.join(out)
+
+
+def skip_string(text, i):
+    """i 指向开引号；返回闭引号之后的位置。"""
+    n = len(text)
+    i += 1
+    while i < n:
+        if text[i] == '\\':
+            i += 2
+            continue
+        if text[i] == '"':
+            return i + 1
+        i += 1
+    return i
+
+
+def balanced(text, start):
+    """text[start] 必须是 '('；返回 (内部文本, 结束位置)。"""
+    depth = 0
+    i = start
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            i = skip_string(text, i)
+            continue
+        if c == '(':
+            depth += 1
+        elif c == ')':
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:i], i
+        i += 1
+    return None, start
+
+
+def blocks(text, pattern):
+    """找出所有 `Name(...)` 调用：(参数文本, { } 体)。"""
+    out = []
+    for m in re.finditer(pattern, text):
+        args, close = balanced(text, m.end() - 1)
+        if args is None:
+            continue
+        body = ''
+        j = close + 1
+        while j < len(text) and text[j].isspace():
+            j += 1
+        if j < len(text) and text[j] == '{':
+            depth = 0
+            k = j
+            while k < len(text):
+                c = text[k]
+                if c == '"':
+                    k = skip_string(text, k)
+                    continue
+                if c == '{':
+                    depth += 1
+                elif c == '}':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k += 1
+            body = text[j:k + 1]
+        out.append((args, body))
+    return out
+
+
+def has(block, marker):
+    """块里有没有这个标记 —— 参数里或 { } 体里都算。
+
+    ⚠️ `Text(...)` 是**表达式**（没有 { } 体）⇒ 标记在参数里；
+      `Row(...) { ... }` 才有体 ⇒ 标记在体里。两种都得认。
+    """
+    return marker in block[0] or marker in block[1]
+
+
+if not CARD.exists():
+    print('找不到 %s —— 这道闸门要跟着改' % CARD)
+    sys.exit(1)
+if not METRICS.exists():
+    print('找不到 %s —— 文案与宽度预算的唯一事实源不见了' % METRICS)
+    sys.exit(1)
+
+src = mask(read(CARD))
+met = mask(read(METRICS))
+
+rows = blocks(src, r'\bRow\s*\(')
+# ⚠️ **FlowRow**（`docs/adr.md` 第 28 条点名的机制：放不下就**整体换行**，绝不截断）。
+# ⚠️ `\bRow\s*\(` **不会**匹配到 `FlowRow(` —— 「w」与「R」之间没有词边界 ✔
+flows = blocks(src, r'\bFlowRow\s*\(')
+texts = blocks(src, r'\bText\s*\(')
+
+# ① 两条指标不许回到同一个容器；而且那个容器**必须是 FlowRow**
+#
+# ⚠️ 为什么不能是 `Row` + `weight(1f, fill = false)`：
+#    200% 字号下限定语要 182dp ⇒ 数字那半只剩 114dp，
+#    而「直流快充 93%」要 158dp ⇒ 数字那半自己换行
+#    ⇒ 「直流快充」这个**整词**被劈成「直流」+「快充 93%」
+#    （adr.md 第 28 条：短短语不许砍成半截话）。
+#    FlowRow 则把两半当成**两个整块**：放得下同排，放不下整体换行。
+dc_rows = [b for b in rows if has(b, 'dcShareLine(')]
+dc_flows = [b for b in flows if has(b, 'dcShareLine(')]
+containers = dc_rows + dc_flows
+if len(containers) != 1:
+    problems.append('包含 dcShareLine( 的容器有 %d 个（应恰好 1 个）—— 界面结构被改动了？' % len(containers))
+else:
+    if dc_rows:
+        problems.append('直流快充那一行用 Row 而不是 FlowRow ⇒ 200% 字号下'
+                        '「直流快充 93%」会被劈成「直流」/「快充 93%」'
+                        '（adr.md 第 28 条：短短语不许砍成半截话）')
+    if not has(containers[0], 'DC_SHARE_CALIBER'):
+        problems.append('直流快充那一行里没有 DC_SHARE_CALIBER ⇒ 口径限定语不见了'
+                        '（v0.47.0 特意补的「按充入电量」不许消失）')
+    if has(containers[0], 'avgEnergyLine('):
+        problems.append('平均能耗与直流快充又并排在同一个容器里 ⇒ 窄屏上放不下'
+                        '（v0.104.0 的折行缺陷）')
+
+# ② 限定语与数字必须**分属两个 Text 节点**
+dc_texts = [b for b in texts if has(b, 'dcShareLine(')]
+cal_texts = [b for b in texts if has(b, 'DC_SHARE_CALIBER')]
+if len(dc_texts) != 1:
+    problems.append('包含 dcShareLine( 的 Text 有 %d 个（应恰好 1 个）' % len(dc_texts))
+else:
+    if has(dc_texts[0], 'DC_SHARE_CALIBER'):
+        problems.append('直流快充的数字与口径限定语又拼回同一段了 ⇒ 限定语会被折行劈开')
+    # ③ FlowRow 的子项**不许**带 weight —— 那样又变回「被挤」的语义了
+    if re.search(r'weight\s*\(', dc_texts[0][0]):
+        problems.append('直流快充的数字那半还带着 weight(…) ⇒ 它会按比例分宽度，'
+                        '而不是「放不下就整体换行」')
+if len(cal_texts) != 1:
+    problems.append('包含 DC_SHARE_CALIBER 的 Text 有 %d 个（应恰好 1 个）' % len(cal_texts))
+else:
+    if has(cal_texts[0], 'dcShareLine('):
+        problems.append('口径限定语又和数字回到同一个 Text 里了 ⇒ 限定语会被折行劈开')
+
+# 平均能耗那一行：**先认变量名**（不许写死「avgLine」—— 改名就会误报）
+am = re.search(r'val\s+(\w+)\s*=\s*avgEnergyLine\(', src)
+if not am:
+    problems.append('找不到 avgEnergyLine() 的赋值 —— 事实源被改名了？')
+else:
+    avg_var = am.group(1)
+    avg_texts = [b for b in texts if has(b, avg_var)]
+    if len(avg_texts) != 1:
+        problems.append('渲染平均能耗那一行的 Text 有 %d 个（应恰好 1 个）' % len(avg_texts))
+    if len(containers) == 1 and has(containers[0], avg_var):
+        problems.append('平均能耗又回到快充那个容器里了 ⇒ 两条并排放不下（v0.104.0 的折行缺陷）')
+    # 那个容器里只许有**两个** Text：数字 + 限定语
+    if len(containers) == 1:
+        inner = blocks(containers[0][1], r'\bText\s*\(')
+        if len(inner) != 2:
+            problems.append('直流快充那个容器里有 %d 个 Text（应恰好 2 个：数字 + 限定语）'
+                            '⇒ 别的指标又被塞进这一行了' % len(inner))
+
+# ⑤ **值与单位之间必须绑住**（不换行空格 U+00A0）
+#
+# ⚠️ 贪心折行取的是**最后一个放得下的断点** ⇒ 「平均能耗 17.4 kWh/100km」里
+#    那个**普通空格**是致命的：200% 下整行 349dp > 296dp 必然折行，
+#    断点会落在「17.4」后面 ⇒ **数与单位分离**（半个句子）。
+#    ⇒ 那个位置必须是不换行空格 ⇒ 整行只剩「标签 | 值+单位」一个断行机会。
+nb = re.search(r'val\s+NBSP\s*:[^\n]*', met)
+if not nb:
+    problems.append('SummaryMetrics.kt 里找不到 NBSP 常量')
+else:
+    if '0xA0' not in nb.group(0):
+        problems.append('NBSP 常量不是 U+00A0（0xA0）⇒ 绑不住值与单位')
+am2 = re.search(r'fun\s+avgEnergyLine\s*\(', met)
+if not am2:
+    problems.append('SummaryMetrics.kt 里找不到 avgEnergyLine() —— 事实源被改名了？')
+else:
+    _, close = balanced(met, am2.end() - 1)
+    body = met[close + 1:close + 400].split('\n\n')[0]
+    if 'NBSP' not in body:
+        problems.append('avgEnergyLine() 里没有用不换行空格绑住值与单位 ⇒ '
+                        '200% 字号下会折成「平均能耗 17.4」/「kWh/100km」')
+
+# ④ 事实源：限定语不许被塞回数字那一段
+m = re.search(r'const val DC_SHARE_CALIBER\s*=\s*"([^"]*)"', met)
+if not m:
+    problems.append('SummaryMetrics.kt 里找不到 DC_SHARE_CALIBER 的字面量')
+elif m.group(1) != '（按充入电量）':
+    problems.append('口径限定语变成了「%s」' % m.group(1))
+fm = re.search(r'fun\s+dcShareLine\s*\(', met)
+if not fm:
+    problems.append('SummaryMetrics.kt 里找不到 dcShareLine() —— 事实源被改名了？')
+else:
+    _, close = balanced(met, fm.end() - 1)
+    tail = met[close + 1:close + 400].split('\n\n')[0]
+    lits = re.findall(r'"((?:[^"\\]|\\.)*)"', tail)
+    for l in lits:
+        if '按充入电量' in l:
+            problems.append('dcShareLine() 里又出现了口径限定语 ⇒ 限定语回到数字那一段 ⇒ 会被折行劈开')
+
+if problems:
+    print('「最近 30 天」卡的结构被改回去了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 两条指标上下堆叠；口径限定语独立成 Text 节点；两段用 FlowRow 排（放不下就整体换行）')
+    print('   ⇒ 值与单位之间用不换行空格（U+00A0）绑住')
+    print('   ⇒ 宽度预算由 JVM 单测 SummaryMetricsWidthTest 钉住')
+    sys.exit(1)
+
+print('「最近 30 天」卡结构正确（两条指标上下堆叠、限定语独立成段、FlowRow 整体换行、值与单位绑住）')
+PYEOF
+if [ $? -eq 0 ]; then ok "汇总卡结构（两条指标不并排 + 限定语独立成段 + FlowRow + 值与单位绑住）"; else fail "汇总卡结构"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
