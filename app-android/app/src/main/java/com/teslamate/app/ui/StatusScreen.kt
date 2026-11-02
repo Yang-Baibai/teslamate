@@ -2538,20 +2538,32 @@ private fun DriveNowCard(d: com.teslamate.app.ActiveDrive, st: CarStatus) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            // ⚠️ **v0.115.0：本轮不动这一行**（登记在案的例外，客户端闸门 25 会盯着）。
+            // ⚠️ **v0.116.0：这一行改成「车速 | 功率」两格并排 + 「电量」另起一行整宽。**
             //
-            // 这一行三格 ⇒ 每格文字区只有 **64dp**，而「42 km/h」**真实**宽度 ≈ 63.6dp
-            // ⇒ **只剩 0.4dp 余量** ⇒ 又是「刚好放得下是运气不是结构」那类问题。
-            // 但本轮改布局会让 100% 的版面变啰嗦（这张卡会高 3 倍）⇒ 列为**下一轮手术点**。
+            // **上一轮记错了数**：当时写「42 km/h 真实宽度 ≈ 63.6dp，每格 64dp ⇒ 只剩 0.4dp」
+            // —— 那是**手算**（把拉丁字母按 0.55em 算）；App 自己的估算器
+            // （`estimateTextWidthDpWithNbsp`）给的是 **4.07em × 17sp = 69.19dp**
+            // ⇒ **100% 就已经放不下 64dp** ⇒ 值会被折成「42」/「km/h」（**数与单位分离**，ADR #42）
+            // ⇒ 那不是「运气」，是**活的 bug**。
             //
-            // ⚠️ 这里**故意保留普通空格**（不用不换行空格）：
-            // 放不下时「42」/「km/h」**折行**（数还在）比被**裁掉**（单位消失）好
-            // ⇒ **先改布局、再上 NBSP**（顺序不能反）。
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                InfoTile("车速", st.speed?.let { "$it km/h" } ?: "—", Modifier.weight(1f))
-                InfoTile("功率", st.power?.let { "$it kW" } ?: "—", Modifier.weight(1f))
-                InfoTile("电量", "${st.battery_level ?: "—"}%", Modifier.weight(1f))
-            }
+            // 算术：三格并排时每格文字区 = (296 − 2×10) ÷ 3 − 28 = **64dp**；
+            // 「42 km/h」= 0.62+0.62+0.30+0.66+0.66+0.55+0.66 = 4.07em × 17sp = **69.19dp**。
+            //
+            // ⇒ 现在「车速 / 功率」两格并排：每格文字区 = (296 − 10) ÷ 2 − 28 = **115dp**
+            // ⇒ 余量 **45.8dp**（结构性放得下）；「电量」另起一行**整宽**（268dp）
+            // ⇒ 电量**不是重复信息**：页面下方的续航区虽然也写着电量，
+            //   但滚到这张卡时它已经出屏幕了。
+            // ⇒ 大字号下两格**自动单列**（`InfoTileRow`）⇒ 200% 也放得下。
+            // ⇒ 布局先改、**再上 NBSP**（顺序不能反：布局没改就上 NBSP ⇒ 放不下时整段被裁）。
+            InfoTileRow(
+                listOf(
+                    "车速" to infoTileSpeedValue(st.speed),
+                    "功率" to infoTileKwValue(st.power),
+                ),
+                gapDp = 10.dp,
+            )
+            Spacer(Modifier.height(8.dp))
+            InfoTileRow(listOf("电量" to "${st.battery_level ?: "—"}%"))
         }
     }
 }

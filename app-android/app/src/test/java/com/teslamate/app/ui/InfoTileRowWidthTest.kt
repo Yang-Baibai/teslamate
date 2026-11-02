@@ -183,4 +183,62 @@ class InfoTileRowWidthTest {
         assertEquals("12.3 度", infoTileKwhValue(12.34).replace(NBSP, " "))
         assertEquals("11 kW", infoTileKwValue(11).replace(NBSP, " "))
     }
+
+    // ── v0.116.0：「行驶中」那一行（车速 / 功率 / 电量）────────────────────────
+    //
+    // ⚠️ **上一轮记的「42 km/h ≈ 63.6dp」是手算**（把拉丁字母按 0.55em 算）；
+    // App 自己的估算器给的是 4.07em × 17sp = **69.19dp**
+    // ⇒ 三格并排时每格只有 **64dp** ⇒ **100% 就已经放不下**
+    // ⇒ 值会被折成「42」/「km/h」（数与单位分离）。
+    // ⇒ 现在「车速 / 功率」两格并排（每格 115dp）+「电量」独占一行整宽（268dp）。
+
+    /** 「车速 / 功率」两格：100% 与 150% 并排，170% 必须单列。 */
+    @Test
+    fun `行驶中那两格在正常字号下并排`() {
+        val titles = listOf("车速", "功率")
+        val values = listOf(infoTileSpeedValue(42), infoTileKwValue(11))
+        assertEquals(
+            "100%% 下「42 km/h」要 69.2dp ≤ 115dp ⇒ 必须并排",
+            2,
+            infoTileColumns(titles, values, 1.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+        )
+        assertEquals(
+            "150%% 下「42 km/h」要 103.8dp ≤ 115dp ⇒ 还是并排",
+            2,
+            infoTileColumns(titles, values, 1.5f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+        )
+        assertEquals(
+            "170%% 下「42 km/h」要 117.6dp > 115dp ⇒ 必须单列",
+            1,
+            infoTileColumns(titles, values, 1.7f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+        )
+    }
+
+    /** 「电量」那一格独占一行 ⇒ 整宽（268dp）⇒ 200% 也放得下。 */
+    @Test
+    fun `电量那格独占一行就是整宽`() {
+        assertEquals(
+            "只有一格 ⇒ 单列（整宽）",
+            1,
+            infoTileColumns(listOf("电量"), listOf("85%"), 2.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+        )
+        val needed = infoTileValueNeededDp("85%", 2.0f)
+        assertTrue(
+            "「85%%」在 200%% 下要 %.1fdp，整宽文字区只有 %.0fdp ⇒ 放不下"
+                .format(needed, INFO_TILE_CARD_CONTENT_DP - INFO_TILE_PADDING_H_DP),
+            needed <= INFO_TILE_CARD_CONTENT_DP - INFO_TILE_PADDING_H_DP,
+        )
+    }
+
+    /** 车速的数与单位绑住（NBSP）—— 普通空格是断行机会 ⇒ 会把数与单位拆开。 */
+    @Test
+    fun `车速的数与单位绑住`() {
+        assertEquals("42" + NBSP + "km/h", infoTileSpeedValue(42))
+        assertEquals("—", infoTileSpeedValue(null))
+        assertTrue(
+            "「42 km/h」里还有普通空格 ⇒ 折行会把数与单位拆开",
+            !infoTileSpeedValue(42).contains(' '),
+        )
+        assertEquals("42 km/h", infoTileSpeedValue(42).replace(NBSP, " "))
+    }
 }

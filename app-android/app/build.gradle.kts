@@ -13,12 +13,12 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.115.0**：App 改了（车况页那些信息块大字号改单列）⇒ 版本号要涨。
+        // ⚠️ **v0.116.0**：App 改了（「行驶中」那一行：车速不再被拆成两行）⇒ 版本号要涨。
         //    ⚠️ **必须单调递增、不能跳号**（App 的更新判定是 remote > 本地 code
-        //    ⇒ 跳过的号用户永远收不到）：120 → 121 → 122 → 123 → 124，四个是
+        //    ⇒ 跳过的号用户永远收不到）：120 → 121 → 122 → 123 → 124 → 125，五个是
         //    并行会话与我按序发的，**没有跳号**。
-        versionCode = 124
-        versionName = "0.115.0"
+        versionCode = 125
+        versionName = "0.116.0"
     }
 
     buildTypes {

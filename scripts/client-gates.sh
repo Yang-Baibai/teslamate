@@ -2744,7 +2744,8 @@ rm -f "$TMP"
 #
 # ⇒ 这道闸门守**结构**：
 #   ① `StatusScreen.kt` 必须走 `InfoTileRow(`（统一那条路）；
-#   ② `StatusScreen.kt` 里**不许**再直接摆 `InfoTile(`（不许有第二条路）；
+#   ② `StatusScreen.kt` 里**不许**再直接摆 `InfoTile(`（不许有第二条路）
+#      —— v0.115.0 登记的「行驶中」那三个例外已在 v0.116.0 **清零**（棘轮：只许变少）；
 #   ③ `InfoTileRow.kt` 里必须有 `infoTileColumns(`，且它读了 `fontScale`
 #      并按**每格预算**比较（不许写死列数）；
 #   ④ **每一处**「数 + 单位」之间都必须是不换行空格（NBSP）
@@ -2787,21 +2788,26 @@ if 'InfoTileRow(' not in screen:
     problems.append('StatusScreen.kt 没有调用 InfoTileRow( ⇒ 那些格子还是各自摆的 ⇒ '
                     '列数写死 ⇒ 大字号下读数被裁')
 
-# ② 直接摆 InfoTile( 的地方：**只许剩「行驶中」那一行**（登记在案的例外）
+# ② 直接摆 InfoTile( 的地方：**不许有**（例外已于 v0.116.0 清零 ⇒ 棘轮：例外只许变少）
 #
-# ⚠️ **v0.115.0 留下的例外**：车况页「行驶中」卡那一行（车速 / 功率 / 电量）本轮**没改** ——
-#    它的「42 km/h」在 100% 下**真实**宽度 ≈ 63.6dp，而每格文字区只有 **64dp**
-#    ⇒ **只剩 0.4dp 余量**（又是「刚好放得下」那类运气）
-#    ⇒ 改布局会让 100% 的版面变啰嗦（那张卡会高 3 倍）⇒ 列为**下一轮手术点**。
-#    ⇒ **棘轮**：例外只许变少 —— 下一轮改完 ⇒ **删掉这条豁免**。
-#    ⚠️ 那一行的值**故意不用**不换行空格：放不下时「42」/「km/h」折行（数还在）
-#    比被**裁掉**（单位消失）好 ⇒ **先改布局、再上 NBSP**（顺序不能反）。
+# ⚠️ **例外历史**：
+#   · v0.115.0：登记了「行驶中」那一行（车速 / 功率 / 电量）三个直接 InfoTile( 例外；
+#   · v0.116.0：那一行改走 InfoTileRow( ⇒ **例外清零** ⇒ 以后**不许**再新增直接 InfoTile(。
+#
+# ⚠️ **v0.116.0 的一处更正**：v0.115.0 段写「42 km/h 真实宽度 ≈ 63.6dp，每格 64dp ⇒ 只剩 0.4dp」
+#    —— 那是**手算**（把拉丁字母按 0.55em 算）；App 自己的估算器给的是 **4.07em × 17sp = 69.19dp**
+#    ⇒ **100% 就已经放不下 64dp** ⇒ 那一格的值会被折成「42」/「km/h」（**数与单位分离**，ADR #42）
+#    ⇒ 那不是「运气」，是**活的 bug**（v0.116.0 已修：两格并排 + 电量独占一行）。
 direct_labels = re.findall(r'InfoTile\s*\(\s*"([^"]+)"', screen)
-expected = ['车速', '功率', '电量']
-if sorted(direct_labels) != sorted(expected):
-    problems.append('StatusScreen.kt 里直接摆 InfoTile( 的地方是 %r，应只剩「行驶中」那一行 %r '
-                    '⇒ 其余的行都必须走 InfoTileRow( ⇒ 大字号下那些行又会被裁'
-                    % (direct_labels, expected))
+if direct_labels:
+    problems.append('StatusScreen.kt 里还有直接摆 InfoTile( 的地方 %r ⇒ '
+                    '那些格子又变回「并排写死」⇒ 大字号下读数被裁（ADR #44）'
+                    % (direct_labels,))
+
+# ②′ 车速 / 功率 / 电量 三格都必须走 InfoTileRow( ⇒ 都在宽度预算的判定里
+for label in ('车速', '功率', '电量'):
+    if ('"%s" to ' % label) not in screen:
+        problems.append('「%s」那一格没有走 InfoTileRow( ⇒ 它不在宽度预算的判定里' % label)
 
 # ③ 判定必须是宽度驱动的
 if 'fun infoTileColumns(' not in row:
@@ -2823,7 +2829,7 @@ else:
 #
 # ⚠️ **只查「文件里有没有出现过 NBSP」是不够的**：把其中一处换成普通空格，
 #    闸门照样绿（另一处还在）⇒ **假绿** ⇒ 必须逐处查。
-for fn, unit in (('infoTileKwhValue', '度'), ('infoTileKwValue', 'kW')):
+for fn, unit in (('infoTileKwhValue', '度'), ('infoTileKwValue', 'kW'), ('infoTileSpeedValue', 'km/h')):
     m = re.search(r'fun\s+%s\s*\(' % fn, row)
     if not m:
         problems.append('InfoTileRow.kt 里找不到 %s() —— 事实源被改名了？' % fn)
@@ -2840,7 +2846,7 @@ for fn, unit in (('infoTileKwhValue', '度'), ('infoTileKwValue', 'kW')):
                         % (fn, unit, prefix))
 
 # 界面里不许再出现「数 + 普通空格 + 单位」的字面量
-for lit in ('" 度"', '" kW"'):
+for lit in ('" 度"', '" kW"', '" km/h"'):
     if lit in screen:
         problems.append('StatusScreen.kt 里还有字面量 %s ⇒ '
                         '数与单位之间是**普通空格**（断行机会）⇒ 会被折开' % lit)
