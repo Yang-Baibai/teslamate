@@ -584,6 +584,21 @@ def teslamate_charge_brief(period: str = "7d") -> dict:
             _fmt_tz(lf.get("date"), tz), lf.get("from_soc"), lf.get("to_soc"))
     else:
         out["上次充满"] = "这个区间里没有充满过"
+    # ⚠️ **v0.115.1**：能耗段（里程 / 用电 / 平均能耗）。
+    # 它与充电**共用同一个窗口**（服务端只算一次）⇒ 回答时别自己另算窗口。
+    energy = data.get("energy")
+    if isinstance(energy, dict):
+        out["行驶里程km"] = energy.get("km")
+        out["行驶时长分钟"] = energy.get("minutes")
+        out["用电(度)"] = energy.get("kwh_used")
+        out["平均能耗(Wh/km)"] = energy.get("wh_per_km")
+        out["平均能耗(kWh/100km)"] = energy.get("kwh_per_100km")
+        out["行程数"] = energy.get("drive_count")
+    else:
+        # 没有能耗段时，服务端给**一句话**说明（如「这一档不并能耗段」）。
+        note = data.get("energy_note")
+        if note:
+            out["能耗段说明"] = note
     return out
 
 

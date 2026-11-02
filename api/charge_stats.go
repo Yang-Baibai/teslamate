@@ -70,6 +70,30 @@ var chargeRangeSpecs = []chargeRangeSpec{
 	{key: "all", days: 0},
 }
 
+// chargeRangeSpecByKey 按 key 取区间定义。
+func chargeRangeSpecByKey(key string) (chargeRangeSpec, bool) {
+	for _, s := range chargeRangeSpecs {
+		if s.key == key {
+			return s, true
+		}
+	}
+	return chargeRangeSpec{}, false
+}
+
+// bucketCount 这个区间要分几个**桶**（按天）。
+//
+// ⚠️ **v0.115.1**：简报的能耗段要按**同一个窗口**聚合（同一份事实），
+// 所以桶数必须和窗口严格对齐：滚动 7/30 天 ⇒ 7/30 个桶；
+// 自然月 ⇒ 从 1 号到今天 ⇒ 今天几号就几个桶。
+// ⚠️ 「全部历史」⇒ **没有窗口**（边界是数据自身首尾）⇒ 桶数 0
+// ⇒ 那一档**不并能耗段**（/stats 没有全量档；drives 上限 500 也不够）。
+func (s chargeRangeSpec) bucketCount(loc *time.Location, now time.Time) int {
+	if s.calendarMonth {
+		return now.Day()
+	}
+	return s.days
+}
+
 // buildChargeStats 把充电行汇总成三个区间的统计（纯函数，可单测）。
 func buildChargeStats(loc *time.Location, now time.Time, rows []chargeStatRow) []*ChargeStatsRange {
 	out := make([]*ChargeStatsRange, 0, len(chargeRangeSpecs))

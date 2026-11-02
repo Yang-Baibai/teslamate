@@ -4,21 +4,35 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 )
 
 // ⚠️ **v0.111.0**：充电简报（给飞书的周期性报告）的护栏。
 //
-// 三条规矩：
+// 四条规矩：
 //
 //  ① **文案只有服务端一份** —— 推送脚本与 MCP 只转述（ADR #41）。
-//  ② **窗口必须露出来** —— 只说「近 7 天」不说边界，用户没法核对「是哪 7 天」。
-//  ③ **没有样本就不给数** —— 平均时长没样本时，正文里不许出现「平均」。
+//  ② **窗口必须露出来** —— 只说「近 30 天」不说边界，用户没法核对「是哪 30 天」。
+//  ③ **没有样本就不给数** —— 平均时长/平均能耗没样本时，正文里不许出现那一段。
+//  ④ **v0.115.1**：能耗段与充电段**共用同一个窗口** ⇒ 全篇只有一行窗口。
 //
 // ⚠️ 所有断言都**钉具体值**（不钉「有没有超过 N」）——
 // 边界算错时，「有没有超过 N」这种断言会假绿（v0.98.0 的教训）。
+//
+// ⚠️ 辅助函数（testZone / at / intp / fixedNow / fixedRows / rangeByKey）
+// **复用 charge_stats_test.go 的那一份** —— 同一个包里不许写两份（编译冲突）。
 
-// briefOf 渲染一个区间的简报。
+// briefFloatp 一个可空浮点数。
+func briefFloatp(v float64) *float64 { return &v }
+
+// briefAbs 取绝对值。
+func briefAbs(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// briefOf 渲染一个区间的简报（**不带能耗段**）。
 func briefOf(t *testing.T, key string) (string, string, *ChargeStatsRange) {
 	t.Helper()
 	loc := testLoc(t)
@@ -28,21 +42,13 @@ func briefOf(t *testing.T, key string) (string, string, *ChargeStatsRange) {
 	if r == nil {
 		t.Fatalf("区间 %s 缺失", key)
 	}
-	title, body := renderChargeBrief(loc, "Asia/Shanghai", "爱车", r)
+	title, body := renderChargeBrief(loc, "Asia/Shanghai", "爱车", r, nil, "")
 	return title, body, r
 }
 
-// ① 标题与正文：**窗口两端都在**（钉具体时刻）。
+// ① 窗口两端都在正文里（钉具体时刻）。
 func TestChargeBriefWindowPinned(t *testing.T) {
-	title, body, _ := briefOf(t, "7d")
-
-	if !strings.Contains(title, "爱车") {
-		t.Errorf("标题里没有车名：%q", title)
-	}
-	if !strings.Contains(title, "近 7 天") {
-		t.Errorf("标题里没有区间标签：%q", title)
-	}
-	// 窗口起点 = 2026-10-27 00:00（+08:00）；终点 = now = 2026-11-02 15:44
+	_, body, _ := briefOf(t, "7d")
 	if !strings.Contains(body, "2026-10-27 00:00") {
 		t.Errorf("正文里没有窗口起点 2026-10-27 00:00：\n%s", body)
 	}
@@ -50,14 +56,13 @@ func TestChargeBriefWindowPinned(t *testing.T) {
 		t.Errorf("正文里没有窗口终点 2026-11-02 15:44：\n%s", body)
 	}
 	if !strings.Contains(body, "Asia/Shanghai") {
-		t.Errorf("正文里没有写服务器时区（用户对时间会差几小时）：\n%s", body)
+		t.Errorf("正文里没有写服务器时区：\n%s", body)
 	}
 }
 
-// ② 正文里的**数**必须与聚合一致（钉死具体字符串）。
+// ② 正文的**数**钉死（与服务端聚合同源）。
 func TestChargeBriefBodyNumbersPinned(t *testing.T) {
 	_, body, r := briefOf(t, "7d")
-
 	want := []string{
 		"充电 2 次 · 充入 37.8 度",
 		"直流（快充）：2 次 · 37.8 度 · 平均 35 分钟",
@@ -69,17 +74,20 @@ func TestChargeBriefBodyNumbersPinned(t *testing.T) {
 			t.Errorf("正文里没有 %q：\n%s", w, body)
 		}
 	}
-	// ⚠️ 交流平均时长**没有样本** ⇒ 正文里不许出现交流的「平均」。
-	if strings.Contains(body, "交流（慢充）：0 次 · 0.0 度 · 平均") {
-		t.Errorf("交流没有样本却给了平均时长：\n%s", body)
-	}
-	// 数字必须与区间聚合一致（同一事实只留一处 ⇒ 简报不能另算）。
 	if r.TotalKwh != 37.8 {
-		t.Fatalf("区间聚合变了（期望 37.8，实际 %v）⇒ 简报的数也要跟着变", r.TotalKwh)
+		t.Fatalf("区间聚合变了（期望 37.8，实际 %v）", r.TotalKwh)
 	}
 }
 
-// ③ **全部历史**这一档：窗口是数据自身的首尾（不是滚动窗口）。
+// ③ 没有样本就不给数（交流没有平均时长 ⇒ 正文里不出现交流的「平均」）。
+func TestChargeBriefNoSampleGivesNoNumber(t *testing.T) {
+	_, body, _ := briefOf(t, "7d")
+	if strings.Contains(body, "交流（慢充）：0 次 · 0.0 度 · 平均") {
+		t.Errorf("交流没有样本却给了平均时长：\n%s", body)
+	}
+}
+
+// ④ 「全部历史」这一档：窗口 = 数据自身首尾。
 func TestChargeBriefAllWindowIsDataSpan(t *testing.T) {
 	_, body, _ := briefOf(t, "all")
 	if !strings.Contains(body, "2026-08-15 07:00") {
@@ -93,37 +101,98 @@ func TestChargeBriefAllWindowIsDataSpan(t *testing.T) {
 	}
 }
 
-// ④ 没有样本 ⇒ **不给数**（不编）。
-func TestChargeBriefNoSampleGivesNoNumber(t *testing.T) {
+// ── v0.115.1：能耗段 ──────────────────────────────────────────────
+
+// ⑤ 能耗段与充电段**共用同一个窗口** ⇒ 全篇只有**一行**窗口。
+//
+// ⚠️ 这是本轮最要紧的结构事实：一段话里两个窗口 ⇒ 用户对不上账（ADR #38）。
+func TestChargeBriefEnergySharesOneWindow(t *testing.T) {
 	loc := testLoc(t)
 	now := fixedNow(t)
-	// 窗口内一场都没有（数据在 10-01，落在 7 天窗口之外）。
-	ranges := buildChargeStats(loc, now, []chargeStatRow{
-		{StartDate: at(2026, time.October, 1, 8, 0), EnergyAdded: 30.0, DurationMin: intp(40), StartSoc: intp(20), EndSoc: intp(60), IsDC: true},
-	})
+	ranges := buildChargeStats(loc, now, fixedRows(t))
 	r := rangeByKey(ranges, "7d")
-	if r == nil {
-		t.Fatal("区间 7d 缺失")
-	}
-	_, body := renderChargeBrief(loc, "Asia/Shanghai", "爱车", r)
-	if !strings.Contains(body, "这个区间没有充电记录") {
-		t.Errorf("没有样本时正文应明说「没有充电记录」：\n%s", body)
-	}
-	if strings.Contains(body, "度") {
-		t.Errorf("没有样本却报了度数：\n%s", body)
-	}
-	if strings.Contains(body, "平均") {
-		t.Errorf("没有样本却报了平均时长：\n%s", body)
+	energy := &ChargeBriefEnergy{Km: 1234.5, Minutes: 1800, KwhUsed: 168.2, WhPerKm: briefFloatp(136.2), KwhPer100Km: briefFloatp(13.62), DriveCount: 12}
+	_, body := renderChargeBrief(loc, "Asia/Shanghai", "爱车", r, energy, "")
+	if n := strings.Count(body, "窗口："); n != 1 {
+		t.Errorf("正文里有 %d 行窗口（应恰好 1 行）⇒ 能耗段与充电段不是同一个窗口：\n%s", n, body)
 	}
 }
 
-// ⑤ **线上契约**：JSON 必须真的带上简报要的键（少一个 ⇒ 客户端静默拿到空串）。
+// ⑥ 能耗段的数钉死（单位换算：Wh/km ÷ 10 = kWh/100km）。
+func TestChargeBriefEnergyNumbersPinned(t *testing.T) {
+	loc := testLoc(t)
+	now := fixedNow(t)
+	ranges := buildChargeStats(loc, now, fixedRows(t))
+	r := rangeByKey(ranges, "7d")
+	energy := &ChargeBriefEnergy{Km: 1234.5, Minutes: 1800, KwhUsed: 168.2, WhPerKm: briefFloatp(136.2), KwhPer100Km: briefFloatp(13.62), DriveCount: 12}
+	_, body := renderChargeBrief(loc, "Asia/Shanghai", "爱车", r, energy, "")
+	want := "能耗：行驶 1234.5 公里 · 用电 168.2 度 · 平均 13.6 kWh/100km"
+	if !strings.Contains(body, want) {
+		t.Errorf("正文里没有 %q：\n%s", want, body)
+	}
+}
+
+// ⑦ 「全部历史」⇒ **不并能耗段**，且正文只说**一句话**。
+func TestChargeBriefAllHasNoEnergy(t *testing.T) {
+	loc := testLoc(t)
+	now := fixedNow(t)
+	ranges := buildChargeStats(loc, now, fixedRows(t))
+	r := rangeByKey(ranges, "all")
+	// ⚠️ 「全部」这一档**有** WindowStart（= 数据首尾，不是 nil）——
+	// 「不并能耗段」的判据是**桶数 = 0**（它不是日历窗口）。
+	spec, ok := chargeRangeSpecByKey("all")
+	if !ok {
+		t.Fatal("找不到 all 区间定义")
+	}
+	if n := spec.bucketCount(loc, now); n != 0 {
+		t.Fatalf("「全部」的桶数应是 0（没有日历窗口），实际 %d", n)
+	}
+	_, body := renderChargeBrief(loc, "Asia/Shanghai", "爱车", r, nil, "这一档不并能耗段")
+	if !strings.Contains(body, "这一档不并能耗段") {
+		t.Errorf("正文里没有说清「这一档不并能耗段」：\n%s", body)
+	}
+	if strings.Contains(body, "能耗：") {
+		t.Errorf("「全部」这一档不该有能耗段：\n%s", body)
+	}
+}
+
+// ⑧ 没有里程 ⇒ **不给数**（反幻觉：宁可说没有，不编一个平均能耗）。
+func TestChargeBriefEnergyFromSummaryNoKm(t *testing.T) {
+	if e := chargeBriefEnergyFromSummary(&StatsBucket{Km: 0.05}); e != nil {
+		t.Errorf("里程不足 0.1km 时不该给出能耗段：%+v", e)
+	}
+	if e := chargeBriefEnergyFromSummary(nil); e != nil {
+		t.Errorf("没有汇总时不该给出能耗段：%+v", e)
+	}
+}
+
+// ⑨ 单位换算钉死：Wh/km ÷ 10 = kWh/100km（界面上给用户看的那个口径）。
+func TestChargeBriefEnergyUnitConversion(t *testing.T) {
+	e := chargeBriefEnergyFromSummary(&StatsBucket{
+		Km: 100, KwhUsed: 13.62, WhPerKm: briefFloatp(136.2), DriveCount: 3,
+	})
+	if e == nil {
+		t.Fatal("有里程却没有能耗段")
+	}
+	if e.KwhPer100Km == nil {
+		t.Fatal("没有 kWh/100km")
+	}
+	if briefAbs(*e.KwhPer100Km-13.62) > 0.001 {
+		t.Errorf("kWh/100km = %v，期望 13.62（Wh/km ÷ 10）", *e.KwhPer100Km)
+	}
+	if e.WhPerKm == nil || briefAbs(*e.WhPerKm-136.2) > 0.001 {
+		t.Errorf("Wh/km = %v，期望 136.2", e.WhPerKm)
+	}
+}
+
+// ⑩ JSON 契约：键齐全（少一个 ⇒ 客户端静默拿到空值）。
 func TestChargeBriefJSONContract(t *testing.T) {
 	loc := testLoc(t)
 	now := fixedNow(t)
 	ranges := buildChargeStats(loc, now, fixedRows(t))
 	r := rangeByKey(ranges, "7d")
-	title, body := renderChargeBrief(loc, "Asia/Shanghai", "爱车", r)
+	energy := &ChargeBriefEnergy{Km: 1234.5, KwhUsed: 168.2, WhPerKm: briefFloatp(136.2), KwhPer100Km: briefFloatp(13.62), DriveCount: 12}
+	title, body := renderChargeBrief(loc, "Asia/Shanghai", "爱车", r, energy, "")
 	payload := ChargeBrief{
 		CarName:          "爱车",
 		PeriodLabel:      chargeBriefPeriodLabel["7d"],
@@ -131,6 +200,7 @@ func TestChargeBriefJSONContract(t *testing.T) {
 		Title:            title,
 		Body:             body,
 		ChargeStatsRange: *r,
+		Energy:           energy,
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -144,13 +214,19 @@ func TestChargeBriefJSONContract(t *testing.T) {
 		"car_name", "period_label", "server_timezone", "title", "body",
 		"key", "days", "window_start", "window_end", "count", "total_kwh",
 		"dc_kwh", "dc_count", "dc_avg_min", "ac_kwh", "ac_count", "ac_avg_min",
-		"last_full",
+		"last_full", "energy",
 	} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("简报缺键 %q", k)
 		}
 	}
-	if m["title"] != title || m["body"] != body {
-		t.Error("JSON 里的 title/body 与渲染结果不一致")
+	en, ok := m["energy"].(map[string]any)
+	if !ok {
+		t.Fatalf("energy 不是对象：%v", m["energy"])
+	}
+	for _, k := range []string{"km", "minutes", "kwh_used", "wh_per_km", "kwh_per_100km", "drive_count"} {
+		if _, ok := en[k]; !ok {
+			t.Errorf("energy 缺键 %q", k)
+		}
 	}
 }

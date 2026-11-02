@@ -1477,19 +1477,7 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		windowStart = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, -(buckets - 1), 0)
 	}
 
-	driveAgg, err := scanBucketAgg(sqlStatsDrives, id, granularity, tz, windowStart,
-		func(sb *StatsBucket, f1, f2, f3 float64, cnt int) {
-			sb.Km, sb.Minutes, sb.KwhUsed, sb.DriveCount = f1, f2, f3, cnt
-		})
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	chargeAgg, err := scanBucketAgg(sqlStatsCharges, id, granularity, tz, windowStart,
-		func(sb *StatsBucket, f1, f2, f3 float64, cnt int) {
-			sb.ChargeKwh, sb.DcKwh, sb.Cost, sb.ChargeCount = f1, f2, f3, cnt
-			sb.AcKwh = f1 - f2
-		})
+	bucketList, summary, err := statsBucketsForWindow(id, granularity, buckets, tz, windowStart)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1506,7 +1494,38 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	//
 	// 客户端无法自己猜服务端用哪个时区，所以这里显式下发。
 	stats.ServerTimezone = tz
-	for i := 0; i < buckets; i++ {
+	stats.Buckets = bucketList
+	stats.Summary = summary
+	writeJSON(w, stats)
+}
+
+// statsBucketsForWindow 按窗口算出**分桶**与**汇总**（全 App 唯一一份算法）。
+//
+// ⚠️ **v0.115.1**：抽出来的原因 —— 充电简报要并入「能耗统计」这一段，
+// 而简报那段必须和 App 用量页**说同一个数**（同一窗口、同一套护栏、同一份汇总），
+// 否则同一段话里两个口径 ⇒ 用户对不上账（ADR #38 的同一事实只留一处）。
+//
+// ⇒ /stats（用量页）与 /charge_brief（简报）**都调这一个函数**。
+//
+// @param bucketCount 窗口里的桶数（按天或按月）。
+func statsBucketsForWindow(carID int, granularity string, bucketCount int, tz string, windowStart time.Time) ([]*StatsBucket, *StatsBucket, error) {
+	driveAgg, err := scanBucketAgg(sqlStatsDrives, carID, granularity, tz, windowStart,
+		func(sb *StatsBucket, f1, f2, f3 float64, cnt int) {
+			sb.Km, sb.Minutes, sb.KwhUsed, sb.DriveCount = f1, f2, f3, cnt
+		})
+	if err != nil {
+		return nil, nil, err
+	}
+	chargeAgg, err := scanBucketAgg(sqlStatsCharges, carID, granularity, tz, windowStart,
+		func(sb *StatsBucket, f1, f2, f3 float64, cnt int) {
+			sb.ChargeKwh, sb.DcKwh, sb.Cost, sb.ChargeCount = f1, f2, f3, cnt
+			sb.AcKwh = f1 - f2
+		})
+	if err != nil {
+		return nil, nil, err
+	}
+	buckets := make([]*StatsBucket, 0, bucketCount)
+	for i := 0; i < bucketCount; i++ {
 		bucketStart := windowStart
 		if granularity == "month" {
 			bucketStart = windowStart.AddDate(0, i, 0)
@@ -1525,10 +1544,9 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 			v := b.KwhUsed * 1000 / b.Km
 			b.WhPerKm = &v
 		}
-		stats.Buckets = append(stats.Buckets, b)
+		buckets = append(buckets, b)
 	}
-	stats.Summary = summarize(stats.Buckets)
-	writeJSON(w, stats)
+	return buckets, summarize(buckets), nil
 }
 
 // 执行桶聚合 SQL（两个聚合查询同为 bucket/f1/f2/f3/count 五列）并按日期建索引

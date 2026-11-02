@@ -942,6 +942,36 @@ type ChargeBrief struct {
 	Body  string `json:"body"`
 	// 聚合数字：与 ChargeStatsRange 同一份（内嵌 ⇒ JSON 里是平铺的键）。
 	ChargeStatsRange
+	// Energy 能耗段（**与充电同一个窗口** ⇒ 全篇只有一个窗口）。
+	//
+	// ⚠️ **v0.115.1**：这一段与 App 用量页**共用同一份算法**
+	// （statsBucketsForWindow）⇒ 两边不会各说各话。
+	// 为 nil 时看 [ChargeBrief.EnergyNote]（为什么没有）。
+	Energy *ChargeBriefEnergy `json:"energy"`
+	// EnergyNote 没有能耗段时的**一句话**说明（空 = 有能耗段）。
+	//
+	// ⚠️ 理由写在代码注释里，**不塞进这里**（啰嗦棘轮：那行是用户真读的东西）。
+	//
+	// ⚠️ **不带 omitempty** ⇒ 这个键**恒在**（没有说明时是空串）——
+	// 客户端不必区分「键不存在」与「键是空的」。
+	EnergyNote string `json:"energy_note"`
+}
+
+// ChargeBriefEnergy 简报的能耗段（窗口与充电段完全相同）。
+type ChargeBriefEnergy struct {
+	// Km 窗口内行驶里程（km）。
+	Km float64 `json:"km"`
+	// Minutes 窗口内行驶时长（分钟）。
+	Minutes float64 `json:"minutes"`
+	// KwhUsed 窗口内用电（度；标定续航差法，与用量页同源）。
+	KwhUsed float64 `json:"kwh_used"`
+	// WhPerKm 平均能耗（Wh/km）；里程不足时为 null。
+	WhPerKm *float64 `json:"wh_per_km"`
+	// KwhPer100Km 平均能耗（kWh/100km）—— **界面上给用户看的那个口径**
+	// （与 App 的 Fmt.kt.fmtKwh100 同口径：÷10）。
+	KwhPer100Km *float64 `json:"kwh_per_100km"`
+	// DriveCount 窗口内行程数。
+	DriveCount int `json:"drive_count"`
 }
 
 type BatteryHealth struct {

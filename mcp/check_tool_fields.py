@@ -160,6 +160,10 @@ SPEC = [
     ("teslamate_charge_brief", {"period": "7d"}, "场次", "简报里的场次"),
     ("teslamate_charge_brief", {"period": "7d"}, "充入(度)", "简报里的充入电量"),
     ("teslamate_charge_brief", {"period": "7d"}, "上次充满", "上次充满（没有也要说清楚）"),
+    # ⚠️ **v0.115.1**：能耗段（与充电**同一个窗口**）。
+    ("teslamate_charge_brief", {"period": "7d"}, "行驶里程km", "简报里的行驶里程"),
+    ("teslamate_charge_brief", {"period": "7d"}, "用电(度)", "简报里的用电量"),
+    ("teslamate_charge_brief", {"period": "7d"}, "平均能耗(kWh/100km)", "简报里的平均能耗"),
 ]
 
 
@@ -364,6 +368,46 @@ def check_charge_brief_contract() -> list:
     return bad
 
 
+def check_brief_energy_contract() -> list:
+    """简报的**能耗段**必须与**用量页的汇总**是同一个数（同一窗口、同一算法）。
+
+    ⚠️ 为什么比「有没有能耗」更重要：简报与用量页是**两个端点**
+    ⇒ 窗口一旦各算各的 ⇒ 飞书里「近 7 天用了 168 度」而 App 上是 172 度
+    ⇒ 用户对不上账（ADR #38：一个事实只能有一个说法）。
+    ⇒ 这里断言的是**相等**（带一点浮点容差），不是「有没有」。
+
+    ⚠️ 窗口档位的对应关系（ADR #40 代价段）：
+    简报 `7d`（`dayWindowStart(7)`）↔ 用量页 `period=week`（同一个起点）。
+    """
+    bad = []
+    try:
+        brief = T.teslamate_charge_brief("7d")
+        stats = T.teslamate_charge_stats("7d")
+        raw = T._get("/api/v1/cars/%s/stats?period=week" % T.CAR_ID)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(brief, dict) or "错误" in brief:
+        return ["充电简报取不到：%r" % (brief,)]
+    if not isinstance(raw, dict) or "error" in raw:
+        return ["用量页取不到：%r" % (raw,)]
+    summary = raw.get("summary") or {}
+    for mk, sk, tol, label in (
+        ("行驶里程km", "km", 0.5, "里程"),
+        ("用电(度)", "kwh_used", 0.01, "用电"),
+    ):
+        b = brief.get(mk)
+        s = summary.get(sk)
+        if b is None or s is None:
+            bad.append("简报没有「%s」或用量页没有 %s ⇒ 拿不到就别装有数" % (mk, sk))
+        elif abs(float(b) - float(s)) > tol:
+            bad.append("简报的%s = %s，与用量页汇总的 %s = %s 不一致 ⇒ 两个端点各算各的窗口了"
+                       % (label, b, sk, s))
+    if brief.get("窗口起点") != stats.get("窗口起点"):
+        bad.append("简报与充电统计的窗口起点不一致：%r / %r"
+                   % (brief.get("窗口起点"), stats.get("窗口起点")))
+    return bad
+
+
 def check_feedback_items() -> list:
     """反馈**每一条**都必须带上「id / 时间 / 内容 / 状态」。
 
@@ -480,6 +524,13 @@ def main() -> int:
         print("  ✓ %-26s %-24s 窗口边界与充电统计一致、正文带窗口起点"
               % ("teslamate_charge_brief", "简报契约"))
     bad.extend(brief_bad)
+
+    energy_bad = check_brief_energy_contract()
+    for b in energy_bad:
+        print("  ✗ %s" % b)
+    if not energy_bad:
+        print("  ✓ %-26s %-24s 能耗段与用量页汇总是同一个数" % ("teslamate_charge_brief", "能耗契约"))
+    bad.extend(energy_bad)
 
     fb_bad = check_feedback_items()
     for b in fb_bad:

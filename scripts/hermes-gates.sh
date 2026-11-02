@@ -146,11 +146,12 @@ def go_struct_tags(src, name):
     m = re.search(r'type\s+' + name + r'\s+struct\s*\{(.*?)\n\}', src, re.S)
     if not m:
         return None
-    return set(re.findall(r'json:"([^"]+)"', m.group(1)))
+    # ⚠️ 只取**键名**：标签里可能带 ",omitempty" ⇒ 把选项吃进键会误报「键不存在」。
+    return set(re.findall(r'json:"([^",]+)"', m.group(1)))
 
 
 server_tags = set()
-for name in ('ChargeBrief', 'ChargeStatsRange', 'ChargeStatsLastFull'):
+for name in ('ChargeBrief', 'ChargeBriefEnergy', 'ChargeStatsRange', 'ChargeStatsLastFull'):
     t = go_struct_tags(models, name)
     if t is None:
         print('服务端找不到 type %s（api/models.go）' % name)
@@ -244,6 +245,69 @@ if problems:
 print('推送脚本的简报带槽位节流 ✔（读 / 比 / 写三件套齐，且失败不记槽位）')
 PYEOF
 if [ $? -eq 0 ]; then ok "推送脚本的简报带槽位节流"; else fail "简报的节流契约"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 24：简报的**能耗段不许自己算窗口**（必须借充电段的区间）──────
+#
+# ⚠️ **v0.115.1**
+#
+# 简报现在同时讲**充电**与**能耗**。若两边各算一次窗口
+# ⇒ 同一段话里两个口径（「充电是近 30 天、能耗是自然月」）
+# ⇒ **用户对不上账**（ADR #38：一个事实只能有一个说法）。
+#
+# ⇒ 规矩：窗口**只能**在 `api/charge_stats.go` 里算一次
+# （`dayWindowStart` / `monthStart`），简报**从区间借**；
+# 聚合也只能用**用量页那个函数**（`statsBucketsForWindow`）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+BRIEF = pathlib.Path('api/charge_brief.go')
+STATS = pathlib.Path('api/charge_stats.go')
+for p in (BRIEF, STATS):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+brief = BRIEF.read_text(encoding='utf-8', errors='replace')
+stats = STATS.read_text(encoding='utf-8', errors='replace')
+problems = []
+
+# ⚠️ **先剥掉 Go 的行注释**再查关键字 ——
+#    否则「注释里也写了 target.WindowStart」就会让闸门以为代码里还在用
+#    ⇒ 探针把代码改坏时闸门照样绿（**假绿**）。
+#    （本文件里没有带 "://" 的字符串，所以按行剥注释是安全的。）
+brief_code = re.sub(r'(?m)//.*$', '', brief)
+stats_code = re.sub(r'(?m)//.*$', '', stats)
+
+# ① 简报里不许出现窗口计算函数（那两处只该在 charge_stats.go 里）。
+for fn in ('dayWindowStart(', 'monthStart('):
+    if fn in brief_code:
+        problems.append('api/charge_brief.go 里出现了 %s ⇒ 简报自己算了一次窗口'
+                        '（应当从充电区间借，否则同一段话里两个口径）' % fn)
+
+# ② 简报必须**从区间借**窗口（查的是**代码**，不是注释）。
+if 'target.WindowStart' not in brief_code:
+    problems.append('api/charge_brief.go 没有用 target.WindowStart ⇒ 能耗段没有借用充电段的窗口')
+
+# ③ 聚合必须走**用量页那个函数**（不许写第二份）。
+if 'statsBucketsForWindow(' not in brief_code:
+    problems.append('api/charge_brief.go 没有调 statsBucketsForWindow ⇒ 能耗段另算了一份聚合')
+
+# ④ 窗口定义**确实**在 charge_stats.go 里（否则上面三条就都成了空检查）。
+if 'dayWindowStart(' not in stats_code or 'monthStart(' not in stats_code:
+    problems.append('api/charge_stats.go 里找不到 dayWindowStart / monthStart ⇒ 窗口定义搬家了？')
+
+if problems:
+    print('简报的能耗/窗口契约破了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 窗口只在 charge_stats.go 算一次；简报从区间借；聚合走 statsBucketsForWindow')
+    sys.exit(1)
+
+print('简报的能耗段：窗口借自充电区间、聚合走用量页同一个函数 ✔')
+PYEOF
+if [ $? -eq 0 ]; then ok "简报能耗段与充电段共用同一窗口/同一聚合"; else fail "简报的能耗/窗口契约"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"

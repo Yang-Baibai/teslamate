@@ -13,16 +13,16 @@ import (
 //
 // ## 为什么要有这个端点（v0.111.0）
 //
-// 定时任务使命里有一格是「**周期性健康报告**：能耗统计简报」——
+// 定时任务使命里有一格是「**周期性健康报告**」——
 // 而 App 的统计卡**推不到飞书**（用户在 App 里看得到、在飞书里问得到，
 // 但没人**定时**把结论送到眼前）。
 //
 // ## 为什么文案放服务端（而不是脚本或 MCP 各写一份）
 //
-// 本仓库反复吃过「同一句话写了两遍」的亏：
+// 本项目反复吃过「同一句话写两遍」的亏：
 //
 //   · v0.76.0：「完成后是什么样」在服务端与客户端各写了一份；
-//   · v0.78.0：通知里「充电完成」写死在脚本里 ⇒ 实测只充到 80% 也说「完成」（**假成功**）。
+//   · v0.78.0：通知里「充电完成」**写死在脚本里** ⇒ 实测只充到 80% 也说「完成」（**假成功**）。
 //
 // ⇒ **判定与文案都在服务端**（本文件），推送脚本与 MCP 只**转述**
 //   （与故障码告警一个套路：`api/telemetry.go` 给文案，脚本原样转述）。
@@ -32,10 +32,16 @@ import (
 // 直接复用 [summarizeChargeRange] ⇒ 与 App 卡片是**同一份聚合**，
 // 不存在「卡片一个数、简报另一个数」的可能（ADR #38 的同一事实只留一处）。
 //
+// ⚠️ **v0.115.1**：并入**能耗统计**这一段（使命 §2.2 的那半句还空着）。
+// 而能耗段必须和 App 用量页**说同一个数** ⇒
+//   · 窗口**从充电段的区间借**（[ChargeStatsRange.WindowStart]）—— **不许再算一次**；
+//   · 聚合走 [statsBucketsForWindow]（用量页同一个函数）。
+//
 // ## 反幻觉三条
 //
-//  1. **窗口必须露出来** —— 只说「近 7 天」不说边界，用户没法核对「是哪 7 天」。
-//  2. **没有样本就不给数** —— 平均时长没有样本就是 null，正文里就不写那一段。
+//  1. **窗口必须露出来** —— 只说「近 30 天」不说边界，用户没法核对「是哪 30 天」。
+//     （能耗段与充电段**同一个窗口** ⇒ 全篇只有一行窗口。）
+//  2. **没有样本就不给数** —— 平均时长/平均能耗没有样本就是 null，正文里就不写那一段。
 //  3. **没充满过就说没充满过** —— 不用「上次充电」冒充「上次充满」。
 
 // chargeBriefPeriodLabel 区间 key → 中文标签（**服务端这一份**）。
@@ -58,7 +64,11 @@ func fmtKwh(v float64) string {
 //
 // ⚠️ 时间一律按**服务器时区**渲染，并把时区名写进正文 ——
 // 用户拿手机上的时间对一遍才不会以为差了几小时（v0.98.0 的时区教训）。
-func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeStatsRange) (string, string) {
+//
+// @param energy 能耗段（可为 nil ⇒ 看 [energyNote]）。
+// @param energyNote 没有能耗段时的**一句话**说明（空 = 有能耗段）。
+func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeStatsRange,
+	energy *ChargeBriefEnergy, energyNote string) (string, string) {
 	label := chargeBriefPeriodLabel[r.Key]
 	if label == "" {
 		label = r.Key
@@ -66,7 +76,9 @@ func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeS
 	if carName == "" {
 		carName = "车辆"
 	}
-	title := fmt.Sprintf("📊 %s · %s充电简报", carName, label)
+	// ⚠️ **v0.115.1**：标题从「充电简报」改成「用车简报」——
+	// 这一份现在**同时**讲充电与能耗，只说「充电」会漏掉一半。
+	title := fmt.Sprintf("📊 %s · %s用车简报", carName, label)
 
 	lines := []string{}
 	// 窗口：两个边界都要（「全部」给的是数据自身的首尾）。
@@ -78,6 +90,7 @@ func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeS
 		we = r.WindowEnd.In(loc).Format("2006-01-02 15:04")
 	}
 	if ws != "" && we != "" {
+		// ⚠️ 充电段与能耗段**共用这一个窗口** ⇒ 只有一行窗口，不会出现两个口径。
 		lines = append(lines, fmt.Sprintf("窗口：%s → %s（服务器时区 %s）", ws, we, tz))
 	}
 
@@ -115,7 +128,45 @@ func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeS
 	} else {
 		lines = append(lines, "上次充满：这个区间里没有充满过")
 	}
+
+	// ── 能耗段（v0.115.1）────────────────────────────────────
+	if energy != nil {
+		line := fmt.Sprintf("能耗：行驶 %.1f 公里 · 用电 %s 度", energy.Km, fmtKwh(energy.KwhUsed))
+		if energy.KwhPer100Km != nil {
+			// ⚠️ 单位用 **kWh/100km**（界面上给用户看的那个口径）——
+			// 与 App 的 Fmt.kt.fmtKwh100 同口径（Wh/km ÷ 10）。
+			line += fmt.Sprintf(" · 平均 %.1f kWh/100km", *energy.KwhPer100Km)
+		}
+		lines = append(lines, line)
+	} else if energyNote != "" {
+		// ⚠️ 只说**一句话**（用户真读的东西）；理由在代码注释里。
+		lines = append(lines, energyNote)
+	}
 	return title, strings.Join(lines, "\n")
+}
+
+// chargeBriefEnergyFromSummary 把用量页的**汇总**变成简报的**能耗段**（纯函数，可单测）。
+//
+// ⚠️ **没有里程就不给数**（反幻觉）：里程不足 0.1km ⇒ 没有能耗结论 ⇒ nil。
+// ⚠️ 单位换算只有这一处：Wh/km ÷ 10 = kWh/100km（界面上给用户看的那个口径）。
+func chargeBriefEnergyFromSummary(summary *StatsBucket) *ChargeBriefEnergy {
+	if summary == nil || summary.Km <= 0.1 {
+		return nil
+	}
+	var wh, k100 *float64
+	if summary.WhPerKm != nil {
+		wh = summary.WhPerKm
+		v := *summary.WhPerKm / 10.0
+		k100 = &v
+	}
+	return &ChargeBriefEnergy{
+		Km:          summary.Km,
+		Minutes:     summary.Minutes,
+		KwhUsed:     summary.KwhUsed,
+		WhPerKm:     wh,
+		KwhPer100Km: k100,
+		DriveCount:  summary.DriveCount,
+	}
 }
 
 // carDisplayName 这台车的名字（简报标题要写清「谁的车」）。
@@ -146,7 +197,8 @@ func handleChargeBrief(w http.ResponseWriter, r *http.Request) {
 	if period == "" {
 		period = "7d"
 	}
-	if _, ok := chargeBriefPeriodLabel[period]; !ok {
+	spec, ok := chargeRangeSpecByKey(period)
+	if !ok {
 		writeErr(w, http.StatusBadRequest, "period 只能是 7d / 30d / month / all")
 		return
 	}
@@ -187,8 +239,35 @@ func handleChargeBrief(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "区间缺失")
 		return
 	}
+
+	// ── 能耗段（v0.115.1）：**与充电同一个窗口** ──────────────────
+	//
+	// ⚠️ 窗口**从充电段的区间借**（target.WindowStart）—— **不许在这里再算一次**
+	// （dayWindowStart / monthStart 只在 charge_stats.go 里出现）。
+	// ⇒ 否则同一段话里两个窗口 ⇒ 用户对不上账（ADR #38）。
+	//
+	// ⚠️ 聚合走 [statsBucketsForWindow]（用量页**同一个函数**）⇒ 两边不会各说各话。
+	var energy *ChargeBriefEnergy
+	energyNote := ""
+	// ⚠️ 「全部历史」这一档：桶数 = 0 ⇒ 它的边界是**数据自身首尾**（不是日历窗口）
+	// ⇒ /stats 没有对应档（period 只有 today / week / month / calendar_month / year）
+	// ⇒ **不并能耗段**。理由写在这里，**不塞进飞书正文**（啰嗦棘轮）。
+	if n := spec.bucketCount(loc, now); n == 0 {
+		energyNote = "这一档不并能耗段"
+	} else {
+		_, summary, err := statsBucketsForWindow(id, "day", n, tz, *target.WindowStart)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if energy = chargeBriefEnergyFromSummary(summary); energy == nil {
+			// 窗口内没有行驶 ⇒ **不给数**。
+			energyNote = "这个区间没有行驶记录。"
+		}
+	}
+
 	name := carDisplayName(id)
-	title, body := renderChargeBrief(loc, tz, name, target)
+	title, body := renderChargeBrief(loc, tz, name, target, energy, energyNote)
 	writeJSON(w, &ChargeBrief{
 		CarName:          name,
 		PeriodLabel:      chargeBriefPeriodLabel[period],
@@ -196,5 +275,7 @@ func handleChargeBrief(w http.ResponseWriter, r *http.Request) {
 		Title:            title,
 		Body:             body,
 		ChargeStatsRange: *target,
+		Energy:           energy,
+		EnergyNote:       energyNote,
 	})
 }
