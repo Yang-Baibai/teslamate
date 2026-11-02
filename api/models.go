@@ -955,6 +955,71 @@ type ChargeBrief struct {
 	// ⚠️ **不带 omitempty** ⇒ 这个键**恒在**（没有说明时是空串）——
 	// 客户端不必区分「键不存在」与「键是空的」。
 	EnergyNote string `json:"energy_note"`
+	// Battery 电池健康段（**当前 SOH% + 窗口内满充实测趋势**）。
+	//
+	// ⚠️ **v0.116.0 补记**：这一段里有**两个口径**，必须分开看：
+	//   · `soh_percent` 是**当前值**（最近一次满充实测 ÷ 出厂标称容量）⇒ **与窗口无关**；
+	//   · `full_count` / `first_kwh` / `last_kwh` 是**窗口内**严格档实测点。
+	// 为 nil 时看 [ChargeBrief.BatteryNote]。
+	Battery *ChargeBriefBattery `json:"battery"`
+	// BatteryNote 没有电池趋势段时的**一句话**说明（空 = 有趋势段）。
+	BatteryNote string `json:"battery_note"`
+}
+
+// ChargeBriefSegments 简报里那些**可能有、也可能没有**的段。
+//
+// ⚠️ 为什么用结构体而不是逐个参数：能耗段与电池段的载荷**都是指针**，
+// 逐个传（energy, energyNote, battery, batteryNote）时传错位置
+// **编译器不会报错** ⇒ 静默的错数据。用结构体 ⇒ 一眼看得见是哪一段。
+type ChargeBriefSegments struct {
+	// Energy 能耗段（nil = 没有）。
+	Energy *ChargeBriefEnergy
+	// EnergyNote 没有能耗段时的一句话说明。
+	EnergyNote string
+	// Battery 电池健康段（nil = 没有）。
+	Battery *ChargeBriefBattery
+	// BatteryNote 没有电池趋势段时的一句话说明。
+	BatteryNote string
+}
+
+// ChargeBriefBattery 简报的**电池健康段**（v0.116.0 补记）。
+//
+// ⚠️ **两个口径必须分开**（这一段最要紧的事实）：
+//
+//	· **当前 SOH%** —— 最近一次满充实测容量 ÷ 出厂标称可用容量
+//	  ⇒ 与简报窗口**无关**（换哪个窗口都是同一个数）。
+//	· **窗口内趋势** —— 窗口内那些**严格档**（真的充到 100%）的实测点
+//	  ⇒ 与窗口**有关**。
+//
+// 同一行里同时出现两个口径时，文案**必须写「当前」**
+// —— 否则用户会以为「近 30 天的 SOH 是 83%」，那是一个我们**没算过**的数。
+type ChargeBriefBattery struct {
+	// SohPercent 当前 SOH%（相对出厂可用容量）；没有出厂基准时为 null。
+	SohPercent *float64 `json:"soh_percent"`
+	// FullCount 窗口内**严格档**（充到 100%）满充实测的点数。
+	FullCount int `json:"full_count"`
+	// Windowed 这一段**有没有窗口**。
+	//
+	// ⚠️ 为什么要有这个标志：「全部历史」那一档**没有窗口**（边界是数据首尾），
+	// 而「有窗口但窗口内没有满充实测」是**另一件事** ——
+	// 两者都说成「本窗口没有满充实测」就是**编**（那一档压根没有「本窗口」）。
+	Windowed bool `json:"windowed"`
+	// FirstKwh / LastKwh 窗口内**最早 / 最晚**那次严格档满充实测的容量（度）。
+	//
+	// ⚠️ 这是**时间序**，不是趋势 —— 见 [ChargeBriefBattery.MinKwh] 的说明。
+	FirstKwh *float64 `json:"first_kwh"`
+	LastKwh  *float64 `json:"last_kwh"`
+	// MinKwh / MaxKwh 窗口内**所有**严格档实测容量的最小 / 最大值（度）。
+	//
+	// ⚠️ 为什么另存这两个：**范围**才是能如实报的东西。
+	// 「首 → 末」会被读成「电池变好了 / 变差了」——
+	// 而那个方向**不是结论**（严格档离散度 MAD/中位数 ≈ 0.59%，
+	// 窗口内首末差很可能只是测量噪声）⇒ 正文只报范围（ADR #46）。
+	MinKwh *float64 `json:"min_kwh"`
+	MaxKwh *float64 `json:"max_kwh"`
+	// FirstAt / LastAt 那两次实测的时刻。
+	FirstAt *time.Time `json:"first_at"`
+	LastAt  *time.Time `json:"last_at"`
 }
 
 // ChargeBriefEnergy 简报的能耗段（窗口与充电段完全相同）。

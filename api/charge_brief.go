@@ -65,10 +65,9 @@ func fmtKwh(v float64) string {
 // ⚠️ 时间一律按**服务器时区**渲染，并把时区名写进正文 ——
 // 用户拿手机上的时间对一遍才不会以为差了几小时（v0.98.0 的时区教训）。
 //
-// @param energy 能耗段（可为 nil ⇒ 看 [energyNote]）。
-// @param energyNote 没有能耗段时的**一句话**说明（空 = 有能耗段）。
+// @param seg 简报里的可选段（能耗段 / 电池健康段）；nil 等价于「一段都没有」。
 func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeStatsRange,
-	energy *ChargeBriefEnergy, energyNote string) (string, string) {
+	seg *ChargeBriefSegments) (string, string) {
 	label := chargeBriefPeriodLabel[r.Key]
 	if label == "" {
 		label = r.Key
@@ -130,6 +129,12 @@ func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeS
 	}
 
 	// ── 能耗段（v0.115.1）────────────────────────────────────
+	var energy *ChargeBriefEnergy
+	energyNote := ""
+	if seg != nil {
+		energy = seg.Energy
+		energyNote = seg.EnergyNote
+	}
 	if energy != nil {
 		line := fmt.Sprintf("能耗：行驶 %.1f 公里 · 用电 %s 度", energy.Km, fmtKwh(energy.KwhUsed))
 		if energy.KwhPer100Km != nil {
@@ -142,7 +147,120 @@ func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeS
 		// ⚠️ 只说**一句话**（用户真读的东西）；理由在代码注释里。
 		lines = append(lines, energyNote)
 	}
+
+	// ── 电池健康段（v0.116.0 补记）────────────────────────────
+	//
+	// ⚠️ 这一段里有**两个口径**：当前 SOH%（**窗口无关**）+ 窗口内满充实测趋势（**窗口有关**）
+	// ⇒ 文案里**必须**写「当前」，否则用户会以为那是「近 30 天的 SOH」
+	// —— 那是一个我们**没算过**的数（反幻觉）。
+	if seg != nil {
+		if line := renderBatteryBriefLine(seg.Battery); line != "" {
+			lines = append(lines, line)
+		}
+		if seg.BatteryNote != "" {
+			lines = append(lines, seg.BatteryNote)
+		}
+	}
 	return title, strings.Join(lines, "\n")
+}
+
+// renderBatteryBriefLine 渲染电池健康段那一行（纯函数）。
+//
+// ⚠️ **不给方向性结论**：窗口内首末两个实测值的差，可能只是**测量噪声**
+// （严格档离散度 MAD/中位数 ≈ 0.59%）⇒ 说「变好了 / 变差了」是编的。
+// 这里只如实报两个实测值（宁可少说，不多说）。
+func renderBatteryBriefLine(b *ChargeBriefBattery) string {
+	if b == nil {
+		return ""
+	}
+	parts := []string{}
+	if b.SohPercent != nil {
+		// ⚠️ 「当前」两个字**必须**有 —— 它标明这个数与窗口无关。
+		parts = append(parts, fmt.Sprintf("当前 %.1f%%", *b.SohPercent))
+	}
+	if b.FullCount > 0 && b.MinKwh != nil && b.MaxKwh != nil {
+		if b.FullCount == 1 {
+			// 一次实测 ⇒ 就一个数，不谈范围。
+			parts = append(parts, fmt.Sprintf("本窗口满充实测 1 次 %s 度", fmtKwh(*b.MinKwh)))
+		} else {
+			// ⚠️ **用「~」不用「→」** ——
+			// 「64.8 → 65.3」会被读成「电池变好了」，
+			// 而那个方向**不是结论**（严格档离散度 MAD/中位数 ≈ 0.59%
+			// ⇒ 窗口内首末差很可能只是测量噪声）⇒ 只报**范围**，不下方向性结论。
+			parts = append(parts, fmt.Sprintf("本窗口满充实测 %d 次 %s ~ %s 度",
+				b.FullCount, fmtKwh(*b.MinKwh), fmtKwh(*b.MaxKwh)))
+		}
+	} else if b.SohPercent != nil && b.Windowed {
+		// 窗口内没有充满过 ⇒ **不给趋势**，但**当前的 SOH 仍然要给**
+		//（它来自最近一次满充实测，与窗口无关）。
+		//
+		// ⚠️ 只在**有窗口**时说这句 —— 「全部历史」那一档压根没有「本窗口」，
+		// 说「本窗口没有满充实测」是编的。
+		parts = append(parts, "本窗口没有满充实测")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "电池健康：" + strings.Join(parts, " · ")
+}
+
+// chargeBriefBatteryFromHealth 从电池健康里取出简报的**电池段**（纯函数，可单测）。
+//
+// ⚠️ **窗口从充电区间借**（[ChargeStatsRange.WindowStart] / [WindowEnd]）——
+// **不许在这里再算一次**（dayWindowStart / monthStart 只在 charge_stats.go 里出现）
+// ⇒ 全篇仍然只有**一行**窗口。
+//
+// ⚠️ 窗口为 nil ⇒ **没有「窗口内」可言**（"全部历史"那一档的边界是**充电记录**的首尾，
+// 而电池曲线是**满充点**序列 ⇒ 两者边界语义不同）⇒ 只给「当前 SOH%」。
+func chargeBriefBatteryFromHealth(h *BatteryHealth, ws, we *time.Time) *ChargeBriefBattery {
+	if h == nil {
+		return nil
+	}
+	out := &ChargeBriefBattery{SohPercent: h.HealthPercent}
+	if ws == nil || we == nil {
+		// ⚠️ 没有窗口 ⇒ 这一段**只有当前值**，没有「窗口内」可言。
+		return out
+	}
+	out.Windowed = true
+	var first, last *BatteryPoint
+	for _, p := range h.Series {
+		// ⚠️ **严格档**：只取**真的充到 100%** 的点 ——
+		// 90~98% 的点是从 94% 线性外推到 100% 的，系统性偏高 0.56%（服务端自己写明）。
+		if p == nil || p.CapacityKwh == nil || p.EndSoc == nil || *p.EndSoc < 100 {
+			continue
+		}
+		if p.Date.Before(*ws) || p.Date.After(*we) {
+			continue
+		}
+		out.FullCount++
+		// ⚠️ 显式比时间，**不依赖序列顺序**（SQL 是 ORDER BY end_date，但别把正确性押在上面）。
+		if first == nil || p.Date.Before(first.Date) {
+			first = p
+		}
+		if last == nil || p.Date.After(last.Date) {
+			last = p
+		}
+		// 范围：窗口内**所有**实测点的最小 / 最大值（正文只报它，不报方向）。
+		if out.MinKwh == nil || *p.CapacityKwh < *out.MinKwh {
+			v := *p.CapacityKwh
+			out.MinKwh = &v
+		}
+		if out.MaxKwh == nil || *p.CapacityKwh > *out.MaxKwh {
+			v := *p.CapacityKwh
+			out.MaxKwh = &v
+		}
+	}
+	if first != nil {
+		out.FirstKwh = first.CapacityKwh
+		f := first.Date
+		out.FirstAt = &f
+	}
+	if last != nil {
+		out.LastKwh = last.CapacityKwh
+		l := last.Date
+		out.LastAt = &l
+	}
+	return out
 }
 
 // chargeBriefEnergyFromSummary 把用量页的**汇总**变成简报的**能耗段**（纯函数，可单测）。
@@ -266,8 +384,39 @@ func handleChargeBrief(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ── 电池健康段（v0.116.0 补记）────────────────────────────
+	//
+	// ⚠️ **SOH% 必须来自 [computeBatteryHealth]** —— 与 /battery 端点、
+	// MCP 的 teslamate_battery **是同一个数**（ADR #38），
+	// **绝不在简报里另算一套**。
+	health, err := computeBatteryHealth(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var battery *ChargeBriefBattery
+	batteryNote := ""
+	if n := spec.bucketCount(loc, now); n == 0 {
+		// 「全部历史」这一档：窗口边界 = **充电记录**的首尾，而电池曲线是
+		// **满充点**序列 ⇒ 两者边界语义不同（末场充电的 end_date 晚于它的
+		// start_date ⇒ 拿充电记录的末场当上界会误杀那一场）⇒ **不并趋势段**。
+		// 「当前 SOH%」与窗口无关 ⇒ 照给。
+		battery = chargeBriefBatteryFromHealth(health, nil, nil)
+		if battery != nil && battery.SohPercent != nil {
+			batteryNote = "这一档不并电池趋势段"
+		}
+	} else {
+		// ⚠️ 窗口**从充电区间借**（不许在这里再算一次）。
+		battery = chargeBriefBatteryFromHealth(health, target.WindowStart, target.WindowEnd)
+	}
+
 	name := carDisplayName(id)
-	title, body := renderChargeBrief(loc, tz, name, target, energy, energyNote)
+	title, body := renderChargeBrief(loc, tz, name, target, &ChargeBriefSegments{
+		Energy:      energy,
+		EnergyNote:  energyNote,
+		Battery:     battery,
+		BatteryNote: batteryNote,
+	})
 	writeJSON(w, &ChargeBrief{
 		CarName:          name,
 		PeriodLabel:      chargeBriefPeriodLabel[period],
@@ -277,5 +426,7 @@ func handleChargeBrief(w http.ResponseWriter, r *http.Request) {
 		ChargeStatsRange: *target,
 		Energy:           energy,
 		EnergyNote:       energyNote,
+		Battery:          battery,
+		BatteryNote:      batteryNote,
 	})
 }

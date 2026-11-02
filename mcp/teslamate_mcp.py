@@ -599,6 +599,29 @@ def teslamate_charge_brief(period: str = "7d") -> dict:
         note = data.get("energy_note")
         if note:
             out["能耗段说明"] = note
+    # ⚠️ **v0.116.0 补记**：电池健康段。
+    #
+    # ⚠️ **两个口径，别混**：
+    #   · 「电池健康·当前SOH%」= 最近一次满充实测 ÷ 出厂标称容量 ⇒ **与窗口无关**；
+    #   · 「电池趋势·…」 = **窗口内**严格档（真的充到 100%）的实测点。
+    # ⇒ 回答时**不要**把当前 SOH 说成「近 7 天的 SOH」——
+    #   那是一个我们**没算过**的数。
+    battery = data.get("battery")
+    if isinstance(battery, dict):
+        out["电池健康·当前SOH%"] = battery.get("soh_percent")
+        out["电池趋势·有窗口"] = battery.get("windowed")
+        out["电池趋势·窗口内满充实测次数"] = battery.get("full_count")
+        # ⚠️ **只给范围（最小 / 最大），不给「首 → 末」** ——
+        # 首末的方向会被读成「电池变好了」，而那不是结论
+        #（严格档离散度 ≈ 0.59% ⇒ 首末差可能只是测量噪声）。
+        out["电池趋势·窗口内容量最小(度)"] = battery.get("min_kwh")
+        out["电池趋势·窗口内容量最大(度)"] = battery.get("max_kwh")
+        out["电池趋势·窗口内首次实测"] = battery.get("first_at")
+        out["电池趋势·窗口内末次实测"] = battery.get("last_at")
+    else:
+        note = data.get("battery_note")
+        if note:
+            out["电池段说明"] = note
     return out
 
 

@@ -164,6 +164,12 @@ SPEC = [
     ("teslamate_charge_brief", {"period": "7d"}, "行驶里程km", "简报里的行驶里程"),
     ("teslamate_charge_brief", {"period": "7d"}, "用电(度)", "简报里的用电量"),
     ("teslamate_charge_brief", {"period": "7d"}, "平均能耗(kWh/100km)", "简报里的平均能耗"),
+    # ⚠️ **v0.116.0 补记**：电池健康段。
+    #
+    # ⚠️ 「当前 SOH%」在**没有出厂基准**（NOMINAL_BATTERY_KWH）时合法为 null
+    # ⇒ **不列进 SPEC**（SPEC 只断言必然存在的字段）；
+    #   它的**相等性**由 check_brief_battery_contract 单独断言。
+    ("teslamate_charge_brief", {"period": "7d"}, "电池趋势·窗口内满充实测次数", "简报里的窗口内满充实测次数"),
 ]
 
 
@@ -408,6 +414,44 @@ def check_brief_energy_contract() -> list:
     return bad
 
 
+def check_brief_battery_contract() -> list:
+    """简报的**电池段**必须与 /battery 端点**是同一个 SOH 数**。
+
+    ⚠️ 为什么比「有没有电池段」更重要：简报与电池页是**两个端点**
+    ⇒ SOH 一旦各算各的 ⇒ 飞书里说「电池 83%」而 App 上是 78%
+    ⇒ 用户以为数据在骗人（ADR #38：一个事实只能有一个说法）。
+
+    ⚠️ **口径必须分开**：「当前 SOH%」是**窗口无关**的
+    ⇒ 这里只断言它**等于** /battery 的 health_percent，
+    **不**断言它落在窗口内（那是一个我们没算过的数）。
+
+    ⚠️ 另外：正文里出现电池段时**必须**带「当前」二字
+    ⇒ 否则窗口无关的 SOH 被说成了窗口内的数（编口径）。
+    """
+    bad = []
+    try:
+        brief = T.teslamate_charge_brief("7d")
+        raw = T._get("/api/v1/cars/%s/battery" % T.CAR_ID)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(brief, dict) or "错误" in brief:
+        return ["充电简报取不到：%r" % (brief,)]
+    if not isinstance(raw, dict) or "error" in raw:
+        return ["电池健康取不到：%r" % (raw,)]
+    b = brief.get("电池健康·当前SOH%")
+    s = raw.get("health_percent")
+    if b is None or s is None:
+        bad.append("简报没有「电池健康·当前SOH%%」或 /battery 没有 health_percent（%r / %r）"
+                   % (b, s))
+    elif abs(float(b) - float(s)) > 0.01:
+        bad.append("简报的当前 SOH = %s，与 /battery 的 health_percent = %s 不一致 ⇒ 两个端点各算各的"
+                   % (b, s))
+    body = str(brief.get("正文") or "")
+    if "电池健康" in body and "电池健康：当前" not in body:
+        bad.append("简报正文里有电池段却没有「电池健康：当前」⇒ 窗口无关的 SOH 被说成了窗口内的")
+    return bad
+
+
 def check_feedback_items() -> list:
     """反馈**每一条**都必须带上「id / 时间 / 内容 / 状态」。
 
@@ -531,6 +575,14 @@ def main() -> int:
     if not energy_bad:
         print("  ✓ %-26s %-24s 能耗段与用量页汇总是同一个数" % ("teslamate_charge_brief", "能耗契约"))
     bad.extend(energy_bad)
+
+    battery_bad = check_brief_battery_contract()
+    for b in battery_bad:
+        print("  ✗ %s" % b)
+    if not battery_bad:
+        print("  ✓ %-26s %-24s 当前 SOH 与 /battery 是同一个数、正文标明「当前」"
+              % ("teslamate_charge_brief", "电池契约"))
+    bad.extend(battery_bad)
 
     fb_bad = check_feedback_items()
     for b in fb_bad:

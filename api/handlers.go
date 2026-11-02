@@ -1573,16 +1573,35 @@ func scanBucketAgg(sql string, carID int, granularity, tz string, windowStart ti
 	return out, rows.Err()
 }
 
+// handleBattery GET /api/v1/cars/{id}/battery —— 电池健康曲线 + 健康度。
+//
+// ⚠️ **v0.116.0 补记**：判定与算式都在 [computeBatteryHealth] 里 ——
+// 本端点与**充电简报的电池段**共用同一份计算 ⇒ 两处不会各说各话（ADR #38）。
 func handleBattery(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "car id 无效")
 		return
 	}
-	rows, err := db.Query(context.Background(), sqlBattery, id)
+	h, err := computeBatteryHealth(id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	writeJSON(w, h)
+}
+
+// computeBatteryHealth 算一份电池健康（**服务端唯一事实源**）。
+//
+// ⚠️ **v0.116.0 补记**：为什么把它从端点里抽出来 ——
+// 充电简报要并入「电池健康」段（定时任务使命 §2.2 的另一半），
+// 而简报里的「当前 SOH%」必须与 App 电池页 / MCP 的 teslamate_battery
+// **是同一个数** ⇒ 这里算一次，端点与简报都拿它，
+// **绝不在简报里另算一套**（ADR #38：同一事实只留一处）。
+func computeBatteryHealth(carID int) (*BatteryHealth, error) {
+	rows, err := db.Query(context.Background(), sqlBattery, carID)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	// ⚠️ **v0.50.0（第 29 轮崩溃与健壮性审计 P1-1）**：
@@ -1623,8 +1642,7 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		p := &BatteryPoint{}
 		if err := rows.Scan(&p.Date, &p.CapacityKwh, &p.RatedRangeKm, &p.EndSoc, &p.EfficiencyUsed, &p.OdometerKm,
 			&p.CapacityKwhEnergy, &p.OutsideTempAvg, &p.StartSoc, &p.DurationMin); err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, err
 		}
 		if p.CapacityKwh != nil {
 			if h.MaxCapacityKwh == nil || *p.CapacityKwh > *h.MaxCapacityKwh {
@@ -1814,7 +1832,7 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 	if h.NominalCapacityKwh != nil {
 		h.FactoryRatedRangeKm = factoryRatedRangeKm(*h.NominalCapacityKwh, scaleRatios)
 	}
-	writeJSON(w, h)
+	return h, nil
 }
 
 // ---------- 工具 ----------

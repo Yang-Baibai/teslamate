@@ -151,7 +151,7 @@ def go_struct_tags(src, name):
 
 
 server_tags = set()
-for name in ('ChargeBrief', 'ChargeBriefEnergy', 'ChargeStatsRange', 'ChargeStatsLastFull'):
+for name in ('ChargeBrief', 'ChargeBriefEnergy', 'ChargeBriefBattery', 'ChargeStatsRange', 'ChargeStatsLastFull'):
     t = go_struct_tags(models, name)
     if t is None:
         print('服务端找不到 type %s（api/models.go）' % name)
@@ -308,6 +308,86 @@ if problems:
 print('简报的能耗段：窗口借自充电区间、聚合走用量页同一个函数 ✔')
 PYEOF
 if [ $? -eq 0 ]; then ok "简报能耗段与充电段共用同一窗口/同一聚合"; else fail "简报的能耗/窗口契约"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 25：简报的**电池段**不许自己算 SOH、不许自己算窗口 ───────
+#
+# ⚠️ **v0.116.0 补记**
+#
+# 简报现在还讲**电池健康**，而电池健康有两个坑：
+#
+#  ① **SOH% 必须走同一份计算**（computeBatteryHealth）
+#     —— 不许在简报里另算一套（否则飞书里说 83%，App 上却是 78%）。
+#  ② **「当前 SOH%」是窗口无关的**，「窗口内趋势」才是窗口相关的
+#     ⇒ 趋势必须**借**充电段的窗口，不许自己再算一个。
+#  ③ 趋势只取**严格档**（真的充到 100%）的点 —— 90~98% 的点外推会偏高 0.56%。
+#  ④ 文案必须写「当前」 ⇒ 否则窗口无关的数被说成了窗口内的数。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+BRIEF = pathlib.Path('api/charge_brief.go')
+if not BRIEF.exists():
+    print('找不到 %s —— 这道闸门要跟着改' % BRIEF)
+    sys.exit(1)
+
+brief = BRIEF.read_text(encoding='utf-8', errors='replace')
+
+# ⚠️ **先剥掉 Go 的行注释**再查关键字 ——
+#    否则「注释里也写了 computeBatteryHealth」就会让闸门以为代码里还在用
+#    ⇒ 探针把代码改坏时闸门照样绿（**假绿**）。
+brief_code = re.sub(r'(?m)//.*$', '', brief)
+problems = []
+
+# ① SOH 必须来自 computeBatteryHealth（不许在简报里另算一套）。
+if 'computeBatteryHealth(' not in brief_code:
+    problems.append('api/charge_brief.go 没有调 computeBatteryHealth ⇒ 简报的 SOH 是另算的一套')
+
+# ② 电池趋势必须**借**充电段的窗口（起点 + 终点都要）。
+#    ⚠️ 匹配的是**调用处**：定义处的参数是 h *BatteryHealth，不会命中。
+#    ⚠️ 「全部历史」那一档**故意**传 nil（那一档没有窗口）⇒
+#       判据是「**至少有一个**调用借了窗口」，不是「每个调用都借」。
+calls = re.findall(r'chargeBriefBatteryFromHealth\(health([^)]*)\)', brief_code)
+if not calls:
+    problems.append('api/charge_brief.go 里找不到 chargeBriefBatteryFromHealth 的调用 ⇒ 电池段是怎么算的？')
+elif not any('target.WindowStart' in a and 'target.WindowEnd' in a for a in calls):
+    problems.append('电池趋势段没有借充电段的窗口（要 target.WindowStart + target.WindowEnd）⇒ 同一段话里两个窗口')
+
+# ③ 严格档判据 + 不许在这里另算 SOH。
+m = re.search(r'func\s+chargeBriefBatteryFromHealth\s*\([^)]*\)\s*\*ChargeBriefBattery\s*\{(.*?)\n\}', brief_code, re.S)
+if not m:
+    problems.append('取不到 chargeBriefBatteryFromHealth 的函数体 ⇒ 这道闸门要跟着改')
+else:
+    fn = m.group(1)
+    if 'EndSoc' not in fn or '100' not in fn:
+        problems.append('电池趋势段没有「严格档」判据（EndSoc / 100）⇒ 混进了没充满的点')
+    if 'NominalCapacityKwh' in fn:
+        problems.append('chargeBriefBatteryFromHealth 里出现了 NominalCapacityKwh ⇒ 它在另算 SOH（口径要只有一处）')
+
+# ④ 文案必须写「当前」（窗口无关的数不许被说成窗口内的）。
+if '当前' not in brief_code:
+    problems.append('简报里没有「当前」二字 ⇒ 窗口无关的 SOH 会被说成窗口内的数')
+
+# ⑤ 电池段**不许用箭头**：箭头 = 趋势符号，而我们**没下趋势结论**
+#    （严格档离散度 MAD/中位数 ≈ 0.59% ⇒ 窗口内首末差可能只是测量噪声）
+#    ⇒ 正文只报**范围**（min ~ max）。
+m3 = re.search(r'func\s+renderBatteryBriefLine\s*\([^)]*\)\s*string\s*\{(.*?)\n\}', brief_code, re.S)
+if not m3:
+    problems.append('取不到 renderBatteryBriefLine 的函数体 ⇒ 这道闸门要跟着改')
+else:
+    if '→' in m3.group(1):
+        problems.append('电池段里用了箭头（→）⇒ 那会被读成「电池变好了/变差了」，而我们没下这个结论')
+
+if problems:
+    print('简报的电池段契约破了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ SOH 走 computeBatteryHealth；趋势借充电段的窗口；只用严格档；文案写明「当前」')
+    sys.exit(1)
+
+print('简报的电池段：SOH 同一份计算 + 趋势借同一窗口 + 严格档 + 写明「当前」 ✔')
+PYEOF
+if [ $? -eq 0 ]; then ok "简报电池段与 /battery 同一份 SOH、趋势借同一窗口"; else fail "简报的电池段契约"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
