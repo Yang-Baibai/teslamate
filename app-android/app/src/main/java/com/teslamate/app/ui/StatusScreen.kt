@@ -918,7 +918,7 @@ private fun buildRangeModel(
             // 日期区间是**出处**，属于**口径说明** ⇒ 折进 ⓘ（见下面的 scopeNote）。
             //
             // ⚠️ 数据一点没丢：日期区间现在在 scopeNote 里（ⓘ 点开仍在原位展开）。
-            append("${m.sampleCount} 条实测")
+            append(rangeScopeText(m.sampleCount))
         }
     }
     val scopeNote = consumption?.let { m ->
@@ -1016,7 +1016,7 @@ private fun buildRangeModel(
             speedKph = refSpeed,
             outsideTempC = st.outside_temp,
         )?.let { (lo, hi) ->
-            "约 $lo ~ $hi 公里" to
+            rangeBandText(lo, hi) to
                 (consumption?.residualSamples?.takeIf { it > 0 }?.let {
                     "（模型残差 90 分位，样本为 $it 条 ≥100 公里行程）"
                 } ?: "（模型残差 90 分位）")
@@ -1202,11 +1202,33 @@ private fun RangeConclusions(model: RangeModel) {
             //    来源是 v0.26.0（新手分不清「实测」与「标称」）——
             //    但它们可以**并成一行**，**数据一点没丢**。
             model.band?.let { (txt, note) ->
-                TextWithNote(
-                    text = listOfNotNull(txt, model.scopeLine).joinToString(" · "),
-                    note = listOfNotNull(note, model.scopeNote).joinToString("；"),
-                    a11yLabel = "续航区间与实测样本的说明",
-                )
+                rangeConclusionText(txt, model.scopeLine)?.let { conclusion ->
+                    // ⚠️ **v0.114.0**：判定要用**生效**的字号
+                    //（`labelMedium` 的字号 × 系统字体倍率）⇒ 宽度预算才是真的。
+                    val fontSizeSp = MaterialTheme.typography.labelMedium.fontSize.value *
+                        LocalDensity.current.fontScale
+                    if (rangeConclusionNeedsSplit(conclusion, fontSizeSp)) {
+                        // 放不下 ⇒ **拆成完整短语各占一行**（ADR #42）：
+                        // 每块独立成 Text 节点 ⇒ 独立段落 ⇒ **没有内部断点**
+                        // ⇒ 「88 条实测」永远不会被劈成「88 条实」+「测」。
+                        TextWithNote(
+                            text = conclusion.parts[0],
+                            note = listOfNotNull(note, model.scopeNote).joinToString("；"),
+                            a11yLabel = "续航区间与实测样本的说明",
+                        )
+                        Text(
+                            conclusion.parts[1],
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        TextWithNote(
+                            text = conclusion.joined,
+                            note = listOfNotNull(note, model.scopeNote).joinToString("；"),
+                            a11yLabel = "续航区间与实测样本的说明",
+                        )
+                    }
+                }
             }
         }
         if (model.floorKm != null && model.trueRange != null) {

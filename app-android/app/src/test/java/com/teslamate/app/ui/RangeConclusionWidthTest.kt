@@ -1,6 +1,7 @@
 package com.teslamate.app.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -64,6 +65,85 @@ class RangeConclusionWidthTest {
             "结论行需要 %.0fdp（含 ⓘ 徽标），整宽只有 %.0fdp ⇒ 连整宽都放不下，得再想办法"
                 .format(needed, FULL_WIDTH_DP),
             needed <= FULL_WIDTH_DP,
+        )
+    }
+
+    // ── v0.114.0：大字号下**整宽也放不下** ⇒ 必须拆成完整短语 ──────────
+    //
+    // ⚠️ 旧断言只问「整宽放得下吗」（而且用的是 12sp 的旧默认字号）⇒
+    // **200% 下要 ≈400dp 这个事实从来没人钉过** ⇒
+    // 「88 条实测」被劈成「88 条实」+「测」那个坑（v0.94.0）在整宽布局里**又回来了**，
+    // 而单测是绿的。
+    //
+    // ⚠️ 这正是 v0.98.0 的教训：**只钉「有没有超过 N」⇒ 511 分钟也放行**。
+    // ⇒ 这里钉**具体数值**。
+
+    /** 200% 字号下整宽**放不下**（钉具体数值）。 */
+    @Test
+    fun `200 字号下整宽也放不下结论行`() {
+        val text = rangeConclusionText(rangeBandText(191, 249), rangeScopeText(88))!!
+        val needed = rangeConclusionNeededDp(text.joined, RANGE_CONCLUSION_SP * 2f)
+        assertTrue(
+            "200%% 字号下结论行需要 %.0fdp，整宽只有 %.0fdp ⇒ 必须拆行（不然「88 条实测」会被劈开）"
+                .format(needed, FULL_WIDTH_DP),
+            needed > FULL_WIDTH_DP,
+        )
+    }
+
+    /** 正常字号下**不拆** —— 现在的样子（区间与来源并成一行）保持不变。 */
+    @Test
+    fun `正常字号下不拆行`() {
+        val text = rangeConclusionText(rangeBandText(191, 249), rangeScopeText(88))!!
+        assertFalse(
+            "正常字号下不该拆行（并成一行才是现在的样子）",
+            rangeConclusionNeedsSplit(text, RANGE_CONCLUSION_SP),
+        )
+    }
+
+    /** 大字号下**要拆**，且拆开的两块**每一块都放得下** ⇒ 拆完不会再折行。 */
+    @Test
+    fun `大字号下拆行且每块都放得下`() {
+        val text = rangeConclusionText(rangeBandText(191, 249), rangeScopeText(88))!!
+        val fs = RANGE_CONCLUSION_SP * 2f
+        assertTrue("200% 字号下应该拆行", rangeConclusionNeedsSplit(text, fs))
+        assertEquals("拆成两块：区间 + 来源自曝", 2, text.parts.size)
+        for (p in text.parts) {
+            val need = rangeConclusionPartNeededDp(p, fs)
+            assertTrue(
+                "拆开后的「%s」需要 %.0fdp > %.0fdp ⇒ 它自己还会被折行（那就没解决）"
+                    .format(p.replace(NBSP, " "), need, FULL_WIDTH_DP),
+                need <= FULL_WIDTH_DP,
+            )
+        }
+    }
+
+    /** 拆开的两块**都是完整短语**（不是半句话）。 */
+    @Test
+    fun `拆开的两块都是完整短语`() {
+        val text = rangeConclusionText(rangeBandText(191, 249), rangeScopeText(88))!!
+        assertEquals(
+            listOf("约 191 ~ 249 公里", "88 条实测"),
+            text.parts.map { it.replace(NBSP, " ") },
+        )
+    }
+
+    /** 文案**逐字不变**：不换行空格渲染出来就是一个空格 ⇒ 可见文字与改造前完全一致。 */
+    @Test
+    fun `文案逐字不变`() {
+        assertEquals("约 191 ~ 249 公里", rangeBandText(191, 249).replace(NBSP, " "))
+        assertEquals("88 条实测", rangeScopeText(88).replace(NBSP, " "))
+    }
+
+    /** 数与单位之间**必须**用不换行空格绑住（ADR #42 第三条）。 */
+    @Test
+    fun `数与单位之间用不换行空格绑住`() {
+        assertTrue(
+            "区间文案里「249」与「公里」之间必须是不换行空格",
+            rangeBandText(191, 249).contains("249${NBSP}公里"),
+        )
+        assertTrue(
+            "来源文案里「88」与「条」之间必须是不换行空格",
+            rangeScopeText(88).contains("88${NBSP}条"),
         )
     }
 }
