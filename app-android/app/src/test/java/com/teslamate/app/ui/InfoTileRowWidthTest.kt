@@ -15,10 +15,12 @@ import org.junit.Test
  * | 行 | 格数 | 内容区 | 每格文字区 | 最宽的值 | 100% | 200% |
  * |---|---|---|---|---|---|---|
  * | 页面级（空调 / 车内温度、车外温度 / 功率） | 2 | 328dp | **130dp** | 「31.5°C」 | 69.19dp ✓ | **138.38dp ✗** |
- * | 卡片里（充到 / 当时上限 / 充入） | 3 | 296dp | **64dp** | 「12.3 度」 | 63.07dp ✓ | **126.14dp ✗** |
+ * | 卡片里（**v0.118.0 起两段**） | 2 + 1 | 296dp | **115dp + 268dp** | 「100.0 度」 | 73.61dp ✓ | 147.22dp ✓ |
  *
- * ⚠️ **三格那一行在 100% 下只剩 1dp 余量** ⇒ 110% 就开始坏（Android 的「大字体」档）
- * ⇒ 这不是「只有 200% 才坏」的问题。
+ * ⚠️ **v0.118.0**：卡片里那一行（充到 / 当时上限 / 充入）原来也是**三格并排**
+ * （每格只有 64dp）⇒ 而「充入」是**度数**：「100.0 度」= **73.61dp** ⇒ **100% 下就放不下**
+ * ⇒ 现在「充到 / 当时上限」并排（115dp）＋「充入」独占一行整宽（268dp）
+ * ⇒ **卡片里再没有三格并排的行** ⇒ 也不会再有「0.93dp 余量上走钢丝」的排布。
  *
  * ⚠️ **字号口径**：值用 `titleMedium` = **17sp**、标签用 `labelMedium` = **13sp**
  * （App 覆盖了整套排版，`ui/Theme.kt`；⚠️ 别拿 M3 默认值算）。
@@ -29,9 +31,16 @@ class InfoTileRowWidthTest {
     private val pageTitles = listOf("空调", "车内温度")
     private val pageValues = listOf("开启", "31.5°C")
 
-    /** 卡片里那一行（充到 / 当时上限 / 充入）。 */
-    private val cardTitles = listOf("充到", "当时上限", "充入")
-    private val cardValues = listOf("80%", "80%", "12.3 度")
+    /**
+     * ⚠️ **v0.118.0**：卡片里那一行现在分成**两段** ——
+     * 「充到 / 当时上限」并排一行（每格 **115dp**）＋「充入」独占一行整宽（**268dp**）。
+     */
+    private val cardPairTitles = listOf("充到", "当时上限")
+    private val cardPairValues = listOf("100%", "80%")
+
+    /** 卡片里那两格并排时的文字区（dp）：(296 − 10) ÷ 2 − 28。 */
+    private val cardPairTextDp =
+        (INFO_TILE_CARD_CONTENT_DP - INFO_TILE_GAP_CARD_DP) / 2 - INFO_TILE_PADDING_H_DP
 
     /**
      * 正常字号下**并排** —— 视觉与改之前一模一样。
@@ -44,49 +53,60 @@ class InfoTileRowWidthTest {
             infoTileColumns(pageTitles, pageValues, 1.0f, INFO_TILE_PAGE_CONTENT_DP, INFO_TILE_GAP_PAGE_DP),
         )
         assertEquals(
-            "卡片里那三格在 100%% 下不该拆成单列（视觉会变）",
-            3,
-            infoTileColumns(cardTitles, cardValues, 1.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+            "卡片里那两格（充到 / 当时上限）在 100%% 下不该拆成单列（视觉会变）",
+            2,
+            infoTileColumns(cardPairTitles, cardPairValues, 1.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
         )
     }
 
     /**
-     * 200% 字号下**必须单列**（每格独占整宽）。
+     * 200% 字号下：页面级那两格**必须单列**，而卡片里那两格（v0.118.0 起）**仍并排**。
      *
-     * ⚠️ 页面级：「31.5°C」要 **138.38dp** > 130dp；
-     * ⚠️ 卡片里：「12.3 度」要 **126.14dp** > 64dp。
+     * ⚠️ 页面级：「31.5°C」要 **138.38dp** > 130dp ⇒ 单列；
+     * ⚠️ 卡片里：「当时上限」标签在 200% 下要 **104dp** ≤ 115dp ⇒ 并排放得下。
      */
     @Test
-    fun `两倍字号下必须单列`() {
+    fun `两倍字号下页面级单列而卡片里那两格仍并排`() {
         assertEquals(
             "200%% 下「31.5°C」放不下 130dp ⇒ 必须单列",
             1,
             infoTileColumns(pageTitles, pageValues, 2.0f, INFO_TILE_PAGE_CONTENT_DP, INFO_TILE_GAP_PAGE_DP),
         )
         assertEquals(
-            "200%% 下「12.3 度」放不下 64dp ⇒ 必须单列",
-            1,
-            infoTileColumns(cardTitles, cardValues, 2.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+            "200%% 下标签「当时上限」要 104dp ≤ 115dp ⇒ 仍并排",
+            2,
+            infoTileColumns(cardPairTitles, cardPairValues, 2.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
         )
     }
 
     /**
-     * ⚠️ **卡片里那三格在 110% 就开始坏**（不是只有 200% 才坏）。
+     * ⚠️ **v0.118.0**：「充入」独占一行整宽（268dp）⇒ 一次充 100 度也放得下。
      *
-     * 「12.3 度」在 100% 下要 63.07dp，而每格文字区只有 **64dp** ⇒ 只剩 0.93dp 余量
-     * ⇒ 110% 时 69.4dp > 64dp ⇒ 必须单列。
+     * ⚠️ **历史（已弃用的三格排布）**：每格只有 64dp，
+     * 而「100.0 度」= **73.61dp** ⇒ **100% 下就放不下** ⇒ 整行会塌成三行单列
+     * ⇒ 这正是「充入」必须独占一行的理由（下面把它钉住）。
      */
     @Test
-    fun `卡片里那三格在110就开始坏`() {
-        assertEquals(
-            "100%% 下三格必须还并排（只剩 1dp 余量，但放得下）",
-            3,
-            infoTileColumns(cardTitles, cardValues, 1.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+    fun `充入独占一行所以100度也放得下`() {
+        val wide = "100.0" + NBSP + "度"
+        val textDp = INFO_TILE_CARD_CONTENT_DP - INFO_TILE_PADDING_H_DP
+        // ⚠️ **钉死具体数值**，别只写「放得下」—— 整宽有 268dp，
+        //    任何像样的字符串都放得下 ⇒ 「放得下」这条断言**近乎恒真**（什么也没测到）。
+        assertEquals("「100.0 度」@17sp 的宽度（估算器）", 73.61f, infoTileValueNeededDp(wide, 1.0f), 0.01f)
+        assertEquals("「100.0 度」在 200% 下的宽度", 147.22f, infoTileValueNeededDp(wide, 2.0f), 0.01f)
+        assertTrue(
+            "整宽文字区 %.0fdp ⇒ 200%% 下 147.2dp 放得下（这是「独占一行」的意义）".format(textDp),
+            infoTileValueNeededDp(wide, 2.0f) <= textDp,
         )
+        // ⚠️ 已弃用的三格排布：100% 下就放不下 ⇒ 必须拆行（这就是 v0.118.0 的理由）
         assertEquals(
-            "110%% 下「12.3 度」要 69.4dp > 64dp ⇒ 必须单列",
+            "三格并排（已弃用）在 100%% 下放不下「100.0 度」⇒ 整行会塌成三行",
             1,
-            infoTileColumns(cardTitles, cardValues, 1.1f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+            infoTileColumns(
+                listOf("充到", "当时上限", "充入"),
+                listOf("100%", "80%", wide),
+                1.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP,
+            ),
         )
     }
 
@@ -150,8 +170,8 @@ class InfoTileRowWidthTest {
             needed <= INFO_TILE_CARD_CONTENT_DP - INFO_TILE_PADDING_H_DP,
         )
         assertTrue(
-            "标签在 100%% 下（并排）也要放得下",
-            infoTileTitleNeededDp("当时上限", 1.0f) <= 64f,
+            "标签在 100%% 下（并排）也要放得下（v0.118.0 起那行是两格，预算 115dp）",
+            infoTileTitleNeededDp("当时上限", 1.0f) <= cardPairTextDp,
         )
     }
 

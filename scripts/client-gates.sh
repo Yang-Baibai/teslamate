@@ -2820,6 +2820,20 @@ if 'InfoTileRow(listOf("当前电量"' not in screen:
 if not re.search(r'listOf\(\s*"功率" to .*?"已充入" to', screen, re.S):
     problems.append('「功率」与「已充入」不在同一个 listOf 里 ⇒ 「充电中」那行不是两格并排')
 
+# ②‴ 「充电结论」那一行必须是**「充到 / 当时上限」并排 + 「充入」独占一行**（v0.118.0）
+#
+# ⚠️ 「充入」的值是**度数**（「12.9 度」= 63.07dp /「100.0 度」= **73.61dp**）
+# ⇒ 三等分（每格只有 64dp）时，**充得多就放不下**
+# ⇒ 整行塌成三行单列 ⇒ 那张卡比预期高 3 倍（v0.115.0 的副作用，与「充电中」同一类）。
+if not re.search(r'InfoTileRow\(\s*listOf\("充入"', screen):
+    problems.append('「充入」没有独占一行（InfoTileRow(listOf("充入"…)）'
+                    ' ⇒ 三格并排时每格只有 64dp，「100.0 度」= 73.61dp ⇒ 放不下 ⇒ 整行塌成三行')
+if re.search(r'listOf\([^)]*充入[^)]*当时上限', screen):
+    problems.append('「充入」与「当时上限」在同一个 listOf 里 ⇒ 「充入」没有独占一行')
+for label in ('充到', '当时上限', '充入'):
+    if ('"%s" to ' % label) not in screen:
+        problems.append('「%s」那一格不见了（v0.118.0：充到 / 当时上限并排一行，充入独占一行）' % label)
+
 # ③ 判定必须是宽度驱动的
 if 'fun infoTileColumns(' not in row:
     problems.append('InfoTileRow.kt 里找不到 fun infoTileColumns( —— 规则搬家了？')

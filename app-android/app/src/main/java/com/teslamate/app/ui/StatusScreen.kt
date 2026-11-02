@@ -2229,10 +2229,16 @@ private fun ChargeOutcomeCard(oc: com.teslamate.app.ChargeOutcome) {
                 fontWeight = FontWeight.Bold,
                 color = accents.warnAmberText,
             )
-            // ⚠️ **v0.115.0**：这三格原来**并排写死** ⇒ 每格文字区只有 **64dp**
-            // （卡片内容区 296dp ÷ 3 − 内边距 28dp），而「12.3 度」在 100% 下就要 **63.07dp**
-            // ⇒ **只剩 1dp 余量** ⇒ **110% 就开始坏**（Android 的「大字体」档）。
-            // ⇒ 现在**列数由宽度预算决定**（`InfoTileRow`）：放得下并排，放不下单列。
+            // ⚠️ **v0.118.0**：这一行原来**三格并排**（充到 / 当时上限 / 充入），
+            // 每格文字区只有 **64dp**（卡片内容区 296dp ÷ 3 − 内边距 28dp）
+            // ⇒ 而「充入」的值是**度数**（「12.9 度」= 63.07dp /「100.0 度」= **73.61dp**）
+            // ⇒ 一次充得多（≥ 100 度）就**放不下** ⇒ 整行塌成三行单列
+            // ⇒ 那张卡比预期高 3 倍（与「充电中」那一行同源 ⇒ ADR #45 的模式）。
+            //
+            // ⇒ 现在：「充到」与「当时上限」（有则）并排一行（每格 **115dp**）
+            //   ＋「充入」独占一行整宽（**268dp**）
+            // ⇒ 100% 与 200% 都放得下（充入在 200% 下要 147.22dp ≤ 268dp）
+            // ⇒ **卡片高度不再随数据跳**（充入 12.9 度还是 100.0 度都是两行）。
             val outcomeTiles = mutableListOf(
                 "充到" to (oc.end_soc?.let { "$it%" } ?: "—"),
             )
@@ -2246,8 +2252,13 @@ private fun ChargeOutcomeCard(oc: com.teslamate.app.ChargeOutcome) {
             oc.session_limit_soc?.let { lim ->
                 outcomeTiles += "当时上限" to "$lim%"
             }
-            outcomeTiles += "充入" to infoTileKwhValue(oc.energy_added_kwh)
+            // 「充到」与「当时上限」并排：两个都是百分比（值 ≤ 41dp、标签 ≤ 52dp）
+            // ⇒ 115dp 绰绰有余 ⇒ 这一行**永远**并排（200% 下标签要 104dp，仍放得下）。
             InfoTileRow(outcomeTiles, gapDp = 10.dp)
+            Spacer(Modifier.height(8.dp))
+            // ⚠️ **v0.118.0**：「充入」**独占一行整宽** —— 它是这一行最宽的一格（度数）
+            // ⇒ 整宽（268dp）才装得下「100.0 度」⇒ 数字永远不会被折行/裁切。
+            InfoTileRow(listOf("充入" to infoTileKwhValue(oc.energy_added_kwh)))
         }
     }
 }
