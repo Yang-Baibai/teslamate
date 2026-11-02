@@ -129,6 +129,27 @@
   但「新增一个带括号的 description」必须**同时**决定它是**单位**还是**后果**
   （白名单外一律当后果）⇒ 新增动作时要多想一步。
 
+### #40 的代价
+
+- **「month」这个词在仓库里有**两个意思**，照抄会写出口径错乱的简报**：
+
+  | 地方 | key | 窗口 |
+  |---|---|---|
+  | `/stats`（用量页 / 汇总卡） | `period=month` | **滚动 30 天**（`dayWindowStart`）|
+  | `/stats`（用量页「本月」） | `period=calendar_month` | **自然月**（`monthStart`）|
+  | `/charge_stats` / `/charge_brief` | `month` | **自然月**（`calendarMonth: true`）|
+
+  ⇒ ⚠️ **`/stats?period=month` 不是自然月** —— 它**就是**「近 30 天」
+  （`api/handlers.go`：`case "month": buckets = 30`；自然月是 `case "calendar_month"`）。
+  ⇒ 简报要加「能耗」那半时的 **period 映射**（同一个档位必须是同一个窗口）：
+  `7d → week`、`30d → month`、**`month（本月）→ calendar_month`**、`all → 无对应（要自己聚合）`。
+  ⇒ 配错的后果：简报「本月」那一档的**充电是自然月、能耗却是滚动 30 天**
+  ⇒ 同一段文字里两个口径（正是 ADR #40 要防的那件事，只是方向反了）。
+- **窗口必须同源**：能耗那半要用**简报自己的窗口起点**（`dayWindowStart` / `monthStart`），
+  不另起一套 ⇒ 与充电那半**同函数、同起止、同时区**。
+- **纯服务端改动 ⇒ 不动 `versionCode`**（App 的更新判定是 `remote > 本地 code`，
+  动了会误报「有新版本」）；版本名可以动，但**版本说明只有下一次动 App 时才被用户看到**。
+
 ### #41 的代价
 
 - **多了一个服务端端点**（`/api/v1/cars/{id}/charge_brief`）：
