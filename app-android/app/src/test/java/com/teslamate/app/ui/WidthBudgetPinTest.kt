@@ -51,5 +51,23 @@ class WidthBudgetPinTest {
         assertEquals(379.86f, estimateTextWidthDpWithNbsp(concl, 26f), 0.01f)
         // 车控最长标签「方向盘加热开关」@15sp ⇒ 105.00dp（200% ⇒ 210.00dp）
         assertEquals(105.00f, estimateTextWidthDpWithNbsp("方向盘加热开关", 15f), 0.01f)
+
+        // ⚠️ **v0.118.0**：下面这几条是「把文档里没核过的宽度数字补核完」的结果 ——
+        // **宽度数字必须连「口径」一起记**：同一个字符串，乐观口径（NBSP 按 0.30em）
+        // 与保守口径（NBSP 按 1.0em）能差 30dp+ ⇒ 只写一个数不说口径 ⇒ 后人会当成同一个数。
+        // 「100.0 度」@17sp ⇒ 73.61dp（没有不换行空格 ⇒ 两套口径同值）
+        assertEquals(73.61f, estimateTextWidthDpWithNbsp("100.0 度", 17f), 0.01f)
+        // 「近 7 天 243.3 公里 · 4 天有行程」@15sp ⇒ 乐观 230.55dp / 保守 262.05dp
+        //   （3 个不换行空格 × 0.70em × 15sp = 31.5dp ⇒ 两套口径差这么多）
+        val weekLong = "近" + NBSP + "7" + NBSP + "天 243.3" + NBSP + "公里 · 4 天有行程"
+        assertEquals(230.55f, estimateTextWidthDpWithNbsp(weekLong, 15f), 0.01f)
+        assertEquals(262.05f, estimateTextWidthDp(weekLong, 15f), 0.01f)
+        // 「今天 4.4 公里 · 15 分钟」@15sp ⇒ 乐观 172.95dp / 保守 193.95dp（2 个不换行空格）
+        assertEquals(193.95f, estimateTextWidthDp(today, 15f), 0.01f)
+        // 「17.4 kWh/100km」@13sp ⇒ 乐观 109.46dp / 保守 118.56dp
+        //   （v0.115.0 段那张表写的 119dp = 保守口径的取整 ⇒ 不是手算错，是口径不同）
+        val kwh100 = "17.4" + NBSP + "kWh/100km"
+        assertEquals(109.46f, estimateTextWidthDpWithNbsp(kwh100, 13f), 0.01f)
+        assertEquals(118.56f, estimateTextWidthDp(kwh100, 13f), 0.01f)
     }
 }
