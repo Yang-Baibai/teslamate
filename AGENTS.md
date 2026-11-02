@@ -108,3 +108,9 @@ bash scripts/server-gates.sh && bash scripts/client-gates.sh && bash scripts/smo
 
 ⚠️ 改完记得同步 `scripts/release.sh` 的版本号与 `.env` 的 `APP_VERSION_*`
 （客户端闸门会校验 **APK 的 versionCode 与服务端通告一致**）。
+
+⚠️ **纯服务端发布（App 零改动 ⇒ versionCode 不动）的版本说明，用户永远看不到**：
+App 的更新提示按 **versionCode** 比较 ⇒ 手机上停在 120 时，下一个动 App 的版本（121）
+会**直接跳过** 0.111.0 那条说明 ⇒ **纯服务端新增的功能，要在下一次动 App 时把说明补一句**，
+否则那个功能上线了但用户不知道有。
+（2026-11-02 实况：v0.111.0 是纯服务端发布 ⇒ 已把「充电简报自动推飞书」并进 v0.112.0 的说明。）
