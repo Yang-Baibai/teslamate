@@ -1,22 +1,19 @@
 package com.teslamate.app.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.teslamate.app.Drive
 import com.teslamate.app.ServerZone
-import com.teslamate.app.fmt
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -159,6 +156,11 @@ fun driveDaysInWindow(
 /**
  * ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-1）**：车况页的「今天 / 近 7 天」一行。
  *
+ * ⚠️ **v0.112.0**：这两段原来**并排**放着，而它们加起来要 ≈404dp、
+ * 车况页内容区只有 328~361dp ⇒ **连 100% 字号都放不下** ⇒ 后一段被折行劈开
+ * （「4 天有行程」变成「4 天」+「有行程」）。
+ * 现在**每段独占一行**，段内放不下就拆成完整短语（详见 [usageTodayLine]）。
+ *
  * 文案（逐字）：
  * - 有行驶：`今天 4.4 公里 · 15 分钟` + `近 7 天 243.3 公里 · 4 天有行程`
  * - 零行驶：`今天还没开车` + `近 7 天 243.3 公里 · 4 天有行程`
@@ -174,30 +176,40 @@ fun driveDaysInWindow(
  */
 @Composable
 fun TodayWeekRow(summary: UsageSummary, modifier: Modifier = Modifier) {
-    val todayTxt = if (summary.hasToday) {
-        "今天 " + summary.todayKm.fmt(1) + " 公里 · " + summary.todayMinutes + " 分钟"
-    } else {
-        "今天还没开车"
+    // ⚠️ 判定要用**生效**的字号（15sp × 字体倍率）⇒ 宽度预算才是真的。
+    val fontSizeSp = USAGE_BODY_MEDIUM_SP * LocalDensity.current.fontScale
+    Column(
+        modifier.fillMaxWidth().padding(vertical = 6.dp),
+        // ⚠️ 2dp：段内拆行时用同一个间距 ⇒ 拆出来的几行仍读作一组。
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        UsageSummaryText(usageTodayLine(summary), fontSizeSp, emphasis = true)
+        UsageSummaryText(usageWeekLine(summary), fontSizeSp, emphasis = false)
     }
-    val weekTxt = if (summary.weekTrips > 0) {
-        "近 7 天 " + summary.weekKm.fmt(1) + " 公里 · " + summary.weekDays + " 天有行程"
-    } else {
-        "近 7 天还没有行程"
-    }
-    Column(modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                todayTxt,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                weekTxt,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+}
+
+/**
+ * 一条摘要的渲染：**放得下就整句一行，放不下就拆成完整短语各占一行**。
+ *
+ * ⚠️ 拆行时**不渲染「 · 」** —— 分隔符只在「同排」时才有意义；
+ * 两块各占一行时它会变成一个孤零零的尾巴（比劈开句子轻，但仍然是瑕疵）。
+ *
+ * ⚠️ 拆开后的每一块都是**完整短语**（独立 Text 节点 ⇒ 独立段落 ⇒ 没有内部断点）
+ * ⇒ 「4 天有行程」这种词组永远不会被劈开。
+ */
+@Composable
+private fun UsageSummaryText(line: UsageLine, fontSizeSp: Float, emphasis: Boolean) {
+    val parts = if (usageLineNeedsSplit(line, fontSizeSp)) line.parts else listOf(line.joined)
+    for (part in parts) {
+        Text(
+            part,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (emphasis) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (emphasis) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
     }
 }

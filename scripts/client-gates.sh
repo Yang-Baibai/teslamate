@@ -2472,6 +2472,100 @@ PYEOF
 if [ $? -eq 0 ]; then ok "MCP 与服务端的键名一致（且返回带窗口边界）"; else fail "MCP 与服务端的键名"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 23：车况页「今天 / 近 7 天」不许再并排 + 拆行必须宽度驱动 ──────
+#
+# ⚠️ **v0.112.0**
+#
+# 这一行原来把两段**并排**放着（Row + 12dp 间距）：
+#   「今天 4.4 公里 · 15 分钟」 ＋ 「近 7 天 243.3 公里 · 4 天有行程」
+# 两段加起来要 ≈404dp，而车况页内容区只有 328~361dp
+# ⇒ **连 100% 字号都放不下** ⇒ 后一段被折行劈开
+#    （「4 天有行程」变成「4 天」+「有行程」＝半个句子）。
+#
+# ⇒ 这道闸门钉**结构**（不是文案）：
+#   ① TodayWeekRow.kt 里**不许再出现 Row(** ⇒ 两段不许并排；
+#   ② 必须调用 usageLineNeedsSplit( ⇒ 拆行是**宽度驱动**的，不许写死；
+#   ③ 必须调用 usageTodayLine( / usageWeekLine( ⇒ 文案只有一个事实源；
+#   ④ 「数 + 单位」之间必须是不换行空格（NBSP）
+#      —— 普通空格 ⇒ 200% 字号下「4.4」和「公里」会被折行拆开；
+#   ⑤ 宽度预算 USAGE_ROW_CONTENT_DP 必须 = 328f
+#      ⇒ 不许改小预算来把「放不下」藏起来。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui')
+ROW = UI / 'TodayWeekRow.kt'
+MET = UI / 'UsageMetrics.kt'
+for p in (ROW, MET):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace')
+
+
+def strip_kt_comments(src):
+    """剥掉 Kotlin 注释 —— 说明文字里提到被禁的写法不算违规（否则假红）。"""
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    src = re.sub(r'//[^\n]*', '', src)
+    return src
+
+
+row = strip_kt_comments(read(ROW))
+met = strip_kt_comments(read(MET))
+
+problems = []
+
+# ① 不许再并排
+if re.search(r'\bRow\s*\(', row):
+    problems.append('TodayWeekRow.kt 里还有 Row( ⇒ 两段又并排了 ⇒ '
+                    '它们加起来放不下（≈404dp > 328~361dp）⇒ 又会被折行劈开')
+
+# ② 拆行必须宽度驱动
+if 'usageLineNeedsSplit(' not in row:
+    problems.append('TodayWeekRow.kt 没有调用 usageLineNeedsSplit( ⇒ '
+                    '拆行被写死了 ⇒ 改字号 / 改文案就会漏判')
+
+# ③ 文案只有一个事实源
+for fn in ('usageTodayLine(', 'usageWeekLine('):
+    if fn not in row:
+        problems.append('TodayWeekRow.kt 没有调用 %s ⇒ 文案被抄到界面里了（会有两份说法）' % fn)
+
+# ④ 数与单位之间必须是不换行空格 —— **每一处**都要。
+#    ⚠️ **只查「文件里有没有出现过 NBSP」是不够的**：
+#    负向探针把**其中一处**换成普通空格，闸门照样绿（另一处还在）⇒ **假绿**。
+#    ⇒ 改成**逐处**检查：每个单位的**前一个字符**都必须是不换行空格。
+for unit in ('公里', '分钟', '天有行程'):
+    for mm in re.finditer(re.escape(unit), met):
+        prefix = met[max(0, mm.start() - 8):mm.start()]
+        if not prefix.endswith('${NBSP}'):
+            problems.append('UsageMetrics.kt 里「%s」前面是普通空格（%r）⇒ '
+                            '200%% 字号下数与单位会被折行拆开'
+                            % (unit, prefix))
+
+# ⑤ 宽度预算不许被改小
+m = re.search(r'USAGE_ROW_CONTENT_DP\s*=\s*([0-9.]+)f', met)
+if not m:
+    problems.append('UsageMetrics.kt 里找不到 USAGE_ROW_CONTENT_DP ⇒ 这道闸门要跟着改')
+elif abs(float(m.group(1)) - 328.0) > 0.01:
+    problems.append('USAGE_ROW_CONTENT_DP = %s，应为 328（360dp 窄屏 − 页面 32dp 内边距）'
+                    '⇒ 改小预算就把「放不下」藏起来了' % m.group(1))
+
+if problems:
+    print('「今天 / 近 7 天」这一行的结构被改坏了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 两段各占一行；放不下就按宽度拆成完整短语；数与单位用不换行空格绑住')
+    sys.exit(1)
+
+print('「今天 / 近 7 天」两段各占一行、宽度驱动拆行、数与单位绑在不换行空格上（预算 328dp）')
+PYEOF
+if [ $? -eq 0 ]; then ok "「今天 / 近 7 天」不许并排 + 宽度驱动拆行"; else fail "「今天 / 近 7 天」的结构"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
