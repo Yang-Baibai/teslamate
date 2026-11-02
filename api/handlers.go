@@ -497,25 +497,49 @@ func handleDrives(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	list := []*Drive{}
 	for rows.Next() {
-		var d Drive
-		if err := rows.Scan(
-			&d.ID, &d.StartDate, &d.EndDate, &d.DurationMin, &d.Distance,
-			&d.StartPlace, &d.EndPlace, &d.StartPlaceKey, &d.EndPlaceKey,
-			&d.StartSoc, &d.EndSoc,
-			&d.EnergyKwh, &d.WhPerKm, &d.SpeedMax, &d.OutsideTemp, &d.OdoStart, &d.OdoEnd,
-			&d.AvgSpeedKph, &d.AscentM, &d.DescentM, &d.InsideTempAvg,
-			&d.PowerMaxKw, &d.PowerMinKw,
-			&d.StartRatedKm, &d.EndRatedKm,
-			&d.StartIdealKm, &d.EndIdealKm,
-			&d.StartGeofence, &d.EndGeofence,
-			&d.HasSupercharger, &d.ChargeAfterTrip,
-		); err != nil {
+		d, err := scanDrive(rows)
+		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		list = append(list, &d)
+		list = append(list, d)
 	}
 	writeJSON(w, list)
+}
+
+// rowScanner 能扫一行的东西（pgxpool 的 Rows 满足它）。
+//
+// ⚠️ 用接口而不是写死 *sql.Rows：本项目的驱动是 **pgx**（不是 database/sql）。
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanDrive 扫一行 drives（列顺序与 sqlDrives 的 SELECT 一一对应）。
+//
+// ⚠️ 抽出来的原因：「真实可达续航」那条链路（api/range_estimate_http.go）
+//
+//	必须读**同一批**行程 ⇒ 同一条 SQL + 同一个 limit ⇒ 样本总体与客户端完全一致
+//	⇒ 两边算出来的数**必然相同**。
+//
+// ⇒ 列变了编译器会当场报错（不会静默错位）。
+func scanDrive(rows rowScanner) (*Drive, error) {
+	var d Drive
+	err := rows.Scan(
+		&d.ID, &d.StartDate, &d.EndDate, &d.DurationMin, &d.Distance,
+		&d.StartPlace, &d.EndPlace, &d.StartPlaceKey, &d.EndPlaceKey,
+		&d.StartSoc, &d.EndSoc,
+		&d.EnergyKwh, &d.WhPerKm, &d.SpeedMax, &d.OutsideTemp, &d.OdoStart, &d.OdoEnd,
+		&d.AvgSpeedKph, &d.AscentM, &d.DescentM, &d.InsideTempAvg,
+		&d.PowerMaxKw, &d.PowerMinKw,
+		&d.StartRatedKm, &d.EndRatedKm,
+		&d.StartIdealKm, &d.EndIdealKm,
+		&d.StartGeofence, &d.EndGeofence,
+		&d.HasSupercharger, &d.ChargeAfterTrip,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
 }
 
 // handleCostSummary 返回一个时间窗口内的**充电成本构成**。

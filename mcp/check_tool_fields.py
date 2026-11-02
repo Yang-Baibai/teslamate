@@ -170,6 +170,12 @@ SPEC = [
     # ⇒ **不列进 SPEC**（SPEC 只断言必然存在的字段）；
     #   它的**相等性**由 check_brief_battery_contract 单独断言。
     ("teslamate_charge_brief", {"period": "7d"}, "电池趋势·窗口内满充实测次数", "简报里的窗口内满充实测次数"),
+    # ⚠️ **v0.118.0 补记**：真实可达续航（服务端算，App 与 Hermes 共用一份）。
+    #    只断言**必然存在**的字段 —— 「真实可达(km)」在样本不足时合法为 null
+    #    ⇒ 不进 SPEC（它的**相等性**由 check_range_estimate_contract 断言）。
+    ("teslamate_range_estimate", {}, "一句话", "真实可达续航的一句话结论"),
+    ("teslamate_range_estimate", {}, "怎么算的", "真实可达续航的算法口径"),
+    ("teslamate_range_estimate", {}, "模型样本条数", "模型用了多少条行程"),
 ]
 
 
@@ -480,6 +486,132 @@ def check_feedback_items() -> list:
     return bad
 
 
+def check_range_estimate_contract() -> list:
+    """「真实可达续航」必须是**客户端算法**的复算结果（两个渠道同一个数）。
+
+    ⚠️ 为什么这么严：App 首屏那个「真实可达」原先**只在客户端**算
+    ⇒ 飞书问出来的是**另一个数**（或者根本问不出来）⇒ 用户以为两个渠道在骗人。
+    ⇒ 服务端现在算同一份（同一批行程 + 同一套规则）
+    ⇒ 这里**独立复算**一遍（照客户端 `ConsumptionModel` 的规则写）
+    ⇒ 与服务端差一点点就报红 ⇒ 抓的是「服务端自己漂了」。
+
+    ⚠️ **车在行驶时只比与车速无关的部分**：App 的参考车速取实时车速，
+    服务端取最近一条 position 的车速 ⇒ 两者取的时刻差几秒 ⇒ 行驶中可能落在不同档
+    ⇒ 那时只比样本数 / 各档中位数 / 巡航均速 / 残差 P90（这些与当前车速无关）。
+    """
+    bad = []
+    try:
+        est = T._get("/api/v1/cars/%s/range_estimate" % T.CAR_ID)
+        drives = T._get("/api/v1/cars/%s/drives?limit=500&offset=0" % T.CAR_ID)
+        st = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(est, dict) or "error" in est:
+        return ["续航估算取不到：%r" % (est,)]
+    if not isinstance(drives, list) or not isinstance(st, dict):
+        return ["行程 / 车况取不到：%r / %r" % (type(drives), type(st))]
+
+    # ── 独立复算（照客户端规则）────────────────────────────────────
+    usable = [d for d in drives
+              if d.get("wh_per_km") is not None and d.get("distance_km") is not None
+              and d["distance_km"] >= 20.0 and d.get("avg_speed_kph") is not None
+              and d["avg_speed_kph"] > 0 and 50.0 <= d["wh_per_km"] <= 400.0]
+    if len(usable) < 4:
+        if est.get("true_range_km") is not None:
+            bad.append("样本不足（%d 条可用行程）时服务端却给了真实可达 ⇒ 不该给数" % len(usable))
+        return bad
+
+    def median(vals):
+        if not vals:
+            return None
+        s = sorted(vals)
+        n = len(s)
+        return s[n // 2] if n % 2 == 1 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+    edges = [0, 60, 90, 110, 130, float("inf")]
+    buckets = []
+    for i in range(len(edges) - 1):
+        lo, hi = edges[i], edges[i + 1]
+        vals = [d["wh_per_km"] for d in usable
+                if d["avg_speed_kph"] >= lo and d["avg_speed_kph"] < hi]
+        if len(vals) < 2:
+            continue
+        buckets.append({"lo": lo, "hi": hi, "wh": median(vals), "n": len(vals)})
+
+    def bucket_for(sp):
+        for b in buckets:
+            if sp >= b["lo"] and sp < b["hi"]:
+                return b, True
+        best, bd = None, None
+        for b in buckets:
+            d2 = abs((b["lo"] - sp) if sp < b["lo"] else (sp - b["hi"] + 1))
+            if bd is None or d2 < bd:
+                best, bd = b, d2
+        return best, False
+
+    recent = [d for d in usable if d["distance_km"] >= 30.0 and d["avg_speed_kph"] > 0]
+    recent.sort(key=lambda d: d["start_date"], reverse=True)
+    cruise = median([d["avg_speed_kph"] for d in recent[:5]])
+    if cruise is None:
+        cruise = median([d["avg_speed_kph"] for d in usable])
+    if cruise is None:
+        cruise = 60.0
+
+    resid = []
+    for d in usable:
+        if d["distance_km"] < 100.0:
+            continue
+        b, _ = bucket_for(d["avg_speed_kph"])
+        if b is None:
+            continue
+        resid.append(abs(d["wh_per_km"] - b["wh"]))
+    p90 = None
+    if len(resid) >= 10:
+        s = sorted(resid)
+        rank = max(1, min((len(s) * 9 + 9) // 10, len(s)))
+        p90 = s[rank - 1]
+
+    # ── 与服务端逐条比 ───────────────────────────────────────────
+    if est.get("sample_count") != len(usable):
+        bad.append("样本数不一致：服务端 %r vs 复算 %d" % (est.get("sample_count"), len(usable)))
+    parked = (st.get("speed") or 0) <= 5
+    srv_ref = float(est.get("reference_speed_kph") or 0)
+    if parked and abs(srv_ref - cruise) > 1e-9:
+        bad.append("参考车速不一致：服务端 %r vs 复算巡航均速 %r（车是停着的，两者应当相同）"
+                   % (srv_ref, cruise))
+    srv_wh = est.get("wh_per_km")
+    b, _ = bucket_for(srv_ref)
+    if b is not None and srv_wh is not None and abs(float(srv_wh) - b["wh"]) > 1e-6:
+        bad.append("该档的实测 Wh/km 不一致：服务端 %r vs 复算 %r ⇒ 分档或中位数漂了"
+                   % (srv_wh, b["wh"]))
+    srv_p90 = est.get("residual_p90_wh_per_km")
+    if (srv_p90 is None) != (p90 is None):
+        bad.append("残差 P90 有无不一致：服务端 %r vs 复算 %r" % (srv_p90, p90))
+    elif srv_p90 is not None and abs(float(srv_p90) - p90) > 1e-6:
+        bad.append("残差 P90 不一致：服务端 %r vs 复算 %r" % (srv_p90, p90))
+
+    # ── 结论（车停着时可比）──────────────────────────────────────
+    if parked and abs(srv_ref - cruise) <= 1e-9:
+        rated = st.get("rated_range_km")
+        if rated is None:
+            rated = st.get("ideal_range_km")
+        temp = st.get("outside_temp")
+        batt = st.get("battery_level")
+        if rated and b is not None:
+            tf = 1.0 + min(0.10, 0.006 * max(0.0, temp - 22.0)) if temp is not None else 1.0
+            want = rated * 146.0 / (b["wh"] * tf) * 0.90
+            got = est.get("true_range_km")
+            if got is None or abs(float(got) - want) > 1e-6:
+                bad.append("真实可达不一致：服务端 %r vs 复算 %r ⇒ 服务端与客户端不是同一个数"
+                           % (got, want))
+            if batt is not None and batt > 20:
+                want_f = rated * 146.0 / (b["wh"] * tf) * ((batt - 20) / batt)
+                got_f = est.get("floor_range_km")
+                if got_f is None or abs(float(got_f) - want_f) > 1e-6:
+                    bad.append("保底里程不一致：服务端 %r vs 复算 %r" % (got_f, want_f))
+    return bad
+
+
 def main() -> int:
     print("=== MCP 工具字段映射自检 ===")
     bad = []
@@ -583,6 +715,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 当前 SOH 与 /battery 是同一个数、正文标明「当前」"
               % ("teslamate_charge_brief", "电池契约"))
     bad.extend(battery_bad)
+
+    range_bad = check_range_estimate_contract()
+    for b in range_bad:
+        print("  ✗ %s" % b)
+    if not range_bad:
+        print("  ✓ %-26s %-24s 与客户端算法逐位一致（同一个数）"
+              % ("teslamate_range_estimate", "续航契约"))
+    bad.extend(range_bad)
 
     fb_bad = check_feedback_items()
     for b in fb_bad:

@@ -551,6 +551,142 @@ PYEOF
 if [ $? -eq 0 ]; then ok "能耗/续航口径：客户端与服务端两份实现逐条一致"; else fail "能耗/续航口径两份实现漂了"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 7：客户端 ↔ 服务端「真实可达续航」实现的常量必须逐条一致 ──
+#
+# ⚠️ **为什么还要一道**（2026-11-03）：闸门 6 盯的是「客户端 ↔ climb_calib.go」，
+#    而**真实可达续航**这条判定搬到了服务端（api/range_estimate.go）
+#    ⇒ 那边的温度修正 / EPA Wh/km / 样本门槛 / 残差口径**也必须**与客户端一致
+#    ⇒ 否则飞书说 171 公里、App 说 180 公里（两个渠道各说各话）。
+#
+# ⇒ 这道闸门把「服务端那份是照客户端搬的」从注释变成**机器校验**。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+KT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ConsumptionModel.kt')
+GO = pathlib.Path('api/range_estimate.go')
+
+
+def load(p):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+    return p.read_text(encoding='utf-8')
+
+
+def strip_comments(t):
+    t = re.sub(r'(?s)/\*.*?\*/', '', t)
+    t = re.sub(r'(?m)//.*$', '', t)
+    return t
+
+
+kt = strip_comments(load(KT))
+go = strip_comments(load(GO))
+
+problems = []
+ok_lines = []
+
+# (说明, 客户端正则, 服务端正则)
+PAIRS = [
+    ('EPA Wh/km（标称能耗）', r'EPA_WH_PER_KM\s*=\s*([0-9.]+)', r'rangeEPAWhPerKm\s*=\s*([0-9.]+)'),
+    ('温度修正上限', r'minOf\(([0-9.]+),\s*[0-9.]+\s*\*', r'rangeTempMax\s*=\s*([0-9.]+)'),
+    ('温度修正系数', r'minOf\([0-9.]+,\s*([0-9.]+)\s*\*', r'rangeTempCoef\s*=\s*([0-9.]+)'),
+    ('温度修正阈值℃', r'maxOf\(0\.0,\s*it\s*-\s*([0-9.]+)\)', r'rangeTempHotC\s*=\s*([0-9.]+)'),
+    ('低温不可信线℃', r'outsideTempC\s*<=\s*([0-9.]+)', r'rangeTempLowC\s*=\s*([0-9.]+)'),
+    ('低温样本门槛', r'LOW_TEMP_MIN_SAMPLES\s*=\s*([0-9]+)', r'rangeLowTempMinSamples\s*=\s*([0-9]+)'),
+    ('每档样本门槛', r'bucket\.samples\s*<\s*([0-9]+)', r'rangeBucketMinSamples\s*=\s*([0-9]+)'),
+    ('可用样本门槛', r'usable\.size\s*<\s*([0-9]+)', r'rangeMinUsableSamples\s*=\s*([0-9]+)'),
+    ('残差样本的最短里程', r'residuals\s*=\s*usable\s*\.filter\s*\{\s*\(it\.distance_km\s*\?:?\s*0\.0\)\s*>=\s*([0-9.]+)', r'rangeResidualMinKm\s*=\s*([0-9.]+)'),
+    ('残差样本条数门槛', r'residuals\.size\s*>=\s*([0-9]+)', r'rangeResidualMinSamples\s*=\s*([0-9]+)'),
+    ('日常保底余量', r'reserveFactor:\s*Double\s*=\s*([0-9.]+)', r'rangeDefaultReserve\s*=\s*([0-9.]+)'),
+]
+
+
+def one(pat, text):
+    m = re.search(pat, text)
+    return m.group(1) if m else None
+
+
+def all_vals(pat, text):
+    return sorted(set(re.findall(pat, text)))
+
+
+for label, kpat, gpat in PAIRS:
+    gv = one(gpat, go)
+    if gv is None:
+        problems.append('%s：服务端取不到（range_estimate.go 的写法变了？）' % label)
+        continue
+    # ⚠️ **客户端这边可能有多个同类写法** ⇒ 只取第一个会**假红/假绿**。
+    #    实测：客户端有「distance_km >= 30」（巡航筛选）与「>= 100」（残差筛选）两处
+    #    ⇒ 判据必须精确到上下文；这里再补一道**自检**：取值不唯一 ⇒ 直接报「判据不精确」。
+    kvals = all_vals(kpat, kt)
+    if len(kvals) == 0:
+        problems.append('%s：客户端取不到（ConsumptionModel.kt 的写法变了？）' % label)
+        continue
+    if len(kvals) > 1:
+        problems.append('%s：客户端有多个取值 %s ⇒ 这条判据不精确（改精确到上下文）'
+                        % (label, ' / '.join(kvals)))
+        continue
+    kv = kvals[0]
+    if kv != gv:
+        problems.append('%s 不一致：客户端 %s ↔ 服务端 %s' % (label, kv, gv))
+    else:
+        ok_lines.append('%s = %s' % (label, kv))
+
+# ── 车速分档边界（客户端 EDGES ↔ 服务端 rangeSpeedEdges）──────────
+def edges_kt(t):
+    m = re.search(r'EDGES\s*=\s*listOf\(([^)]*)\)', t)
+    if not m:
+        return None
+    out = []
+    for p in [x.strip() for x in m.group(1).split(',') if x.strip()]:
+        if 'MAX_VALUE' in p:
+            out.append('MAX')
+        elif re.match(r'^-?\d+$', p):
+            out.append(p)
+        else:
+            return None
+    return out
+
+
+def edges_go(t):
+    m = re.search(r'rangeSpeedEdges\s*=\s*\[\]int\{([^}]*)\}', t)
+    if not m:
+        return None
+    parts = [x.strip() for x in m.group(1).split(',') if x.strip()]
+    out = []
+    for i, p in enumerate(parts):
+        if not re.match(r'^-?\d+$', p):
+            return None
+        out.append('MAX' if (i == len(parts) - 1 and p == '0') else p)
+    return out
+
+
+ke = edges_kt(kt)
+ge = edges_go(go)
+if ke is None:
+    problems.append('车速分档边界：客户端取不到 EDGES')
+elif ge is None:
+    problems.append('车速分档边界：服务端取不到 rangeSpeedEdges')
+elif ke != ge:
+    problems.append('车速分档边界不一致：客户端 %s ↔ 服务端 %s' % ('/'.join(ke), '/'.join(ge)))
+else:
+    ok_lines.append('车速分档边界 = %s' % '/'.join(ke))
+
+if problems:
+    print('客户端与服务端的「真实可达续航」常量漂了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 服务端那份是照客户端搬的：改了一边就必须改另一边')
+    sys.exit(1)
+
+for ln in ok_lines:
+    print('   ✓', ln)
+print('真实可达续航的常量：客户端 ↔ 服务端逐条一致 ✔')
+PYEOF
+if [ $? -eq 0 ]; then ok "真实可达续航的常量：客户端与服务端逐条一致"; else fail "真实可达续航的常量漂了"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

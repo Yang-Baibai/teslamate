@@ -389,6 +389,58 @@ def teslamate_battery() -> dict:
 
 
 @mcp.tool()
+def teslamate_range_estimate() -> dict:
+    """查「**真实可达续航**」：按**你自己跑出来的实测能耗**折算的里程、区间与依据。
+
+    **什么时候用**：用户问「我现在真实能跑多远」「还能开多少」「能跑到下一个服务区吗」
+    「官方标称 226 公里是真的吗」「开空调会掉多少续航」—— 都归它。
+
+    ⚠️ **别拿官方标定续航当答案**：标定续航（EPA 认证值）是一块**能量表**，不是里程表
+    ⇒ 夏季高速用它做规划会乐观 25%~40%。
+
+    ⚠️ 这个数是「**真实可达**」＝ 标定续航 × 146 Wh/km ÷ 实测 Wh/km × 温度修正 × 保底余量
+    ⇒ **样本不足时服务端不给数**（宁可不说，也不编一个）。
+
+    ⚠️ **别自己复算**：服务端用的是**同一批行程**（与 App 完全相同的那 500 趟），
+    你在这里另算一遍，样本 / 温度 / 窗口都会偏 ⇒ 出来的数一定对不上。
+
+    ⚠️ 分工：电量 / 车机读数 → `teslamate_status`；电池衰减 → `teslamate_battery`。
+    """
+    d = _get(f"/api/v1/cars/{CAR_ID}/range_estimate")
+    if not isinstance(d, dict) or "error" in d:
+        return d if isinstance(d, dict) else {"error": "返回格式异常"}
+
+    band = d.get("true_range_band_km") or {}
+    fband = d.get("floor_range_band_km") or {}
+
+    out = {
+        "真实可达(km)": d.get("true_range_km"),
+        "区间下界(km)": band.get("lo_km"),
+        "区间上界(km)": band.get("hi_km"),
+        "留20%保底能开(km)": d.get("floor_range_km"),
+        "保底区间下界(km)": fband.get("lo_km"),
+        "保底区间上界(km)": fband.get("hi_km"),
+        "实测能耗(Wh/km)": d.get("wh_per_km"),
+        "采用的车速档": d.get("bucket_label"),
+        "该档样本数": d.get("bucket_samples"),
+        "参考车速(km/h)": d.get("reference_speed_kph"),
+        "温度修正": d.get("temp_factor"),
+        "标定续航(km)": d.get("rated_range_km"),
+        "当前电量(%)": d.get("battery_level"),
+        "模型样本条数": d.get("sample_count"),
+        "残差P90(Wh/km)": d.get("residual_p90_wh_per_km"),
+        "残差样本条数": d.get("residual_samples"),
+        "一句话": d.get("summary"),
+        "怎么算的": d.get("basis"),
+    }
+    if d.get("note"):
+        out["注意"] = d["note"]
+    if d.get("temp_caveat"):
+        out["温度口径"] = d["temp_caveat"]
+    return out
+
+
+@mcp.tool()
 def teslamate_charges(limit: int = 10) -> dict:
     """查**最近的充电记录**：时间、地点、充入多少度、起止电量、费用、峰值/平均功率。
 
