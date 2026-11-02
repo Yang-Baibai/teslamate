@@ -29,10 +29,10 @@ TeslaMate（开源采集）→ PostgreSQL → 自写 Go API → 自写 Android A
 
 | 路径 | 是什么 | 先看这几个文件 |
 |---|---|---|
-| `api/` | **Go 服务**（唯一的判定与聚合层） | `main.go`（路由表）· `handlers.go`（端点）· `models.go`（响应结构）· `queries.go`（SQL）· `alerts.go`（阈值判定）· `vehicle_safety.go` + `telemetry_vehicle.go`（车窗/车门/哨兵）· `battery_decay.go`（电池衰减）· `charge_outcome.go`（充电结局）· `tesla_command.go`（车控）· `feedback.go`（用户反馈 + 截图） |
+| `api/` | **Go 服务**（唯一的判定与聚合层） | `main.go`（路由表）· `handlers.go`（端点）· `models.go`（响应结构）· `queries.go`（SQL）· `alerts.go`（阈值判定）· `vehicle_safety.go` + `telemetry_vehicle.go`（车窗/车门/哨兵）· `battery_decay.go`（电池衰减）· `charge_outcome.go`（充电结局）· `charge_brief.go`（充电简报：服务端渲染好的标题+正文）· `tesla_command.go`（车控）· `feedback.go`（用户反馈 + 截图） |
 | `app-android/` | **Android App**（Compose，Kotlin） | `Api.kt`（所有 HTTP 与数据类）· `ui/AppRoot.kt`（导航与 App 级状态）· `ui/StatusScreen.kt`（车况页）· `ui/RecordsScreen.kt` · `ui/ChargesScreen.kt` · `ui/StatsScreen.kt`（用量页）· `ui/SettingsScreen.kt`（设置 + 所有二级页）· `ui/Theme.kt`（颜色/字阶令牌）· `ui/Motion.kt`（动效令牌）· `ui/Widgets.kt`（共用组件） |
 | `mcp/` | **MCP 服务**（给 Hermes/agent 用的工具集） | `teslamate_mcp.py`（全部工具）· `check_tool_fields.py`（**字段映射自检**）· `selftest_mcp.py` |
-| `scripts/` | **运维与发版脚本** | `watch-car.ps1`（主动通知引擎）· `watch-car-selftest.ps1`（它的自测）· `release.sh`（一键发版）· `release-feedback-gate.sh`（**发版前的用户反馈闸门**）· `smoke.sh`（冒烟）· `client-gates.sh` / `server-gates.sh`（门禁）· `unit-tests.sh`（JVM 单测）· `backup-db.sh` / `backup-weekly.sh` · `tesla-authorize.ps1` / `tesla-partner.ps1`（Tesla 授权与车控签名） |
+| `scripts/` | **运维与发版脚本** | `watch-car.ps1`（主动通知引擎）· `watch-car-selftest.ps1`（它的自测）· `release.sh`（一键发版）· `release-feedback-gate.sh`（**发版前的用户反馈闸门**）· `smoke.sh`（冒烟）· `client-gates.sh` / `server-gates.sh`（门禁）· `hermes-gates.sh`（**Hermes 链路**门禁：服务端↔MCP↔推送脚本）· `unit-tests.sh`（JVM 单测）· `backup-db.sh` / `backup-weekly.sh` · `tesla-authorize.ps1` / `tesla-partner.ps1`（Tesla 授权与车控签名） |
 | `docs/` | **文档**（先读 `INDEX.md` 再读别的） | `CHANGELOG.md`（**改动史与决策记录**）· `api-spec.md`（接口）· `architecture.md` · `data-dictionary.md` · `operations.md`（运维手册）· `adr.md`（架构决策）· `手机客户端使用说明.md`（给车主看的）· `真机复核清单.md` |
 | `apk/` | 发版产物（APK，由 API 静态分发） | — |
 | `database/` `grafana/` `mosquitto/` `fleet-telemetry/` | 运行数据与配套服务 | — |
@@ -70,6 +70,7 @@ python mcp/check_tool_fields.py        # 顺带确认工具字段没漂
 bash scripts/server-gates.sh            # Go 语法 / 密钥扫描 / 仓库卫生
 bash scripts/client-gates.sh            # 客户端 22 道闸门
 bash scripts/smoke.sh                   # 冒烟（48 项）
+bash scripts/hermes-gates.sh           # Hermes 链路闸门（服务端↔MCP↔推送脚本）
 python mcp/check_tool_fields.py         # MCP 字段自检
 
 # ④ 构建 App（**必须走 ASCII 路径**，见 §5）
@@ -91,6 +92,9 @@ bash scripts/release.sh "更新说明一句话"
 ### 3.3 运维
 
 - 车况告警由 **Hermes** 推飞书/微信（`scripts/watch-car.ps1`，Windows 计划任务每 5 分钟跑）。
+  - **周期性充电简报**（v0.111.0）：同一脚本里按 `.env` 的 `WATCH_BRIEF_WEEKDAY` /
+    `WATCH_BRIEF_HOUR`（默认每周一 09:00）推一条简报；**正文由服务端渲染**
+    （`/api/v1/cars/{id}/charge_brief`）⇒ 脚本只转述，同一周只推一次。
   ⚠️ 改了它 ⇒ 跑 `pwsh -File scripts/watch-car-selftest.ps1`（引擎有 69 条断言）。
 - 数据库备份：`scripts/backup-db.sh`（每天）/ `backup-weekly.sh`（每周）。
 - Tesla 授权过期（一次性 refresh_token）：`scripts/tesla-authorize.ps1`。

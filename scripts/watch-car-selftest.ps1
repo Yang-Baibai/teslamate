@@ -41,6 +41,12 @@ New-Item -ItemType Directory -Path $Tmp -Force | Out-Null
 $StateFile  = Join-Path $Tmp 'state.json'
 $StatusFile = Join-Path $Tmp 'status.json'
 $LogFile    = Join-Path $Tmp 'watch.log'
+$BriefFile  = Join-Path $Tmp 'brief.json'
+
+# ⚠️ **默认关掉简报**（v0.111.0）：否则「今天是周一 12 点」时它会自己到点，
+# 把下面 23 个场景的「只推了 N 条」断言全搅了
+# ⇒ 简报的场景（24 起）自己再打开。
+$env:WATCH_BRIEF_ENABLED = '0'
 
 # 一个**必然连不上**的本地端口：模拟「家里那台电脑/服务挂了」。
 $DeadApi = 'http://127.0.0.1:45999'
@@ -84,7 +90,7 @@ function Set-Status([hashtable]$fields) {
 # ⚠️ 这里**绝不能**删状态文件 ——
 #    引擎的价值全在「跨轮记住什么」，删了状态就等于每次都是首轮，
 #    测出来的东西毫无意义。要重置状态由各场景自己显式删。
-function Invoke-Watch([switch]$UseHttp) {
+function Invoke-Watch([switch]$UseHttp, [switch]$BriefFail) {
   $argv = @('-NoProfile', '-File', $WatchCar,
             '-StateFile', $StateFile, '-LogFile', $LogFile,
             '-DryRun', '-CarName', '测试车')
@@ -93,6 +99,14 @@ function Invoke-Watch([switch]$UseHttp) {
     $argv += @('-ApiBase', $DeadApi)
   } else {
     $argv += @('-StatusFile', $StatusFile)
+  }
+  # ⚠️ 简报喂**罐头的**（不连真服务器 ⇒ 断言不依赖真实数据，
+  #    也不会真的推给用户 —— DryRun 只写日志）。
+  # 文件不存在时脚本会记「取不到」⇒ 那正是场景 30 要测的。
+  $argv += @('-BriefFile', $BriefFile)
+  if ($BriefFail) {
+    # 模拟 Hermes 推送失败（没送到 = 没告知 ⇒ 不该记槽位）。
+    $argv += @('-BriefPushFail')
   }
   # ⚠️ 子进程的 stderr 会被 2>&1 变成错误记录；ErrorActionPreference=Stop 下
   #    那可能被当成终止错误 —— 自测要的是「跑完」，不是「别出错」。
@@ -191,6 +205,42 @@ function Invoke-ChargeEnd([string]$kind, [string]$detail) {
   if ($kind) { Set-ChargeOutcome $kind $detail } else { Set-Status @{ active_charge = $null } }
   Invoke-Watch | Out-Null
   return @(Get-Pushes)
+}
+
+# 喂一份**罐头的**简报（与服务端 JSON 同形）。
+#
+# ⚠️ 窗口是「写死」的：断言要钉具体值（不钉「有没有 > N」）——
+#    边界算错时那种断言会假绿（v0.98.0 的教训）。
+function Set-Brief([int]$count) {
+  $brief = @{
+    car_name        = '测试车'
+    period_label    = '近 7 天'
+    server_timezone = 'Asia/Shanghai'
+    key             = '7d'
+    days            = 7
+    window_start    = '2026-10-26T16:00:00Z'
+    window_end      = '2026-11-02T06:26:00Z'
+    count           = $count
+    total_kwh       = 55.4
+    dc_kwh          = 55.4
+    dc_count        = 3
+    dc_avg_min      = 34
+    ac_kwh          = 0
+    ac_count        = 0
+    ac_avg_min      = $null
+    last_full       = $null
+    title           = '📊 测试车 · 近 7 天充电简报'
+    body            = "窗口：2026-10-27 00:00 → 2026-11-02 06:26（服务器时区 Asia/Shanghai）`n充电 $count 次 · 充入 55.4 度"
+  }
+  ($brief | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $BriefFile -Encoding utf8
+}
+
+# 把状态文件里的简报槽位改成指定值（模拟「换了槽位」/「上次是别的周」）。
+function Set-BriefSlot([string]$slot) {
+  $s = Read-StateJson
+  if ($null -eq $s) { $s = [pscustomobject]@{} }
+  $s | Add-Member -NotePropertyName 'last_brief_slot' -NotePropertyValue $slot -Force
+  ($s | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $StateFile -Encoding utf8
 }
 
 function Reset-Log {
@@ -564,6 +614,90 @@ if ($m.Success) {
   $diff = [math]::Abs(($shown - $want).TotalMinutes)
   Assert-True ($diff -le 2) "正文里的起点应≈$($want.ToString('MM-dd HH:mm'))（真实起点），实际 $($m.Groups[1].Value)—— 差 $diff 分钟"
 }
+# ═════════════════════════════════════════════════════════════════
+# 场景 24~30：周期性充电简报（v0.111.0）
+# ═════════════════════════════════════════════════════════════════
+#
+# 守的是**通知策略**那几条：
+#   ① 到点只推一次（同一槽位不重复推）—— 告警风暴同款；
+#   ② 窗口没数据就不推，但**要记槽位**（否则每 5 分钟重试一次）；
+#   ③ 推送失败**不记槽位** ⇒ 下一轮重试（没送到 = 没告知）；
+#   ④ 没到点不推；取不到简报也不推。
+#
+# ⚠️ 简报内容用罐头的（-BriefFile）⇒ 断言不依赖真实数据。
+$isoToday  = ([int](Get-Date).DayOfWeek + 6) % 7 + 1
+$todayStr  = (Get-Date).ToString('yyyy-MM-dd')
+
+Write-Host "── 场景 24：简报到点 ⇒ 推 1 条"
+Set-Brief 3
+Reset-Log
+if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force }
+$env:WATCH_BRIEF_ENABLED  = '1'
+$env:WATCH_BRIEF_WEEKDAY = "$isoToday"
+$env:WATCH_BRIEF_HOUR    = '0'
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '充电简报') "到点了 ⇒ 推了 1 条简报"
+$lastBody = Get-LastBody
+Assert-True ($lastBody -match '2026-10-27 00:00') "简报正文带上了窗口起点（钉具体值）"
+$s = Read-StateJson
+Assert-Eq $todayStr (Get-JsonProp $s 'last_brief_slot') "推完记住了槽位（同一周不再推）"
+
+Write-Host "── 场景 25：同一槽位再跑一轮 ⇒ 不重复推"
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '充电简报') "同一槽位再跑 ⇒ 不会重复推（告警风暴同款）"
+
+Write-Host "── 场景 26：换了槽位 ⇒ 又推 1 条"
+Set-BriefSlot '2000-01-01'
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 2 (Count-Push $pushes '充电简报') "槽位变了 ⇒ 又推了 1 条"
+
+Write-Host "── 场景 27：窗口内没有充电记录 ⇒ 不推，但记槽位"
+Set-Brief 0
+Set-BriefSlot '2000-01-01'
+Reset-Log
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 0 (Count-Push $pushes '充电简报') "没有充电记录 ⇒ 不推（推了是噪音）"
+$s = Read-StateJson
+Assert-Eq $todayStr (Get-JsonProp $s 'last_brief_slot') "没有记录也**记了槽位**（否则每 5 分钟重试一次）"
+
+Write-Host "── 场景 28：推送失败 ⇒ 不记槽位 ⇒ 下一轮重试"
+Set-Brief 3
+Set-BriefSlot '2000-01-01'
+Reset-Log
+Invoke-Watch -BriefFail | Out-Null
+$s = Read-StateJson
+# ⚠️ 断言的是「槽位**没被更新**」（还是上一次那个），不是「字段不存在」——
+#    失败时脚本压根不写这个键 ⇒ 它保留的是上一轮的值。
+Assert-Eq '2000-01-01' (Get-JsonProp $s 'last_brief_slot') "推送失败 ⇒ 槽位没被更新（下一轮会重试）"
+
+Write-Host "── 场景 29：还没到点 ⇒ 不推"
+Set-Brief 3
+Set-BriefSlot '2000-01-01'
+Reset-Log
+if ((Get-Date).Hour -lt 23) {
+  $env:WATCH_BRIEF_HOUR = '23'
+  Invoke-Watch | Out-Null
+  $pushes = @(Get-Pushes)
+  Assert-Eq 0 (Count-Push $pushes '充电简报') "还没到点 ⇒ 不推"
+  $env:WATCH_BRIEF_HOUR = '0'
+} else {
+  Write-Host "  · 跳过（现在已过 23 点，到点判定构造不出来）"
+}
+
+Write-Host "── 场景 30：简报取不到 ⇒ 不推、不记槽位"
+Set-BriefSlot '2000-01-01'
+Reset-Log
+if (Test-Path -LiteralPath $BriefFile) { Remove-Item -LiteralPath $BriefFile -Force }
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 0 (Count-Push $pushes '充电简报') "取不到简报 ⇒ 不推"
+$s = Read-StateJson
+Assert-Eq '2000-01-01' (Get-JsonProp $s 'last_brief_slot') "取不到 ⇒ 不记槽位（下一轮再试）"
+
 # ═════════════════════════════════════════════════════════════════
 # 清理 + 汇总
 # ═════════════════════════════════════════════════════════════════

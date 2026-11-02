@@ -23,6 +23,7 @@ MCP 工具的**字段映射自检**。
 """
 from __future__ import annotations
 
+import datetime
 import sys
 
 # ⚠️ **必须**：这台机器的默认编码是 GBK，Python 打印 '✓' / '✗' 会抛
@@ -148,6 +149,17 @@ SPEC = [
     # 而「本月」**不是** 30 天（两者实测差 25.9%）。
     ("teslamate_charge_stats", {"period": "month"}, "窗口起点", "自然月的起点"),
     ("teslamate_charge_stats", {"period": "all"}, "场次", "全部历史的场次"),
+    # ⚠️ **v0.111.0**：充电简报工具（给飞书的周期性报告）。
+    #
+    # 「标题」「正文」是**服务端渲染的原文** —— 本工具只转述（ADR #41）。
+    # 少了任何一个，推送出去的就是一段空话。
+    ("teslamate_charge_brief", {"period": "7d"}, "标题", "简报标题（服务端原文）"),
+    ("teslamate_charge_brief", {"period": "7d"}, "正文", "简报正文（服务端原文）"),
+    ("teslamate_charge_brief", {"period": "7d"}, "窗口起点", "简报窗口起点"),
+    ("teslamate_charge_brief", {"period": "7d"}, "窗口终点", "简报窗口终点"),
+    ("teslamate_charge_brief", {"period": "7d"}, "场次", "简报里的场次"),
+    ("teslamate_charge_brief", {"period": "7d"}, "充入(度)", "简报里的充入电量"),
+    ("teslamate_charge_brief", {"period": "7d"}, "上次充满", "上次充满（没有也要说清楚）"),
 ]
 
 
@@ -307,6 +319,51 @@ def check_cabin_contract() -> list:
     return bad
 
 
+def check_charge_brief_contract() -> list:
+    """简报必须带窗口边界，且边界必须与 `teslamate_charge_stats` **一致**。
+
+    ⚠️ 为什么不只问「有没有窗口」：简报与统计是**两个端点**，
+    窗口一旦各算各的 ⇒ 飞书里那句「近 7 天充了 X 度」和 App 的卡片对不上
+    ⇒ 用户以为数据在骗人（一个事实只能有一个说法）。
+    ⇒ 这里断言的是**起点完全相等**，终点只允许分钟级差异
+    （终点 = 生成时刻，两次调用天然差几秒）。
+    """
+    bad = []
+    try:
+        brief = T.teslamate_charge_brief("7d")
+        stats = T.teslamate_charge_stats("7d")
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(brief, dict) or "错误" in brief:
+        return ["充电简报取不到：%r" % (brief,)]
+    for key in ("标题", "正文", "窗口起点", "窗口终点", "区间", "场次"):
+        if key not in brief:
+            bad.append("简报缺字段「%s」" % key)
+
+    # 窗口**起点**必须完全相等（它是确定的：当天 00:00 − N 天）。
+    if brief.get("窗口起点") != stats.get("窗口起点"):
+        bad.append("简报的「窗口起点」= %r，与充电统计的 %r 不一致 ⇒ 两个端点各算各的窗口了"
+                   % (brief.get("窗口起点"), stats.get("窗口起点")))
+
+    # 窗口**终点** = 生成时刻 ⇒ 两次调用差几秒 ⇒ 只允许分钟级差异。
+    try:
+        b = datetime.datetime.strptime(str(brief.get("窗口终点")), "%Y-%m-%d %H:%M")
+        s = datetime.datetime.strptime(str(stats.get("窗口终点")), "%Y-%m-%d %H:%M")
+        gap = abs((b - s).total_seconds())
+        if gap > 120:
+            bad.append("简报与充电统计的窗口终点差 %d 秒（>2 分钟）" % int(gap))
+    except Exception:
+        bad.append("窗口终点不是可解析的时间：%r / %r"
+                   % (brief.get("窗口终点"), stats.get("窗口终点")))
+
+    # 正文里必须出现窗口起点的日期（只说「近 7 天」不说边界 ⇒ 用户没法核对）。
+    day = str(brief.get("窗口起点") or "")[:10]
+    body = str(brief.get("正文") or "")
+    if day and day not in body:
+        bad.append("简报正文里没有窗口起点日期 %s（正文=%r）" % (day, body[:120]))
+    return bad
+
+
 def check_feedback_items() -> list:
     """反馈**每一条**都必须带上「id / 时间 / 内容 / 状态」。
 
@@ -415,6 +472,14 @@ def main() -> int:
         names = sorted(n for n in dir(T) if n.startswith("teslamate_"))
         print("  ✓ %-26s %-24s %d 个工具都写了「什么时候用」" % ("（description）", "工具用途说明", len(names)))
     bad.extend(desc_bad)
+
+    brief_bad = check_charge_brief_contract()
+    for b in brief_bad:
+        print("  ✗ %s" % b)
+    if not brief_bad:
+        print("  ✓ %-26s %-24s 窗口边界与充电统计一致、正文带窗口起点"
+              % ("teslamate_charge_brief", "简报契约"))
+    bad.extend(brief_bad)
 
     fb_bad = check_feedback_items()
     for b in fb_bad:

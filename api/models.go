@@ -925,6 +925,25 @@ type ChargeStats struct {
 	Ranges []*ChargeStatsRange `json:"ranges"`
 }
 
+// ── 充电简报（服务端渲染好的标题 + 正文）────────────────────────────
+//
+// ⚠️ **v0.111.0**：给 Hermes / 飞书的**周期性**简报。
+// 判定与文案**都在服务端**（api/charge_brief.go）⇒ 推送脚本与 MCP 只转述
+// （三处各写一份文案，迟早漂 —— v0.76.0 / v0.78.0 都这么漂过）。
+type ChargeBrief struct {
+	// CarName 车名（如「爱车」）。
+	CarName string `json:"car_name"`
+	// PeriodLabel 区间标签（服务端这一份文案）。
+	PeriodLabel string `json:"period_label"`
+	// ServerTimezone 分日用的时区（如 "Asia/Shanghai"）。
+	ServerTimezone string `json:"server_timezone"`
+	// Title / Body 渲染好的简报：**可直接推给用户**。
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	// 聚合数字：与 ChargeStatsRange 同一份（内嵌 ⇒ JSON 里是平铺的键）。
+	ChargeStatsRange
+}
+
 type BatteryHealth struct {
 	CurrentCapacityKwh *float64 `json:"current_capacity_kwh"` // 最近一次满充实测容量
 	MaxCapacityKwh     *float64 `json:"max_capacity_kwh"`     // 记录中的最大实测值（仅供趋势参考，不是基准）

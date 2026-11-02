@@ -528,6 +528,65 @@ def teslamate_charge_stats(period: str = "7d") -> dict:
     return out
 
 
+@mcp.tool()
+def teslamate_charge_brief(period: str = "7d") -> dict:
+    """查**充电简报**：一段可以直接发给用户的短报告（标题 + 正文）+ 底下的结构化数字。
+
+    **什么时候用**：用户要「一份充电简报」「把充电情况总结一下」
+    「这周充了多少电，给我个总结」「发个充电周报」—— 都归它。
+
+    ⚠️ **标题与正文都是服务端的原文**（`/charge_brief` 渲染好的）——
+    本工具**不自己拼**（同一句话只能有一份，见 ADR #41）。
+    ⇒ 要发出去就直接用「标题」+「正文」，**别自己改写数字**。
+
+    ⚠️ **区间只有这四个**：`7d`（近 7 天）/ `30d`（近 30 天）/ `month`
+    （**本月 = 自然月**，**不是** 30 天）/ `all`（全部历史）。
+
+    ⚠️ **以「窗口起点 / 窗口终点」为准** —— 只说「近 30 天」不说边界，
+    用户没法核对「是哪 30 天」。
+
+    ⚠️ 分工：某一场的功率曲线 → `teslamate_charge_curve`；
+    历次明细 → `teslamate_charges`。
+    """
+    key = _CHARGE_RANGE_ALIAS.get(str(period).strip().lower())
+    if key is None:
+        return {
+            "错误": "区间只能是 7d / 30d / month / all",
+            "收到": period,
+        }
+    data = _get(f"/api/v1/cars/{CAR_ID}/charge_brief?period={key}")
+    if not isinstance(data, dict) or "error" in data:
+        return {"错误": "取不到充电简报", "详情": data}
+    tz = data.get("server_timezone") or "Asia/Shanghai"
+    out = {
+        # ⚠️ **原样转述**（ADR #41）：标题与正文都是服务端写的。
+        "标题": data.get("title") or "",
+        "正文": data.get("body") or "",
+        "区间": data.get("period_label") or _CHARGE_RANGE_CN.get(key, key),
+        "窗口起点": _fmt_tz(data.get("window_start"), tz),
+        "窗口终点": _fmt_tz(data.get("window_end"), tz),
+        "服务器时区": tz,
+        "场次": data.get("count"),
+        "充入(度)": data.get("total_kwh"),
+        "直流(度)": data.get("dc_kwh"),
+        "直流场次": data.get("dc_count"),
+        "交流(度)": data.get("ac_kwh"),
+        "交流场次": data.get("ac_count"),
+    }
+    # 平均时长：**没有样本就是没有**（服务端给 null）⇒ 不拿 0 充数。
+    if data.get("dc_avg_min") is not None:
+        out["直流平均(分钟)"] = data.get("dc_avg_min")
+    if data.get("ac_avg_min") is not None:
+        out["交流平均(分钟)"] = data.get("ac_avg_min")
+    lf = data.get("last_full")
+    if isinstance(lf, dict):
+        out["上次充满"] = "%s（%s%% → %s%%）" % (
+            _fmt_tz(lf.get("date"), tz), lf.get("from_soc"), lf.get("to_soc"))
+    else:
+        out["上次充满"] = "这个区间里没有充满过"
+    return out
+
+
 # ⚠️ **v0.78.0**：结局的**文案**只有服务端那一份（`verdict` / `detail`）。
 #
 # 原来这里还写了一份枚举 → 中文说明的映射表（`_OUTCOME_CN`）——

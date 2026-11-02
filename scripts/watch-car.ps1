@@ -51,7 +51,9 @@ param(
   [string]$CarName = '',      # 覆盖车名（省一次 /cars 请求）
   [int]$UnlockTimeoutMinutes = 30,   # 未锁车多久算问题
   [int]$WindowTimeoutMinutes = 30,   # 车窗未关多久算问题
-  [int]$FailThreshold = 3             # 连续失败几轮才推「服务挂了」
+  [int]$FailThreshold = 3,            # 连续失败几轮才推「服务挂了」
+  [string]$BriefFile = '',   # 从 JSON 文件读充电简报（自测用；不给就走 HTTP）
+  [switch]$BriefPushFail     # 测试钩子：模拟 Hermes 推送失败（自测用）
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,6 +82,23 @@ $ApiToken   = Get-EnvValue 'API_TOKEN'
 $CarId      = Get-EnvValue 'WATCH_CAR_ID' '1'
 $HermesTo   = Get-EnvValue 'WATCH_HERMES_TARGET' 'feishu'
 $HermesBin  = Get-EnvValue 'HERMES_BIN' (Join-Path $env:LOCALAPPDATA 'hermes\bin\hermes.exe')
+
+# ── 周期性充电简报（v0.111.0）────────────────────────────────────
+#
+# ⚠️ **分工**：这里管「**什么时候发**」（通知策略，与「开着多久才提醒」同类），
+# 服务端管「**这个区间的数是多少、正文怎么写**」（判定 + 文案）。
+# ⇒ 脚本**只转述**服务端的 title / body，不自己拼任何数字（ADR #41）。
+$BriefEnabled = Get-EnvValue 'WATCH_BRIEF_ENABLED' '1'
+$BriefPeriod  = Get-EnvValue 'WATCH_BRIEF_PERIOD' '7d'
+if ($BriefPeriod -notin @('7d', '30d', 'month', 'all')) { $BriefPeriod = '7d' }
+$BriefWeekday = 1
+$BriefHour    = 9
+$briefWdRaw = Get-EnvValue 'WATCH_BRIEF_WEEKDAY' '1'
+if ($briefWdRaw -match '^\d+$') { $BriefWeekday = [int]$briefWdRaw }
+if ($BriefWeekday -lt 1 -or $BriefWeekday -gt 7) { $BriefWeekday = 1 }
+$briefHourRaw = Get-EnvValue 'WATCH_BRIEF_HOUR' '9'
+if ($briefHourRaw -match '^\d+$') { $BriefHour = [int]$briefHourRaw }
+if ($BriefHour -lt 0 -or $BriefHour -gt 23) { $BriefHour = 9 }
 
 # ⚠️ DryRun / 自测模式**不要求**令牌与 Hermes 可执行文件存在 ——
 # 自测就是要能在没有 Hermes 的机器上跑。
@@ -290,6 +309,23 @@ function Get-SinceLocalText($iso) {
   } catch {
     return ''
   }
+}
+
+# 本槽位的「计划时刻」与槽位号（周期性简报用）。
+#
+# 槽位 = 计划时刻那天的日期（yyyy-MM-dd）⇒ 一周一个槽位，
+# 同一周里跑多少轮都撞同一个槽位 ⇒ 只推一次
+# （防告警风暴 —— v0.77.0 的洞 ①：旧版越过阈值后每一轮都推，实测推了 97 次）。
+#
+# ⚠️ 计划时刻算的是**本周**里的那一天（周一为一周之始）：
+#    没到点 ⇒ 不推；错过了点（机器当时关着）⇒ 补推一次
+#    （漏报比晚报好 —— 正文里带着窗口边界，晚一点也能核对）。
+function Get-BriefSlot([datetime]$now, [int]$weekday, [int]$hour) {
+  $dow = [int]$now.DayOfWeek        # .NET：周日=0 … 周六=6
+  $delta = ($dow + 6) % 7            # 距周一的天数（周一=0 … 周日=6）
+  $weekStart = $now.Date.AddDays(-$delta)
+  $dueAt = $weekStart.AddDays($weekday - 1).AddHours($hour)
+  return [pscustomobject]@{ DueAt = $dueAt; Slot = $dueAt.ToString('yyyy-MM-dd') }
 }
 
 # ── 告警判定与推送（统一上升沿）──────────────────────────────────
@@ -618,6 +654,71 @@ Update-Alert $alerted 'window_open_timeout' $windowTimeout `
   "开着的是：$windowText（自 $windowSinceText 起）。`n停在露天的话记得关窗。" `
   "✅ $CarName 车窗已关好" `
   "车窗状态恢复正常。"
+
+# ═════════════════════════════════════════════════════════════════
+# 五之二、周期性充电简报（v0.111.0）
+# ═════════════════════════════════════════════════════════════════
+#
+# 定时任务使命里有一格是「周期性健康报告」——
+# 这里把它落地：**到点就把一段充电简报推给用户**。
+#
+# ⚠️ **脚本只转述**：标题与正文都是服务端给的（api/charge_brief.go），
+#    这里**不自己拼**任何数字或文案（同一句话只能有一份，ADR #41）。
+try {
+  $briefOn = ($BriefEnabled -eq '1' -or $BriefEnabled -eq 'true' -or $BriefEnabled -eq 'yes')
+  if ($briefOn) {
+    $nowLocal = Get-Date
+    $slotInfo = Get-BriefSlot $nowLocal $BriefWeekday $BriefHour
+    $lastSlot = [string](Get-Prop $prev 'last_brief_slot' '')
+    if ($nowLocal -ge $slotInfo.DueAt -and $lastSlot -ne $slotInfo.Slot) {
+      $brief = $null
+      if ($BriefFile) {
+        try { $brief = Get-Content -LiteralPath $BriefFile -Raw -Encoding utf8 | ConvertFrom-Json }
+        catch { $brief = $null }
+      } else {
+        try {
+          $brief = Invoke-RestMethod -Uri "$ApiBase/api/v1/cars/$CarId/charge_brief?period=$BriefPeriod" `
+            -Headers @{ Authorization = "Bearer $ApiToken" } -TimeoutSec 15
+        } catch { $brief = $null }
+      }
+      if ($null -eq $brief) {
+        # 取不到 ⇒ **不推、也不记槽位** ⇒ 下一轮再试（没拿到就没告知）。
+        Write-LogQuiet "⏳ 充电简报取不到（下一轮再试）"
+      } else {
+        $bCount = 0
+        $c = Get-Prop $brief 'count' $null
+        if ($null -ne $c) { $bCount = [int]$c }
+        if ($bCount -le 0) {
+          # 窗口里没有充电记录 ⇒ **不推**（推了是噪音），
+          # 但**要记槽位** —— 否则每 5 分钟重试一次（告警风暴同款）。
+          Save-State @{ last_brief_slot = $slotInfo.Slot }
+          Write-LogQuiet "ℹ️ 充电简报：窗口内没有充电记录 ⇒ 不推送（已记槽位）"
+        } else {
+          $bTitle = [string](Get-Prop $brief 'title' '')
+          $bBody  = [string](Get-Prop $brief 'body' '')
+          if ($bTitle -and $bBody) {
+            $pushed = $false
+            if ($BriefPushFail) {
+              # 测试钩子：模拟 Hermes 推送失败（自测用）。
+              Write-LogQuiet "⚠️ [测试钩子] 模拟推送失败"
+            } else {
+              $pushed = Send-Hermes $bTitle $bBody
+            }
+            if ($pushed) {
+              Save-State @{ last_brief_slot = $slotInfo.Slot }
+              Write-LogQuiet "✅ 充电简报已推送（区间 $BriefPeriod，$bCount 次）"
+            }
+            # ⚠️ 推失败 ⇒ **不记槽位** ⇒ 下一轮重试（没送到 = 没告知）
+          } else {
+            Write-LogQuiet "⚠️ 充电简报缺标题或正文（服务端返回不完整）⇒ 不推送"
+          }
+        }
+      }
+    }
+  }
+} catch {
+  Write-LogQuiet "⚠️ 充电简报分支异常: $($_.Exception.Message)"
+}
 
 # ═════════════════════════════════════════════════════════════════
 # 六、存新状态（合并写）

@@ -145,6 +145,9 @@ func main() {
 	// ⚠️ v0.108.0（用户反馈 #27）：充电统计的三个区间（近 7 天 / 近 30 天 / 全部）。
 	//   区间口径与聚合都在服务端（App 只渲染）—— 理由见 api/charge_stats.go。
 	mux.HandleFunc("GET /api/v1/cars/{id}/charge_stats", auth(handleChargeStats))
+	// ⚠️ **v0.111.0**：充电简报（服务端渲染好的一段话）——
+	//   给 Hermes / 飞书的周期性推送用（判定与文案都在服务端，见 api/charge_brief.go）。
+	mux.HandleFunc("GET /api/v1/cars/{id}/charge_brief", auth(handleChargeBrief))
 	mux.HandleFunc("GET /api/v1/charges/{id}/curve", auth(handleChargeCurve))
 	mux.HandleFunc("GET /api/v1/cars/{id}/stats", auth(handleStats))
 	mux.HandleFunc("GET /api/v1/cars/{id}/battery", auth(handleBattery))
