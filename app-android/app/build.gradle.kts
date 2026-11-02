@@ -13,9 +13,10 @@ android {
         applicationId = "com.teslamate.app"
         minSdk = 26
         targetSdk = 35
-        // ⚠️ **v0.110.0**：App 改了（充电记录列表标出「只列最近 N 条」—— 卡片是全量）⇒ 版本号要涨。
-        versionCode = 120
-        versionName = "0.110.0"
+        // ⚠️ **v0.112.0**：App 改了（车况页「今天 / 近 7 天」两段各占一行）⇒ 版本号要涨。
+        //    上一轮 v0.111.0 是纯服务端发布（App 零改动 ⇒ code 不动，仍 120）。
+        versionCode = 121
+        versionName = "0.112.0"
     }
 
     buildTypes {
