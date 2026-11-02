@@ -690,7 +690,7 @@ fun StatusScreen(
                         LocationCard(st, settings, showMap) { showMap = !showMap }
 
                         // ⚠️ **v0.115.0**：这两格原来**并排写死**（两个 `weight(1f)`）
-                        // ⇒ 200% 下「31.5°C」要 **138dp**，而每格文字区只有 **130dp**
+                        // ⇒ 200% 下「31.5°C」要 **138.38dp**，而每格文字区只有 **130dp**
                         // ⇒ 放不下 ⇒ `maxLines=2` + `Ellipsis` 把**读数裁掉**。
                         // ⇒ 现在**列数由宽度预算决定**（`InfoTileRow`）：放得下并排，放不下单列。
                         val climateText = when (st.is_climate_on) {
@@ -2230,7 +2230,7 @@ private fun ChargeOutcomeCard(oc: com.teslamate.app.ChargeOutcome) {
                 color = accents.warnAmberText,
             )
             // ⚠️ **v0.115.0**：这三格原来**并排写死** ⇒ 每格文字区只有 **64dp**
-            // （卡片内容区 296dp ÷ 3 − 内边距 28dp），而「12.3 度」在 100% 下就要 **63dp**
+            // （卡片内容区 296dp ÷ 3 − 内边距 28dp），而「12.3 度」在 100% 下就要 **63.07dp**
             // ⇒ **只剩 1dp 余量** ⇒ **110% 就开始坏**（Android 的「大字体」档）。
             // ⇒ 现在**列数由宽度预算决定**（`InfoTileRow`）：放得下并排，放不下单列。
             val outcomeTiles = mutableListOf(
@@ -2490,17 +2490,24 @@ private fun ChargeNowCard(c: ActiveCharge) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            // ⚠️ **v0.115.0**：同 ChargeOutcomeCard 那一行 —— 三格并排时每格只有 64dp，
-            // 「12.3 度」在 100% 下就要 63dp ⇒ 110% 就开始折行/裁切
-            // ⇒ 列数改由**宽度预算**决定（`InfoTileRow`）。
+            // ⚠️ **v0.117.0**：这一行原来**三格并排**（每格文字区只有 **64dp**），
+            // 而 `charger_power_kw` 是 **Double** ⇒ 值**恒带小数**（「120.0 kW」）
+            // ⇒ 按估算器要 **4.65em × 17sp = 79.05dp** > 64dp
+            // ⇒ `infoTileColumns` **永远**判「放不下」⇒ **整行永远塌成三行单列**
+            // ⇒ 那张卡比预期高 3 倍（v0.115.0 改列数判定时引进的副作用）。
+            //
+            // ⇒ 现在：「功率 | 已充入」两格并排（每格 **115dp**）+「当前电量」独占一行整宽
+            //   （同 ADR #45 的模式）⇒ 100% 与 200% 都放得下，
+            //   而且**版面不再随数据跳**（功率是 120 还是 79.5 都是两格）。
             InfoTileRow(
                 listOf(
                     "功率" to infoTileKwValue(c.charger_power_kw),
                     "已充入" to infoTileKwhValue(c.energy_added_kwh),
-                    "当前电量" to "${c.battery_level ?: "—"}%",
                 ),
                 gapDp = 10.dp,
             )
+            Spacer(Modifier.height(8.dp))
+            InfoTileRow(listOf("当前电量" to "${c.battery_level ?: "—"}%"))
         }
     }
 }

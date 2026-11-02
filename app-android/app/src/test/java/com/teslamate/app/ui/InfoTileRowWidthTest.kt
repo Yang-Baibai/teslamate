@@ -14,8 +14,8 @@ import org.junit.Test
  *
  * | 行 | 格数 | 内容区 | 每格文字区 | 最宽的值 | 100% | 200% |
  * |---|---|---|---|---|---|---|
- * | 页面级（空调 / 车内温度、车外温度 / 功率） | 2 | 328dp | **130dp** | 「31.5°C」 | 69dp ✓ | **138dp ✗** |
- * | 卡片里（充到 / 当时上限 / 充入） | 3 | 296dp | **64dp** | 「12.3 度」 | 63dp ✓ | **126dp ✗** |
+ * | 页面级（空调 / 车内温度、车外温度 / 功率） | 2 | 328dp | **130dp** | 「31.5°C」 | 69.19dp ✓ | **138.38dp ✗** |
+ * | 卡片里（充到 / 当时上限 / 充入） | 3 | 296dp | **64dp** | 「12.3 度」 | 63.07dp ✓ | **126.14dp ✗** |
  *
  * ⚠️ **三格那一行在 100% 下只剩 1dp 余量** ⇒ 110% 就开始坏（Android 的「大字体」档）
  * ⇒ 这不是「只有 200% 才坏」的问题。
@@ -53,8 +53,8 @@ class InfoTileRowWidthTest {
     /**
      * 200% 字号下**必须单列**（每格独占整宽）。
      *
-     * ⚠️ 页面级：「31.5°C」要 **138dp** > 130dp；
-     * ⚠️ 卡片里：「12.3 度」要 **126dp** > 64dp。
+     * ⚠️ 页面级：「31.5°C」要 **138.38dp** > 130dp；
+     * ⚠️ 卡片里：「12.3 度」要 **126.14dp** > 64dp。
      */
     @Test
     fun `两倍字号下必须单列`() {
@@ -73,7 +73,7 @@ class InfoTileRowWidthTest {
     /**
      * ⚠️ **卡片里那三格在 110% 就开始坏**（不是只有 200% 才坏）。
      *
-     * 「12.3 度」在 100% 下要 63dp，而每格文字区只有 **64dp** ⇒ 只剩 1dp 余量
+     * 「12.3 度」在 100% 下要 63.07dp，而每格文字区只有 **64dp** ⇒ 只剩 0.93dp 余量
      * ⇒ 110% 时 69.4dp > 64dp ⇒ 必须单列。
      */
     @Test
@@ -84,30 +84,35 @@ class InfoTileRowWidthTest {
             infoTileColumns(cardTitles, cardValues, 1.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
         )
         assertEquals(
-            "110%% 下「12.3 度」要 69dp > 64dp ⇒ 必须单列",
+            "110%% 下「12.3 度」要 69.4dp > 64dp ⇒ 必须单列",
             1,
             infoTileColumns(cardTitles, cardValues, 1.1f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
         )
     }
 
     /**
-     * **负温更早坏**：负号多占一个字宽 ⇒ 150% 还并排、170% 就必须单列。
+     * ⚠️ **v0.117.0 更正**：负温**不比**正温早坏 ——
+     * 「-3.5°C」按估算器要 **68.00dp**（负号 0.55em，**比数字 0.62em 还窄**）
+     * ⇒ 反而比「31.5°C」的 69.19dp **更窄**。
+     * ⇒ 页面级那两格（每格 130dp）：**190% 还并排**，**200% 才单列**。
      *
-     * 「-3.5°C」在 100% 下要 79dp ⇒ 170% 时 133.5dp > 130dp。
+     * ⚠️ **上一轮这条断言是假绿**：它传的是**只有一格**的列表，
+     * 而 `infoTileColumns` 对单格**永远**返回 1 ⇒ 断言恒成立、什么也没测到。
+     * ⇒ 现在用**真实的两格行**来测（空调 + 车内温度）。
      */
     @Test
-    fun `负温比正温更早坏`() {
-        val titles = listOf("车内温度")
-        val values = listOf("-3.5°C")
+    fun `页面级那两格到190还并排`() {
+        val titles = listOf("空调", "车内温度")
+        val values = listOf("开启", "-3.5°C")
         assertEquals(
-            "150%% 下「-3.5°C」要 118dp ≤ 130dp ⇒ 还并排",
-            1,
-            infoTileColumns(titles, values, 1.5f, INFO_TILE_PAGE_CONTENT_DP, INFO_TILE_GAP_PAGE_DP),
+            "190%% 下「-3.5°C」要 129.2dp ≤ 130dp ⇒ 还并排",
+            2,
+            infoTileColumns(titles, values, 1.9f, INFO_TILE_PAGE_CONTENT_DP, INFO_TILE_GAP_PAGE_DP),
         )
         assertEquals(
-            "170%% 下「-3.5°C」要 134dp > 130dp ⇒ 必须单列",
+            "200%% 下「-3.5°C」要 136.0dp > 130dp ⇒ 必须单列",
             1,
-            infoTileColumns(titles, values, 1.7f, INFO_TILE_PAGE_CONTENT_DP, INFO_TILE_GAP_PAGE_DP),
+            infoTileColumns(titles, values, 2.0f, INFO_TILE_PAGE_CONTENT_DP, INFO_TILE_GAP_PAGE_DP),
         )
     }
 
@@ -227,6 +232,54 @@ class InfoTileRowWidthTest {
             "「85%%」在 200%% 下要 %.1fdp，整宽文字区只有 %.0fdp ⇒ 放不下"
                 .format(needed, INFO_TILE_CARD_CONTENT_DP - INFO_TILE_PADDING_H_DP),
             needed <= INFO_TILE_CARD_CONTENT_DP - INFO_TILE_PADDING_H_DP,
+        )
+    }
+
+    /**
+     * **v0.117.0**：「充电中」那两格（功率 / 已充入）。
+     *
+     * ⚠️ 功率是 **Double** ⇒ 恒带小数（「120.0 kW」= **79.05dp**）
+     * ⇒ 三格并排时每格只有 64dp ⇒ **放不下** ⇒ 那一行**永远**塌成三行单列。
+     * ⇒ 现在两格并排（每格 115dp）⇒ 100%~140% 都并排、150% 起单列。
+     */
+    @Test
+    fun `充电中那两格在正常字号下并排`() {
+        val titles = listOf("功率", "已充入")
+        val values = listOf(infoTileKwValue(120.0), infoTileKwhValue(12.34))
+        assertEquals(
+            "100%% 下「120.0 kW」要 79.1dp ≤ 115dp ⇒ 必须并排",
+            2,
+            infoTileColumns(titles, values, 1.0f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+        )
+        assertEquals(
+            "140%% 下「120.0 kW」要 110.7dp ≤ 115dp ⇒ 还是并排",
+            2,
+            infoTileColumns(titles, values, 1.4f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+        )
+        assertEquals(
+            "150%% 下「120.0 kW」要 118.6dp > 115dp ⇒ 必须单列",
+            1,
+            infoTileColumns(titles, values, 1.5f, INFO_TILE_CARD_CONTENT_DP, INFO_TILE_GAP_CARD_DP),
+        )
+    }
+
+    /**
+     * ⚠️ **钉住那个真洞**：三格并排时「120.0 kW」放不下 64dp
+     * ⇒ `infoTileColumns` 永远判单列 ⇒ 那张卡永远高 3 倍。
+     * ⇒ 这条断言是**修法的前提**（不是修法本身 ⇒ 修法由界面代码与闸门 25 钉）。
+     */
+    @Test
+    fun `三格并排放不下充电功率`() {
+        assertEquals(
+            "100%% 下三格并排时每格只有 64dp，而「120.0 kW」要 79.1dp ⇒ 必须单列",
+            1,
+            infoTileColumns(
+                listOf("功率", "已充入", "当前电量"),
+                listOf(infoTileKwValue(120.0), infoTileKwhValue(12.34), "85%"),
+                1.0f,
+                INFO_TILE_CARD_CONTENT_DP,
+                INFO_TILE_GAP_CARD_DP,
+            ),
         )
     }
 

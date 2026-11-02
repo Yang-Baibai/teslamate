@@ -2805,9 +2805,20 @@ if direct_labels:
                     % (direct_labels,))
 
 # ②′ 车速 / 功率 / 电量 三格都必须走 InfoTileRow( ⇒ 都在宽度预算的判定里
-for label in ('车速', '功率', '电量'):
+for label in ('车速', '功率', '电量', '已充入', '当前电量'):
     if ('"%s" to ' % label) not in screen:
         problems.append('「%s」那一格没有走 InfoTileRow( ⇒ 它不在宽度预算的判定里' % label)
+
+# ②″ 「充电中」那一行必须是**两格并排 + 当前电量独占一行**（v0.117.0）
+#
+# ⚠️ 功率是 **Double** ⇒ 恒带小数（「120.0 kW」= 79.05dp）
+# ⇒ 三格并排时每格只有 64dp ⇒ **放不下** ⇒ `infoTileColumns` 永远判单列
+# ⇒ 那张卡永远高 3 倍 ⇒ 必须两格并排 + 电量另起一行（ADR #45 的模式）。
+if 'InfoTileRow(listOf("当前电量"' not in screen:
+    problems.append('「当前电量」没有独占一行（InfoTileRow(listOf("当前电量"…)）'
+                    ' ⇒ 「充电中」那三格会永远塌成三行单列（功率恒带小数 ⇒ 79.05dp > 64dp）')
+if not re.search(r'listOf\(\s*"功率" to .*?"已充入" to', screen, re.S):
+    problems.append('「功率」与「已充入」不在同一个 listOf 里 ⇒ 「充电中」那行不是两格并排')
 
 # ③ 判定必须是宽度驱动的
 if 'fun infoTileColumns(' not in row:
@@ -2879,6 +2890,69 @@ if problems:
 print('车况页那些 InfoTile 行：列数宽度驱动、数与单位绑住（每格预算 130dp / 64dp）')
 PYEOF
 if [ $? -eq 0 ]; then ok "车况页 InfoTile 行（大字号改单列 + 单位绑不换行空格）"; else fail "车况页 InfoTile 行"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 26：文档里引用的宽度数字必须与**单测钉死的**一致 ──────────────
+#
+# ⚠️ **v0.117.0**：这个闸门是因为「手算的宽度写进文档」出的事 ——
+#   v0.115.0 段里「「42 km/h」≈ 63.6dp」是手算的（拉丁字母按 0.55em 算），
+#   而 App 自己的估算器给的是 **69.19dp** ⇒ 差 5.19dp
+#   ⇒ 差点把一个「100% 就存在的 bug」当成「运气问题」放过去。
+# ⇒ 所以：**宽度一律用估算器算（或让单测算），别手算**；
+#   写进文档的每个宽度数字，必须在**单测**里有同名断言（两边出现同一个数）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+DOCS = [ROOT / 'docs/CHANGELOG.md', ROOT / 'docs/adr.md']
+PIN = ROOT / 'app-android/app/src/test/java/com/teslamate/app/ui/WidthBudgetPinTest.kt'
+
+if not PIN.exists():
+    print('找不到 %s —— 这道闸门要跟着改' % PIN)
+    sys.exit(1)
+
+pin = PIN.read_text(encoding='utf-8')
+docs = ''.join(p.read_text(encoding='utf-8') for p in DOCS if p.exists())
+
+# (数字, 它是什么) —— 每个都必须同时出现在**单测**（钉死）与**文档**（引用）里
+PAIRS = [
+    ('69.19', '「42 km/h」/「31.5°C」'),
+    ('68.00', '「-3.5°C」（v0.117.0 更正：负号 0.55em，比正温还窄）'),
+    ('63.07', '「12.3 度」'),
+    ('48.62', '「11 kW」'),
+    ('79.05', '「120.0 kW」（充电功率恒带小数 ⇒ 超过三等分的 64dp）'),
+    ('30.43', '「85%」'),
+    ('52.00', '标签「当时上限」@13sp'),
+    ('119.00', '「3834.6 公里」@20sp'),
+    ('132.75', '「近 7 天 243.3 公里」@15sp'),
+    ('164.25', '同一句的保守口径（NBSP 按 1.0em）'),
+    ('172.95', '「今天 4.4 公里 · 15 分钟」@15sp'),
+    ('189.93', '续航结论句 @13sp'),
+    ('105.00', '「方向盘加热开关」@15sp'),
+]
+
+problems = []
+pin_lines = pin.splitlines()
+for num, what in PAIRS:
+    # ⚠️ **必须出现在断言行里** —— 只查「文件里出现过这个数」是**假绿**：
+    #    注释里提一句就能满足 ⇒ 探针把断言改坏了闸门照样绿（v0.117.0 实测）。
+    if not any(('assertEquals(' in ln and num in ln) for ln in pin_lines):
+        problems.append('单测里没有把 %s 钉成断言（%s）⇒ 估算器变了没人知道' % (num, what))
+    if num not in docs:
+        problems.append('文档里没有引用 %s（%s）⇒ 文档与代码对不上' % (num, what))
+
+if problems:
+    print('文档引用的宽度数字与单测钉死的不一致 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 宽度一律用 estimateTextWidthDpWithNbsp 算（或让单测算），别手算')
+    print('   ⇒ 改了估算器 ⇒ 同步改单测与文档（两边都出现同一个数）')
+    sys.exit(1)
+
+print('文档引用的 %d 个宽度数字与单测钉死的一致' % len(PAIRS))
+PYEOF
+if [ $? -eq 0 ]; then ok "文档引用的宽度数字 = 单测钉死的（别手算）"; else fail "文档引用的宽度数字与单测不一致"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"

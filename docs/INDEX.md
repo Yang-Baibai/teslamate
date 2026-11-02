@@ -68,7 +68,7 @@ python mcp/check_tool_fields.py        # 顺带确认工具字段没漂
 
 # ③ 验证（**全绿才发版**）
 bash scripts/server-gates.sh            # Go 语法 / 密钥扫描 / 仓库卫生
-bash scripts/client-gates.sh            # 客户端 25 道闸门
+bash scripts/client-gates.sh            # 客户端 26 道闸门
 bash scripts/smoke.sh                   # 冒烟（49 项）
 bash scripts/hermes-gates.sh           # Hermes 链路闸门（服务端↔MCP↔推送脚本）
 python mcp/check_tool_fields.py         # MCP 字段自检
