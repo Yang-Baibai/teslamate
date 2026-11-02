@@ -689,19 +689,22 @@ fun StatusScreen(
                         // **信息一点没删，只是把高频答案提前了**。
                         LocationCard(st, settings, showMap) { showMap = !showMap }
 
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            InfoTile(
-                                "空调",
-                                // 车没上报时是 null，显示"关闭"会骗人 —— 必须区分「未知」
-                                when (st.is_climate_on) {
-                                    true -> "开启"
-                                    false -> "关闭"
-                                    null -> "未知"
-                                },
-                                Modifier.weight(1f),
-                            )
-                            InfoTile("车内温度", st.inside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
+                        // ⚠️ **v0.115.0**：这两格原来**并排写死**（两个 `weight(1f)`）
+                        // ⇒ 200% 下「31.5°C」要 **138dp**，而每格文字区只有 **130dp**
+                        // ⇒ 放不下 ⇒ `maxLines=2` + `Ellipsis` 把**读数裁掉**。
+                        // ⇒ 现在**列数由宽度预算决定**（`InfoTileRow`）：放得下并排，放不下单列。
+                        val climateText = when (st.is_climate_on) {
+                            // 车没上报时是 null，显示"关闭"会骗人 —— 必须区分「未知」
+                            true -> "开启"
+                            false -> "关闭"
+                            null -> "未知"
                         }
+                        InfoTileRow(
+                            listOf(
+                                "空调" to climateText,
+                                "车内温度" to (st.inside_temp?.fmt(1, "°C") ?: "—"),
+                            ),
+                        )
 
                         // 能量条 —— 特斯拉最易识别的视觉母题，充电中转绿
                         EnergyBar(
@@ -723,22 +726,24 @@ fun StatusScreen(
                         st.charge_outcome?.takeIf { it.worthShowing() }?.let { ChargeOutcomeCard(it) }
                         st.active_drive?.let { DriveNowCard(it, st) }
 
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            InfoTile("车外温度", st.outside_temp?.fmt(1, "°C") ?: "—", Modifier.weight(1f))
-                            // ⚠️ v0.14.0（新手车主 P2-2）：**功率为 0 时整格隐藏**。
-                            //
-                            // 车停着的时候功率恒为 0，这一格没有任何信息量，
-                            // 却占掉半个信息块的位置。
-                            //
-                            // ⚠️ 判据用「功率值就是 0」而不是「速度为空」——
-                            // TeslaMate 停着时记的是 `speed = 0`（不是 null），
-                            // 所以按 speed 判会漏掉（实测「功率 0 kW」照样显示）。
-                            // 但「功率未知（null）」要显示「—」，不能一起藏掉。
-                            val powerIdle = st.power != null && st.power == 0
-                            if (!powerIdle) {
-                                InfoTile("功率", st.power?.let { "$it kW" } ?: "—", Modifier.weight(1f))
-                            }
+                        // ⚠️ v0.14.0（新手车主 P2-2）：**功率为 0 时整格隐藏**。
+                        //
+                        // 车停着的时候功率恒为 0，这一格没有任何信息量，
+                        // 却占掉半个信息块的位置。
+                        //
+                        // ⚠️ 判据用「功率值就是 0」而不是「速度为空」——
+                        // TeslaMate 停着时记的是 `speed = 0`（不是 null），
+                        // 所以按 speed 判会漏掉（实测「功率 0 kW」照样显示）。
+                        // 但「功率未知（null）」要显示「—」，不能一起藏掉。
+                        val powerIdle = st.power != null && st.power == 0
+                        // ⚠️ **v0.115.0**：同上面那一行 —— 列数由宽度预算决定（`InfoTileRow`）。
+                        val outdoorTiles = mutableListOf(
+                            "车外温度" to (st.outside_temp?.fmt(1, "°C") ?: "—"),
+                        )
+                        if (!powerIdle) {
+                            outdoorTiles += "功率" to infoTileKwValue(st.power)
                         }
+                        InfoTileRow(outdoorTiles)
                         // ⚠️ v0.8.5（效率车主复核）删掉「海拔 | 可用电量」两块：
                         //  · 海拔一年用一次，且 data-dictionary 自己写着「深圳平原常为 null」
                         //  · 「可用电量」和电量环是同一个数的两半（battery_level vs
@@ -2224,20 +2229,25 @@ private fun ChargeOutcomeCard(oc: com.teslamate.app.ChargeOutcome) {
                 fontWeight = FontWeight.Bold,
                 color = accents.warnAmberText,
             )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                InfoTile("充到", oc.end_soc?.let { "$it%" } ?: "—", Modifier.weight(1f))
-                // ⚠️ **v0.79.0**：这里读的是**那场会话当时**的上限
-                //    （`session_limit_soc`），**不是**现在的上限（`limit_soc`）。
-                //
-                // 拿现在的上限跟那次的结束电量并排显示，等于在暗示
-                // 「当时差了多少」—— 而我们并不知道「当时的上限是多少」
-                // （上限会变，方向还不确定）。读不到就整格不出现，
-                // 按「宁删勿留」：两个有数的格子比三个里有一个是空的更好看。
-                oc.session_limit_soc?.let { lim ->
-                    InfoTile("当时上限", "$lim%", Modifier.weight(1f))
-                }
-                InfoTile("充入", oc.energy_added_kwh?.fmt(1, " 度") ?: "—", Modifier.weight(1f))
+            // ⚠️ **v0.115.0**：这三格原来**并排写死** ⇒ 每格文字区只有 **64dp**
+            // （卡片内容区 296dp ÷ 3 − 内边距 28dp），而「12.3 度」在 100% 下就要 **63dp**
+            // ⇒ **只剩 1dp 余量** ⇒ **110% 就开始坏**（Android 的「大字体」档）。
+            // ⇒ 现在**列数由宽度预算决定**（`InfoTileRow`）：放得下并排，放不下单列。
+            val outcomeTiles = mutableListOf(
+                "充到" to (oc.end_soc?.let { "$it%" } ?: "—"),
+            )
+            // ⚠️ **v0.79.0**：这里读的是**那场会话当时**的上限
+            //    （`session_limit_soc`），**不是**现在的上限（`limit_soc`）。
+            //
+            // 拿现在的上限跟那次的结束电量并排显示，等于在暗示
+            // 「当时差了多少」—— 而我们并不知道「当时的上限是多少」
+            // （上限会变，方向还不确定）。读不到就整格不出现，
+            // 按「宁删勿留」：两个有数的格子比三个里有一个是空的更好看。
+            oc.session_limit_soc?.let { lim ->
+                outcomeTiles += "当时上限" to "$lim%"
             }
+            outcomeTiles += "充入" to infoTileKwhValue(oc.energy_added_kwh)
+            InfoTileRow(outcomeTiles, gapDp = 10.dp)
         }
     }
 }
@@ -2480,11 +2490,17 @@ private fun ChargeNowCard(c: ActiveCharge) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                InfoTile("功率", "${c.charger_power_kw ?: "—"} kW", Modifier.weight(1f))
-                InfoTile("已充入", c.energy_added_kwh?.fmt(1, " 度") ?: "—", Modifier.weight(1f))
-                InfoTile("当前电量", "${c.battery_level ?: "—"}%", Modifier.weight(1f))
-            }
+            // ⚠️ **v0.115.0**：同 ChargeOutcomeCard 那一行 —— 三格并排时每格只有 64dp，
+            // 「12.3 度」在 100% 下就要 63dp ⇒ 110% 就开始折行/裁切
+            // ⇒ 列数改由**宽度预算**决定（`InfoTileRow`）。
+            InfoTileRow(
+                listOf(
+                    "功率" to infoTileKwValue(c.charger_power_kw),
+                    "已充入" to infoTileKwhValue(c.energy_added_kwh),
+                    "当前电量" to "${c.battery_level ?: "—"}%",
+                ),
+                gapDp = 10.dp,
+            )
         }
     }
 }
@@ -2522,6 +2538,15 @@ private fun DriveNowCard(d: com.teslamate.app.ActiveDrive, st: CarStatus) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            // ⚠️ **v0.115.0：本轮不动这一行**（登记在案的例外，客户端闸门 25 会盯着）。
+            //
+            // 这一行三格 ⇒ 每格文字区只有 **64dp**，而「42 km/h」**真实**宽度 ≈ 63.6dp
+            // ⇒ **只剩 0.4dp 余量** ⇒ 又是「刚好放得下是运气不是结构」那类问题。
+            // 但本轮改布局会让 100% 的版面变啰嗦（这张卡会高 3 倍）⇒ 列为**下一轮手术点**。
+            //
+            // ⚠️ 这里**故意保留普通空格**（不用不换行空格）：
+            // 放不下时「42」/「km/h」**折行**（数还在）比被**裁掉**（单位消失）好
+            // ⇒ **先改布局、再上 NBSP**（顺序不能反）。
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 InfoTile("车速", st.speed?.let { "$it km/h" } ?: "—", Modifier.weight(1f))
                 InfoTile("功率", st.power?.let { "$it kW" } ?: "—", Modifier.weight(1f))

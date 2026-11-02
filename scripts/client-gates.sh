@@ -2725,6 +2725,156 @@ PYEOF
 if [ $? -eq 0 ]; then ok "「最近 30 天」四格指标网格（列数宽度驱动 + 文案单一事实源）"; else fail "「最近 30 天」四格指标网格"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 25：车况页那些 **InfoTile 行**的列数不许写死（大字号要改单列）────
+#
+# ⚠️ **v0.115.0**
+#
+# 那些格子原来**并排写死**（`Row` + 固定 `weight(1f)`），每格的值放不下时靠
+# `maxLines = 2` + `Ellipsis` 硬扛 ⇒ **读数被裁掉**。
+#
+# 宽度预算（**最窄**的常见屏 360dp）：
+#   · 页面级两格（空调 / 车内温度、车外温度 / 功率）：内容区 328dp ⇒ 每格文字区 **130dp**
+#     而「31.5°C」在 200% 下要 **138dp** ⇒ 放不下；
+#   · 卡片里三格（充到 / 当时上限 / 充入、功率 / 已充入 / 当前电量）：
+#     内容区 296dp ⇒ 每格文字区 **64dp**，而「12.3 度」在 100% 下就要 **63dp**
+#     ⇒ **只剩 1dp 余量** ⇒ 110% 就开始坏。
+#
+# ⇒ 正解是**换布局**而不是压文案（ADR #39 / #43）：列数由**宽度预算**决定
+#    （`infoTileColumns`）⇒ 放得下并排、放不下单列（每格独占整宽）。
+#
+# ⇒ 这道闸门守**结构**：
+#   ① `StatusScreen.kt` 必须走 `InfoTileRow(`（统一那条路）；
+#   ② `StatusScreen.kt` 里**不许**再直接摆 `InfoTile(`（不许有第二条路）；
+#   ③ `InfoTileRow.kt` 里必须有 `infoTileColumns(`，且它读了 `fontScale`
+#      并按**每格预算**比较（不许写死列数）；
+#   ④ **每一处**「数 + 单位」之间都必须是不换行空格（NBSP）
+#      —— 普通空格是断行机会 ⇒ 折行会把「12.3」和「度」拆开；
+#   ⑤ 宽度预算常量不许被改（改大 = 把「放不下」藏起来）。
+#
+# ⚠️ 阈值本身（110% / 170% / 200% 各档）由 **JVM 单测** `InfoTileRowWidthTest`
+#    钉住 —— 静态闸门看不见实际渲染宽度。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui')
+SCREEN = UI / 'StatusScreen.kt'
+ROW = UI / 'InfoTileRow.kt'
+for p in (SCREEN, ROW):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace')
+
+
+def strip_kt_comments(src):
+    """剥掉 Kotlin 注释 —— 说明文字里提到被禁的写法不算违规（否则假红）。"""
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    src = re.sub(r'//[^\n]*', '', src)
+    return src
+
+
+screen = strip_kt_comments(read(SCREEN))
+row = strip_kt_comments(read(ROW))
+
+problems = []
+
+# ① 统一那条路
+if 'InfoTileRow(' not in screen:
+    problems.append('StatusScreen.kt 没有调用 InfoTileRow( ⇒ 那些格子还是各自摆的 ⇒ '
+                    '列数写死 ⇒ 大字号下读数被裁')
+
+# ② 直接摆 InfoTile( 的地方：**只许剩「行驶中」那一行**（登记在案的例外）
+#
+# ⚠️ **v0.115.0 留下的例外**：车况页「行驶中」卡那一行（车速 / 功率 / 电量）本轮**没改** ——
+#    它的「42 km/h」在 100% 下**真实**宽度 ≈ 63.6dp，而每格文字区只有 **64dp**
+#    ⇒ **只剩 0.4dp 余量**（又是「刚好放得下」那类运气）
+#    ⇒ 改布局会让 100% 的版面变啰嗦（那张卡会高 3 倍）⇒ 列为**下一轮手术点**。
+#    ⇒ **棘轮**：例外只许变少 —— 下一轮改完 ⇒ **删掉这条豁免**。
+#    ⚠️ 那一行的值**故意不用**不换行空格：放不下时「42」/「km/h」折行（数还在）
+#    比被**裁掉**（单位消失）好 ⇒ **先改布局、再上 NBSP**（顺序不能反）。
+direct_labels = re.findall(r'InfoTile\s*\(\s*"([^"]+)"', screen)
+expected = ['车速', '功率', '电量']
+if sorted(direct_labels) != sorted(expected):
+    problems.append('StatusScreen.kt 里直接摆 InfoTile( 的地方是 %r，应只剩「行驶中」那一行 %r '
+                    '⇒ 其余的行都必须走 InfoTileRow( ⇒ 大字号下那些行又会被裁'
+                    % (direct_labels, expected))
+
+# ③ 判定必须是宽度驱动的
+if 'fun infoTileColumns(' not in row:
+    problems.append('InfoTileRow.kt 里找不到 fun infoTileColumns( —— 规则搬家了？')
+else:
+    m = re.search(r'fun\s+infoTileColumns\s*\(', row)
+    tail = row[m.end():m.end() + 900]
+    if 'fontScale' not in tail:
+        problems.append('infoTileColumns() 没有读 fontScale ⇒ 列数与字号无关')
+    if 'INFO_TILE_PADDING_H_DP' not in tail:
+        problems.append('infoTileColumns() 的每格预算没有扣掉 InfoTile 内边距'
+                        '（INFO_TILE_PADDING_H_DP）⇒ 预算算大了 ⇒ 「放不下」被藏起来')
+    # ⚠️ 必须真的拿**最宽的值**和**每格预算**比较 —— 只查「用了某个常量」不够：
+    #    把判定改成写死的列数（`return n`）也必须报红。
+    if not re.search(r'widest\s*<=\s*textDp', tail):
+        problems.append('infoTileColumns() 没有拿「最宽的值」和「每格预算」比较 ⇒ 列数被写死了')
+
+# ④ 数与单位之间必须是不换行空格 —— **逐处**（两个构造函数各查一次）
+#
+# ⚠️ **只查「文件里有没有出现过 NBSP」是不够的**：把其中一处换成普通空格，
+#    闸门照样绿（另一处还在）⇒ **假绿** ⇒ 必须逐处查。
+for fn, unit in (('infoTileKwhValue', '度'), ('infoTileKwValue', 'kW')):
+    m = re.search(r'fun\s+%s\s*\(' % fn, row)
+    if not m:
+        problems.append('InfoTileRow.kt 里找不到 %s() —— 事实源被改名了？' % fn)
+        continue
+    body = row[m.end():m.end() + 400].split('\n\n')[0]
+    if 'NBSP' not in body:
+        problems.append('%s() 里没有用不换行空格绑住值与单位 ⇒ '
+                        '放不下时数与单位会被折开' % fn)
+        continue
+    idx = body.find(unit)
+    prefix = body[max(0, idx - 8):idx] if idx >= 0 else ''
+    if idx < 0 or not prefix.endswith('${NBSP}'):
+        problems.append('%s() 里「%s」前面不是 ${NBSP}（%r）⇒ 数与单位会被折开'
+                        % (fn, unit, prefix))
+
+# 界面里不许再出现「数 + 普通空格 + 单位」的字面量
+for lit in ('" 度"', '" kW"'):
+    if lit in screen:
+        problems.append('StatusScreen.kt 里还有字面量 %s ⇒ '
+                        '数与单位之间是**普通空格**（断行机会）⇒ 会被折开' % lit)
+
+# ⑤ 宽度预算不许被改（改大 = 把「放不下」藏起来）
+budgets = (
+    ('INFO_TILE_PAGE_CONTENT_DP', 328.0),
+    ('INFO_TILE_CARD_CONTENT_DP', 296.0),
+    ('INFO_TILE_PADDING_H_DP', 28.0),
+    ('INFO_TILE_VALUE_SP', 17.0),
+    ('INFO_TILE_LABEL_SP', 13.0),
+)
+for name, want in budgets:
+    m = re.search(name + r'\s*=\s*([0-9.]+)f', row)
+    if not m:
+        problems.append('InfoTileRow.kt 里找不到 %s ⇒ 这道闸门要跟着改' % name)
+    elif abs(float(m.group(1)) - want) > 0.01:
+        problems.append('%s = %s，应为 %s ⇒ 改它就把「放不下」藏起来了'
+                        % (name, m.group(1), want))
+
+if problems:
+    print('车况页那些 InfoTile 行的结构被改坏了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 列数由宽度预算决定（infoTileColumns）：放得下并排，放不下单列')
+    print('   ⇒ 数与单位用不换行空格绑住；界面只走 InfoTileRow( 这一条路')
+    print('   ⇒ 阈值（110% / 170% / 200% 各档）由 JVM 单测 InfoTileRowWidthTest 钉住')
+    sys.exit(1)
+
+print('车况页那些 InfoTile 行：列数宽度驱动、数与单位绑住（每格预算 130dp / 64dp）')
+PYEOF
+if [ $? -eq 0 ]; then ok "车况页 InfoTile 行（大字号改单列 + 单位绑不换行空格）"; else fail "车况页 InfoTile 行"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
