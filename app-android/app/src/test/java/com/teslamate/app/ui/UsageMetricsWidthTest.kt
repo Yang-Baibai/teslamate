@@ -69,8 +69,8 @@ class UsageMetricsWidthTest {
         val today = usageTodayLine(summary)
         val week = usageWeekLine(summary)
         val sideBySide =
-            estimateUsageWidthDp(today.joined, bodyMediumSp) +
-                estimateUsageWidthDp(week.joined, bodyMediumSp)
+            estimateTextWidthDpWithNbsp(today.joined, bodyMediumSp) +
+                estimateTextWidthDpWithNbsp(week.joined, bodyMediumSp)
         assertTrue(
             "两段并排要 ${sideBySide}dp，必须放不下 ${USAGE_ROW_CONTENT_DP}dp —— " +
                 "放得下就不必换布局，这次修复就没有依据",

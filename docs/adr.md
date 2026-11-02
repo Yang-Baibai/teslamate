@@ -148,8 +148,9 @@
 
 ### #42 的代价
 
-- **仓库里现在有**两个**宽度估算器**：@@estimateUsageWidthDp@@（把 U+00A0 按 **0.30em** 算，与普通空格同口径）
-  与 @@estimateTextWidthDp@@（把 U+00A0 按 **1.0em** 算，刻意偏保守）。
+- **仓库里现在有**两个**宽度估算器**：@@estimateTextWidthDpWithNbsp@@（在 `ui/TextWidth.kt`，
+  把 U+00A0 按 **0.30em** 算，与普通空格同口径）
+  与 @@estimateTextWidthDp@@（在 `ui/RangeLayout.kt`，把 U+00A0 按 **1.0em** 算，刻意偏保守）。
   ⇒ 理由：后者是**用来证明「放不下」**的（估大 ⇒ 安全）；
   而这条决策要判「**放得下**」⇒ 需要接近真实的宽度
   ⇒ 沿用 1.0em 会把「近 7 天 243.3 公里」估成 328.5dp（比 328dp 预算**多 0.5dp**）

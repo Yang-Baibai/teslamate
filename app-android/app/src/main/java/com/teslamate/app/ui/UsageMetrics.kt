@@ -13,10 +13,10 @@ import com.teslamate.app.fmt
  *
  *   「今天 4.4 公里 · 15 分钟」 ＋ 「近 7 天 243.3 公里 · 4 天有行程」
  *
- * | | 宽度（15sp，按 [estimateTextWidthDp] 的口径） |
+ * | | 宽度（15sp，按 [estimateTextWidthDpWithNbsp] 的口径） |
  * |---|---|
- * | 今天那一段 | ≈ **166dp** |
- * | 近 7 天那一段 | ≈ **226dp** |
+ * | 今天那一段 | ≈ **173dp** |
+ * | 近 7 天那一段 | ≈ **231dp** |
  * | 两段 + 12dp 间距 | ≈ **404dp** |
  * | 车况页内容区（360dp 窄屏） | **328dp** |
  * | 车况页内容区（393dp 屏） | **361dp** |
@@ -39,10 +39,13 @@ import com.teslamate.app.fmt
  *
  * ## 为什么「放不下就拆行」是安全的
  *
- * 判定用的是 [estimateTextWidthDp] —— 它**刻意偏保守**
- * （不换行空格按 1.0em 算，真实约 0.25em；全角标点也按 1.0em）。
+ * 判定用的是 [estimateTextWidthDpWithNbsp] —— 不换行空格按 **0.30em**
+ * （= 普通空格的口径，真实约 0.25em）算 ⇒ 接近真实宽度
  * ⇒ 「估得下」⇒ 一定放得下；「估不下」⇒ 就拆行。
  * ⇒ **两种情况都安全**：不会因为估得准而漏判，也不会因为估得保守而误拆成两行。
+ * ⚠️ **不要**改用 [estimateTextWidthDp] 判「放得下」：它把不换行空格按 1.0em 算
+ * ⇒ 会把「近 7 天 243.3 公里」估成 328.5dp（比 328dp 预算**多 0.5dp**）⇒ 白拆一行。
+ * （两个函数的分工见 [TextWidth.kt]。）
  *
  * ⚠️ 文案**逐字不变**（只把内部的普通空格换成不换行空格）
  * ⇒ Hermes（飞书）侧零影响，用户看到的词一个都没变。
@@ -121,51 +124,16 @@ fun usageWeekLine(summary: UsageSummary): UsageLine {
 }
 
 /**
- * 这一行的宽度估算 —— **与 [estimateTextWidthDp] 的唯一区别**：
- * **不换行空格按 0.30em**（普通空格的口径）算，而不是 1.0em。
- *
- * ## 为什么要另起一个
- *
- * 仓库那个估算函数把不换行空格按 **1.0em** 算（`SummaryMetrics.kt` 当时的**刻意**选择：
- * 「宁可估大」⇒ 用来**证明「放不下」**）。
- *
- * 但 U+00A0 **渲染出来就是一个空格** ⇒ 它的真实宽度与普通空格相同（≈0.25em），
- * 而估算函数对**普通空格**用的就是 **0.30em**（同样偏保守 20%）。
- *
- * ⇒ 这里要判的是「**放得下放不下**」⇒ 需要**接近真实**的宽度；
- *   沿用 1.0em 会把「近 7 天 243.3 公里」估成 328.5dp（比 328dp 的预算**多 0.5dp**）
- *   ⇒ 明明放得下却被拆开 ⇒ 白拆一行。
- *
- * ⚠️ 本函数**只影响这一行的拆行判定**，不动共享估算函数
- * （它那个「宁可估大」的取值在别处是**承重**的）。
- */
-fun estimateUsageWidthDp(text: String, fontSizeSp: Float): Float {
-    var em = 0f
-    for (ch in text) {
-        em += when {
-            ch == ' ' -> 0.30f
-            // ⚠️ U+00A0：不换行空格 —— 渲染出来就是个空格（宽度同普通空格）。
-            ch.code == 0xA0 -> 0.30f
-            ch in '0'..'9' -> 0.62f
-            ch in 'a'..'z' || ch in 'A'..'Z' -> 0.66f
-            ch.code < 128 -> 0.55f
-            else -> 1.00f
-        }
-    }
-    return em * fontSizeSp
-}
-
-/**
  * 这一句在给定字号下**要不要拆成两行**。
  *
  * @param fontSizeSp **生效**的字号（= [USAGE_BODY_MEDIUM_SP] × 字体倍率）。
  */
 fun usageLineNeedsSplit(line: UsageLine, fontSizeSp: Float): Boolean =
     line.parts.size > 1 &&
-        estimateUsageWidthDp(line.joined, fontSizeSp) > USAGE_ROW_CONTENT_DP
+        estimateTextWidthDpWithNbsp(line.joined, fontSizeSp) > USAGE_ROW_CONTENT_DP
 
 /**
  * 拆行后**每一块**需要的宽度（dp）—— 用来证明「拆开之后不会再折行」。
  */
 fun usagePartNeededDp(part: String, fontSizeSp: Float): Float =
-    estimateUsageWidthDp(part, fontSizeSp)
+    estimateTextWidthDpWithNbsp(part, fontSizeSp)
