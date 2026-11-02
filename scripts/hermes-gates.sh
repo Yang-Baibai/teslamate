@@ -7,7 +7,7 @@
 # · 这条链路的三个端分别是**服务端 / MCP / 推送脚本**（**没有 App**）——
 #   塞进 App 的闸门里既不搭，也会和并行的「UI交互迭代」会话抢同一个文件。
 #
-# ## 三道闸门
+# ## 六道闸门
 #
 #   1. **简报的文案只有服务端一份** ＋ 正文**必带窗口边界**
 #      （同一句话写两遍 ⇒ 迟早漂：v0.76.0「完成后是这样」、v0.78.0「充电完成」）
@@ -15,6 +15,12 @@
 #      （防 v0.72.0 同款「工具能调通、返回 JSON，但全是 null」）
 #   3. **推送脚本的简报必须节流**
 #      （同一槽位不重复推 —— 告警风暴同款，v0.77.0 实测一轮推了 97 次）
+#   4. **简报的能耗段与充电段共用同一窗口 / 同一聚合**
+#      （一个简报里两个窗口 ⇒ 用户对不上账）
+#   5. **简报的电池段与 /battery 同一份 SOH、趋势借同一窗口**
+#      （两处各算一次 SOH ⇒ 飞书与 App 报不同的数）
+#   6. **能耗/续航口径：客户端与服务端两份实现逐条一致**
+#      （分档边界 + 样本过滤各写一遍，只靠注释维持 ⇒ 迟早漂）
 #
 # 用法：bash scripts/hermes-gates.sh      （在仓库根）
 set -uo pipefail
@@ -388,6 +394,161 @@ if problems:
 print('简报的电池段：SOH 同一份计算 + 趋势借同一窗口 + 严格档 + 写明「当前」 ✔')
 PYEOF
 if [ $? -eq 0 ]; then ok "简报电池段与 /battery 同一份 SOH、趋势借同一窗口"; else fail "简报的电池段契约"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 6：能耗/续航口径 —— Kotlin 与 Go 两份实现必须逐条一致 ─────────
+#
+# ⚠️ **为什么这道闸门存在**（2026-11-03）：
+#
+# 「真实可达续航」这条判定的**分档边界 + 样本过滤**，在**两个地方各写了一遍**：
+#   · 客户端 `ConsumptionModel.kt`（`EDGES` + `usable` 过滤）
+#   · 服务端 `api/climb_calib.go`（`climbSpeedEdges`）+ `api/queries.go`（`sqlClimbCalib` 过滤）
+#
+# 两边**只靠注释**（「必须与客户端逐条一致」）维持一致 ⇒ **没有任何机器校验**
+# ⇒ 谁改了一边，另一边静默跟着漂 ⇒ App 的「真实可达」与服务端 / Hermes 的数各说各话
+# （本项目吃过同款亏：「60 分」那句话抄了第二份，错了 57 个版本）。
+#
+# ⇒ 这道闸门把那句注释变成**机器校验**：逐条比对两份实现的分档边界与样本过滤阈值，
+#   并报出**是哪一行**不一样。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+KT    = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ConsumptionModel.kt')
+GOED  = pathlib.Path('api/climb_calib.go')
+GOSQL = pathlib.Path('api/queries.go')
+
+
+def load(p):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+    return p.read_text(encoding='utf-8')
+
+
+def strip_comments(t):
+    # ⚠️ **必须先剥注释再匹配**：改过的旧值都留在注释里（"原来是 20.0" 之类）
+    # ⇒ 不剥就可能在**注释里**找到那个数 ⇒ 假绿。
+    t = re.sub(r'(?s)/\*.*?\*/', '', t)
+    t = re.sub(r'(?m)//.*$', '', t)
+    return t
+
+
+def lineno(t, idx):
+    return t.count('\n', 0, idx) + 1
+
+
+kt    = strip_comments(load(KT))
+goed  = strip_comments(load(GOED))
+gosql = strip_comments(load(GOSQL))
+
+problems = []
+ok_lines = []
+
+# ── 客户端的 `usable` 过滤体 / 服务端的 `sqlClimbCalib` 体 ─────
+m_kf = re.search(r'val\s+usable\s*=\s*drives\.filter\s*\{(.*?)\n\s*\}', kt, re.S)
+m_gs = re.search(r'const\s+sqlClimbCalib\s*=\s*`(.*?)`', gosql, re.S)
+
+if not m_kf:
+    problems.append('客户端取不到 usable 过滤体（ConsumptionModel.kt）⇒ 规则搬走了？')
+if not m_gs:
+    problems.append('服务端取不到 sqlClimbCalib（queries.go）⇒ 规则搬走了？')
+
+# ── ① 车速分档边界（EDGES ↔ climbSpeedEdges）────────────────────
+m_kt_edges = re.search(r'EDGES\s*=\s*listOf\(([^)]*)\)', kt)
+m_go_edges = re.search(r'climbSpeedEdges\s*=\s*\[\]int\{([^}]*)\}', goed)
+
+
+def edges_kt(raw):
+    out = []
+    for p in [x.strip() for x in raw.split(',') if x.strip()]:
+        if 'MAX_VALUE' in p:
+            out.append('MAX')
+        elif re.match(r'^-?\d+$', p):
+            out.append(p)
+        else:
+            return None
+    return out
+
+
+def edges_go(raw):
+    parts = [x.strip() for x in raw.split(',') if x.strip()]
+    out = []
+    for i, p in enumerate(parts):
+        if not re.match(r'^-?\d+$', p):
+            return None
+        # ⚠️ Go 侧末档用 **0** 表示「开区间」（代码里 `if hi == 0`）⇒ 归一化成 MAX
+        out.append('MAX' if (i == len(parts) - 1 and p == '0') else p)
+    return out
+
+
+if not m_kt_edges:
+    problems.append('客户端取不到 EDGES（listOf 形式）⇒ 规则搬走了？')
+if not m_go_edges:
+    problems.append('服务端取不到 climbSpeedEdges（[]int 形式）⇒ 规则搬走了？')
+if m_kt_edges and m_go_edges:
+    a = edges_kt(m_kt_edges.group(1))
+    b = edges_go(m_go_edges.group(1))
+    if a is None or b is None:
+        problems.append('分档边界解析不出来 ⇒ 这道闸门要跟着改')
+    elif a != b:
+        problems.append(
+            '车速分档边界不一致：客户端 %s（ConsumptionModel.kt:%d） ↔ 服务端 %s（climb_calib.go:%d）'
+            % ('/'.join(a), lineno(kt, m_kt_edges.start()),
+               '/'.join(b), lineno(goed, m_go_edges.start())))
+    else:
+        ok_lines.append('分档边界 %s（ConsumptionModel.kt:%d ↔ climb_calib.go:%d）'
+                        % ('/'.join(a), lineno(kt, m_kt_edges.start()),
+                           lineno(goed, m_go_edges.start())))
+
+
+# ── ② 样本过滤阈值：最小里程 km / wh 区间 ──────────────────────
+def pick(pat, body):
+    if body is None:
+        return None
+    m = re.search(pat, body)
+    return m.group(1) if m else None
+
+
+def rule(name, kt_pat, go_pat, norm=None):
+    kv = pick(kt_pat, m_kf.group(1) if m_kf else None)
+    gv = pick(go_pat, m_gs.group(1) if m_gs else None)
+    if norm:
+        kv = norm(kv)
+        gv = norm(gv)
+    if kv is None:
+        problems.append('%s：客户端取不到（ConsumptionModel.kt 的规则搬走了？）' % name)
+        return
+    if gv is None:
+        problems.append('%s：服务端取不到（queries.go 的规则搬走了？）' % name)
+        return
+    if kv != gv:
+        problems.append('%s 不一致：客户端 %s ↔ 服务端 %s' % (name, kv, gv))
+    else:
+        ok_lines.append('%s = %s（两侧一致）' % (name, kv))
+
+
+rule('样本过滤·最小里程 km',
+     r'km\s*>=\s*([0-9]+(?:\.[0-9]+)?)',
+     r'd\.distance\s*>=\s*([0-9]+(?:\.[0-9]+)?)')
+
+rule('样本过滤·wh 区间',
+     r'wh\s+in\s+([0-9]+(?:\.[0-9]+)?)\.\.([0-9]+(?:\.[0-9]+)?)',
+     r'BETWEEN\s+([0-9]+(?:\.[0-9]+)?)\s+AND\s+([0-9]+(?:\.[0-9]+)?)',
+     norm=lambda v: (v.replace('..', ' AND ') if v else v))
+
+if problems:
+    print('能耗/续航口径的两份实现已经漂了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 客户端 ConsumptionModel.kt 与服务端 climb_calib.go / queries.go 必须逐条一致')
+    sys.exit(1)
+
+for ln in ok_lines:
+    print('   ✓', ln)
+print('能耗/续航口径：Kotlin ↔ Go 两份实现逐条一致 ✔')
+PYEOF
+if [ $? -eq 0 ]; then ok "能耗/续航口径：客户端与服务端两份实现逐条一致"; else fail "能耗/续航口径两份实现漂了"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
