@@ -2566,6 +2566,165 @@ PYEOF
 if [ $? -eq 0 ]; then ok "「今天 / 近 7 天」不许并排 + 宽度驱动拆行"; else fail "「今天 / 近 7 天」的结构"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 24：「最近 30 天」卡那四格指标的**列数**不许写死（大字号要改单列）──
+#
+# ⚠️ **v0.113.0**
+#
+# 那四格指标（行驶里程 / 充入 / 充电次数 / 行驶天数）原来**列数写死成两列**
+# （两个 Row + 四个 `weight(1f)`）⇒ 200% 字号下「3834.6 公里」要 238dp，
+# 而两列时每格只有 **148dp**（296dp 内容区 ÷ 2）⇒ 被折成「3834.6」+「公里」
+# （**数与单位分离**，ADR #42 的老毛病）。
+#
+# ⇒ 正解是**换布局**而不是压文案（ADR #39）：列数由**宽度预算**决定
+#    （`summaryMetricColumns`）⇒ 放得下两列（视觉与原来一模一样）、
+#    放不下单列（每格独占整宽 296dp）。
+#
+# ⇒ 这道闸门守**结构**：
+#   ① 界面必须走 `summaryMetricColumns(`（列数宽度驱动）；
+#   ② 每行的格数必须是 `chunked(columns)` —— 不许 `chunked(2)`（写死两列）；
+#   ③ 四格的**文案**只有一个事实源（`summaryMetrics(`）——
+#      不许在界面里再抄一遍「行驶里程」「充电次数」这些标签；
+#   ④ **每一处**「数 + 单位」之间都必须是不换行空格（NBSP）；
+#   ⑤ 宽度预算不许被改小（`SUMMARY_CARD_CONTENT_DP = 296f`、
+#      两列每格 = 148f）⇒ 改小预算就把「放不下」藏起来了；
+#   ⑥ 判定必须读 `fontScale` 且与**每格预算**比较（不许写死一个列数）。
+#
+# ⚠️ 阈值本身（两列最大倍率 **1.24**、200% 单列放得下）由 **JVM 单测**
+#    `SummaryMetricsWidthTest` 钉住 —— 静态闸门看不见实际渲染宽度。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui')
+CARD = UI / 'RecentSummaryCard.kt'
+MET = UI / 'SummaryMetrics.kt'
+for p in (CARD, MET):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace')
+
+
+def strip_kt_comments(src):
+    """剥掉 Kotlin 注释 —— 说明文字里提到被禁的写法不算违规（否则假红）。"""
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    src = re.sub(r'//[^\n]*', '', src)
+    return src
+
+
+def body_of(src, pattern):
+    """取 `fun xxx(...)` 之后的函数体。
+
+    ⚠️ **表达式体函数**（`fun f(): T = expr`）**没有花括号** ⇒
+    从签名往后取到**下一个空行为止**（别去找 `{` —— 会找到表达式里的 lambda）。
+    """
+    m = re.search(pattern, src)
+    if not m:
+        return None
+    tail = src[m.end():]
+    cut = tail.find('\n\n')
+    return tail if cut < 0 else tail[:cut]
+
+
+card = strip_kt_comments(read(CARD))
+met = strip_kt_comments(read(MET))
+
+problems = []
+
+# ① 列数必须宽度驱动
+if 'summaryMetricColumns(' not in card:
+    problems.append('RecentSummaryCard.kt 没有调用 summaryMetricColumns( ⇒ '
+                    '列数写死了 ⇒ 200% 下「3834.6 公里」放不下 148dp ⇒ 又被折成两截')
+
+# ② 每行的格数必须是宽度驱动出来的那个
+if re.search(r'chunked\s*\(\s*2\s*\)', card):
+    problems.append('RecentSummaryCard.kt 里还有 chunked(2) ⇒ 两列写死了 ⇒ '
+                    '大字号下每格只有 148dp ⇒ 指标值被折开')
+if not re.search(r'chunked\s*\(\s*columns\s*\)', card):
+    problems.append('RecentSummaryCard.kt 里没有 chunked(columns) ⇒ '
+                    '每行的格数不是由宽度预算决定的 ⇒ 列数被写死了')
+
+# ③ 文案只有一个事实源
+if 'summaryMetrics(' not in card:
+    problems.append('RecentSummaryCard.kt 没有调用 summaryMetrics( ⇒ '
+                    '四格文案被抄到界面里了（会有两份说法）')
+for label in ('行驶里程', '充入', '充电次数', '行驶天数', '行程次数'):
+    if '"%s"' % label in card:
+        problems.append('RecentSummaryCard.kt 里出现了标签字面量「%s」⇒ '
+                        '文案被抄了一份 ⇒ 改文案时容易只改一处' % label)
+
+# ④ 数与单位之间必须是不换行空格 —— **逐处**（每个构造函数各查一次）
+#
+# ⚠️ **只查「文件里有没有出现过 NBSP」是不够的**：负向探针把其中一处换成
+#    普通空格，闸门照样绿（另一处还在）⇒ **假绿** ⇒ 必须逐处查。
+for fn, unit in (('summaryKmValue', '公里'), ('summaryKwhValue', '度'),
+                 ('summaryCountValue', '$unit')):
+    body = body_of(met, r'fun\s+%s\s*\(' % fn)
+    if body is None:
+        problems.append('SummaryMetrics.kt 里找不到 %s() —— 事实源被改名了？' % fn)
+        continue
+    if 'NBSP' not in body:
+        problems.append('%s() 里没有用不换行空格绑住值与单位 ⇒ '
+                        '放不下时数与单位会被折开' % fn)
+        continue
+    if unit == '$unit':
+        if '${NBSP}' not in body:
+            problems.append('%s() 里数与单位之间不是 ${NBSP} ⇒ '
+                            '「31 次」会被折成「31」+「次」' % fn)
+    else:
+        idx = body.find(unit)
+        prefix = body[max(0, idx - 8):idx] if idx >= 0 else ''
+        if idx < 0 or not prefix.endswith('${NBSP}'):
+            problems.append('%s() 里「%s」前面不是 ${NBSP}（%r）⇒ '
+                            '数与单位会被折开' % (fn, unit, prefix))
+
+# ⑤ 宽度预算不许被改小
+m = re.search(r'SUMMARY_CARD_CONTENT_DP\s*=\s*([0-9.]+)f', met)
+if not m:
+    problems.append('SummaryMetrics.kt 里找不到 SUMMARY_CARD_CONTENT_DP ⇒ 这道闸门要跟着改')
+elif abs(float(m.group(1)) - 296.0) > 0.01:
+    problems.append('SUMMARY_CARD_CONTENT_DP = %s，应为 296（360dp 窄屏 − 页面 32dp − 卡片 32dp）'
+                    '⇒ 改小预算就把「放不下」藏起来了' % m.group(1))
+m2 = re.search(r'SUMMARY_METRIC_CELL_DP_TWO_COLUMNS\s*=\s*([^\n]+)', met)
+if not m2:
+    problems.append('SummaryMetrics.kt 里找不到 SUMMARY_METRIC_CELL_DP_TWO_COLUMNS ⇒ '
+                    '这道闸门要跟着改')
+else:
+    expr = m2.group(1).strip()
+    derived = re.fullmatch(r'SUMMARY_CARD_CONTENT_DP\s*/\s*2(\.0)?f', expr) is not None
+    if not (derived or expr == '148f'):
+        problems.append('SUMMARY_METRIC_CELL_DP_TWO_COLUMNS = %r，应为 148f '
+                        '（= SUMMARY_CARD_CONTENT_DP ÷ 2）⇒ 改小它就把「放不下」藏起来了'
+                        % expr)
+
+# ⑥ 判定必须读 fontScale，且与「每格预算」比较（不许写死一个列数）
+body = body_of(met, r'fun\s+summaryMetricColumns\s*\(')
+if body is None:
+    problems.append('SummaryMetrics.kt 里找不到 summaryMetricColumns() —— 事实源被改名了？')
+else:
+    if 'fontScale' not in body:
+        problems.append('summaryMetricColumns() 没有读 fontScale ⇒ 列数与字号无关')
+    if 'SUMMARY_METRIC_CELL_DP_TWO_COLUMNS' not in body:
+        problems.append('summaryMetricColumns() 没有拿宽度预算 '
+                        '（SUMMARY_METRIC_CELL_DP_TWO_COLUMNS）比较 ⇒ 列数变成写死的了')
+
+if problems:
+    print('「最近 30 天」卡那四格指标的结构被改坏了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 列数由宽度预算决定（summaryMetricColumns）：放得下两列，放不下单列')
+    print('   ⇒ 文案只有一个事实源（summaryMetrics），数与单位用不换行空格绑住')
+    print('   ⇒ 阈值（两列最大倍率 1.24 / 200% 单列）由 JVM 单测 SummaryMetricsWidthTest 钉住')
+    sys.exit(1)
+
+print('「最近 30 天」四格指标：列数宽度驱动、文案单一事实源、数与单位绑住（每格预算 148dp）')
+PYEOF
+if [ $? -eq 0 ]; then ok "「最近 30 天」四格指标网格（列数宽度驱动 + 文案单一事实源）"; else fail "「最近 30 天」四格指标网格"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

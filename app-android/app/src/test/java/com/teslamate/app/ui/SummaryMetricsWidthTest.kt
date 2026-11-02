@@ -1,5 +1,6 @@
 package com.teslamate.app.ui
 
+import com.teslamate.app.StatsBucket
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -174,5 +175,142 @@ class SummaryMetricsWidthTest {
         assertNull(avgEnergyLine(null))
         assertNull(avgEnergyLine(0.0))
         assertNull(avgEnergyLine(0.1))
+    }
+
+    // ── v0.113.0：上面那 2×2 指标网格 ───────────────────────────────────────
+
+    /** 线上真实数据（`/cars/1/stats?period=month` 的 summary）。 */
+    private val realBucket = StatsBucket(
+        start = "2026-10-01",
+        km = 3834.55012,
+        minutes = 4135.0,
+        kwh_used = 665.1867,
+        wh_per_km = 173.4719,
+        drive_count = 137,
+        charge_kwh = 673.64,
+        dc_kwh = 672.94,
+        ac_kwh = 0.7000,
+        cost = 0.0,
+        charge_count = 31,
+    )
+
+    private fun realValues() = summaryMetrics(realBucket, driveDays = 22).map { it.value }
+
+    /**
+     * 正常字号下是**两列**，而且每个值在每格（148dp）里都放得下。
+     *
+     * ⚠️ 这条钉住「视觉与原来一模一样」：正常字号下不该变成 4 行。
+     */
+    @Test
+    fun `正常字号下是两列且每格放得下`() {
+        val values = realValues()
+        assertEquals("正常字号下不该换成单列（视觉会变）", 2, summaryMetricColumns(values, 1.0f))
+        values.forEach { v ->
+            val needed = summaryMetricValueNeededDp(v, 1.0f)
+            assertTrue(
+                "「%s」需要 %.1fdp，每格只有 %.0fdp ⇒ 放不下"
+                    .format(v, needed, SUMMARY_METRIC_CELL_DP_TWO_COLUMNS),
+                needed <= SUMMARY_METRIC_CELL_DP_TWO_COLUMNS,
+            )
+        }
+    }
+
+    /**
+     * 200% 字号下**必须单列**。
+     *
+     * ⚠️ 两列时每格只有 148dp，而「3834.6 公里」在 200% 下要 238dp（估算口径）
+     * ⇒ 两列必然把它折成「3834.6」+「公里」（数与单位分离）。
+     */
+    @Test
+    fun `两倍字号下必须单列`() {
+        assertEquals(
+            "200% 下两列每格只有 148dp，「3834.6 公里」放不下 ⇒ 必须是单列",
+            1,
+            summaryMetricColumns(realValues(), 2.0f),
+        )
+    }
+
+    /**
+     * 单列时 200% 的值放得下（整宽 296dp）—— 否则「换单列」也只是把问题往后挪。
+     */
+    @Test
+    fun `两倍字号下单列放得下`() {
+        summaryMetrics(realBucket, driveDays = 22).forEach { m ->
+            val needed = summaryMetricValueNeededDp(m.value, 2.0f)
+            assertTrue(
+                "「%s」在 200%% 下需要 %.1fdp，整宽只有 %.0fdp ⇒ 放不下"
+                    .format(m.value, needed, SUMMARY_METRIC_CELL_DP_ONE_COLUMN),
+                needed <= SUMMARY_METRIC_CELL_DP_ONE_COLUMN,
+            )
+        }
+    }
+
+    /**
+     * 两列的**最大字号倍率钉死在 1.24** —— 不是「> N」那种模糊断言。
+     *
+     * 推导：最宽的值「3834.6 公里」= **119.0dp**（`estimateTextWidthDpWithNbsp` 口径：
+     * 5 个数字 3.10em + 小数点 0.55em + 不换行空格 0.30em + 「公里」2.00em = 5.95em × 20sp）
+     * ⇒ 两列每格 148dp ⇒ 148 ÷ 119.0 = **1.2437**
+     * ⇒ **1.24 放得下（147.6dp ≤ 148dp）、1.25 放不下（148.8dp > 148dp）**。
+     */
+    @Test
+    fun `两列的最大字号倍率是1_24`() {
+        val values = realValues()
+        assertEquals("1.24 倍下应仍是两列", 2, summaryMetricColumns(values, 1.24f))
+        assertEquals("1.25 倍下必须换单列", 1, summaryMetricColumns(values, 1.25f))
+    }
+
+    /**
+     * 值与单位之间必须是**不换行空格**（U+00A0）—— **逐处**检查。
+     *
+     * ⚠️ 普通空格是断行机会 ⇒ 放不下时贪心折行会把数与单位拆开（半个句子）。
+     */
+    @Test
+    fun `值与单位之间是不换行空格`() {
+        summaryMetrics(realBucket, driveDays = 22).forEach { m ->
+            val unitAt = m.value.indexOfFirst { it.code > 127 && it.code != 0xA0 }
+            assertTrue("「%s」里找不到单位".format(m.value), unitAt > 0)
+            assertEquals(
+                "「%s」的值与单位之间不是不换行空格 ⇒ 放不下时会被折成「%s」+「%s」"
+                    .format(m.value, m.value.substring(0, unitAt), m.value.substring(unitAt)),
+                NBSP,
+                m.value[unitAt - 1].toString(),
+            )
+        }
+    }
+
+    /** 标签自己放得下（标签从不是那个「放不下」的东西）。 */
+    @Test
+    fun `标签在两倍字号下也放得下`() {
+        summaryMetrics(realBucket, driveDays = 22).forEach { m ->
+            val needed = estimateTextWidthDpWithNbsp(m.label, SUMMARY_METRIC_LABEL_SP) * 2f
+            assertTrue(
+                "标签「%s」在 200%% 下要 %.1fdp，每格只有 %.0fdp ⇒ 放不下"
+                    .format(m.label, needed, SUMMARY_METRIC_CELL_DP_TWO_COLUMNS),
+                needed <= SUMMARY_METRIC_CELL_DP_TWO_COLUMNS,
+            )
+        }
+    }
+
+    /** 文案逐字不变（用户看到的词一个都没变；Hermes 侧零影响）。 */
+    @Test
+    fun `文案逐字不变`() {
+        val metrics = summaryMetrics(realBucket, driveDays = 22)
+        assertEquals(
+            listOf("行驶里程", "充入", "充电次数", "行驶天数"),
+            metrics.map { it.label },
+        )
+        assertEquals("3834.6" + NBSP + "公里", metrics[0].value)
+        assertEquals("674" + NBSP + "度", metrics[1].value)
+        assertEquals("31" + NBSP + "次", metrics[2].value)
+        assertEquals("22" + NBSP + "天", metrics[3].value)
+    }
+
+    /** 拿不到行程列表 ⇒ 退回「行程次数」（不给数总比给编的数好）。 */
+    @Test
+    fun `没有行程天数就退回行程次数`() {
+        val metrics = summaryMetrics(realBucket, driveDays = null)
+        assertEquals("行程次数", metrics[3].label)
+        assertEquals("137" + NBSP + "次", metrics[3].value)
     }
 }

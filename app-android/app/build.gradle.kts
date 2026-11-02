@@ -15,8 +15,8 @@ android {
         targetSdk = 35
         // ⚠️ **v0.112.0**：App 改了（车况页「今天 / 近 7 天」两段各占一行）⇒ 版本号要涨。
         //    上一轮 v0.111.0 是纯服务端发布（App 零改动 ⇒ code 不动，仍 120）。
-        versionCode = 121
-        versionName = "0.112.0"
+        versionCode = 122
+        versionName = "0.113.0"
     }
 
     buildTypes {

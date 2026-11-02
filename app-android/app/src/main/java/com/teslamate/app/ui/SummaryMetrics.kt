@@ -1,9 +1,13 @@
 package com.teslamate.app.ui
 
+import com.teslamate.app.StatsBucket
+import com.teslamate.app.fmt
 import com.teslamate.app.fmtKwh100
 
 /**
- * 「最近 30 天」卡那两条指标（平均能耗 / 直流快充占比）的**文案与宽度预算**。
+ * 「最近 30 天」卡的**文案与宽度预算**（唯一事实源）：
+ *   - 上面那 **2×2 指标网格**（行驶里程 / 充入 / 充电次数 / 行驶天数）—— v0.113.0 加；
+ *   - 下面那两条指标（平均能耗 / 直流快充占比）。
  *
  * ⚠️ **v0.104.0（真机实测的折行缺陷）**
  *
@@ -137,3 +141,100 @@ fun summaryLineNeededDp(text: String, fontSizeSp: Float = SUMMARY_BODY_SMALL_SP)
 fun dcShareRowNeededDp(dcPct: Int, fontSizeSp: Float = SUMMARY_BODY_SMALL_SP): Float =
     summaryLineNeededDp(dcShareLine(dcPct), fontSizeSp) +
         summaryLineNeededDp(DC_SHARE_CALIBER, fontSizeSp)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 上面那 **2×2 指标网格**（v0.113.0）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 「最近 30 天」卡上面那四格指标的**文案**与**宽度预算**。
+ *
+ * ⚠️ **v0.113.0**：这四格原来各自写在界面里（`RecentSummaryCard.kt`），
+ * 而且**列数写死成两列** ⇒ 200% 字号下「3834.6 公里」要 **213dp**，
+ * 而两列时每格只有 **148dp**（296dp ÷ 2）⇒ 被折成「3834.6」+「公里」
+ * （**数与单位分离** —— ADR #42 的老毛病）。
+ *
+ * ⇒ 现在：**文案收归这里**（唯一事实源）+ **列数由宽度预算决定**
+ * （[summaryMetricColumns]）⇒ 放得下两列、放不下单列
+ * （**换布局，不换文案**，ADR #39）。
+ */
+
+/** 指标值的字号：**`titleLarge` = 20sp**（`ui/Theme.kt`；⚠️ 别拿 M3 默认值算）。 */
+const val SUMMARY_METRIC_VALUE_SP = 20f
+
+/** 指标标签的字号：**`labelSmall` = 12sp**（同上）。 */
+const val SUMMARY_METRIC_LABEL_SP = 12f
+
+/**
+ * 两列时**每格**的可用宽度（dp）：卡片内容区 ÷ 2（两格之间没有额外间距）。
+ *
+ * ⚠️ 296 ÷ 2 = **148dp** —— 这就是「3834.6 公里」在 200% 下放不下的那个数。
+ */
+const val SUMMARY_METRIC_CELL_DP_TWO_COLUMNS = SUMMARY_CARD_CONTENT_DP / 2f
+
+/** 单列时每格的可用宽度（dp）：整宽（296dp）。 */
+const val SUMMARY_METRIC_CELL_DP_ONE_COLUMN = SUMMARY_CARD_CONTENT_DP
+
+/** 一格指标：标签（这是什么）+ 值（数字与单位）。 */
+data class SummaryMetric(val label: String, val value: String)
+
+/**
+ * 「最近 30 天」那四格指标的**文案**。
+ *
+ * ⚠️ **v0.14.0（单位审校 P1-3）**：「里程」→「行驶里程」（与用量页图表同名，
+ * 且「总里程」会被读成「这车一辈子跑了多少」）；保留一位小数 ——
+ * 抹成整数那是**假精度**。
+ *
+ * ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-3）**：「行程次数 214 次」换成
+ * 「**行驶天数 22 天**」（TeslaMate 的「一趟」= 一次连续移动；真实数据里
+ * 2026-10-06 跑 **1,002.5 公里只有 10 趟** ⇒ 214 趟 ÷ 22 天 = **9.7 段/天**
+ * ⇒ 通勤者读到只会困惑）；长途用户的信息也不丢（趟数在「用量」页仍能看到）。
+ *
+ * @param driveDays 最近 30 天里有行程的**天数**；为 null 时退回「行程次数」
+ *   （**不给数**总比给一个编的数好）。
+ */
+fun summaryMetrics(s: StatsBucket, driveDays: Int?): List<SummaryMetric> = listOf(
+    SummaryMetric("行驶里程", summaryKmValue(s.km)),
+    SummaryMetric("充入", summaryKwhValue(s.charge_kwh)),
+    SummaryMetric("充电次数", summaryCountValue(s.charge_count, "次")),
+    if (driveDays != null) SummaryMetric("行驶天数", summaryCountValue(driveDays, "天"))
+    else SummaryMetric("行程次数", summaryCountValue(s.drive_count, "次")),
+)
+
+/**
+ * 「3834.6 公里」—— **数与单位之间是不换行空格**（U+00A0，[NBSP]）。
+ *
+ * ⚠️ 普通空格是**断行机会** ⇒ 放不下时贪心折行会把「3834.6」和「公里」拆开
+ * （数与单位分离 ⇒ 半个句子，ADR #42）。
+ */
+fun summaryKmValue(km: Double): String = "${km.fmt(1)}${NBSP}公里"
+
+/** 「674 度」—— 同上：数与单位之间是不换行空格。 */
+fun summaryKwhValue(kwh: Double): String = "${kwh.fmt(0)}${NBSP}度"
+
+/** 「31 次」/「22 天」—— 同上：数与单位之间是不换行空格。 */
+fun summaryCountValue(count: Int, unit: String): String = "$count${NBSP}$unit"
+
+/**
+ * 那四格指标在某字号倍率下用几列。
+ *
+ * ⚠️ **1 = 单列（每格独占整宽）**，**2 = 两列**。
+ *
+ * 判定：**最宽的那一格的值**放不进**两列时每格的 148dp** ⇒ 换单列。
+ * ⚠️ 这是**宽度驱动**的，不许写死（写死 ⇒ 200% 下又折行，ADR #39 的老教训）。
+ */
+fun summaryMetricColumns(values: List<String>, fontScale: Float): Int {
+    val widest = values.maxOfOrNull { summaryMetricValueNeededDp(it, fontScale) } ?: return 2
+    return if (widest <= SUMMARY_METRIC_CELL_DP_TWO_COLUMNS) 2 else 1
+}
+
+/**
+ * 某个指标值在某字号倍率下需要的宽度（dp）。
+ *
+ * ⚠️ 用 [estimateTextWidthDpWithNbsp]（不换行空格按 0.30em 算）——
+ * 那是**判「放得下」**的那一个（`ui/TextWidth.kt`）；
+ * 刻意偏保守的另一个（U+00A0 按 1.0em）是用来**证明「放不下」**的
+ * ⇒ 用在这里会**过度触发**（把明明放得下的两列也换成单列 ⇒ 白白多占一屏）。
+ */
+fun summaryMetricValueNeededDp(value: String, fontScale: Float): Float =
+    estimateTextWidthDpWithNbsp(value, SUMMARY_METRIC_VALUE_SP) * fontScale

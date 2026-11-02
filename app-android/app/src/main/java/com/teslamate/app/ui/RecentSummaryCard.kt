@@ -21,12 +21,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.teslamate.app.AppSettings
 import com.teslamate.app.Stats
 import com.teslamate.app.StatsBucket
-import com.teslamate.app.fmt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -109,30 +109,29 @@ fun RecentSummaryCard(
 @Composable
 private fun SummaryContent(s: StatsBucket, driveDays: Int?) {
     SectionCard("最近 30 天") {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            // ⚠️ v0.14.0（单位审校 P1-3）：
-            // 「里程」→「行驶里程」（与用量页图表同名，且「总里程」会被读成
-            // 「这车一辈子跑了多少」）；fmt(0) 把 238.8 直接抹成 239 —— 那是假精度。
-            Stat("行驶里程", "${s.km.fmt(1)} 公里", Modifier.weight(1f))
-            Stat("充入", "${s.charge_kwh.fmt(0)} 度", Modifier.weight(1f))
-        }
-        Spacer(Modifier.padding(top = 10.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            Stat("充电次数", "${s.charge_count} 次", Modifier.weight(1f))
-            // ⚠️ **v0.47.0（第 28 轮通勤车主评审 P0-3）**：
-            // 「行程次数 214 次」换成「**行驶天数 22 天**」。
-            //
-            // TeslaMate 的「一趟」= 一次连续移动；真实数据里
-            // 2026-10-06 跑 **1,002.5 公里只有 10 趟**（≈100 公里/趟），
-            // 214 趟 ÷ 22 天 = **9.7 段/天** ⇒ 通勤者读到只会困惑。
-            // 换成天数后长途用户的信息不丢（趟数在「用量」页仍能看到）。
-            //
-            // ⚠️ `driveDays` 为 null（拿不到行程列表时）⇒ 退回原来的「行程次数」，
-            // **不给数**总比给一个编的数好。
-            if (driveDays != null) {
-                Stat("行驶天数", "$driveDays 天", Modifier.weight(1f))
+        // ⚠️ **v0.113.0**：这四格原来**列数写死成两列**（两个 Row + 四个 `weight(1f)`）
+        // ⇒ 200% 字号下「3834.6 公里」要 **213dp**，而每格只有 **148dp**（296dp ÷ 2）
+        // ⇒ 被折成「3834.6」+「公里」（**数与单位分离**，ADR #42 的老毛病）。
+        //
+        // ⇒ 现在**列数由宽度预算决定**（`summaryMetricColumns`）：
+        //    放得下 ⇒ 两列（**视觉与原来一模一样**）；放不下 ⇒ 单列（每格独占整宽 296dp）
+        //    ⇒ **换布局，不换文案**（ADR #39）。
+        //
+        // ⚠️ 文案与宽度预算在 `ui/SummaryMetrics.kt`（唯一事实源），这里只负责摆版。
+        val metrics = summaryMetrics(s, driveDays)
+        val columns = summaryMetricColumns(metrics.map { it.value }, LocalDensity.current.fontScale)
+        Column(
+            Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            if (columns >= 2) {
+                metrics.chunked(columns).forEach { pair ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                        pair.forEach { m -> Stat(m.label, m.value, Modifier.weight(1f)) }
+                    }
+                }
             } else {
-                Stat("行程次数", "${s.drive_count} 次", Modifier.weight(1f))
+                metrics.forEach { m -> Stat(m.label, m.value) }
             }
         }
         // ⚠️ **v0.104.0（真机实测的折行缺陷）**：这两条指标原来**并排**在一个 `Row` 里
