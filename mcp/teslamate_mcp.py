@@ -389,7 +389,7 @@ def teslamate_battery() -> dict:
 
 
 @mcp.tool()
-def teslamate_range_estimate() -> dict:
+def teslamate_range_estimate(to_km: float = 0) -> dict:
     """查「**真实可达续航**」：按**你自己跑出来的实测能耗**折算的里程、区间与依据。
 
     **什么时候用**：用户问「我现在真实能跑多远」「还能开多少」「能跑到下一个服务区吗」
@@ -405,8 +405,16 @@ def teslamate_range_estimate() -> dict:
     你在这里另算一遍，样本 / 温度 / 窗口都会偏 ⇒ 出来的数一定对不上。
 
     ⚠️ 分工：电量 / 车机读数 → `teslamate_status`；电池衰减 → `teslamate_battery`。
+    ⚠️ **用户说了「还有多远」就带上 `to_km`**（比如「到下一个服务区还有 150 公里」
+    ⇒ 传 `to_km=150`）⇒ 服务端会多判一次「够不够到」「差多少公里」
+    「到达时约剩多少电」。
+    ⇒ **不许自己拿「真实可达」减一下** —— 判定只在服务端（同一条规矩）。
+
     """
-    d = _get(f"/api/v1/cars/{CAR_ID}/range_estimate")
+    url = f"/api/v1/cars/{CAR_ID}/range_estimate"
+    if to_km and float(to_km) > 0:
+        url += "?to_km=%s" % to_km
+    d = _get(url)
     if not isinstance(d, dict) or "error" in d:
         return d if isinstance(d, dict) else {"error": "返回格式异常"}
 
@@ -433,6 +441,17 @@ def teslamate_range_estimate() -> dict:
         "一句话": d.get("summary"),
         "怎么算的": d.get("basis"),
     }
+    # ⚠️ **v0.121.0 补记**：「还有 X 公里，够吗」的判定（服务端给，**不许自己减**）。
+    if d.get("to_km") is not None:
+        out["目的地(km)"] = d.get("to_km")
+        out["够不够到"] = d.get("reach_ok")
+        if d.get("reach_shortfall_km") is not None:
+            out["还差(km)"] = d.get("reach_shortfall_km")
+        out["留20%保底够不够"] = d.get("reach_floor_ok")
+        if d.get("reach_floor_shortfall_km") is not None:
+            out["留20%保底还差(km)"] = d.get("reach_floor_shortfall_km")
+        if d.get("arrive_soc_pct") is not None:
+            out["到达时预计剩余电量(%)"] = d.get("arrive_soc_pct")
     if d.get("note"):
         out["注意"] = d["note"]
     if d.get("temp_caveat"):

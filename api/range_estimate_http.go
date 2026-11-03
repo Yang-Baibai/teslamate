@@ -80,6 +80,18 @@ func handleRangeEstimate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// ── 目的地可达性（可选参数 to_km）────────────────────────
+	//
+	// ⚠️ 只在**显式给了 to_km** 时才算 ⇒ 不给就是「我现在能开多远」那个老问题。
+	if raw := strings.TrimSpace(r.URL.Query().Get("to_km")); raw != "" {
+		km, err := strconv.ParseFloat(raw, 64)
+		if err != nil || km <= 0 {
+			writeErr(w, http.StatusBadRequest, "to_km 必须是大于 0 的数字（公里）")
+			return
+		}
+		applyReachEstimate(est, km)
+	}
+
 	writeJSON(w, est)
 }
 

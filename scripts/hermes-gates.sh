@@ -7,7 +7,7 @@
 # · 这条链路的三个端分别是**服务端 / MCP / 推送脚本**（**没有 App**）——
 #   塞进 App 的闸门里既不搭，也会和并行的「UI交互迭代」会话抢同一个文件。
 #
-# ## 八道闸门
+# ## 九道闸门
 #
 #   1. **简报的文案只有服务端一份** ＋ 正文**必带窗口边界**
 #      （同一句话写两遍 ⇒ 迟早漂：v0.76.0「完成后是这样」、v0.78.0「充电完成」）
@@ -26,6 +26,9 @@
 #   8. **简报的续航段必须复用端点那份算法（同一个数）**
 #      （简报自己算一份 ⇒ 飞书里说 171 公里而 App 上是 165 ⇒ 用户以为数据在骗人；
 #        且这一段是**当前值** ⇒ 文案必须写「当前」，不许暗示方向）
+#   9. **「够不够到」的两端参数契约**（to_km）
+#      （「还有 X 公里，够吗」必须由服务端判；MCP 只透传，不许自己减）
+
 
 #
 # 用法：bash scripts/hermes-gates.sh      （在仓库根）
@@ -758,6 +761,46 @@ print('简报的续航段：复用 /range_estimate 的数 + 标明「当前」�
 PYEOF
 if [ $? -eq 0 ]; then ok "简报的续航段复用端点那份算法（同一个数）"; else fail "简报的续航段没复用端点那份算法"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 9：「够不够到」的两端参数契约 ───────────────────────────
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+GO = pathlib.Path('api/range_estimate_http.go')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+for p in (GO, MCP):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+go = GO.read_text(encoding='utf-8', errors='replace')
+mcp = MCP.read_text(encoding='utf-8', errors='replace')
+problems = []
+
+# ① 服务端必须接受 to_km（否则飞书问「还有多远」没人判）
+if 'to_km' not in go:
+    problems.append('服务端的续航端点不接受 to_km ⇒ 「还有 X 公里够吗」没人判')
+# ② MCP 必须有 to_km 参数
+if 'to_km' not in mcp:
+    problems.append('MCP 的续航工具没有 to_km ⇒ 判定到不了模型手上')
+# ③ MCP 必须**读**服务端的判定，而不是自己减
+if 'reach_ok' not in mcp:
+    problems.append('MCP 没有读 reach_ok ⇒ 说明它在别处自己判「够不够到」')
+# ④ 契约自检必须**被调用**（定义了函数 ≠ 生效 —— 「绿灯 ≠ 检查到东西」）
+CHK = pathlib.Path('mcp/check_tool_fields.py')
+chk = CHK.read_text(encoding='utf-8', errors='replace') if CHK.exists() else ''
+if 'reach_bad = check_range_reach_contract()' not in chk:
+    problems.append('契约自检 check_range_reach_contract 没被调用 ⇒ 那条契约等于没写')
+
+if problems:
+    print('「够不够到」的参数契约断了 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    sys.exit(1)
+print('「够不够到」：服务端与 MCP 两端都认 to_km，判定只在服务端 ✔')
+PYEOF
+if [ $? -eq 0 ]; then ok "「够不够到」：to_km 两端都认（判定只在服务端）"; else fail "「够不够到」的参数契约断了"; cat "$TMP"; fi
+rm -f "$TMP"
+
 
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"

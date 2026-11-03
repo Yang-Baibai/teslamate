@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -259,6 +260,7 @@ func TestRangeBucketBorrowMarksExactFalse(t *testing.T) {
 //	① 超时 ⇒ 重算；
 //	② **行程条数变了** ⇒ 重算（否则「模型样本 N 条」停在旧数上）。
 func TestRangeModelCacheValid(t *testing.T) {
+
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	hit := rangeModelCacheEntry{at: now, model: &rangeModel{}, driveCount: 92}
 
@@ -276,5 +278,60 @@ func TestRangeModelCacheValid(t *testing.T) {
 	nilHit := rangeModelCacheEntry{at: now, model: nil, driveCount: 92}
 	if !rangeModelCacheValid(nilHit, now.Add(time.Minute), 92) {
 		t.Fatal("模型为 nil（样本不足）也是有效缓存")
+	}
+}
+
+// ⚠️ **v0.121.0 补记**：「还有 X 公里，够吗」的判定（纯函数 ⇒ 直接钉）。
+func TestApplyReachEstimate(t *testing.T) {
+	// 容量常量在测试环境里没有 ⇒ 显式给一个（否则「到达时剩余电量」算不出来）
+	t.Setenv("NOMINAL_BATTERY_KWH", "78.4")
+	tr, fl := 170.0, 113.0
+	wh, temp := 167.0, 1.045
+	batt := 50
+	mk := func() *RangeEstimate {
+		return &RangeEstimate{
+			TrueRangeKm:  &tr,
+			FloorRangeKm: &fl,
+			WhPerKm:      &wh,
+			TempFactor:   temp,
+			BatteryLevel: &batt,
+			Summary:      "真实可达 170 公里",
+		}
+	}
+
+	// 到得了（150 ≤ 170）⇒ 够；且给出到达时剩余电量。
+	e := mk()
+	applyReachEstimate(e, 150)
+	if e.ReachOk == nil || !*e.ReachOk {
+		t.Fatal("150 公里 ≤ 真实可达 170 ⇒ 应当够")
+	}
+	if e.ReachFloorOk == nil || *e.ReachFloorOk {
+		t.Fatal("150 公里 > 保底 113 ⇒ 应当不够（保底口径独立判）")
+	}
+	if e.ArriveSocPct == nil {
+		t.Fatal("到得了 ⇒ 应当给出到达时剩余电量")
+	}
+	if e.ReachFloorShortfallKm == nil {
+		t.Fatal("保底不够 ⇒ 应当给出「保底还差多少公里」")
+	}
+
+	// 到不了（200 > 170）⇒ 不够 + 差额；且**不给**剩余电量。
+	e2 := mk()
+	applyReachEstimate(e2, 200)
+	if e2.ReachOk == nil || *e2.ReachOk {
+		t.Fatal("200 公里 > 真实可达 170 ⇒ 应当不够")
+	}
+	if e2.ReachShortfallKm == nil || *e2.ReachShortfallKm != 30 {
+		t.Fatalf("差值应为 30 公里，实际 %v", e2.ReachShortfallKm)
+	}
+	if e2.ArriveSocPct != nil {
+		t.Fatal("到不了 ⇒ 不应给「到达时剩余电量」（会被读成到了就没电）")
+	}
+	if !strings.Contains(e2.Summary, "差 30 公里") {
+		t.Fatalf("摘要里应当写差 30 公里，实际 %q", e2.Summary)
+	}
+	// ⚠️ 不许暗示方向（趋势符号）。
+	if strings.Contains(e2.Summary, "→") {
+		t.Fatalf("摘要里出现了箭头 ⇒ 那是趋势符号：%q", e2.Summary)
 	}
 }

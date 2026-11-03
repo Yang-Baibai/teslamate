@@ -524,6 +524,48 @@ def check_brief_range_contract() -> list:
 
 
 
+def check_range_reach_contract() -> list:
+    """「还有 X 公里，够吗」的判定必须**与服务端同源**（不许模型自己减）。
+
+    ⚠️ 查四件事：
+      ① 服务端给了 to_km 时，reach_ok 必须与「真实可达 ≥ to_km」**完全一致**；
+      ② 不够时必须给出**差多少公里**（不给 ⇒ 模型会自己编一个差值）；
+      ③ 到得了才给「到达时约剩多少电」（到不了还给 ⇒ 会被读成到了就没电）；
+      ④ MCP 侧必须**读到**服务端的判定（reach_ok），而不是自己算。
+    """
+    bad = []
+    try:
+        est = T._get("/api/v1/cars/%s/range_estimate?to_km=100" % T.CAR_ID)
+        brief = T.teslamate_range_estimate(100)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(est, dict) or "error" in est:
+        return ["续航端点取不到：%r" % (est,)]
+    to_km = est.get("to_km")
+    true_km = est.get("true_range_km")
+    if to_km is None or true_km is None:
+        bad.append("带 to_km 的请求没有回 to_km / true_range_km（参数没被接住）")
+    else:
+        want = float(to_km) <= float(true_km)
+        got = est.get("reach_ok")
+        if got is None or bool(got) != want:
+            bad.append("reach_ok = %r，与「真实可达 %s ≥ 到 %s」不一致"
+                       % (got, true_km, to_km))
+        if not want and est.get("reach_shortfall_km") is None:
+            bad.append("到不了却没给「还差多少公里」⇒ 模型会自己编一个差值")
+        if want and est.get("arrive_soc_pct") is None:
+            bad.append("到得了却没给「到达时约剩多少电」")
+    if not isinstance(brief, dict) or "错误" in brief:
+        bad.append("MCP 的续航工具取不到：%r" % (brief,))
+    else:
+        if brief.get("目的地(km)") is None:
+            bad.append("MCP 的续航工具没带 to_km ⇒ 「够不够到」的判定没透出来")
+        if brief.get("够不够到") is None:
+            bad.append("MCP 没读到服务端的 reach_ok ⇒ 说明它在别处自己判")
+    return bad
+
+
+
 def check_range_estimate_contract() -> list:
     """「真实可达续航」必须是**客户端算法**的复算结果（两个渠道同一个数）。
 
@@ -761,6 +803,15 @@ def main() -> int:
         print("  ✓ %-26s %-24s 当前真实可达与 /range_estimate 是同一个数、正文标明「当前」"
               % ("teslamate_charge_brief", "续航契约"))
     bad.extend(range_brief_bad)
+
+
+    reach_bad = check_range_reach_contract()
+    for b in reach_bad:
+        print("  ✗ %s" % b)
+    if not reach_bad:
+        print("  ✓ %-26s %-24s 「还有 X 公里够吗」与服务端同一个判定"
+              % ("teslamate_range_estimate", "目的地可达性契约"))
+    bad.extend(reach_bad)
 
 
     range_bad = check_range_estimate_contract()

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -128,6 +130,17 @@ type RangeEstimate struct {
 	BatteryLevel       *int     `json:"battery_level"`
 	ReserveFactor      float64  `json:"reserve_factor"`
 	FloorReserveFactor *float64 `json:"floor_reserve_factor,omitempty"`
+	// ── 目的地可达性（可选参数 to_km）────────────────────────
+	//
+	// ⚠️ 飞书里用户会问「到下一个服务区还有 150 公里，够吗」⇒
+	//    光给「能开 171 公里」要模型自己减 ⇒ **不许让模型自己算**（ADR #38）。
+	ToKm                  *float64 `json:"to_km,omitempty"`
+	ReachOk               *bool    `json:"reach_ok,omitempty"`
+	ReachShortfallKm      *float64 `json:"reach_shortfall_km,omitempty"`
+	ReachFloorOk          *bool    `json:"reach_floor_ok,omitempty"`
+	ReachFloorShortfallKm *float64 `json:"reach_floor_shortfall_km,omitempty"`
+	// ArriveSocPct 到达时**预计**剩余电量（%）；到不了 ⇒ 不给（nil）。
+	ArriveSocPct *float64 `json:"arrive_soc_pct,omitempty"`
 
 	// 文案（服务端唯一一份，App 与 Hermes 都直接用）
 	Summary string `json:"summary"`
@@ -487,4 +500,105 @@ func getRangeModel(carID int) (*rangeModel, error) {
 	rangeModelCache[carID] = rangeModelCacheEntry{at: now, model: model, driveCount: cnt}
 	rangeModelCacheMu.Unlock()
 	return model, nil
+}
+
+// applyReachEstimate 算「还有 X 公里，够吗」（纯函数，可单测）。
+//
+// ⚠️ **不许让模型自己减**：「真实可达 171 公里」减「150 公里」= 21 ⇒
+//
+//	这个减法一旦在飞书那边做，模型就会顺手编一个「差 21 公里」出来
+//	⇒ 判定只在服务端（ADR #38）。
+//
+// ⚠️ **到达时剩余电量是估算**：按**当次的实测 Wh/km**（含温度修正）算
+//
+//	⇒ 电量百分点 = 距离 × 实测 Wh/km ÷ 1000 ÷ 出厂可用容量 × 100。
+//	分母用**出厂标称可用容量**（与 /battery 同一个常量）⇒ 同一个分母。
+//
+// ⚠️ **到不了就不报剩余电量**（报 0% 会被读成「到了就没电了」）⇒ 只说差多少公里。
+func applyReachEstimate(est *RangeEstimate, toKm float64) {
+	if est == nil || toKm <= 0 {
+		return
+	}
+	km := toKm
+	est.ToKm = &km
+
+	if est.TrueRangeKm != nil {
+		ok := toKm <= *est.TrueRangeKm
+		est.ReachOk = &ok
+		if !ok {
+			short := toKm - *est.TrueRangeKm
+			est.ReachShortfallKm = &short
+		}
+	}
+	if est.FloorRangeKm != nil {
+		ok := toKm <= *est.FloorRangeKm
+		est.ReachFloorOk = &ok
+		if !ok {
+			short := toKm - *est.FloorRangeKm
+			est.ReachFloorShortfallKm = &short
+		}
+	}
+	// 到达时剩余电量：只在**真的到得了**时才算。
+	if est.ReachOk != nil && *est.ReachOk && est.BatteryLevel != nil && est.WhPerKm != nil {
+		if cap := nominalUsableKwh(); cap > 0 {
+			whEff := *est.WhPerKm * est.TempFactor
+			usedKwh := toKm * whEff / 1000.0
+			soc := float64(*est.BatteryLevel) - usedKwh/cap*100.0
+			if soc < 0 {
+				soc = 0
+			}
+			est.ArriveSocPct = &soc
+		}
+	}
+	if txt := reachSummaryText(est); txt != "" {
+		est.Summary = est.Summary + " · " + txt
+	}
+}
+
+// nominalUsableKwh 出厂标称**可用**容量（kWh）；读不到 ⇒ 0（不给数）。
+//
+// ⚠️ 与 /battery 的健康度分母**同一个常量**（NOMINAL_BATTERY_KWH）⇒ 同一个分母。
+func nominalUsableKwh() float64 {
+	raw := strings.TrimSpace(getenv("NOMINAL_BATTERY_KWH", ""))
+	if raw == "" {
+		return 0
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
+}
+
+// reachSummaryText 出「还有 X 公里，够吗」那一句（服务端唯一一份）。
+//
+// ⚠️ **只报事实**：够 / 差多少公里 / 到达时约剩多少电 ⇒ 不许暗示方向，也不许编。
+func reachSummaryText(est *RangeEstimate) string {
+	if est == nil || est.ToKm == nil {
+		return ""
+	}
+	km := *est.ToKm
+	parts := []string{}
+	if est.ReachOk != nil {
+		if *est.ReachOk {
+			parts = append(parts, fmt.Sprintf("到 %.0f 公里：够", km))
+			if est.ArriveSocPct != nil && est.WhPerKm != nil {
+				parts = append(parts, fmt.Sprintf("按实测 %.1f Wh/km 估算，到达时约剩 %.0f%%",
+					*est.WhPerKm, *est.ArriveSocPct))
+			}
+		} else if est.ReachShortfallKm != nil {
+			parts = append(parts, fmt.Sprintf("到 %.0f 公里：差 %.0f 公里", km, *est.ReachShortfallKm))
+		}
+	}
+	if est.ReachFloorOk != nil {
+		if *est.ReachFloorOk {
+			parts = append(parts, "留 20% 保底也够")
+		} else if est.ReachFloorShortfallKm != nil {
+			parts = append(parts, fmt.Sprintf("留 20%% 保底还差 %.0f 公里", *est.ReachFloorShortfallKm))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " · ")
 }
