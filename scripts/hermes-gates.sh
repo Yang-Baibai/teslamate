@@ -7,7 +7,7 @@
 # · 这条链路的三个端分别是**服务端 / MCP / 推送脚本**（**没有 App**）——
 #   塞进 App 的闸门里既不搭，也会和并行的「UI交互迭代」会话抢同一个文件。
 #
-# ## 九道闸门
+# ## 十道闸门
 #
 #   1. **简报的文案只有服务端一份** ＋ 正文**必带窗口边界**
 #      （同一句话写两遍 ⇒ 迟早漂：v0.76.0「完成后是这样」、v0.78.0「充电完成」）
@@ -28,6 +28,8 @@
 #        且这一段是**当前值** ⇒ 文案必须写「当前」，不许暗示方向）
 #   9. **「够不够到」的两端参数契约**（to_km）
 #      （「还有 X 公里，够吗」必须由服务端判；MCP 只透传，不许自己减）
+#  10. **契约自检必须真的在跑**（定义了函数 ≠ 生效）
+#      （注册条件写错 ⇒ 那条自检一次都没跑，而自检照样报「0 项不合规」⇒ 假绿）
 
 
 #
@@ -802,6 +804,58 @@ if [ $? -eq 0 ]; then ok "「够不够到」：to_km 两端都认（判定只在
 rm -f "$TMP"
 
 
+
+# ── 闸门 10：契约自检**必须真的在跑**（定义了函数 ≠ 生效）────────────────────
+#
+# ⚠️ **v0.121.0（并行会话踩到的坑）**：它加了一条契约自检函数，
+#   但 runner 里的**注册条件写错**（被另一条检查的名字误命中）
+#   ⇒ 那条自检**一次都没跑**，而自检依然报「0 项不合规」
+#   ⇒ 「MCP 字段自检 0 项不合规」这句话**本身**可能是假绿。
+#
+# ⇒ 这道闸门是**通用**的（不针对某一条）：
+#   「mcp/check_tool_fields.py 里每个 check_* 函数都必须
+#     ① 在 main() 里被调用；② 其结果被并进 bad（否则跑了也不改退出码）」。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+F = pathlib.Path('mcp/check_tool_fields.py')
+if not F.exists():
+    print('找不到 %s —— 这道闸门要跟着改' % F)
+    sys.exit(1)
+
+src = F.read_text(encoding='utf-8', errors='replace')
+if 'def main(' not in src:
+    print('mcp/check_tool_fields.py 里找不到 main() ⇒ 这道闸门要跟着改')
+    sys.exit(1)
+main = src.split('def main(', 1)[1]
+
+defs = re.findall(r'^def\s+(check_[A-Za-z0-9_]+)\s*\(', src, re.M)
+if not defs:
+    print('mcp/check_tool_fields.py 里一个 check_* 函数都没有 ⇒ 这道闸门要跟着改')
+    sys.exit(1)
+
+problems = []
+for name in defs:
+    m = re.search(r'(\w+)\s*=\s*' + name + r'\s*\(', main)
+    if not m:
+        problems.append('契约自检 %s() 从没在 main() 里被调用 ⇒ 它一次都没跑过' % name)
+        continue
+    var = m.group(1)
+    if not re.search(r'bad\.extend\(\s*' + var + r'\s*\)', main):
+        problems.append('契约自检 %s() 的结果（%s）没有并进 bad ⇒ 就算它报了错，退出码仍是 0（假绿）' % (name, var))
+
+if problems:
+    print('契约自检形同虚设 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 每个 check_* 都要在 main() 里被调用，且结果并进 bad')
+    sys.exit(1)
+
+print('%d 个契约自检全部在 runner 里被调用，且结果并进 bad' % len(defs))
+PYEOF
+if [ $? -eq 0 ]; then ok "契约自检真的在跑（不是形同虚设）"; else fail "契约自检形同虚设（自检可能一次都没跑）"; cat "$TMP"; fi
+rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
