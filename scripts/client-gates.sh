@@ -2955,6 +2955,10 @@ PAIRS = [
     ('104.00', '主角标签「现在能开（公里）」@13sp（乐观口径）', '「现在能开（公里）」'),
     ('367.20', '保养卡底部行旧文案 @24sp（200% 字号 ⇒ 367.20dp > 344dp 预算）', '基准与间隔（爱车）'),
     ('206.40', '保养卡底部行新文案 @24sp（200% 字号）', '基准与间隔 · 爱车'),
+    ('346.06', '旧文案「本次实测：从 68% 充到 80% 用了 36 分钟（读自充电曲线）」@13sp（> 328dp 窄屏内容区 ⇒ 正常字号就放不下）', '本次实测：从 68% 充到 80%'),
+    ('692.12', '同一句 @26sp（200% 字号）', '本次实测：从 68% 充到 80%'),
+    ('145.34', '新标签「本次实测：68% 充到 80%」@13sp', '本次实测：68% 充到 80%'),
+    ('290.68', '新标签 @26sp（200% 字号）', '本次实测：68% 充到 80%'),
 ]
 
 problems = []
@@ -3142,6 +3146,88 @@ if problems:
 print('保养卡底部那一行：只剩事实 · 无教学语 · 无括号 · 单行 + 省略号')
 PYEOF
 if [ $? -eq 0 ]; then ok "保养卡底部行无教学语（可点性由图标承担）"; else fail "保养卡底部行还有教学语 / 几何隐患"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 29：充电详情「实测充到 80% 用了多久」必须是一条 KV 行，且两条分支共用一句话 ──
+#
+# ⚠️ **v0.122.0**：这一行原来是一句**平铺的自由句**：
+#   「本次实测：从 68% 充到 80% 用了 36 分钟（读自充电曲线）」
+# 两个毛病：
+#   ① 自由句：那一屏**唯一**的非 KV 行（邻居全是「该站同起点实测中位」这类 KV）；
+#   ② **同一个事实有两套说法** —— 服务端路径写「本次实测：…（读自充电曲线）」，
+#      老服务端兜底路径写「实测从 …（从曲线直接读）」，两条是**互斥**分支
+#      ⇒ 用户看到的是「今天这句、明天那句」。
+# ⇒ 现在：文案只由 `ui/ChargeMeasured.kt` 的三个纯函数给出，两条分支**都**走它；
+#   来源披露折进 ⓘ（`note = noteMeasuredTo80()`）。
+#
+# ⚠️ 判据必须先剥注释 —— 否则注释里提一句旧句式就能满足 ⇒ 假绿。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+KT = ROOT / 'app-android/app/src/main/java/com/teslamate/app'
+MEAS = KT / 'ui/ChargeMeasured.kt'
+SCREEN = KT / 'ui/ChargesScreen.kt'
+BASE = ROOT / 'scripts/verbose-baseline.txt'
+
+for p in (MEAS, SCREEN, BASE):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    # 块注释（含 KDoc）先剥，再按行剥 // 注释。
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+meas = strip_comments(MEAS.read_text(encoding='utf-8', errors='replace'))
+screen = strip_comments(SCREEN.read_text(encoding='utf-8', errors='replace'))
+
+problems = []
+
+# ① 纯函数层：三个函数各定义**恰好一次**（文案只有一个事实源）
+for fn in ('measuredTo80Label', 'measuredTo80Value', 'noteMeasuredTo80'):
+    n = len(re.findall(r'fun\s+%s\s*\(' % fn, meas))
+    if n != 1:
+        problems.append('ui/ChargeMeasured.kt 里 %s 定义了 %d 次（应为 1）⇒ 文案没有唯一事实源' % (fn, n))
+
+# ② 旧句式不许复活（剥注释后查）
+for bad in ('本次实测：从 $', '充到 80% 用了', '（读自充电曲线）', '（从曲线直接读）'):
+    if bad in screen:
+        problems.append('ChargesScreen.kt 里还有旧句式「%s」⇒ 自由句又回来了' % bad)
+
+# ③ 两条分支都走**同一个**纯函数：各调用恰好两次（服务端路径 + 老服务端兜底）
+for fn in ('measuredTo80Label(', 'measuredTo80Value('):
+    n = screen.count(fn)
+    if n != 2:
+        problems.append('ChargesScreen.kt 里 %s 调用了 %d 次（应为 2：服务端路径 + 兜底路径）⇒ 两条分支写法又分叉了' % (fn, n))
+
+# ④ 啰嗦棘轮基线里那两句必须已经删掉
+base = BASE.read_text(encoding='utf-8', errors='replace')
+if '充到 80% 用了' in base:
+    problems.append('scripts/verbose-baseline.txt 里还有那两句 ⇒ 棘轮没有收缩')
+
+# ⑤ 全 App（剥注释后）「本次实测：」只许出现一次（只在那一个纯函数里）
+hits = 0
+for f in sorted(KT.rglob('*.kt')):
+    hits += strip_comments(f.read_text(encoding='utf-8', errors='replace')).count('本次实测：')
+if hits != 1:
+    problems.append('全 App 里「本次实测：」出现 %d 次（应为 1，只在 ui/ChargeMeasured.kt）⇒ 同一句话被抄了第二份' % hits)
+
+if problems:
+    print('「实测充到 80% 用了多久」那一行还有问题 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 文案只由 ui/ChargeMeasured.kt 给出（measuredTo80Label / measuredTo80Value / noteMeasuredTo80）')
+    print('   ⇒ 两条分支共用它；来源披露折进 ⓘ（note = noteMeasuredTo80()）')
+    sys.exit(1)
+
+print('「实测充到 80% 用了多久」：一条 KV 行 · 两条分支同一句话 · 无旧句式 · 棘轮已收缩')
+PYEOF
+if [ $? -eq 0 ]; then ok "实测到 80% 那一行是 KV 行且两条分支共用一句话"; else fail "实测到 80% 那一行还有问题"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"

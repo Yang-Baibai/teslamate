@@ -112,4 +112,29 @@ class WidthBudgetPinTest {
         assertEquals(367.20f, estimateTextWidthDp("基准与间隔（爱车）· 点这里修改", 24f), 0.01f)
         assertEquals(206.40f, estimateTextWidthDp("基准与间隔 · 爱车", 24f), 0.01f)
     }
+
+    /**
+     * ⚠️ **v0.122.0**：充电详情「实测充到 80% 用了多久」那一行的宽度数字。
+     *
+     * 口径：**乐观**（[estimateTextWidthDpWithNbsp]）—— 这两个串里**没有**不换行空格
+     * ⇒ **保守口径同值**（不是两个不同的数）。
+     *
+     * ⇒ 旧文案「本次实测：从 68% 充到 80% 用了 36 分钟（读自充电曲线）」@13sp = **346.06dp**
+     *   > 最窄内容区 **328dp**（360dp 窄屏 − 卡片左右内边距 32dp）
+     *   ⇒ **正常字号就放不下**（200% 字号要 692.12dp）；
+     * ⇒ 新标签「本次实测：68% 充到 80%」@13sp = **145.34dp**；
+     *   @26sp（200% 字号）= **290.68dp** ⇒ 放得下（余量 37.32dp）。
+     */
+    @Test
+    fun `v0_122_0_实测到80那一行的宽度数字`() {
+        assertEquals(346.06f, estimateTextWidthDpWithNbsp("本次实测：从 68% 充到 80% 用了 36 分钟（读自充电曲线）", 13f), 0.01f)
+        assertEquals(692.12f, estimateTextWidthDpWithNbsp("本次实测：从 68% 充到 80% 用了 36 分钟（读自充电曲线）", 26f), 0.01f)
+        assertEquals(145.34f, estimateTextWidthDpWithNbsp("本次实测：68% 充到 80%", 13f), 0.01f)
+        assertEquals(290.68f, estimateTextWidthDpWithNbsp("本次实测：68% 充到 80%", 26f), 0.01f)
+        // 保守口径对这两个串**同值**（没有不换行空格）
+        assertEquals(346.06f, estimateTextWidthDp("本次实测：从 68% 充到 80% 用了 36 分钟（读自充电曲线）", 13f), 0.01f)
+        assertEquals(692.12f, estimateTextWidthDp("本次实测：从 68% 充到 80% 用了 36 分钟（读自充电曲线）", 26f), 0.01f)
+        assertEquals(145.34f, estimateTextWidthDp("本次实测：68% 充到 80%", 13f), 0.01f)
+        assertEquals(290.68f, estimateTextWidthDp("本次实测：68% 充到 80%", 26f), 0.01f)
+    }
 }

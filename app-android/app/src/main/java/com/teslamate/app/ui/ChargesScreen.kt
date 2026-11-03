@@ -960,13 +960,25 @@ internal fun ChargeDetail(
                             // 原来客户端从曲线自己算一遍、服务端将来再算一遍 → 两套算法必然漂移，
                             // 就会出现「列表页 36 分钟、详情页 38 分钟」。
                             // 现在口径**只有一处**（服务端 `measured_minutes_to_80`）。
+                            //
+                            // ⚠️ **v0.122.0（本轮手术点）**：这一行从**自由句**改成**KV 行** ——
+                            // 原来平铺着的是「本次实测：从 X% 充到 80% 用了 N 分钟（读自充电曲线）」，
+                            // ① 它是那一屏唯一的自由句（邻居全是 KV 行）；
+                            // ② 同一个事实有两套说法（服务端句式 vs 兜底句式，**互斥**分支）；
+                            // ③ 它太长（正常字号 346.06dp > 328dp 窄屏内容区 ⇒ 本来就放不下）。
+                            // ⇒ 现在标签说口径、值只放那个数，来源披露折进 ⓘ；
+                            // 两条分支**共用同一个纯函数**（`ui/ChargeMeasured.kt`），
+                            // 客户端闸门 29 钉住这件事。
                             val mServer = charge.measured_minutes_to_80
                             val fromServer = charge.measured_from_soc
                             if (mServer != null && fromServer != null) {
-                                Text(
-                                    "本次实测：从 $fromServer% 充到 80% 用了 $mServer 分钟（读自充电曲线）",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                // ⚠️ **v0.122.0**：自由句 ⇒ KV 行（标签说口径、值只放那个数）。
+                                // 两条分支（服务端 / 老服务端兜底）**共用同一个纯函数**
+                                // ⇒ 同一个事实不再有两种说法（详见 ui/ChargeMeasured.kt）。
+                                KV(
+                                    measuredTo80Label(fromServer),
+                                    measuredTo80Value(mServer),
+                                    note = noteMeasuredTo80(),
                                 )
                             } else {
                                 // 兜底：老服务端没有这个字段时，用客户端的曲线算法。
@@ -978,10 +990,12 @@ internal fun ChargeDetail(
                                 ) {
                                     val mins = java.time.Duration.between(startPt.date, t80).toMinutes()
                                     if (mins in 1..600) {
-                                        Text(
-                                            "实测从 $startSoc% 充到 80% 用了 $mins 分钟（从曲线直接读）",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurface,
+                                        // ⚠️ **v0.122.0**：同上 —— 兜底分支也走**同一个**纯函数。
+                                        KV(
+                                            measuredTo80Label(startSoc),
+                                            // ⚠️ `Duration.toMinutes()` 给的是 Long；这里已经 `in 1..600` ⇒ 转 Int 安全。
+                                            measuredTo80Value(mins.toInt()),
+                                            note = noteMeasuredTo80(),
                                         )
                                     }
                                 }
