@@ -2951,6 +2951,8 @@ PAIRS = [
     ('230.55', '「近 7 天 243.3 公里 · 4 天有行程」@15sp（乐观口径）', '近 7 天 243.3 公里'),
     ('262.05', '同一句的**保守口径**（NBSP 按 1.0em）', '近 7 天那行'),
     ('193.95', '「今天 4.4 公里 · 15 分钟」的**保守口径**', '今天那行'),
+    ('81.84', '主角「204」@44sp（乐观口径）', '「204」'),
+    ('104.00', '主角标签「现在能开（公里）」@13sp（乐观口径）', '「现在能开（公里）」'),
 ]
 
 problems = []
@@ -2977,6 +2979,77 @@ if problems:
 print('文档引用的 %d 个宽度数字与单测钉死的一致' % len(PAIRS))
 PYEOF
 if [ $? -eq 0 ]; then ok "文档引用的宽度数字 = 单测钉死的（别手算）"; else fail "文档引用的宽度数字与单测不一致"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 27：首屏排布必须**宽度驱动**（不许拍死的字号阈值）──────────────
+#
+# ⚠️ **v0.120.0**：原来首屏「环 + 主角」是用 `fontScale >= 1.35f` 这个**拍死的阈值**
+#   决定并排 / 上下叠 ⇒ ① 它的推导里那个宽度是**手算**的（73.9sp，
+#   而估算器给的是 81.84dp）而且**没有任何单测钉住**；② 它**完全不看屏宽**
+#   ⇒ 宽屏与窄屏在同一字号上一起竖排 ⇒ 宽屏白丢「环 + 主角并排」的构图。
+# ⇒ 现在由 `heroArrangement` 按**运行时量出来的宽度**决定（同 ADR #43 / #44）。
+#
+# ⚠️ **判据必须先剥注释** —— 否则注释里提一句「1.35」就能满足 ⇒ 假绿。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+SCREEN = ROOT / 'app-android/app/src/main/java/com/teslamate/app/ui/StatusScreen.kt'
+ARRANGE = ROOT / 'app-android/app/src/main/java/com/teslamate/app/ui/RangeArrangement.kt'
+WIDGETS = ROOT / 'app-android/app/src/main/java/com/teslamate/app/ui/Widgets.kt'
+
+for p in (SCREEN, ARRANGE, WIDGETS):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+def strip_comments(src):
+    # 块注释（含 KDoc）先剥，再按行剥 // 注释。
+    # ⚠️ 这三个文件里没有带 `://` 的字符串 ⇒ 按行剥是安全的。
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+screen = strip_comments(SCREEN.read_text(encoding='utf-8'))
+arrange = strip_comments(ARRANGE.read_text(encoding='utf-8'))
+widgets = strip_comments(WIDGETS.read_text(encoding='utf-8'))
+
+problems = []
+
+# ① 不许再出现拍死的字号阈值
+if 'fontScale >= 1.35f' in screen:
+    problems.append('StatusScreen.kt 里还有 `fontScale >= 1.35f` ⇒ 排布又变回拍死的阈值了')
+
+# ② 必须走宽度驱动的判定
+if 'heroArrangement(' not in screen:
+    problems.append('StatusScreen.kt 里没有调用 heroArrangement( ⇒ 首屏排布不是宽度驱动的')
+
+# ③ 规则文件必须带着那几个预算常量
+for name in ('HERO_VALUE_SP', 'HERO_LABEL_SP', 'HERO_RING_GAP_DP',
+             'HERO_FIT_SLACK_DP', 'SOC_RING_MIN_DP'):
+    if not re.search(r'const val ' + name + r'\s*=\s*', arrange):
+        problems.append('RangeArrangement.kt 里没有 %s ⇒ 宽度预算缺一项' % name)
+
+# ④ 预算里的环宽必须**等于画出来的**环宽（Widgets.kt 的 SocRing 默认 baseSizeDp）
+m = re.search(r'baseSizeDp:\s*Int\s*=\s*(\d+)', widgets)
+n = re.search(r'const val SOC_RING_MIN_DP\s*=\s*(\d+)', arrange)
+if not m or not n:
+    problems.append('找不到 SocRing 的 baseSizeDp 默认值或 SOC_RING_MIN_DP ⇒ 核对一下')
+elif m.group(1) != n.group(1):
+    problems.append('SocRing 画的环用 baseSizeDp=%s，而预算用的是 SOC_RING_MIN_DP=%s ⇒ 两者不是同一个环'
+                    % (m.group(1), n.group(1)))
+
+if problems:
+    print('首屏排布不是宽度驱动的 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 排布由 heroArrangement（ui/RangeArrangement.kt）按运行时宽度决定')
+    print('   ⇒ 阈值由 JVM 单测 RangeArrangementTest 钉住')
+    sys.exit(1)
+
+print('首屏排布：宽度驱动（heroArrangement）· 预算常量齐全 · 环宽与画出来的一致')
+PYEOF
+if [ $? -eq 0 ]; then ok "首屏排布宽度驱动（不许拍死的字号阈值）"; else fail "首屏排布宽度驱动"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"

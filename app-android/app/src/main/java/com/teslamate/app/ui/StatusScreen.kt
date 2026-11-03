@@ -19,6 +19,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -606,17 +607,26 @@ fun StatusScreen(
                         // 现在解封了 fontScale（WCAG 1.4.4 要求 200% 可用），
                         // 这条遗留项必须一起解掉，否则等于「解封了一半」。
                         //
-                        // 阈值 1.35（v0.30.0 从 1.5 改下来）：
+                        // ⚠️ **v0.120.0（本轮手术点）**：**排布不再由「拍一个字号阈值」决定，
+                        // 改由「实际可用宽度」决定**（`heroArrangement`，`ui/RangeArrangement.kt`）。
                         //
-                        // 原来 1.5 是拍脑袋的「1.5 倍时左右两栏还挤得下」。
-                        // 实际算一遍：393dp 屏可用 361dp，减去环（v0.30.0 起按文字反推，
-                        // fs=1.35 时 140dp）和 28dp 间距 → 主角只剩 **193dp**；
-                        // 360dp 屏只剩 **160dp**。主角「204」在 44sp 下宽 73.9sp，
-                        // fs=1.35 时 99.8dp —— 393dp 屏放得下，360dp 屏也放得下，
-                        // 但再往上（fs>1.4）360dp 屏就开始**硬裁**（`maxLines=1` 默认 Clip）。
+                        // 原来这里写死的是 1.35（v0.30.0 从 1.5 改下来的），推导是**手算**的：
+                        // 「主角「204」在 44sp 下宽 73.9sp」—— 那个数**不是** App 估算器给的
+                        // （估算器给 **81.84dp**），而且**没有任何单测钉住**它
+                        // ⇒ 同 ADR #43 / #44 的老教训：**拍死的阈值迟早过期**。
                         //
-                        // 所以阈值定在 **1.35**：两条公式下主角都还有余量，
-                        // 超过就切竖排（主角独占整行，绝不会被裁）。
+                        // 实际代价（这一轮量出来的）：
+                        // 393dp 屏的内容区 361dp，扣掉环（140dp）与 28dp 间距 ⇒ 窄栏 193dp；
+                        // 而窄栏要装的是**主角数字 + 它的标签**：
+                        //   「204」@44sp = **81.84dp**、「现在能开（公里）」@13sp = **104.00dp**
+                        //   （口径：`estimateTextWidthDpWithNbsp`，乐观口径）
+                        // ⇒ 真正的**绑定项是标签**，不是数字；
+                        // ⇒ fs=1.35 时余量 52.6dp、fs=1.6 时余量 10.3dp ⇒ **都放得下**
+                        // ⇒ 旧阈值却已经切了竖排 ⇒ **白丢「环 + 主角并排」的首屏构图**
+                        // （主角独占一行、环被挤到下面 ⇒ 首屏纵向多占一屏）。
+                        //
+                        // ⇒ 现在：**量出宽度再决定**（`BoxWithConstraints` ⇒ 每台机器按自己的
+                        // 实际宽度判断），放得下就并排，放不下就竖排（主角独占整行，绝不会被裁）。
                         val fontScale = LocalDensity.current.fontScale
                         // ⚠️ **v0.95.0（本轮手术点）**：续航的**主角**与**结论区**分开渲染。
                         //
@@ -635,39 +645,58 @@ fun StatusScreen(
                                 fallbackSpeedKph = fallbackSpeed,
                             )
                         )
-                        if (fontScale >= 1.35f) {
-                            Column(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 8.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                            ) {
-                                RangeHero(rangeModel, Modifier.fillMaxWidth())
-                                RangeConclusions(rangeModel)
-                                Spacer(Modifier.height(14.dp))
-                                // ⚠️ v0.30.0：两种布局用**同一个**环尺寸，
-                                // 否则切布局时环会「跳」一下。
-                                SocRing(
-                                    st.battery_level,
-                                    charging = st.active_charge != null,
-                                )
-                            }
-                        } else {
-                            Column(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 8.dp),
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.fillMaxWidth(),
+                        // ⚠️ **v0.120.0**：排布由**宽度预算**决定（不是拍一个字号阈值）。
+                        //
+                        // `maxWidth` 是**运行时量出来的** ⇒ 360dp 窄屏 / 393dp / 412dp /
+                        // 折叠屏各按各的实际宽度判断（同 ADR #43 / #44 的做法）。
+                        BoxWithConstraints(Modifier.fillMaxWidth()) {
+                            val arrangement = heroArrangement(
+                                contentDp = maxWidth.value,
+                                // ⚠️ 预算里的环宽必须**等于画出来的**环宽
+                                // ⇒ 两者用同一个常量（客户端闸门 27 核对）。
+                                ringDp = socRingDiameterDp(SOC_RING_MIN_DP, fontScale),
+                                heroText = rangeHeroValue(rangeModel),
+                                heroLabel = rangeHeroLabel(rangeModel),
+                                fontScale = fontScale,
+                            )
+                            when (arrangement) {
+                                HeroArrangement.STACKED -> Column(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
-                                    SocRing(st.battery_level, charging = st.active_charge != null)
-                                    Spacer(Modifier.width(28.dp))
-                                    RangeHero(rangeModel, Modifier.weight(1f))
+                                    RangeHero(rangeModel, Modifier.fillMaxWidth())
+                                    RangeConclusions(rangeModel)
+                                    Spacer(Modifier.height(14.dp))
+                                    // ⚠️ v0.30.0：两种布局用**同一个**环尺寸，
+                                    // 否则切布局时环会「跳」一下。
+                                    SocRing(
+                                        st.battery_level,
+                                        charging = st.active_charge != null,
+                                        baseSizeDp = SOC_RING_MIN_DP,
+                                    )
                                 }
-                                // ⚠️ **v0.95.0**：结论区**整宽**（原来在上面的窄栏里）。
-                                RangeConclusions(rangeModel)
+                                HeroArrangement.SIDE_BY_SIDE -> Column(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp),
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        SocRing(
+                                            st.battery_level,
+                                            charging = st.active_charge != null,
+                                            baseSizeDp = SOC_RING_MIN_DP,
+                                        )
+                                        Spacer(Modifier.width(HERO_RING_GAP_DP.dp))
+                                        RangeHero(rangeModel, Modifier.weight(1f))
+                                    }
+                                    // ⚠️ **v0.95.0**：结论区**整宽**（原来在上面的窄栏里）。
+                                    RangeConclusions(rangeModel)
+                                }
                             }
                         }
                         // ⚠️ **v0.94.0**：里程表那一行**整宽**渲染（原来在右侧窄栏里）。
@@ -868,16 +897,17 @@ fun StatusScreen(
 private fun RangeHero(model: RangeModel, modifier: Modifier = Modifier) {
     Column(modifier) {
         BigStat(
-            (model.trueRange ?: model.ratedRange)?.fmt(0) ?: "—",
+            // ⚠️ **v0.120.0**：数字与标签都从**唯一事实源**取
+            // （`ui/RangeArrangement.kt`）⇒ 排布判定用的宽度
+            // 与**真正渲染出来**的字永远是同一份 ⇒ 两边不会漂。
+            rangeHeroValue(model),
             // ⚠️ v0.9.0（新手车主复核）：「真实可达 (km)」是术语。
             // 车主原话：「'可达'太书面」「我真正要的是一句话：
             // '现在能开 206 公里，高速算的，够你回家'」。
             // 大数字 + 这行小字，读起来就是「现在能开 206 公里」。
-            if (model.trueRange != null) "现在能开（公里）"
             // ⚠️ **v0.26.0（第 17 轮通勤车主 P0-2）：低温样本不足时要说清为什么退回标称。**
             // 原来只写「官方标称（公里）」，用户会以为 App 出故障了。
-            else if (model.tempCaveat != null) "官方标称（公里）· 低温未修正"
-            else "官方标称（公里）",
+            rangeHeroLabel(model),
             // ⚠️ **v0.14.0（苹果 HIG P0-1）：**主角级** —— 44sp。
             // 34sp 和页面标题「车况」同级，主角就不成立（每屏要有唯一视觉锚点）。
             hero = true,

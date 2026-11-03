@@ -70,4 +70,23 @@ class WidthBudgetPinTest {
         assertEquals(109.46f, estimateTextWidthDpWithNbsp(kwh100, 13f), 0.01f)
         assertEquals(118.56f, estimateTextWidthDp(kwh100, 13f), 0.01f)
     }
+
+    /**
+     * ⚠️ **v0.120.0**：首屏排布（环 + 主角并排 / 上下叠）的宽度预算。
+     *
+     * 口径：**乐观**（[estimateTextWidthDpWithNbsp]，不换行空格按 0.30em）。
+     * ⚠️ 这两个串里**没有**不换行空格 ⇒ **保守口径同值**（不是两个不同的数）。
+     *
+     * ⇒ 「204」@44sp = 1.86em × 44sp = **81.84dp**
+     * ⇒ 「现在能开（公里）」@13sp = 8em × 13sp = **104.00dp**
+     *   （**绑定项是标签**，不是数字 ⇒ 排布由它决定）
+     */
+    @Test
+    fun `v0_120_0_首屏排布的宽度数字`() {
+        assertEquals(81.84f, estimateTextWidthDpWithNbsp("204", 44f), 0.01f)
+        assertEquals(104.00f, estimateTextWidthDpWithNbsp("现在能开（公里）", 13f), 0.01f)
+        // 保守口径对这两个串**同值**（没有不换行空格）
+        assertEquals(81.84f, estimateTextWidthDp("204", 44f), 0.01f)
+        assertEquals(104.00f, estimateTextWidthDp("现在能开（公里）", 13f), 0.01f)
+    }
 }
