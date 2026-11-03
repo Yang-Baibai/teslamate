@@ -429,7 +429,8 @@ class RoutePlanLogicTest {
         )
         // ⚠️ v0.39.0（第 23 轮车主复审 C6）：最低点要带上**落点** ——
         // 「第 1237 公里」不在任何一个站上，用户看到 5% 也不知道在哪一站少充了。
-        assertEquals("全程最低 5%（第 1237 公里 · A之后）", p.verdictDetail())
+        // ⚠️ **v0.124.0**：最低点低于 20% 保底时**明说**（那半句从卡末尾重复的那行并过来）
+        assertEquals("全程最低 5%（第 1237 公里 · A之后） · 低于 20% 保底", p.verdictDetail())
         assertEquals("A", p.lowestHopFrom)
     }
 
@@ -444,7 +445,7 @@ class RoutePlanLogicTest {
         )
         // 最低点在**所有站之前** ⇒ 没有「从哪一站之后」可说
         assertNull(p.lowestHopFrom)
-        assertEquals("全程最低 5%（第 1237 公里）", p.verdictDetail())
+        assertEquals("全程最低 5%（第 1237 公里） · 低于 20% 保底", p.verdictDetail())
     }
 
     @Test

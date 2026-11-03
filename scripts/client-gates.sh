@@ -3230,6 +3230,80 @@ PYEOF
 if [ $? -eq 0 ]; then ok "实测到 80% 那一行是 KV 行且两条分支共用一句话"; else fail "实测到 80% 那一行还有问题"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 30：「线路余量表」卡的「全程最低」只许渲染**一处** ─────────────────
+#
+# ⚠️ **v0.124.0**：这个事实原来在卡里印了**两遍** ——
+#   ① 顶部细节行（`verdictDetail()`，随起点站重算）；
+#   ② 逐站列表末尾那一行（**全线**最低点，没随起点站重算）。
+# ⇒ 选了起点站时，同屏出现**两个不同的「全程最低」**（自相矛盾）；
+# ⇒ 而且两遍是**两种说法**（「（第 N 公里 · …之后）」vs「（在第 N 公里…）」）。
+# ⇒ 现在只留 `verdictDetail()` 一处；末尾那行删掉，「低于 20% 保底」并进细节行。
+#
+# ⚠️ 判据**只扫 RoutePlan.kt** —— `DrivesScreen.kt` 里也有「全程最低」，
+#   但那是**行程详情**的另一个事实（不是这张卡的）⇒ 全 App 扫会**假红**。
+# ⚠️ 判据必须先剥注释 —— 否则注释里提一句就能满足 ⇒ 假绿。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+RP = ROOT / 'app-android/app/src/main/java/com/teslamate/app/ui/RoutePlan.kt'
+
+if not RP.exists():
+    print('找不到 %s —— 这道闸门要跟着改' % RP)
+    sys.exit(1)
+
+
+def strip_comments(src):
+    # 块注释（含 KDoc）先剥，再按行剥 // 注释。
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+src = strip_comments(RP.read_text(encoding='utf-8', errors='replace'))
+lines = src.splitlines()
+
+problems = []
+
+# ① 「全程最低」只许出现一次
+hits = [i for i, ln in enumerate(lines) if '全程最低' in ln]
+if len(hits) != 1:
+    problems.append('RoutePlan.kt 里「全程最低」出现 %d 次（应为 1）⇒ 同一个事实又印了两遍' % len(hits))
+
+
+def enclosing_fun(lines, idx):
+    for i in range(idx, -1, -1):
+        m = re.match(r'\s*(?:private |public |internal |protected |suspend |inline |operator )*fun\s+([A-Za-z_][A-Za-z0-9_]*)\s*[(<]', lines[i])
+        if m:
+            return m.group(1)
+    return None
+
+
+if len(hits) == 1:
+    fn = enclosing_fun(lines, hits[0])
+    if fn != 'verdictDetail':
+        problems.append('「全程最低」那一句不在 verdictDetail 里（实际在 %s）⇒ 文案没有唯一事实源' % (fn or '(无函数)'))
+
+# ② verdictDetail 的函数体里必须调 hopBefore（落点与公里同源）
+m = re.search(r'fun\s+verdictDetail\s*\([^)]*\)\s*:\s*String\s*\{(.*?)\n    \}', src, re.S)
+if not m:
+    problems.append('RoutePlan.kt 里找不到 verdictDetail(...) ⇒ 这道闸门要跟着改')
+else:
+    if 'hopBefore(' not in m.group(1):
+        problems.append('verdictDetail 里没有调 hopBefore( ⇒ 落点没跟公里同源（会出现「第 3100 公里 · 起点之后」）')
+
+if problems:
+    print('「全程最低」这个事实还有问题 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 只由 RoutePlan.verdictDetail 一处给出（标签/值/保底限定都在那里）')
+    sys.exit(1)
+
+print('「全程最低」只在一处（verdictDetail），落点与公里同源')
+PYEOF
+if [ $? -eq 0 ]; then ok "「全程最低」只渲染一处（且落点与公里同源）"; else fail "「全程最低」又印了两遍 / 落点与公里不同源"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

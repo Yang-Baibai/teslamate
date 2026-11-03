@@ -480,6 +480,36 @@ class RoutePlanHonestyTest {
         assertTrue("从第二站起算不应再报身后的 1237 公里: $fromSecond", !fromSecond.contains("1237"))
         assertTrue("从第二站起算应报第 3100 公里: $fromSecond", fromSecond.contains("3100"))
         assertTrue("从第二站起算应报 20%: $fromSecond", fromSecond.contains("全程最低 20%"))
+        // ⚠️ **v0.124.0**：落点必须**与公里同源** ——
+        // 全线：最低点在第 1237 公里 ⇒ 落点是它之前的最后一站（起点）；
+        // 从第二站起算：最低点在第 3100 公里 ⇒ 落点必须是**第二站**。
+        // 原来这里给的是**全线**的落点 ⇒ 公里在 3100、站名却在 0 公里那段（自相矛盾）。
+        assertTrue("全线落点应是起点: $all", all.contains("起点之后"))
+        assertTrue("起算后落点应是第二站: $fromSecond", fromSecond.contains("第二站之后"))
+        assertTrue("起算后落点不该是起点: $fromSecond", !fromSecond.contains("起点之后"))
+    }
+
+    /**
+     * ⚠️ **v0.124.0**：低于 20% 保底要**明说** ——
+     * 那半句原来在卡末尾**重复**的那一行里；那一行删掉后并进细节行 ⇒ 信息一点没丢。
+     */
+    @Test
+    fun `低于保底时明说_高于保底时不说`() {
+        fun planWith(lowestSoc: Int) = RoutePlan(
+            RouteTemplate(
+                key = "j1", fromLabel = "A", toLabel = "B",
+                distanceKm = 3000.0, startSoc = 100, endSoc = 40,
+                legCount = 3, stopCount = 2,
+                lastDrivenAt = java.time.Instant.parse("2026-10-18T00:00:00Z"),
+                startOdoKm = 100000.0,
+            ),
+            listOf(RouteSocPoint(0.0, 100), RouteSocPoint(1237.0, lowestSoc)),
+            listOf(stop("起点", 0.0, gapKm = 3000.0, need = 40, required = 60, realSoc = 60, estSoc = 60)),
+        )
+        val low = planWith(5).verdictDetail()
+        assertTrue("5% 低于保底，要明说: $low", low.contains("低于 20% 保底"))
+        val ok = planWith(25).verdictDetail()
+        assertTrue("25% 不低于保底，不该说: $ok", !ok.contains("低于 20% 保底"))
     }
 
     @Test

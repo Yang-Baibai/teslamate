@@ -708,11 +708,18 @@ data class RoutePlan(
      * 现在算出它属于**哪一跳**：找出 `kmAlongRoute ≤ 最低点公里` 的最后一个站，
      * 落点就是「离开那个站之后」。
      */
-    val lowestHopFrom: String? get() {
-        val lowest = lowestPoint?.first ?: return null
-        val before = stops.filter { it.kmAlongRoute <= lowest }.maxByOrNull { it.kmAlongRoute }
-        return before?.name
-    }
+    val lowestHopFrom: String? get() = lowestPoint?.first?.let { hopBefore(it) }
+
+    /**
+     * 落点：**在 [km] 之前（含）的最后一个站**。
+     *
+     * ⚠️ **v0.124.0**：它必须**跟调用方给的公里数同源** ——
+     * 原来 [lowestHopFrom] 用的是**全线**最低点算出来的落点，
+     * 而 [verdictDetail] 的公里数可以是**起点站起算**的
+     * ⇒ 两者对不上（会出现「第 3100 公里 · 起点之后」，而起点在 0 公里那段）。
+     */
+    private fun hopBefore(km: Double): String? =
+        stops.filter { it.kmAlongRoute <= km }.maxByOrNull { it.kmAlongRoute }?.name
 
     /**
      * ⚠️ **v0.39.0（第 23 轮车主复审 P2-2）：这条线上有**几跳到不了保底**。**
@@ -1242,10 +1249,17 @@ data class RoutePlan(
         lowPoint?.let { (km, soc) ->
             sb.append("全程最低 ").append(soc).append("%（第 ").append(km.roundToInt()).append(" 公里")
             // ⚠️ **v0.39.0（第 23 轮车主复审 C6）：给**落点**。**
-            lowestHopFrom?.let { from ->
+            //
+            // ⚠️ **v0.124.0**：落点必须**与公里同源** —— 用**同一个 km** 找站。
+            // 原来用的是 [lowestHopFrom]（**全线**最低点算的）⇒ 选了起点站时会出现
+            // 「全程最低 20%（第 3100 公里 · 起点之后）」—— 公里在 3100，站名却在 0 公里那段。
+            hopBefore(km)?.let { from ->
                 sb.append(" · ").append(from).append("之后")
             }
             sb.append("）")
+            // ⚠️ **v0.124.0**：低于 20% 保底要**明说** —— 这半句原来在卡末尾那一行里，
+            // 而那一行已删（同一个事实印两遍）⇒ 并到这里，**信息一点没丢**。
+            if (soc < 20) sb.append(" · 低于 20% 保底")
         }
         return sb.toString()
     }
@@ -3702,26 +3716,13 @@ fun RoutePlanCard(
                 }
             }
         }
-        plan.lowestPoint?.let { (km, soc) ->
-            Spacer(Modifier.height(4.dp))
-            // ⚠️ **v0.32.0（第 20 轮规划复审 P0-1）：公里与电量必须来自**同一个点**。**
-            //
-            // 原来这里写的是 `plan.lowestSoc`（全局最低）配 `plan.belowFloorKm`
-            // （第一个跌破 20% 的公里）—— **两个不同的点被拼在了一起**：
-            // 6227 公里那条会同时出现
-            // 「全程最低 5%（第 1237 公里）」与「全程最低 5%（在第 227 公里）」。
-            //
-            // 这正是 v0.29.0 P0-3 修过的那类错，**只是在另一处又犯了一次**。
-            // 现在两处都用 [lowestPoint]（公里与电量同源）。
-            Text(
-                if (soc < 20) {
-                    "全程最低 $soc%（在第 ${km.roundToInt()} 公里，低于 20% 保底）"
-                } else {
-                    "全程最低 $soc%（在第 ${km.roundToInt()} 公里）"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = if (soc < 20) accents.warnAmberText else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        // ⚠️ **v0.124.0**：这里原来**又印了一遍**「全程最低 X%（在第 N 公里…）」——
+        // ① 同一个事实在卡里出现**两次**（顶部细节行 + 这一行），而且是**两种说法**；
+        // ② 这一遍用的是**全线**最低点，**没随起点站重算**
+        //    ⇒ 选了起点站时，同屏会出现**两个不同的「全程最低」**（自相矛盾）。
+        //
+        // ⇒ 这一行删掉：事实由上面的细节行 [RoutePlan.verdictDetail] **一处**给出
+        //   （含「低于 20% 保底」的限定 ⇒ 信息一点没丢）；
+        //   「公里与电量必须同源」那条规矩（v0.32.0 P0-1）仍由 [RoutePlan.lowestPoint] 守着。
     }
 }
