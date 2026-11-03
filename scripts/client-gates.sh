@@ -2953,6 +2953,8 @@ PAIRS = [
     ('193.95', '「今天 4.4 公里 · 15 分钟」的**保守口径**', '今天那行'),
     ('81.84', '主角「204」@44sp（乐观口径）', '「204」'),
     ('104.00', '主角标签「现在能开（公里）」@13sp（乐观口径）', '「现在能开（公里）」'),
+    ('367.20', '保养卡底部行旧文案 @24sp（200% 字号 ⇒ 367.20dp > 344dp 预算）', '基准与间隔（爱车）'),
+    ('206.40', '保养卡底部行新文案 @24sp（200% 字号）', '基准与间隔 · 爱车'),
 ]
 
 problems = []
@@ -3050,6 +3052,96 @@ if problems:
 print('首屏排布：宽度驱动（heroArrangement）· 预算常量齐全 · 环宽与画出来的一致')
 PYEOF
 if [ $? -eq 0 ]; then ok "首屏排布宽度驱动（不许拍死的字号阈值）"; else fail "首屏排布宽度驱动"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 28：保养卡底部那一行不许再有**教学语**（也不许把箭头挤出屏幕）─────────
+#
+# ⚠️ **v0.121.0**：这一行原来写的是「基准与间隔（爱车）· 点这里修改」——
+#   ① 「点这里修改」是**教学语**：界面里教用户怎么点；而**可点性已经由右边的
+#      箭头图标承担了** ⇒ 同一件事说两遍（降噪的第一原则：一句事实只说一次）。
+#      ⚠️ 全 App 扫过：这一行是**最后**一处「点这里 / 点击这里」类教学语。
+#   ② 「（车名）」的括号把车名降级成「补充说明」
+#      （用户反馈 #25 的原话：「各个按钮**可以不需要括号内的那些东西**」）。
+#   ③ 旧文案在 200% 字号下要 367.20dp > 那一行的 344dp 预算 ⇒ 会被折行 /
+#      把右边的箭头挤出屏幕。
+#
+# ⚠️ **判据必须先剥注释** —— 否则注释里提一句「点这里」就能满足 ⇒ 假绿。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+KT = ROOT / 'app-android/app/src/main/java/com/teslamate/app'
+MAINT = KT / 'ui/Maintenance.kt'
+SCREEN = KT / 'ui/StatusScreen.kt'
+
+for p in (MAINT, SCREEN):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    # 块注释（含 KDoc）先剥，再按行剥 // 注释。
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+maint = strip_comments(MAINT.read_text(encoding='utf-8', errors='replace'))
+screen = strip_comments(SCREEN.read_text(encoding='utf-8', errors='replace'))
+
+problems = []
+
+# ① 纯函数层：那一行的文案不许出现教学语 / 全角括号
+m = re.search(r'fun\s+maintenanceBaselineLabel\s*\([^)]*\)\s*:\s*String\s*=(.*?)\n\n', maint, re.S)
+if not m:
+    problems.append('ui/Maintenance.kt 里找不到 maintenanceBaselineLabel(...) ⇒ 那一行的文案没有唯一事实源')
+else:
+    body = m.group(1)
+    for bad in ('点这里', '点击', '修改'):
+        if bad in body:
+            problems.append('maintenanceBaselineLabel 里出现了「%s」⇒ 界面里不该教用户怎么点' % bad)
+    for bad in ('（', '）'):
+        if bad in body:
+            problems.append('maintenanceBaselineLabel 里出现了全角括号 ⇒ 车名被降级成补充说明')
+
+# ② 界面层：那一行必须走那个纯函数，且不许把箭头挤出屏幕
+mm = re.search(r'private fun MaintenanceCard\s*\(.*?\n\}', screen, re.S)
+if not mm:
+    problems.append('StatusScreen.kt 里找不到 MaintenanceCard ⇒ 这道闸门要跟着改')
+else:
+    card = mm.group(0)
+    if 'maintenanceBaselineLabel(' not in card:
+        problems.append('MaintenanceCard 里没有调用 maintenanceBaselineLabel( ⇒ 文案没有唯一事实源')
+    if 'buildString' in card:
+        problems.append('MaintenanceCard 里出现了 buildString ⇒ 文案又在界面里现拼了')
+    idx = card.find('maintenanceBaselineLabel(')
+    if idx >= 0:
+        # ⚠️ 判据必须**精确到那一段** —— 整张卡里出现一次 maxLines 不算数
+        region = card[idx:idx + 600]
+        if 'maxLines = 1' not in region:
+            problems.append('那一行的 Text 没有 maxLines = 1 ⇒ 车名过长会把箭头挤出屏幕')
+        if 'TextOverflow.Ellipsis' not in region:
+            problems.append('那一行的 Text 没有 TextOverflow.Ellipsis ⇒ 放不下时会被裁成半个词')
+
+# ③ 全 App（剥注释后）不许再有「点这里 / 点击这里」这类教学语
+for f in sorted(KT.rglob('*.kt')):
+    src = strip_comments(f.read_text(encoding='utf-8', errors='replace'))
+    for bad in ('点这里', '点击这里'):
+        if bad in src:
+            problems.append('界面里还有教学语「%s」（%s）⇒ 可点性由图标承担，文字不该再教一次' % (bad, f.name))
+
+if problems:
+    print('保养卡底部那一行还有问题 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 文案由 ui/Maintenance.kt 的 maintenanceBaselineLabel 唯一给出')
+    print('   ⇒ 宽度预算：BASELINE_ROW_TEXT_DP（单测 MaintenanceBaselineLabelTest 钉住）')
+    sys.exit(1)
+
+print('保养卡底部那一行：只剩事实 · 无教学语 · 无括号 · 单行 + 省略号')
+PYEOF
+if [ $? -eq 0 ]; then ok "保养卡底部行无教学语（可点性由图标承担）"; else fail "保养卡底部行还有教学语 / 几何隐患"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"

@@ -89,4 +89,27 @@ class WidthBudgetPinTest {
         assertEquals(81.84f, estimateTextWidthDp("204", 44f), 0.01f)
         assertEquals(104.00f, estimateTextWidthDp("现在能开（公里）", 13f), 0.01f)
     }
+
+    /**
+     * ⚠️ **v0.121.0**：保养卡底部那一行的宽度数字。
+     *
+     * 口径：**乐观**（[estimateTextWidthDpWithNbsp]）—— 这两个串里**没有**不换行空格
+     * ⇒ **保守口径同值**（不是两个不同的数）。
+     *
+     * ⇒ 旧文案「基准与间隔（爱车）· 点这里修改」@24sp（200% 字号）= **367.20dp**
+     *   > 那一行能用的 **344dp**（卡片内容区 361dp − 间距 3dp − 箭头 14dp）
+     *   ⇒ 放不下（会被折行 / 把箭头挤出屏幕）；
+     * ⇒ 新文案「基准与间隔 · 爱车」@24sp = **206.40dp** ⇒ 余量 137.60dp。
+     */
+    @Test
+    fun `v0_121_0_保养卡底部行的宽度数字`() {
+        assertEquals(367.20f, estimateTextWidthDpWithNbsp("基准与间隔（爱车）· 点这里修改", 24f), 0.01f)
+        assertEquals(206.40f, estimateTextWidthDpWithNbsp("基准与间隔 · 爱车", 24f), 0.01f)
+        // 正常字号（labelSmall = 12sp）：旧 183.60dp / 新 103.20dp
+        assertEquals(183.60f, estimateTextWidthDpWithNbsp("基准与间隔（爱车）· 点这里修改", 12f), 0.01f)
+        assertEquals(103.20f, estimateTextWidthDpWithNbsp("基准与间隔 · 爱车", 12f), 0.01f)
+        // 保守口径对这两个串**同值**（没有不换行空格）
+        assertEquals(367.20f, estimateTextWidthDp("基准与间隔（爱车）· 点这里修改", 24f), 0.01f)
+        assertEquals(206.40f, estimateTextWidthDp("基准与间隔 · 爱车", 24f), 0.01f)
+    }
 }

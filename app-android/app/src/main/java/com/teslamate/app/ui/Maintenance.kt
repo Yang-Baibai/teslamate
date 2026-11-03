@@ -99,3 +99,38 @@ fun MaintenanceReminder.bannerText(currentOdoKm: Double?): String {
         "$label 还有 ${remainingKm.roundToInt()} 公里到期（该在里程表 $due 公里时做）"
     }
 }
+
+/**
+ * 保养卡底部那一行的文案（**唯一事实源**）——「基准与间隔」＋ 是哪台车。
+ *
+ * ⚠️ **v0.121.0（本轮手术点）**：原来这一行是
+ * 「基准与间隔（爱车）· 点这里修改」⇒ 两个毛病：
+ *
+ * ① **「· 点这里修改」是教学语** —— 界面里教用户怎么点。
+ *    而**可点性已经由右边的箭头图标承担了**（KeyboardArrowRight）
+ *    ⇒ 同一件事说了两遍（降噪的第一原则：一句事实只说一次）。
+ *    ⚠️ 全 App 扫过一遍：这一行是**最后**一处「点这里 / 点击」类教学语。
+ * ② **「（爱车）」的括号**把车名降级成「补充说明」
+ *    （用户反馈 #25 的同类诉求：「各个按钮**可以不需要括号内的那些东西**」）。
+ *
+ * ⇒ 现在这一行只剩**事实**：基准与间隔，是哪台车的。
+ */
+fun maintenanceBaselineLabel(carName: String?): String =
+    if (carName.isNullOrBlank()) "基准与间隔" else "基准与间隔 · $carName"
+
+/** 那一行的字号：labelSmall = **12sp**（见 ui/Theme.kt；⚠️ 别拿 M3 默认值算）。 */
+const val BASELINE_ROW_SP = 12f
+
+/**
+ * 那一行里**文字**能用的宽度（dp）：卡片内容区（FULL_WIDTH_DP = 361dp）
+ * − 间距 3dp − 箭头图标 14dp。
+ *
+ * ⚠️ 这个数是**承重**的：旧文案「基准与间隔（爱车）· 点这里修改」在 200% 字号下
+ * 要 **367.20dp > 344dp** ⇒ 放不下（会被折行 / 把箭头挤出屏幕）
+ * ⇒ 这就是本轮手术的理由。
+ */
+const val BASELINE_ROW_TEXT_DP = FULL_WIDTH_DP - 3f - 14f
+
+/** 那一行在某字号倍率下需要的宽度（dp）—— 一律用**估算器**算，别手算。 */
+fun maintenanceBaselineNeededDp(label: String, fontScale: Float): Float =
+    estimateTextWidthDpWithNbsp(label, BASELINE_ROW_SP * fontScale)

@@ -1842,13 +1842,17 @@ private fun MaintenanceCard(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                buildString {
-                    append("基准与间隔")
-                    carName?.let { append("（$it）") }
-                    append(" · 点这里修改")
-                },
+                // ⚠️ **v0.121.0（本轮手术点）**：文案由 maintenanceBaselineLabel 唯一给出 ——
+                // 去掉「· 点这里修改」这个**教学语**（可点性由右边的箭头图标承担）
+                // 与「（车名）」的括号 ⇒ 这一行只剩**事实**。
+                maintenanceBaselineLabel(carName),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                // ⚠️ **不许把右边的箭头挤出屏幕**：车名再长也不许溢出
+                // （宽度预算见 ui/Maintenance.kt 的 BASELINE_ROW_TEXT_DP）。
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.width(3.dp))
             Icon(

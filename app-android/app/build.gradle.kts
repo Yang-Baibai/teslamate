@@ -17,8 +17,8 @@ android {
         //    ⚠️ **必须单调递增、不能跳号**（App 的更新判定是 remote > 本地 code
         //    ⇒ 跳过的号用户永远收不到）：120 → 121 → 122 → 123 → 124 → 125 → 126 → 127 → 128，八个是
         //    并行会话与我按序发的，**没有跳号**。
-        versionCode = 129
-        versionName = "0.120.0"
+        versionCode = 130
+        versionName = "0.121.0"
     }
 
     buildTypes {
