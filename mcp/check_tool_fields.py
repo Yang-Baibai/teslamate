@@ -41,6 +41,10 @@ import teslamate_mcp as T
 # ⚠️ 只断言「**必然存在**」的字段：
 #    费用（没配电价时合法为 null）、锁车状态（车在休眠时合法为 null）**不列**。
 SPEC = [
+    # ⚠️ **v0.122.0 补记**：「App 能看到的，Hermes 也要能取」（能力对账）。
+    #    这两个是 App 有、而 Hermes 原来没有的端点 ⇒ 本轮补上。
+    ("teslamate_drive_energy_profile", {}, "采样点数", "这趟行程的逐公里电量剖面"),
+    ("teslamate_climb_model", {}, "上坡每米耗电(Wh/m)", "爬升能耗标定的上坡系数"),
     ("teslamate_status", {}, "电量%", "电量"),
     ("teslamate_status", {}, "里程表km", "里程表"),
     # ⚠️ **v0.100.0**：用户反馈工具。
@@ -566,6 +570,35 @@ def check_range_reach_contract() -> list:
 
 
 
+def check_drive_energy_profile_contract() -> list:
+    """本轮补的两个工具必须**真的取得到数**（不是工具壳子）。
+
+    ⚠️ 为什么查：上一轮踩过「函数定义了但没被调用 ⇒ 等于没写」，
+    以及「纯函数测了、但没接到输出上」两类坑 ⇒ 这里查**运行时**。
+    """
+    bad = []
+    try:
+        prof = T.teslamate_drive_energy_profile()
+        climb = T.teslamate_climb_model()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(prof, dict) or "错误" in prof:
+        bad.append("行程电量剖面取不到：%r" % (prof,))
+    else:
+        if not prof.get("采样点数"):
+            bad.append("行程电量剖面没有采样点（库里没有行程？）")
+        if prof.get("起点电量(%)") is None or prof.get("终点电量(%)") is None:
+            bad.append("行程电量剖面缺起点/终点电量")
+        if not prof.get("剖面"):
+            bad.append("行程电量剖面没有逐公里点")
+    if not isinstance(climb, dict) or "错误" in climb:
+        bad.append("爬升标定取不到：%r" % (climb,))
+    else:
+        if climb.get("上坡每米耗电(Wh/m)") is None:
+            bad.append("爬升标定缺上坡系数")
+        if climb.get("回充可信") is None:
+            bad.append("爬升标定缺「回充可信」标志（不可信时要用保守值）")
+    return bad
 def check_range_estimate_contract() -> list:
     """「真实可达续航」必须是**客户端算法**的复算结果（两个渠道同一个数）。
 
@@ -813,6 +846,14 @@ def main() -> int:
               % ("teslamate_range_estimate", "目的地可达性契约"))
     bad.extend(reach_bad)
 
+
+    drive_energy_bad = check_drive_energy_profile_contract()
+    for b in drive_energy_bad:
+        print("  ✗ %s" % b)
+    if not drive_energy_bad:
+        print("  ✓ %-26s %-24s 这趟电怎么掉的 / 爬升标定都取得到数"
+              % ("teslamate_drive_energy_profile", "能力对账契约"))
+    bad.extend(drive_energy_bad)
 
     range_bad = check_range_estimate_contract()
     for b in range_bad:

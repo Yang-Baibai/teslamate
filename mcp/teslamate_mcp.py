@@ -1457,3 +1457,74 @@ if __name__ == "__main__":
     print(f"[teslamate-mcp] API={API_URL} car={CAR_ID} token={'有' if TOKEN else '缺'!s}",
           file=sys.stderr)
     mcp.run()
+
+
+@mcp.tool()
+def teslamate_drive_energy_profile(drive_id: int = 0, step_km: int = 5) -> dict:
+    """查**某一趟行程的逐公里电量剖面**（这趟的电是怎么掉的）。
+
+    **什么时候用**：用户问「上周那趟电怎么掉得这么快」「这趟跑到一半就没电了」
+    「哪一段最费电」「这趟的爬升多耗了多少电」—— 都归它。
+
+    ⚠️ **逐公里真实剖面**（不是直线插值）：服务端按里程 5 公里分箱取 battery_level
+    的中位数 ⇒ 山区长途的误差从实测 13 公里降到 1 公里内
+    （插值会把「第 244 公里跌破 20% 保底」算成 231 公里 ⇒ **危险决策**）。
+
+    ⚠️ drive_id=0 ⇒ 取**最近一趟**（模型手里没有 id 时就用这个；
+    也可先查 teslamate_drives 拿到 id 再指定）。
+    """
+    did = int(drive_id or 0)
+    if did <= 0:
+        rows = _get(f"/api/v1/cars/{CAR_ID}/drives?limit=1")
+        if not isinstance(rows, list) or not rows:
+            return {"错误": "库里还没有行程"}
+        did = int(rows[0].get("id") or 0)
+        if did <= 0:
+            return {"错误": "最近一趟拿不到 id"}
+    pts = _get(f"/api/v1/drives/{did}/soc_profile?step_km={int(step_km)}")
+    if not isinstance(pts, list):
+        return {"错误": "取不到电量剖面", "详情": str(pts)[:200]}
+    if not pts:
+        return {"错误": "这趟没有逐公里电量采样"}
+    out = {
+        "行程id": did,
+        "每公里步长": int(step_km),
+        "采样点数": len(pts),
+        "起点电量(%)": pts[0].get("soc"),
+        "终点电量(%)": pts[-1].get("soc"),
+        "剖面": [{"公里": p.get("km"), "电量(%)": p.get("soc")} for p in pts],
+    }
+    return out
+
+
+@mcp.tool()
+def teslamate_climb_model(min_km: float = 20.0) -> dict:
+    """查**本车的爬升能耗标定**（上坡每米多耗多少电 / 下坡每米能回多少）。
+
+    **什么时候用**：用户问「上坡特别费电吗」「下坡能回充多少」
+    「这个坡大概要多少电」「爬升修正系数是多少」—— 都归它。
+
+    ⚠️ 这是**本车实测**的系数（不是通用值）：上坡约 6.4 Wh/m、下坡约 3.4 Wh/m。
+    ⚠️ **回充系数可能不可信**（纯下坡样本只有 5 趟）⇒ 看「回充可信」；
+    不可信时用「保守下坡回充」（偏安全那一侧）。
+    """
+    d = _get(f"/api/v1/cars/{CAR_ID}/climb_model?min_km={min_km}")
+    if not isinstance(d, dict) or "error" in d:
+        return {"错误": "取不到爬升标定", "详情": str(d)[:200]}
+    return {
+        "上坡每米耗电(Wh/m)": d.get("c_up_wh_per_m"),
+        "下坡每米回充(Wh/m)": d.get("c_regen_wh_per_m"),
+        "保守下坡回充(Wh/m)": d.get("conservative_c_regen"),
+        "上坡传动效率": d.get("implied_eta_up"),
+        "下坡回充效率": d.get("implied_eta_regen"),
+        "上坡系数可信": d.get("c_up_trustworthy"),
+        "回充可信": d.get("c_regen_trustworthy"),
+        "参与拟合行程数": d.get("n_drive"),
+        "纯上坡行程数": d.get("n_pure_up"),
+        "纯下坡行程数": d.get("n_pure_down"),
+        "毛耗电回归R2": d.get("r2_gross"),
+        "最短统计里程(km)": d.get("min_km"),
+        "方法": d.get("method"),
+        "注意": d.get("caveat"),
+    }
+

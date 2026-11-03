@@ -7,7 +7,7 @@
 # · 这条链路的三个端分别是**服务端 / MCP / 推送脚本**（**没有 App**）——
 #   塞进 App 的闸门里既不搭，也会和并行的「UI交互迭代」会话抢同一个文件。
 #
-# ## 十道闸门
+# ## 十一道闸门
 #
 #   1. **简报的文案只有服务端一份** ＋ 正文**必带窗口边界**
 #      （同一句话写两遍 ⇒ 迟早漂：v0.76.0「完成后是这样」、v0.78.0「充电完成」）
@@ -28,6 +28,10 @@
 #        且这一段是**当前值** ⇒ 文案必须写「当前」，不许暗示方向）
 #   9. **「够不够到」的两端参数契约**（to_km）
 #      （「还有 X 公里，够吗」必须由服务端判；MCP 只透传，不许自己减）
+#   10. **契约自检函数必须都被调用**（定义 ≠ 生效）
+#      （自检没跑 ⇒ 「0 项不合规」是假绿）
+#   11. **App 能看到的，Hermes 也要能取**（能力对账）
+#      （App 独有的端点要么给 MCP 补工具，要么在例外清单里写清理由）
 #  10. **契约自检必须真的在跑**（定义了函数 ≠ 生效）
 #      （注册条件写错 ⇒ 那条自检一次都没跑，而自检照样报「0 项不合规」⇒ 假绿）
 
@@ -856,6 +860,84 @@ print('%d 个契约自检全部在 runner 里被调用，且结果并进 bad' % 
 PYEOF
 if [ $? -eq 0 ]; then ok "契约自检真的在跑（不是形同虚设）"; else fail "契约自检形同虚设（自检可能一次都没跑）"; cat "$TMP"; fi
 rm -f "$TMP"
+
+# ── 闸门 11：App 能看到的，Hermes 也要能取（能力对账）────────────────
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+KT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/Api.kt')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+for p in (KT, MCP):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+kt = KT.read_text(encoding='utf-8', errors='replace')
+mcp = MCP.read_text(encoding='utf-8', errors='replace')
+
+
+def norm(p):
+    """端点归一化：抹掉查询串与变量段 ⇒ 只留**路径形状**。"""
+    p = p.split('?')[0].rstrip('/')
+    p = re.sub(r'\$\{?[A-Za-z_][A-Za-z0-9_]*\}?', '*', p)
+    p = re.sub(r'\{[^}]*\}', '*', p)
+    p = re.sub(r'%[a-z]', '*', p)
+    # 尾部可能多出一个变量段（例：route_profile{q}）⇒ 两侧同规则去掉。
+    p = p.rstrip('*')
+    return p
+
+
+def endpoints(text):
+    """扫出文件里所有 **/api/v1/** 端点字面量（剥掉整行注释）。
+
+    ⚠️ 为什么扫**全文件**而不是只扫 _get(...)：
+    URL 常常先存进变量再拼查询串（例：url = f"/api/v1/cars/{CAR_ID}/range_estimate"）
+    ⇒ 只扫调用点会**漏判成「Hermes 没有」** ⇒ 闸门假红（判据不精确）。
+    """
+    out = set()
+    for line in text.split(chr(10)):
+        s = line.strip()
+        if s.startswith('#') or s.startswith('//'):
+            continue
+        for m in re.finditer(r'["\']([^"\']*/api/v1/[^"\']*)["\']', line):
+            out.add(norm(m.group(1)))
+    return out
+
+
+app_eps = endpoints(kt)
+mcp_eps = endpoints(mcp)
+
+# 例外：App 专用 / 运维自检 / 图片 / 原始采样点 —— 每条**必须写理由**
+EXCEPTIONS = {
+    '/api/v1/cars': '单用户单车：Hermes 侧固定车号，车列表对模型没有意义',
+    '/api/v1/app/latest': 'App 的更新自检，模型不需要',
+    '/api/v1/app/staticmap': '地图图片（不是数据）；Hermes 侧给坐标与地点',
+    '/api/v1/health': '运维自检，模型不需要',
+    '/api/v1/feedback/*/image': 'App 上传截图；Hermes 侧不传图',
+    '/api/v1/drives/*/track': '原始轨迹采样点（上百个）；Hermes 给可读结论（soc_profile / energy_profile）',
+}
+
+missing = []
+for ep in sorted(app_eps):
+    if ep in mcp_eps:
+        continue
+    if ep in EXCEPTIONS:
+        continue
+    missing.append(ep)
+
+if missing:
+    print('App 能取、但 Hermes 侧没有对应入口的端点 %d 个 ——' % len(missing))
+    for ep in missing:
+        print('   ', ep)
+    print('   ⇒ 使命 §2.1：App 能看到的，Hermes 也要能取')
+    print('      （要么给 MCP 补一个工具，要么在 EXCEPTIONS 里写清理由）')
+    sys.exit(1)
+print('App ↔ Hermes 能力对账：%d 个端点全覆盖 ✔' % len(app_eps))
+PYEOF
+if [ $? -eq 0 ]; then ok "App 能看到的，Hermes 也能取（能力对账）"; else fail "App 能取、但 Hermes 取不到的端点"; cat "$TMP"; fi
+rm -f "$TMP"
+
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
