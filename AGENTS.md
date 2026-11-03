@@ -90,6 +90,15 @@ cd /c/tm-ws && export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.1
 （2026-11-02 实测：212 个测试全绿）。⇒ App 侧改动**必须**能跑单测，
 把「没跑成单测」写进 CHANGELOG 是不合格的。
 
+⚠️ **写/删文件（`Copy-Item` / `rm`）必须用「解析后的真实路径」，而且必须是「单条顶层命令」**
+—— `C:\tm-ws`（ASCII 联接）会被本机安全策略判成「工作区外」⇒ 写/删一律用
+`C:\Users\<你>\OneDrive\文档\teslamate\...`；
+`cd ... && cp ...` 这种**复合命令**也会被拦（理由：「切换工作目录后无法核对写/删目标」）
+⇒ **一条命令只干一件事**（拷 APK 就一条 `Copy-Item`，别串 `&&`）；
+删目录用 `rm -rf -- '<真实路径>'`（运行时会路由到可恢复删除）。
+（2026-11-03 实测：发版拷 APK 连撞三次才过。）
+⚠️ **只读与构建**走 ASCII 路径（`C:\tm-ws`）没问题 —— 被拦的只有**写/删**。
+
 ⚠️ 改了 `.env` 之后 `docker compose restart` **不算数**（容器持有创建时的快照），
 必须 `docker compose up -d --force-recreate api`。
 

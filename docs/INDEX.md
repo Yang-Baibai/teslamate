@@ -133,6 +133,12 @@ cd /c/tm-ws && export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.1
 #    （「Your project path contains non-ASCII characters」）。
 gradle -p C:/tm-ws/app-android assembleDebug --console=plain --offline
 
+# ⚠️ 写/删文件（拷 APK、删临时文件）必须用**真实路径** + **单条顶层命令**：
+#    C:\tm-ws 会被判成「工作区外」，`cd ... && cp ...` 复合命令也会被拦。
+#    （只读与构建走 ASCII 路径没问题。）
+Copy-Item 'C:\Users\<你>\OneDrive\文档\teslamate\app-android\app\build\outputs\apk\debug\app-debug.apk' `
+          'C:\Users\<你>\OneDrive\文档\teslamate\apk\teslamate-app.apk' -Force
+
 # 服务端
 docker compose build api && docker compose up -d --force-recreate api
 docker logs -f teslamate-api-1
