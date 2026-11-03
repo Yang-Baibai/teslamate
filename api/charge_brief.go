@@ -96,6 +96,19 @@ func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeS
 	if r.Count == 0 {
 		// 没有样本 ⇒ **不给数**，只说清「这个区间没有充电记录」。
 		lines = append(lines, "这个区间没有充电记录。")
+		// ── 续航段（v0.119.0 补记）──────────────────────────────
+		//
+		// ⚠️ 这一段是**当前值**（与窗口无关）⇒ 文案**必须**写「当前」
+		// —— 否则用户会以为「近 30 天能开 171 公里」（那是一个我们没算过的数）。
+		if seg != nil {
+			if line := renderRangeBriefLine(seg.Range); line != "" {
+				lines = append(lines, line)
+			}
+			if seg.RangeNote != "" {
+				lines = append(lines, seg.RangeNote)
+			}
+		}
+
 		return title, strings.Join(lines, "\n")
 	}
 
@@ -202,6 +215,30 @@ func renderBatteryBriefLine(b *ChargeBriefBattery) string {
 		return ""
 	}
 	return "电池健康：" + strings.Join(parts, " · ")
+}
+
+// renderRangeBriefLine 渲染续航段那一行（纯函数）。
+//
+// ⚠️ **「当前」两个字必须有** —— 这一段是「**现在**能开多远」，与简报窗口**无关**
+// ⇒ 不写「当前」就会被读成「近 30 天能开 171 公里」（那是一个我们**没算过**的数）。
+//
+// ⚠️ **不给方向性结论**：这里只有**一个**当前值 ⇒ 不存在「变好 / 变差」⇒ 也不许出现箭头。
+func renderRangeBriefLine(r *ChargeBriefRange) string {
+	if r == nil || r.TrueRangeKm == nil {
+		return ""
+	}
+	parts := []string{fmt.Sprintf("当前真实可达 %.0f 公里", *r.TrueRangeKm)}
+	if r.TrueRangeLoKm != nil && r.TrueRangeHiKm != nil {
+		parts = append(parts, fmt.Sprintf("约 %d ~ %d 公里", *r.TrueRangeLoKm, *r.TrueRangeHiKm))
+	}
+	if r.FloorRangeKm != nil {
+		f := fmt.Sprintf("留 %.0f%% 保底能开 %.0f 公里", rangeFloorReservePct, *r.FloorRangeKm)
+		if r.FloorRangeLoKm != nil && r.FloorRangeHiKm != nil {
+			f += fmt.Sprintf("（约 %d ~ %d 公里）", *r.FloorRangeLoKm, *r.FloorRangeHiKm)
+		}
+		parts = append(parts, f)
+	}
+	return "续航：" + strings.Join(parts, " · ")
 }
 
 // chargeBriefBatteryFromHealth 从电池健康里取出简报的**电池段**（纯函数，可单测）。
@@ -410,12 +447,46 @@ func handleChargeBrief(w http.ResponseWriter, r *http.Request) {
 		battery = chargeBriefBatteryFromHealth(health, target.WindowStart, target.WindowEnd)
 	}
 
+	// ── 续航段（v0.119.0 补记）：**当前值** ─────────────────────
+	//
+	// ⚠️ 数值**直接取** [computeRangeEstimate]（与 /range_estimate 端点、
+	// App 首屏**同一个函数**）⇒ 同一个数（ADR #38 / #47 / #48）。
+	// **绝不在简报里另算一套**。
+	var rangeSeg *ChargeBriefRange
+	rangeNote := ""
+	est, err := computeRangeEstimate(id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if est.TrueRangeKm != nil {
+		rangeSeg = &ChargeBriefRange{
+			TrueRangeKm:  est.TrueRangeKm,
+			FloorRangeKm: est.FloorRangeKm,
+			BucketLabel:  est.BucketLabel,
+			SampleCount:  est.SampleCount,
+		}
+		// ⚠️ 区间**摊平**存（见 [ChargeBriefRange] 的说明）⇒ 要判空再取。
+		if est.TrueRangeBandKm != nil {
+			rangeSeg.TrueRangeLoKm = &est.TrueRangeBandKm.Lo
+			rangeSeg.TrueRangeHiKm = &est.TrueRangeBandKm.Hi
+		}
+		if est.FloorRangeBandKm != nil {
+			rangeSeg.FloorRangeLoKm = &est.FloorRangeBandKm.Lo
+			rangeSeg.FloorRangeHiKm = &est.FloorRangeBandKm.Hi
+		}
+	} else {
+		rangeNote = "续航：行程样本不足，暂不给数"
+	}
+
 	name := carDisplayName(id)
 	title, body := renderChargeBrief(loc, tz, name, target, &ChargeBriefSegments{
 		Energy:      energy,
 		EnergyNote:  energyNote,
 		Battery:     battery,
 		BatteryNote: batteryNote,
+		Range:       rangeSeg,
+		RangeNote:   rangeNote,
 	})
 	writeJSON(w, &ChargeBrief{
 		CarName:          name,

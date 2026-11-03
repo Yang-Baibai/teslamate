@@ -964,6 +964,14 @@ type ChargeBrief struct {
 	Battery *ChargeBriefBattery `json:"battery"`
 	// BatteryNote 没有电池趋势段时的**一句话**说明（空 = 有趋势段）。
 	BatteryNote string `json:"battery_note"`
+	// Range 续航段（**当前值**：与窗口无关）。
+	//
+	// ⚠️ **v0.119.0 补记**：这一段回答的是「**现在**能开多远」
+	// ⇒ 不是窗口内的量 ⇒ 文案里**必须**写「当前」（同 ADR #46 的规矩）。
+	// 为 nil 时看 [ChargeBrief.RangeNote]。
+	Range *ChargeBriefRange `json:"range"`
+	// RangeNote 没有续航段时的**一句话**说明（空 = 有续航段）。
+	RangeNote string `json:"range_note"`
 }
 
 // ChargeBriefSegments 简报里那些**可能有、也可能没有**的段。
@@ -980,6 +988,10 @@ type ChargeBriefSegments struct {
 	Battery *ChargeBriefBattery
 	// BatteryNote 没有电池趋势段时的一句话说明。
 	BatteryNote string
+	// Range 续航段（nil = 没有）。
+	Range *ChargeBriefRange
+	// RangeNote 没有续航段时的一句话说明。
+	RangeNote string
 }
 
 // ChargeBriefBattery 简报的**电池健康段**（v0.116.0 补记）。
@@ -1037,6 +1049,32 @@ type ChargeBriefEnergy struct {
 	KwhPer100Km *float64 `json:"kwh_per_100km"`
 	// DriveCount 窗口内行程数。
 	DriveCount int `json:"drive_count"`
+}
+
+// ChargeBriefRange 简报的**续航段**（v0.119.0 补记）。
+//
+// ⚠️ 这一段是「**当前**真实可达续航」⇒ **与简报窗口无关**
+// ⇒ 换任何区间档位，这个数都**不变**（它取决于当次的电量 / 标定续航 /
+//
+//	气温 / 车速与实测样本，不取决于充电历史）。
+type ChargeBriefRange struct {
+	// TrueRangeKm 当前真实可达（km）；nil = 样本不足，**不敢给数**。
+	TrueRangeKm *float64 `json:"true_range_km"`
+	// TrueRangeLoKm / TrueRangeHiKm 真实可达的区间（悲观, 乐观）。
+	//
+	// ⚠️ **故意摊平**（不嵌 RangeBand）：MCP 读的键必须在简报的结构体里
+	// **直接看得见**（Hermes 闸门 2 按 json tag 核对）⇒ 嵌一层就看不见了。
+	TrueRangeLoKm *int `json:"true_range_lo_km"`
+	TrueRangeHiKm *int `json:"true_range_hi_km"`
+	// FloorRangeKm 「留 20% 保底还能开多少」（km）。
+	FloorRangeKm *float64 `json:"floor_range_km"`
+	// FloorRangeLoKm / FloorRangeHiKm 保底那一行自己的区间。
+	FloorRangeLoKm *int `json:"floor_range_lo_km"`
+	FloorRangeHiKm *int `json:"floor_range_hi_km"`
+	// BucketLabel 采用的实测档位（如「0–60」）。
+	BucketLabel string `json:"bucket_label"`
+	// SampleCount 模型样本条数（行程条数）。
+	SampleCount int `json:"sample_count"`
 }
 
 type BatteryHealth struct {

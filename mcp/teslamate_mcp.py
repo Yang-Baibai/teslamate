@@ -674,6 +674,23 @@ def teslamate_charge_brief(period: str = "7d") -> dict:
         note = data.get("battery_note")
         if note:
             out["电池段说明"] = note
+    # ⚠️ **v0.119.0 补记**：续航段（**当前值**：与窗口无关）。
+    # 数值与服务端 /range_estimate、App 首屏**同一个数** ⇒ 别自己另算。
+    rg = data.get("range")
+    if isinstance(rg, dict):
+        out["续航·当前真实可达(公里)"] = rg.get("true_range_km")
+        lo = rg.get("true_range_lo_km")
+        hi = rg.get("true_range_hi_km")
+        if lo is not None and hi is not None:
+            out["续航·当前真实可达区间(公里)"] = "%s ~ %s" % (lo, hi)
+        out["续航·当前保底可达(公里)"] = rg.get("floor_range_km")
+        out["续航·档位"] = rg.get("bucket_label")
+        out["续航·样本条数"] = rg.get("sample_count")
+    else:
+        note = data.get("range_note")
+        if note:
+            out["续航段说明"] = note
+
     return out
 
 

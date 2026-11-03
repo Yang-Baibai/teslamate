@@ -7,7 +7,7 @@
 # · 这条链路的三个端分别是**服务端 / MCP / 推送脚本**（**没有 App**）——
 #   塞进 App 的闸门里既不搭，也会和并行的「UI交互迭代」会话抢同一个文件。
 #
-# ## 六道闸门
+# ## 八道闸门
 #
 #   1. **简报的文案只有服务端一份** ＋ 正文**必带窗口边界**
 #      （同一句话写两遍 ⇒ 迟早漂：v0.76.0「完成后是这样」、v0.78.0「充电完成」）
@@ -21,6 +21,12 @@
 #      （两处各算一次 SOH ⇒ 飞书与 App 报不同的数）
 #   6. **能耗/续航口径：客户端与服务端两份实现逐条一致**
 #      （分档边界 + 样本过滤各写一遍，只靠注释维持 ⇒ 迟早漂）
+#   7. **真实可达续航的常量：客户端与服务端逐条一致**
+#      （分档边界 + 样本过滤各写一遍，只靠注释维持 ⇒ 迟早漂）
+#   8. **简报的续航段必须复用端点那份算法（同一个数）**
+#      （简报自己算一份 ⇒ 飞书里说 171 公里而 App 上是 165 ⇒ 用户以为数据在骗人；
+#        且这一段是**当前值** ⇒ 文案必须写「当前」，不许暗示方向）
+
 #
 # 用法：bash scripts/hermes-gates.sh      （在仓库根）
 set -uo pipefail
@@ -157,7 +163,7 @@ def go_struct_tags(src, name):
 
 
 server_tags = set()
-for name in ('ChargeBrief', 'ChargeBriefEnergy', 'ChargeBriefBattery', 'ChargeStatsRange', 'ChargeStatsLastFull'):
+for name in ('ChargeBrief', 'ChargeBriefEnergy', 'ChargeBriefBattery', 'ChargeBriefRange', 'ChargeStatsRange', 'ChargeStatsLastFull'):
     t = go_struct_tags(models, name)
     if t is None:
         print('服务端找不到 type %s（api/models.go）' % name)
@@ -686,6 +692,49 @@ print('真实可达续航的常量：客户端 ↔ 服务端逐条一致 ✔')
 PYEOF
 if [ $? -eq 0 ]; then ok "真实可达续航的常量：客户端与服务端逐条一致"; else fail "真实可达续航的常量漂了"; cat "$TMP"; fi
 rm -f "$TMP"
+
+# ── 闸门 8：简报的续航段必须复用端点那份算法（同一个数）────────────
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+GO = pathlib.Path('api/charge_brief.go')
+if not GO.exists():
+    print('找不到 %s —— 这道闸门要跟着改' % GO)
+    sys.exit(1)
+
+go = GO.read_text(encoding='utf-8', errors='replace')
+problems = []
+
+# ① 简报**必须**复用 computeRangeEstimate（与 /range_estimate、App 首屏同一个数）
+n = go.count('computeRangeEstimate(')
+if n != 1:
+    problems.append('api/charge_brief.go 里 computeRangeEstimate( 出现 %d 次（应为 1）—— 简报必须复用端点那份算法' % n)
+
+# ② 简报**不许**自己建模型（建模型是端点那份的活）
+if 'buildRangeModel(' in go:
+    problems.append('api/charge_brief.go 里出现了 buildRangeModel( —— 简报不许自己建模型')
+
+# ③ 续航段的文案：必须有「当前」，不许有箭头
+if 'func renderRangeBriefLine' not in go:
+    problems.append('api/charge_brief.go 里没有 renderRangeBriefLine —— 续航段的文案要有唯一一份')
+else:
+    body = go.split('func renderRangeBriefLine', 1)[1].split(chr(10) + 'func ', 1)[0]
+    if '当前' not in body:
+        problems.append('续航段的文案里没有「当前」二字 ⇒ 窗口无关的当前值会被读成窗口内的量')
+    if '→' in body:
+        problems.append('续航段的文案里出现了箭头「→」⇒ 那是趋势符号，而我们没下这个结论')
+
+if problems:
+    print('简报的续航段没复用端点那份算法 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    sys.exit(1)
+print('简报的续航段：复用 /range_estimate 的数 + 标明「当前」✔')
+PYEOF
+if [ $? -eq 0 ]; then ok "简报的续航段复用端点那份算法（同一个数）"; else fail "简报的续航段没复用端点那份算法"; cat "$TMP"; fi
+rm -f "$TMP"
+
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"

@@ -486,6 +486,44 @@ def check_feedback_items() -> list:
     return bad
 
 
+def check_brief_range_contract() -> list:
+    """简报的**续航段**必须与 /range_estimate **是同一个数**（而且标明「当前」）。
+
+    ⚠️ 为什么比「有没有续航段」更重要：简报与续航端点是**两处出口**
+    ⇒ 数值一旦各算各的 ⇒ 飞书里说「能开 171 公里」而 App 上是 165 公里
+    ⇒ 用户以为数据在骗人（ADR #38：一个事实只能有一个说法）。
+
+    ⚠️ 另外：正文里出现续航段时**必须**带「当前」二字
+    ⇒ 否则窗口无关的当前值被说成了窗口内的量（编口径，同 ADR #46）。
+    """
+    bad = []
+    try:
+        brief = T.teslamate_charge_brief("7d")
+        est = T._get("/api/v1/cars/%s/range_estimate" % T.CAR_ID)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(brief, dict) or "错误" in brief:
+        return ["充电简报取不到：%r" % (brief,)]
+    if not isinstance(est, dict) or "error" in est:
+        return ["续航端点取不到：%r" % (est,)]
+    b = brief.get("续航·当前真实可达(公里)")
+    e = est.get("true_range_km")
+    if b is None or e is None:
+        bad.append("简报没有「续航·当前真实可达(公里)」或续航端点没有 true_range_km ⇒ 拿不到就别装有数")
+    elif abs(float(b) - float(e)) > 1e-6:
+        bad.append("简报的当前真实可达 = %s，与续航端点的 true_range_km = %s 不一致 ⇒ 两个出口各算各的了"
+                   % (b, e))
+    body = str(brief.get("正文") or "")
+    if b is not None:
+        if "当前" not in body:
+            bad.append("简报正文里的续航段没有「当前」二字 ⇒ 窗口无关的当前值会被读成窗口内的量")
+        shown = "%.0f" % float(b)
+        if shown not in body:
+            bad.append("简报正文里没有续航数值 %s（正文=%r）" % (shown, body[:160]))
+    return bad
+
+
+
 def check_range_estimate_contract() -> list:
     """「真实可达续航」必须是**客户端算法**的复算结果（两个渠道同一个数）。
 
@@ -715,6 +753,15 @@ def main() -> int:
         print("  ✓ %-26s %-24s 当前 SOH 与 /battery 是同一个数、正文标明「当前」"
               % ("teslamate_charge_brief", "电池契约"))
     bad.extend(battery_bad)
+
+    range_brief_bad = check_brief_range_contract()
+    for b in range_brief_bad:
+        print("  ✗ %s" % b)
+    if not range_brief_bad:
+        print("  ✓ %-26s %-24s 当前真实可达与 /range_estimate 是同一个数、正文标明「当前」"
+              % ("teslamate_charge_brief", "续航契约"))
+    bad.extend(range_brief_bad)
+
 
     range_bad = check_range_estimate_contract()
     for b in range_bad:
