@@ -97,17 +97,7 @@ func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeS
 		// 没有样本 ⇒ **不给数**，只说清「这个区间没有充电记录」。
 		lines = append(lines, "这个区间没有充电记录。")
 		// ── 续航段（v0.119.0 补记）──────────────────────────────
-		//
-		// ⚠️ 这一段是**当前值**（与窗口无关）⇒ 文案**必须**写「当前」
-		// —— 否则用户会以为「近 30 天能开 171 公里」（那是一个我们没算过的数）。
-		if seg != nil {
-			if line := renderRangeBriefLine(seg.Range); line != "" {
-				lines = append(lines, line)
-			}
-			if seg.RangeNote != "" {
-				lines = append(lines, seg.RangeNote)
-			}
-		}
+		lines = appendRangeBriefLines(lines, seg)
 
 		return title, strings.Join(lines, "\n")
 	}
@@ -174,6 +164,14 @@ func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeS
 			lines = append(lines, seg.BatteryNote)
 		}
 	}
+
+	// ── 续航段（v0.119.0 补记）──────────────────────────────
+	//
+	// ⚠️ **v0.121.0 补**：原来这一段**只在「没有充电记录」那个分支里渲染**
+	// ⇒ 正常窗口（有充电记录）的正文里**根本没有续航段** —— 那一版等于没上线。
+	// ⇒ 现在**两个分支都渲染**（有段就渲染，没有就只留说明句）。
+	lines = appendRangeBriefLines(lines, seg)
+
 	return title, strings.Join(lines, "\n")
 }
 
@@ -239,6 +237,26 @@ func renderRangeBriefLine(r *ChargeBriefRange) string {
 		parts = append(parts, f)
 	}
 	return "续航：" + strings.Join(parts, " · ")
+}
+
+// appendRangeBriefLines 把**续航段**接进正文（纯函数）。
+//
+// ⚠️ 这一段是**当前值**（与窗口无关）⇒ 文案**必须**写「当前」
+// —— 否则用户会以为「近 30 天能开 171 公里」（那是一个我们没算过的数）。
+//
+// ⚠️ **两个分支都要调用**（有充电记录 / 没充电记录）——
+// 只接一个分支 ⇒ 正常窗口的正文里这一段直接消失（v0.121.0 修的就是这个）。
+func appendRangeBriefLines(lines []string, seg *ChargeBriefSegments) []string {
+	if seg == nil {
+		return lines
+	}
+	if line := renderRangeBriefLine(seg.Range); line != "" {
+		lines = append(lines, line)
+	}
+	if seg.RangeNote != "" {
+		lines = append(lines, seg.RangeNote)
+	}
+	return lines
 }
 
 // chargeBriefBatteryFromHealth 从电池健康里取出简报的**电池段**（纯函数，可单测）。
@@ -499,5 +517,10 @@ func handleChargeBrief(w http.ResponseWriter, r *http.Request) {
 		EnergyNote:       energyNote,
 		Battery:          battery,
 		BatteryNote:      batteryNote,
+		// ⚠️ **v0.121.0 补**：响应结构体**必须**真的带上续航段 ——
+		// 只把段喂给渲染器、不放进这个字面量 ⇒ JSON 里是 null，
+		// MCP 读 data["range"] 只能拿到空 ⇒ **静默退化**（用户看不到、也没人报错）。
+		Range:     rangeSeg,
+		RangeNote: rangeNote,
 	})
 }

@@ -696,7 +696,7 @@ rm -f "$TMP"
 # ── 闸门 8：简报的续航段必须复用端点那份算法（同一个数）────────────
 TMP=$(mktemp)
 "$PY" - > "$TMP" <<'PYEOF'
-import pathlib, sys
+import pathlib, re, sys
 
 GO = pathlib.Path('api/charge_brief.go')
 if not GO.exists():
@@ -724,6 +724,30 @@ else:
         problems.append('续航段的文案里没有「当前」二字 ⇒ 窗口无关的当前值会被读成窗口内的量')
     if '→' in body:
         problems.append('续航段的文案里出现了箭头「→」⇒ 那是趋势符号，而我们没下这个结论')
+
+# ④ **接线**：这一段必须真的出现在**正文**与**响应**里
+#
+# ⚠️ v0.121.0 的教训：上一版只把段喂给渲染器，
+#   · 响应字面量 writeJSON(w, &ChargeBrief{...}) 里**没有 Range 字段** ⇒ JSON 里是 null
+#     （MCP 读 data["range"] 只能拿到空 ⇒ **静默退化**：用户看不到，也没人报错）；
+#   · 正文里**只在「没有充电记录」那个分支**渲染 ⇒ 正常窗口的正文里根本没有这一段。
+# ⇒ 下面两条判据就是为了抓住这两半接线。
+if 'appendRangeBriefLines(' not in go:
+    problems.append('api/charge_brief.go 里没有 appendRangeBriefLines( ⇒ 续航段的接线要跟着改')
+else:
+    n = go.count('appendRangeBriefLines(lines, seg)')
+    if n != 2:
+        problems.append('appendRangeBriefLines 只被调用 %d 次（应为 2：两个分支都要渲染）—— 只接一个分支 ⇒ 正常窗口的正文里没有续航段' % n)
+
+wm = go.find('writeJSON(w, &ChargeBrief{')
+if wm < 0:
+    problems.append('api/charge_brief.go 里找不到 writeJSON(w, &ChargeBrief{...}) ⇒ 这道闸门要跟着改')
+else:
+    lit = go[wm:wm + 800]
+    for field in ('Range:', 'RangeNote:'):
+        # ⚠️ 必须**词边界**：'ChargeStatsRange:' 里也含 'Range:' ⇒ 不设边界会假绿
+        if not re.search(r'(?<![A-Za-z])' + field, lit):
+            problems.append('ChargeBrief 的响应字面量里没有 %s ⇒ JSON 里是 null，MCP 读到空（静默退化）' % field)
 
 if problems:
     print('简报的续航段没复用端点那份算法 %d 处 ——' % len(problems))
