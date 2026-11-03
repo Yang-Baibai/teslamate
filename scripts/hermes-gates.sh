@@ -7,7 +7,7 @@
 # · 这条链路的三个端分别是**服务端 / MCP / 推送脚本**（**没有 App**）——
 #   塞进 App 的闸门里既不搭，也会和并行的「UI交互迭代」会话抢同一个文件。
 #
-# ## 十一道闸门
+# ## 十三道闸门
 #
 #   1. **简报的文案只有服务端一份** ＋ 正文**必带窗口边界**
 #      （同一句话写两遍 ⇒ 迟早漂：v0.76.0「完成后是这样」、v0.78.0「充电完成」）
@@ -32,6 +32,9 @@
 #      （自检没跑 ⇒ 「0 项不合规」是假绿）
 #   11. **App 能看到的，Hermes 也要能取**（能力对账）
 #      （App 独有的端点要么给 MCP 补工具，要么在例外清单里写清理由）
+#   13. **保养 / 轮胎提醒的判定与文案只在服务端一份**
+#      （基准原先只在手机本地 ⇒ 飞书问不出「我轮胎还能跑多少」；
+#        客户端那份只是**兜底**，两侧阈值必须一致）
 #  10. **契约自检必须真的在跑**（定义了函数 ≠ 生效）
 #      （注册条件写错 ⇒ 那条自检一次都没跑，而自检照样报「0 项不合规」⇒ 假绿）
 
@@ -916,6 +919,11 @@ EXCEPTIONS = {
     '/api/v1/health': '运维自检，模型不需要',
     '/api/v1/feedback/*/image': 'App 上传截图；Hermes 侧不传图',
     '/api/v1/drives/*/track': '原始轨迹采样点（上百个）；Hermes 给可读结论（soc_profile / energy_profile）',
+    # ⚠️ **v0.123.0 补**：保养 / 轮胎基准的**写**入口。
+    # 这是**车主自己的线下行为**（换了机油、开了保养单）⇒ 由 App 的设置页填。
+    # ⚠️ 不给模型写权限是故意的：模型把「上次保养时的里程」写错 ⇒ 提醒全乱，
+    # 而车主不会去核对「飞书里那条对话」里的数字。
+    '/api/v1/cars/*/maintenance/baseline': '写保养基准（车主的线下行为）⇒ 只给 App 设置页，不给模型写',
 }
 
 missing = []
@@ -936,6 +944,96 @@ if missing:
 print('App ↔ Hermes 能力对账：%d 个端点全覆盖 ✔' % len(app_eps))
 PYEOF
 if [ $? -eq 0 ]; then ok "App 能看到的，Hermes 也能取（能力对账）"; else fail "App 能取、但 Hermes 取不到的端点"; cat "$TMP"; fi
+rm -f "$TMP"
+
+
+# ── 闸门 13：保养 / 轮胎提醒 —— 判定与文案**只在服务端一份** ────────────
+#
+# ⚠️ **v0.123.0**：保养基准原先只在手机本地 ⇒ 飞书问不出「我轮胎还能跑多少」
+# ⇒ 基准与判定搬到了服务端（api/maintenance.go）。
+#
+# 这道闸门钉三件事：
+#   ① **2000 公里那个阈值只在服务端有一份**
+#      （客户端也有一份 —— 那是**兜底路径**；两侧必须一致，否则
+#        App 说「快到了」而飞书说「还早」⇒ 用户以为两个渠道在打架）；
+#   ② **MCP 只透传，不许自己算**（ADR #38：判定只在服务端做）；
+#   ③ **App 不许自己判**（正常路径上必须读服务端结论）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+GO = pathlib.Path('api/maintenance.go')
+KT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/Maintenance.kt')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+
+for p in (GO, KT, MCP):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+go = strip_comments(GO.read_text(encoding='utf-8', errors='replace'))
+kt = strip_comments(KT.read_text(encoding='utf-8', errors='replace'))
+mcp = MCP.read_text(encoding='utf-8', errors='replace')
+
+problems = []
+
+# ① 阈值：服务端有一个常量，客户端有一个常量，两边必须相等
+m = re.search(r'maintenanceDueSoonKm\s*=\s*(\d+)', go)
+if not m:
+    problems.append('api/maintenance.go 里找不到 maintenanceDueSoonKm 常量 ⇒ 服务端的「快到了」阈值没有事实源')
+else:
+    go_val = int(m.group(1))
+    # 客户端的阈值必须是一个**命名常量**（不是散在比较里的字面量）⇒
+    # 这样两侧能逐条核对（散落的字面量只能靠正则猜 ⇒ 判据不精确）。
+    km = re.search(r'MAINTENANCE_DUE_SOON_KM\s*(?::\s*Double)?\s*=\s*([\d.]+)', kt)
+    if not km:
+        problems.append('客户端找不到命名常量 MAINTENANCE_DUE_SOON_KM ⇒ 兜底路径的阈值没有事实源')
+    else:
+        kt_val = float(km.group(1))
+        if abs(kt_val - go_val) > 0.001:
+            problems.append('服务端的 maintenanceDueSoonKm = %d，客户端的 MAINTENANCE_DUE_SOON_KM = %s ⇒ 两侧阈值不一致'
+                            % (go_val, kt_val))
+    # 兜底路径必须真的用了那个常量（不许又散落一个字面量）
+    if re.search(r'remainingKm\s*<=\s*[\d.]+f?\b', kt):
+        problems.append('客户端的兜底路径里有一个**散落的阈值字面量** ⇒ 请用 MAINTENANCE_DUE_SOON_KM')
+
+# ② MCP 不许自己算剩余公里（不许出现减法算 remaining）
+mcp_tool = re.search(r'def teslamate_maintenance\s*\(.*?\n(?=\n\n|\Z)', mcp, re.S)
+if not mcp_tool:
+    problems.append('MCP 里找不到 teslamate_maintenance 工具')
+else:
+    body = mcp_tool.group(0)
+    # 去掉注释后不许出现「a - b」这种自算（remaining_km / due_odo_km 相减）
+    body_nc = re.sub(r'(?m)#.*$', '', body)
+    if re.search(r'due_odo_km\s*-\s*', body_nc) or re.search(r'remaining_km\s*=\s*\S+\s*-', body_nc):
+        problems.append('MCP 的保养工具里自己减出了剩余公里 ⇒ 判定跑到客户端了（ADR #38）')
+    if 'remaining_km' not in body:
+        problems.append('MCP 的保养工具没有透传服务端的 remaining_km ⇒ 它没读到服务端的判定')
+    if 'text' not in body:
+        problems.append('MCP 的保养工具没有透传服务端的中文原文 ⇒ 文案会有两份（ADR #41）')
+
+# ③ App 的正常路径必须读服务端结论
+if 'resolveMaintenanceItems' not in kt:
+    problems.append('客户端找不到 resolveMaintenanceItems ⇒ App 没有走「服务端结论优先」那层')
+if 'serverOverdue' not in kt or 'serverDueSoon' not in kt:
+    problems.append('客户端的提醒模型没有服务端的判定标志 ⇒ App 仍在自己判超期 / 快到了')
+
+if problems:
+    print('保养 / 轮胎提醒的判定与文案没有收敛到服务端 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 判定与文案只在服务端一份（ADR #38 / #41）')
+    print('      客户端那份只是**兜底**（服务器挂掉时用），两侧阈值必须一致')
+    sys.exit(1)
+print('保养 / 轮胎提醒：判定与文案只在服务端一份 ✔（客户端那份仅兜底，阈值一致）')
+PYEOF
+if [ $? -eq 0 ]; then ok "保养 / 轮胎提醒的判定与文案只在服务端一份"; else fail "保养 / 轮胎提醒的判定跑到了客户端"; cat "$TMP"; fi
 rm -f "$TMP"
 
 

@@ -79,6 +79,16 @@ class StatusStore(private val cache: StatusCache? = null) {
     var consumption by mutableStateOf<ConsumptionModel?>(null)
         private set
 
+    /**
+     * ⚠️ **v0.123.0：服务端算的保养 / 轮胎提醒结论。**
+     *
+     * ⚠️ 它是**首选**（判定与文案都在服务端，ADR #38 / #41）⇒
+     * 飞书与 App 必然同一个数、同一句话。
+     * 为 null（还没取到 / 取不到）⇒ 退回**本地兜底**。
+     */
+    var serverMaintenance by mutableStateOf<com.teslamate.app.MaintenanceReport?>(null)
+        private set
+
     /** 最近一次行程的累计爬升（米），用于爬升修正。 */
     var recentAscentM by mutableStateOf<Int?>(null)
         private set
@@ -176,6 +186,7 @@ class StatusStore(private val cache: StatusCache? = null) {
         consumption = null
         recentAscentM = null
         serverRange = null
+        serverMaintenance = null
         drives = emptyList()
         error = null
         // ⚠️ v0.27.0：驾驶画像是**按车**的，换车必须作废（否则 B 车标题下显示 A 车的驾驶习惯）。
@@ -200,6 +211,7 @@ class StatusStore(private val cache: StatusCache? = null) {
         consumption = null
         recentAscentM = null
         serverRange = null
+        serverMaintenance = null
         drives = emptyList()
         error = null
         // ⚠️ v0.27.0：换服务器 = 全部重来，驾驶画像也要清。
@@ -280,6 +292,16 @@ class StatusStore(private val cache: StatusCache? = null) {
      */
     internal fun updateServerRange(r: RangeEstimate) {
         serverRange = r
+    }
+
+    /**
+     * ⚠️ **v0.123.0：服务端的保养 / 轮胎结论到了。**
+     *
+     * ⚠️ 取不到时**不清空**旧值（与 [fail] 同一个原则）：
+     * 服务器临时算不动不该让保养提醒整块消失。
+     */
+    internal fun updateServerMaintenance(r: com.teslamate.app.MaintenanceReport) {
+        serverMaintenance = r
     }
     /**
      * ⚠️ **v0.27.0：驾驶画像算完了。**

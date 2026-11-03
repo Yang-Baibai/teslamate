@@ -216,6 +216,8 @@ fun SettingsScreen(
     // 服务器组保存完，不该让「保养」页也显示「已保存」。
     var serverSaved by remember { mutableStateOf(false) }
     var baselineSaved by remember { mutableStateOf(false) }
+    // ⚠️ **v0.123.0**：基准同步到服务端的错误（null = 同步成功 / 没同步过）。
+    var baselineSyncError by remember { mutableStateOf<String?>(null) }
     // ⚠️ v0.25.0：电价编辑态 + 独立的保存反馈（与服务器/保养分开）。
     var rates by remember(settings) { mutableStateOf(settings.currentRates) }
     var ratesSaved by remember { mutableStateOf(false) }
@@ -255,7 +257,19 @@ fun SettingsScreen(
         baselineSaved = false
     }
 
-    /** 只写保养 / 轮胎基准。服务器地址与令牌原样带回（**绝不碰**）。 */
+    /**
+     * 只写保养 / 轮胎基准。服务器地址与令牌原样带回（**绝不碰**）。
+     *
+     * ⚠️ **v0.123.0：基准现在也写服务端** —— 之前它只存在手机本地 ⇒
+     * 飞书 / Hermes 完全问不出「我轮胎还能跑多少」（ADR #52）。
+     *
+     * ⚠️ **两份都写，但角色不同**：
+     *   · **服务端 = 事实源**（判定与文案都在那里算，ADR #38）；
+     *   · **本地 = 离线兜底 + 设置页的编辑源**
+     *     （服务器挂掉时 App 仍能显示提醒，见 ui/Maintenance.kt）。
+     * ⇒ 本地写完**立刻生效**（不等网络）；服务端写失败**要说出来**，
+     *   否则用户以为「飞书里也能问了」，其实没有。
+     */
     fun saveBaselines() {
         scope.launch {
             // ⚠️ 空串 = 不填 = 不启用提醒（0 表示未设置）
@@ -280,8 +294,33 @@ fun SettingsScreen(
                     perCar = next,
                 )
             )
+            // ⚠️ **写服务端**（事实源）。失败要说出来（见 baselineSyncError）。
+            val api = settings.api()
+            if (api == null) {
+                baselineSyncError = "服务器地址或令牌还没填，基准只存在本机"
+                baselineSaved = false
+                return@launch
+            }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    api.saveMaintenanceBaseline(
+                        carId = carId,
+                        serviceOdoKm = b.serviceOdoKm,
+                        serviceIntervalKm = b.serviceIntervalKm,
+                        tireOdoKm = b.tireOdoKm,
+                        tireIntervalKm = b.tireIntervalKm,
+                    )
+                }
+            }.onSuccess {
+                baselineSyncError = null
+                baselineSaved = true
+            }.onFailure { e ->
+                // ⚠️ **不假装成功** —— 本地那份已经生效，但飞书还看不到。
+                baselineSyncError = "基准已存本机，但没同步到服务器（飞书里暂时问不到）：" +
+                    (e.message ?: "连不上服务器")
+                baselineSaved = false
+            }
         }
-        baselineSaved = true
         serverSaved = false
     }
 
@@ -445,6 +484,7 @@ fun SettingsScreen(
                             (tireInterval.trim().toIntOrNull() ?: 40000) != it.tireIntervalKm
                     },
                     saved = baselineSaved,
+                    syncError = baselineSyncError,
                     onSave = { saveBaselines() },
                     onBack = { onRouteChange(null) },
                 )
@@ -906,6 +946,13 @@ private fun SettingsMaintenancePage(
     onTireInterval: (String) -> Unit,
     dirty: Boolean,
     saved: Boolean,
+    /**
+     * ⚠️ **v0.123.0**：基准同步到服务端的错误（null = 同步成功 / 没同步过）。
+     *
+     * ⚠️ **必须说出来** —— 本地那份已经生效，但飞书还看不到；
+     * 默默吞掉的话，用户会以为「飞书里也能问了」，其实没有。
+     */
+    syncError: String? = null,
     onSave: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1000,6 +1047,14 @@ private fun SettingsMaintenancePage(
                         Text(
                             "已保存 ✓（其他页面会自动刷新）",
                             color = MaterialTheme.colorScheme.tertiary,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    // ⚠️ **v0.123.0**：同步失败要说出来（不假装成功）。
+                    if (syncError != null) {
+                        Text(
+                            syncError,
+                            color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }

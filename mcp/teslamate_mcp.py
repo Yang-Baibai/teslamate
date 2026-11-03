@@ -1528,3 +1528,59 @@ def teslamate_climb_model(min_km: float = 20.0) -> dict:
         "注意": d.get("caveat"),
     }
 
+@mcp.tool()
+def teslamate_maintenance() -> dict:
+    """查**保养 / 轮胎提醒**：「我轮胎还能跑多少」「保养超期了吗」「该什么时候做保养」。
+
+    **什么时候用**：用户问「我轮胎还能跑多少公里」「保养超期了吗」
+    「上次保养是什么时候」「什么时候该换胎」—— 都归它。
+
+    ⚠️ **基准存在服务端**（按车隔离）⇒ 这里读到的与 App 车况页**同一个数、同一句话**。
+
+    ⚠️ **别自己减**：剩余公里数是服务端按**车端里程表**算的
+    （车端 = 仪表盘上那个数；不是 GPS 累计值，那个能偏几万公里）⇒
+    你在这里拿别的数减一遍，结果一定对不上。
+
+    ⚠️ **里程表读不到就不给判定**（车可能睡着了）⇒ 这时看「说明」，
+    **别自己估一个**（估出来的是假告警，误报的方向最危险）。
+
+    ⚠️ **「还没设置基准」是常态**：保养是车主的线下行为（换了机油、开了保养单），
+    只有车主自己知道 ⇒ 他没填过就**没有**这个提醒，不是故障。
+    """
+    d = _get(f"/api/v1/cars/{CAR_ID}/maintenance")
+    if not isinstance(d, dict) or "error" in d:
+        return {"错误": "取不到保养提醒", "详情": str(d)[:200]}
+
+    def item(it):
+        if not isinstance(it, dict):
+            return None
+        return {
+            "还剩(km)": it.get("remaining_km"),
+            "该在里程表(km)时做": it.get("due_odo_km"),
+            "已超期": it.get("overdue"),
+            "快到了": it.get("due_soon"),
+            "结论": it.get("text"),
+        }
+
+    svc = item(d.get("service"))
+    tire = item(d.get("tire"))
+    base = d.get("baseline") or {}
+
+    out = {
+        "一句话": d.get("summary"),
+        "车端里程表(km)": d.get("odometer_km"),
+        "里程表来源": d.get("odometer_source"),
+        "已设置基准": d.get("configured"),
+        "上次保养时的里程(km)": base.get("service_odo_km"),
+        "保养间隔(km)": base.get("service_interval_km"),
+        "上次换胎时的里程(km)": base.get("tire_odo_km"),
+        "轮胎更换间隔(km)": base.get("tire_interval_km"),
+        "说明": d.get("note"),
+    }
+    if svc is not None:
+        out["保养"] = svc
+    if tire is not None:
+        out["轮胎"] = tire
+    return out
+
+

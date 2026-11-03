@@ -6,6 +6,18 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
+ * ⚠️ **v0.123.0：「快到了」的阈值（公里）。**
+ *
+ * ⚠️ **正常路径上这个阈值不在这里生效** —— 判定与文案都在服务端
+ * （api/maintenance.go 的 maintenanceDueSoonKm，ADR #38）。
+ *
+ * ⇒ 它只用于**兜底路径**（服务器挂掉、拿不到服务端结论时）。
+ * ⚠️ 因此它**必须与服务端那个常量相等** ⇒ Hermes 闸门 13 逐条核对。
+ * （两侧各写一份只靠注释维持 ⇒ 迟早漂 —— 这正是闸门 6/7 存在的理由。）
+ */
+const val MAINTENANCE_DUE_SOON_KM = 2000.0
+
+/**
  * 保养 / 换胎提醒。
  *
  * ⚠️ v0.9.0（新手车主复核）：「上次保养是什么时候 / 什么时候该换胎 ——
@@ -29,12 +41,37 @@ data class MaintenanceReminder(
     val remainingKm: Double,
     /** 该在哪个里程表读数时做 */
     val dueOdoKm: Double,
+    /**
+     * ⚠️ **v0.123.0：服务端的「已超期」判定**（null = 本地兜底路径）。
+     *
+     * ⚠️ **判定只在服务端**（ADR #38）⇒ 正常路径上这个值来自服务端，
+     * 客户端**不再自己**比 ${remainingKm < 0}（那会是第二份判定 ⇒ 迟早漂）。
+     */
+    val serverOverdue: Boolean? = null,
+    /**
+     * ⚠️ **v0.123.0：服务端的「快到了」判定**（null = 本地兜底路径）。
+     *
+     * ⚠️ **2000 公里那个阈值只在服务端有一份**
+     * （api/maintenance.go 的 maintenanceDueSoonKm）⇒
+     * Hermes 闸门 13 核对两侧一致。
+     */
+    val serverDueSoon: Boolean? = null,
+    /**
+     * ⚠️ **v0.123.0：服务端出的这一项文案**（空 = 本地兜底路径）。
+     *
+     * ⚠️ 服务端有 ⇒ **原样印**（ADR #41：文案只有服务端一份）。
+     */
+    val serverText: String = "",
+    /**
+     * ⚠️ **v0.123.0：服务端出的横幅文案**（空 = 本地兜底路径）。
+     */
+    val serverBannerText: String = "",
 ) {
     /** 已超期 */
-    val overdue: Boolean get() = remainingKm < 0
+    val overdue: Boolean get() = serverOverdue ?: (remainingKm < 0)
 
     /** 快到了（2000 km 内）—— 该提醒，但还没超期 */
-    val dueSoon: Boolean get() = !overdue && remainingKm <= 2000
+    val dueSoon: Boolean get() = serverDueSoon ?: (!overdue && remainingKm <= MAINTENANCE_DUE_SOON_KM)
 
     /** 需要行动（超期或快到了）—— 只有这时才值得在首页顶部挂横幅 */
     val needsAction: Boolean get() = overdue || dueSoon
@@ -63,13 +100,78 @@ fun maintenanceReminders(odometerKm: Double?, settings: AppSettings): List<Maint
 }
 
 /**
+ * ⚠️ **v0.123.0：服务端结论 → 界面模型。**
+ *
+ * ## 为什么要这一层
+ *
+ * v0.123.0 起，保养 / 轮胎的**判定与文案都在服务端**（api/maintenance.go）——
+ * 因为基准原先只在手机本地 ⇒ 飞书根本问不出「我轮胎还能跑多少」
+ * （ADR #38 / #52：App 能看到的，Hermes 也要能取）。
+ *
+ * ⇒ 这一层只做**一件事**：把服务端的结构化结论，翻译成界面要渲染的形状。
+ * **不重新判定**（不自己减、不自己比阈值）——
+ * 那正是 ADR #38 要消灭的「各算一套」。
+ *
+ * ## 本地那份是**兜底**，不是第二个事实源
+ *
+ * [maintenanceReminders] 仍留着：服务器挂掉时（取不到服务端结论）
+ * 它用**本地基准 + 车端里程表**算一份，好过整个卡片消失。
+ * ⚠️ 但它**只在服务端结论缺失时**才被调用（见 [resolveMaintenanceItems]）——
+ * 正常路径上永远以服务端为准 ⇒ 飞书与 App 必然同一个数。
+ */
+fun resolveMaintenanceItems(
+    /** 服务端结论（null = 没取到 / 老服务端没这个端点）。 */
+    server: com.teslamate.app.MaintenanceReport?,
+    /** 车端里程表（兜底路径用；null ⇒ 不报）。 */
+    vehicleOdometerKm: Double?,
+    /** 本地基准（兜底路径用）。 */
+    settings: AppSettings,
+): List<MaintenanceReminder> {
+    // ⚠️ 服务端有结论 ⇒ **一律以它为准**（不掺任何本地计算）。
+    if (server != null) {
+        val out = ArrayList<MaintenanceReminder>(2)
+        server.service?.let { out += it.toReminder() }
+        server.tire?.let { out += it.toReminder() }
+        return out
+    }
+    // ⚠️ 取不到服务端结论 ⇒ 退回本地兜底（服务器挂掉时至少还能看到提醒）。
+    return maintenanceReminders(vehicleOdometerKm, settings)
+}
+
+/**
+ * 服务端的一项结论 → 界面模型。
+ *
+ * ⚠️ [text] 直接用服务端的原文（ADR #41：文案只有服务端一份）——
+ * 这里**不重新拼句子**，否则同一个事实会有两种说法。
+ */
+private fun com.teslamate.app.MaintenanceItem.toReminder(): MaintenanceReminder =
+    MaintenanceReminder(
+        label = label,
+        remainingKm = remaining_km,
+        dueOdoKm = due_odo_km,
+        // ⚠️ 判定标志也用服务端的（overdue / due_soon）——
+        // 客户端不再自己比 2000 公里那个阈值。
+        serverOverdue = overdue,
+        serverDueSoon = due_soon,
+        serverText = text,
+        serverBannerText = banner_text,
+    )
+
+/**
  * 提醒的一句话描述（「还有 3,200 公里」/「已超期 500 公里」）。
  *
  * ⚠️ v0.14.0（新手车主 P0-2）：单位统一成**「公里」**。
  * 原来这里写「km」、车况页横幅写「公里」，同一屏两种单位。
  */
-fun MaintenanceReminder.describe(): String =
-    if (overdue) "已超期 ${abs(remainingKm).roundToInt()} 公里" else "还有 ${remainingKm.roundToInt()} 公里"
+fun MaintenanceReminder.describe(): String {
+    // ⚠️ **v0.123.0**：服务端给了原文 ⇒ 原样印（ADR #41：文案只有服务端一份）。
+    if (serverText.isNotBlank()) return serverText
+    return if (overdue) {
+        "已超期 ${abs(remainingKm).roundToInt()} 公里"
+    } else {
+        "还有 ${remainingKm.roundToInt()} 公里"
+    }
+}
 
 /**
  * ⚠️ v0.14.0（新手车主 P0-2）：横幅文案**消歧**。
@@ -85,6 +187,8 @@ fun MaintenanceReminder.describe(): String =
  * 单看这一句就知道是「超期多少」，而不是「开了多少」。
  */
 fun MaintenanceReminder.bannerText(currentOdoKm: Double?): String {
+    // ⚠️ **v0.123.0**：服务端给了原文 ⇒ 原样印（ADR #41：文案只有服务端一份）。
+    if (serverBannerText.isNotBlank()) return serverBannerText
     val due = dueOdoKm.fmtThousands()
     return if (overdue) {
         buildString {

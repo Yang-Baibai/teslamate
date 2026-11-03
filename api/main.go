@@ -85,6 +85,9 @@ func main() {
 	// ⚠️ v0.100.0：用户反馈表（App「设置 → 用户反馈」写进来，迭代时逐条取）。
 	// 建表失败不致命 —— 那样只是反馈功能不可用，主服务照常。
 	ensureUserFeedbackTable(ctx)
+	// ⚠️ **v0.123.0**：保养 / 轮胎基准表（基准与判定都在服务端 ⇒ 飞书能问）。
+	// 建表失败不致命 —— 那样只是保养提醒不可用，主服务照常。
+	ensureMaintenanceTable(ctx)
 	// Tesla Fleet API（锁车状态）：没配凭据也照常启动，只是 locked 恒为 null（未知）
 	tesla = newTeslaClient(loadTeslaConfig())
 	if tesla.configured() {
@@ -152,6 +155,12 @@ func main() {
 	mux.HandleFunc("GET /api/v1/cars/{id}/stats", auth(handleStats))
 	mux.HandleFunc("GET /api/v1/cars/{id}/battery", auth(handleBattery))
 	mux.HandleFunc("GET /api/v1/cars/{id}/range_estimate", auth(handleRangeEstimate))
+	// ⚠️ **v0.123.0**：保养 / 轮胎提醒（**基准与判定都在服务端**）。
+	//   GET  → 读某台车的基准 + 算好的提醒结论（App 与 Hermes 共用）
+	//   POST → 写某台车的基准（App「设置 → 保养与轮胎」页调用）
+	// 理由：之前基准只在手机本地 ⇒ 飞书完全问不出「我轮胎还能跑多少」。
+	mux.HandleFunc("GET /api/v1/cars/{id}/maintenance", auth(handleMaintenance))
+	mux.HandleFunc("POST /api/v1/cars/{id}/maintenance/baseline", auth(handleMaintenanceBaseline))
 	// ⚠️ v0.66.0：车辆控制（车控下沉到本项目；Housekeeper 将来调这里）。
 	//   GET  → 支持哪些动作（App 与 MCP 用它渲染）
 	//   POST → 下发一条命令（/api/v1/cars/{id}/commands/{action}）

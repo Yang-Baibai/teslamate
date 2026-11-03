@@ -19,8 +19,8 @@ android {
         //    并行会话与我按序发的，**没有跳号**。
         // ⚠️ **v0.122.0**：接着 130 之后是 **131**（充电详情「实测到 80% 用了多久」改 KV 行）
         //    ⇒ 仍然**没有跳号**。
-        versionCode = 131
-        versionName = "0.122.0"
+        versionCode = 132
+        versionName = "0.123.0"
     }
 
     buildTypes {

@@ -201,6 +201,8 @@ fun StatusScreen(
     val consumption = store.consumption
     // ⚠️ **v0.119.0**：服务端算的「真实可达续航」结论（null = 还没取到 / 取不到）。
     val serverRange = store.serverRange
+    // ⚠️ **v0.123.0**：服务端的保养 / 轮胎结论（null = 还没取到 / 取不到）。
+    val serverMaintenance = store.serverMaintenance
     val recentAscent = store.recentAscentM
     val fallbackSpeed = store.drives.firstOrNull()?.avg_speed_kph?.toDouble()
 
@@ -237,6 +239,47 @@ fun StatusScreen(
             // ⚠️ 取不到**不报错**：界面要退回本地模型兜底，
             //    而不是弹一条「续航算不出来」（服务器挂掉时那不是车的问题）。
             .onFailure { /* 保留旧值 / 用本地模型兜底 */ }
+
+        // ⚠️ **v0.123.0**：服务端的保养 / 轮胎结论（基准与判定都在服务端）。
+        //
+        // ⚠️ 与 status 一起刷：结论依赖**当次**的车端里程表
+        // ⇒ 必须跟着 15 秒刷新走，否则里程一变提醒就不跟着变。
+        // ⚠️ **v0.123.0：服务端的保养 / 轮胎结论 ＋ 一次性基准迁移。**
+        //
+        // ⚠️ 与 status 一起刷：结论依赖**当次**的车端里程表
+        // ⇒ 必须跟着 15 秒刷新走，否则里程一变提醒就不跟着变。
+        //
+        // ⚠️ **迁移**：升级前基准只存在手机本地 ⇒ 服务端一开始是空的
+        // ⇒ 若不迁移，用户**不手动去设置页点一次保存**，飞书就一直问不出来
+        // （这一轮的目标就落空了）。
+        // ⇒ 服务端**还没配置**、而本机**有**基准 ⇒ 把本机那份推上去。
+        //    推成功之后服务端 configured=true ⇒ **不会重复推**（幂等）。
+        val mreport = runCatching {
+            withContext(Dispatchers.IO) { api.maintenance(settings.carId) }
+        }.getOrNull()
+        if (mreport != null) {
+            store.updateServerMaintenance(mreport)
+            if (!mreport.configured) {
+                val b = settings.currentBaselines
+                if (b.serviceOdoKm > 0 || b.tireOdoKm > 0) {
+                    val synced = runCatching {
+                        withContext(Dispatchers.IO) {
+                            api.saveMaintenanceBaseline(
+                                carId = settings.carId,
+                                serviceOdoKm = b.serviceOdoKm,
+                                serviceIntervalKm = b.serviceIntervalKm,
+                                tireOdoKm = b.tireOdoKm,
+                                tireIntervalKm = b.tireIntervalKm,
+                            )
+                        }
+                    }.getOrNull()
+                    if (synced != null) store.updateServerMaintenance(synced)
+                    // ⚠️ 推失败**不报错**：本机那份还在（App 照旧用本地兜底显示），
+                    // 下次刷新会再试 ⇒ 静默失败不该变成一条红条。
+                }
+            }
+        }
+        // ⚠️ 取不到**不报错**：退回本地兜底（服务器挂掉时保养提醒不该整块消失）。
     }
 
     fun refresh() {
@@ -430,7 +473,11 @@ fun StatusScreen(
                         // ⚠️ v0.9.0：保养 / 换胎提醒。
                         // 只有**需要行动**时（超期或 2000 km 内到期）才挂横幅 ——
                         // 信号优先，平时不制造噪音。完整数字在页面底部的卡片里。
-                        val reminders = remember(st.odometer, st.odometer_vehicle, settings) {
+                        val reminders = remember(st.odometer, st.odometer_vehicle, settings, serverMaintenance) {
+                            // ⚠️ **v0.123.0：判定与文案都在服务端**（ADR #38 / #41）——
+                            // 服务端有结论就用它（飞书与 App 必然同一个数、同一句话）；
+                            // 取不到才退回本地兜底。
+                            //
                             // ⚠️ v0.21.0：**优先用车端里程表** ——
                             // 车主填的保养基准是他**仪表盘上看到的数**（车端），
                             // 拿 TeslaMate 按 GPS 点累计的数去套，会偏几百公里。
@@ -442,7 +489,11 @@ fun StatusScreen(
                             //
                             // ⇒ **车端读不到就不报**（宁可不报，也不误报）。
                             // 车醒着时 Fleet API 会给出仪表里程表，提醒照常出现。
-                            maintenanceReminders(st.odometer_vehicle, settings)
+                            resolveMaintenanceItems(
+                                server = serverMaintenance,
+                                vehicleOdometerKm = st.odometer_vehicle,
+                                settings = settings,
+                            )
                         }
                         reminders.firstOrNull { it.needsAction }?.let { r ->
                             // ⚠️ v0.20.0（车主 P1-1）：**保养超期不再用红色** ——

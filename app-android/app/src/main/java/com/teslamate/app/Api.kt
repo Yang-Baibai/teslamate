@@ -1733,6 +1733,42 @@ class Api private constructor(private val base: String, private val token: Strin
      */
     fun rangeEstimate(carId: Int): RangeEstimate =
         get("/api/v1/cars/$carId/range_estimate")
+    /**
+     * ⚠️ **v0.123.0：保养 / 轮胎提醒的服务端结论。**
+     *
+     * ⚠️ App **不再自己算**这条判定（基准与判定都在服务端）⇒
+     * 飞书与 App 必然同一个数（ADR #38 / #52）。
+     * 取不到时（服务器挂掉 / 老服务端）⇒ 退回本地兜底
+     * （见 ui/Maintenance.kt 的 resolveMaintenanceItems）。
+     */
+    fun maintenance(carId: Int): MaintenanceReport =
+        get("/api/v1/cars/$carId/maintenance")
+
+    /**
+     * ⚠️ **v0.123.0：写保养 / 轮胎基准**（设置页调用）。
+     *
+     * ⚠️ 基准是**车主的线下行为**（换了机油、开了保养单）⇒
+     * 只有车主自己知道 ⇒ 它是**用户填的输入**，不是遥测。
+     * 之前它只存在手机本地 ⇒ 飞书完全问不出「我轮胎还能跑多少」。
+     *
+     * ⚠️ 返回**服务端算好的结论** ⇒ 客户端不用再自己算一遍。
+     */
+    fun saveMaintenanceBaseline(
+        carId: Int,
+        serviceOdoKm: Double,
+        serviceIntervalKm: Int,
+        tireOdoKm: Double,
+        tireIntervalKm: Int,
+    ): MaintenanceReport = post(
+        "/api/v1/cars/$carId/maintenance/baseline",
+        buildJsonObject {
+            put("service_odo_km", serviceOdoKm)
+            put("service_interval_km", serviceIntervalKm)
+            put("tire_odo_km", tireOdoKm)
+            put("tire_interval_km", tireIntervalKm)
+        },
+    )
+
     fun track(driveId: Int): List<TrackPoint> = get("/api/v1/drives/$driveId/track")
     fun charges(carId: Int, limit: Int = 200): List<Charge> =
         get("/api/v1/cars/$carId/charges?limit=$limit")

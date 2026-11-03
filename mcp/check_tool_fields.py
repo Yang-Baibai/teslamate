@@ -45,6 +45,12 @@ SPEC = [
     #    这两个是 App 有、而 Hermes 原来没有的端点 ⇒ 本轮补上。
     ("teslamate_drive_energy_profile", {}, "采样点数", "这趟行程的逐公里电量剖面"),
     ("teslamate_climb_model", {}, "上坡每米耗电(Wh/m)", "爬升能耗标定的上坡系数"),
+    # ⚠️ **v0.123.0**：保养 / 轮胎工具。
+    #    这两个**恒在**（哪怕车主还没填过基准）⇒ 可以断言。
+    #    ⚠️ 「保养.还剩(km)」**不能**进 SPEC —— 车主没填基准 / 里程表读不到时
+    #    那一项整个不存在（那是「不知道」，不是「还剩 0」）。
+    ("teslamate_maintenance", {}, "已设置基准", "保养基准是否已设置"),
+    ("teslamate_maintenance", {}, "里程表来源", "里程表来自车端还是未知"),
     ("teslamate_status", {}, "电量%", "电量"),
     ("teslamate_status", {}, "里程表km", "里程表"),
     # ⚠️ **v0.100.0**：用户反馈工具。
@@ -528,6 +534,73 @@ def check_brief_range_contract() -> list:
 
 
 
+def check_maintenance_contract() -> list:
+    """保养 / 轮胎提醒必须**与服务端同源**（不许模型自己减）。
+
+    ⚠️ 查五件事：
+      ① 服务端必须给出「车端里程表」与它的来源（读不到时要能说清「不知道」）；
+      ② MCP 必须**读到**服务端的判定，而不是自己拿别的数减一遍；
+      ③ 「还剩多少公里」必须与「该在里程表多少时做」能对得上
+         （remaining = due − odometer）⇒ 否则它自己编了一个数；
+      ④ 文案必须**原样透传**服务端的那份（ADR #41：文案只有服务端一份）；
+      ⑤ 基准存在服务端（按车隔离）⇒ 飞书问得到「我轮胎还能跑多少」。
+    """
+    bad = []
+    try:
+        rep = T._get("/api/v1/cars/%s/maintenance" % T.CAR_ID)
+        m = T.teslamate_maintenance()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(rep, dict) or "error" in rep:
+        return ["保养端点取不到：%r" % (rep,)]
+    if not isinstance(m, dict) or "错误" in m:
+        bad.append("MCP 的保养工具取不到：%r" % (m,))
+        return bad
+
+    # ① 来源必须透传（读不到时也要能说清「不知道」）
+    if "里程表来源" not in m:
+        bad.append("MCP 的保养工具没有「里程表来源」⇒ 读不到时无法区分「不知道」与「真的 0」")
+    if "车端里程表(km)" not in m:
+        bad.append("MCP 的保养工具没有「车端里程表」⇒ 判定依据不可核对")
+
+    # ② ⑤ 基准必须在服务端（不是客户端各存一份）
+    if "已设置基准" not in m:
+        bad.append("MCP 的保养工具没有「已设置基准」⇒ 读不到基准时说不清原因")
+    for key in ("上次保养时的里程(km)", "保养间隔(km)", "上次换胎时的里程(km)", "轮胎更换间隔(km)"):
+        if key not in m:
+            bad.append("MCP 的保养工具缺「%s」⇒ 飞书答不出基准是多少" % key)
+
+    # ③④ 判定必须与服务端一致，且文案原样透传
+    for name, field in (("保养", "service"), ("轮胎", "tire")):
+        srv = rep.get(field)
+        got = m.get(name)
+        if not isinstance(srv, dict):
+            # 服务端没给这一项（没设基准 / 里程表读不到）⇒ MCP 也不该编一个
+            if got is not None:
+                bad.append("服务端没给「%s」判定，MCP 却给出了 %r" % (name, got))
+            continue
+        if not isinstance(got, dict):
+            bad.append("MCP 的工具没给出「%s」这一项" % name)
+            continue
+        for k in ("还剩(km)", "该在里程表(km)时做", "已超期", "快到了", "结论"):
+            if k not in got:
+                bad.append("MCP 的「%s」缺字段「%s」" % (name, k))
+        # 文案必须逐字等于服务端那份（不许自己重写）
+        if got.get("结论") != srv.get("text"):
+            bad.append("MCP 的「%s」结论 = %r，与服务端原文 %r 不一致 ⇒ 文案有两份"
+                       % (name, got.get("结论"), srv.get("text")))
+        # 剩余公里数必须与「到期 − 当前里程表」对得上（否则它自己编了一个数）
+        rem = got.get("还剩(km)")
+        due = got.get("该在里程表(km)时做")
+        odo = rep.get("odometer_km")
+        if rem is not None and due is not None and odo is not None:
+            want = float(due) - float(odo)
+            if abs(float(rem) - want) > 1.0:
+                bad.append("MCP 的「%s」还剩 %s，但「到期 %s − 里程表 %s」= %s ⇒ 判定不是服务端那份"
+                           % (name, rem, due, odo, want))
+    return bad
+
+
 def check_range_reach_contract() -> list:
     """「还有 X 公里，够吗」的判定必须**与服务端同源**（不许模型自己减）。
 
@@ -862,6 +935,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 与客户端算法逐位一致（同一个数）"
               % ("teslamate_range_estimate", "续航契约"))
     bad.extend(range_bad)
+
+    maint_bad = check_maintenance_contract()
+    for b in maint_bad:
+        print("  ✗ %s" % b)
+    if not maint_bad:
+        print("  ✓ %-26s %-24s 保养 / 轮胎提醒与服务端同一个判定、同一句话"
+              % ("teslamate_maintenance", "保养契约"))
+    bad.extend(maint_bad)
 
     fb_bad = check_feedback_items()
     for b in fb_bad:
