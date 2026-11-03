@@ -93,6 +93,11 @@ cd /c/tm-ws && export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.1
 ⚠️ 改了 `.env` 之后 `docker compose restart` **不算数**（容器持有创建时的快照），
 必须 `docker compose up -d --force-recreate api`。
 
+⚠️ **改了 `api/` 里的 Go 代码 ⇒ 必须先 `docker compose build api`** ——
+`docker compose up` **默认不重建镜像**（镜像还是上一次构建的那份）⇒ 容器跑的是**旧二进制**，
+而线上行为看着像「代码没生效」（v0.121.0 实测：简报里少了续航段，靠 MCP 契约自检当场报红才发现）。
+⇒ **改了服务端代码的发版顺序**：`build api` → `up -d --force-recreate api` → 再跑 MCP 自检。
+
 ## 改代码前先看
 
 - `docs/INDEX.md` §6「红线」表
