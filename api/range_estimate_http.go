@@ -85,11 +85,6 @@ func handleRangeEstimate(w http.ResponseWriter, r *http.Request) {
 
 // computeRangeEstimate 算「真实可达续航」结论。
 func computeRangeEstimate(carID int) (*RangeEstimate, error) {
-	drives, err := fetchRangeDrives(carID)
-	if err != nil {
-		return nil, err
-	}
-
 	var (
 		batteryLevel *int
 		rated        *float64
@@ -97,7 +92,7 @@ func computeRangeEstimate(carID int) (*RangeEstimate, error) {
 		outsideTemp  *float64
 		speed        *int
 	)
-	err = db.QueryRow(context.Background(), sqlRangeInputs, carID).Scan(
+	err := db.QueryRow(context.Background(), sqlRangeInputs, carID).Scan(
 		&batteryLevel, &rated, &ideal, &outsideTemp, &speed)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
@@ -115,7 +110,10 @@ func computeRangeEstimate(carID int) (*RangeEstimate, error) {
 	}
 	est.RatedRangeKm = ratedRange
 
-	model := buildRangeModel(drives)
+	model, err := getRangeModel(carID)
+	if err != nil {
+		return nil, err
+	}
 	if model == nil {
 		est.Summary = "真实可达：样本不足，暂不给数"
 		est.Basis = "可用行程样本不足（要 ≥ 4 趟、且每档 ≥ 2 条）⇒ 宁可不给数，也不编一个"

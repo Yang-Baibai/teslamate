@@ -8,6 +8,7 @@ import com.teslamate.app.CachedRangeContext
 import com.teslamate.app.CarStatus
 import com.teslamate.app.ConsumptionModel
 import com.teslamate.app.Drive
+import com.teslamate.app.RangeEstimate
 import com.teslamate.app.StatusCache
 import com.teslamate.app.UserFacingException
 import kotlinx.coroutines.Dispatchers
@@ -80,6 +81,17 @@ class StatusStore(private val cache: StatusCache? = null) {
 
     /** 最近一次行程的累计爬升（米），用于爬升修正。 */
     var recentAscentM by mutableStateOf<Int?>(null)
+        private set
+
+
+    /**
+     * ⚠️ **v0.119.0：服务端算的「真实可达续航」结论。**
+     *
+     * ⚠️ 它是**首选**（判定只在服务端做，ADR #38）⇒ 飞书与 App 必然同一个数。
+     * 为 null（还没取到 / 取不到）⇒ 退回**本地模型**兜底
+     * （v0.9.0 的老教训：服务器挂掉不能退化成「乐观 50% 的标称」）。
+     */
+    var serverRange by mutableStateOf<RangeEstimate?>(null)
         private set
 
     /**
@@ -163,6 +175,7 @@ class StatusStore(private val cache: StatusCache? = null) {
         cachedAt = null
         consumption = null
         recentAscentM = null
+        serverRange = null
         drives = emptyList()
         error = null
         // ⚠️ v0.27.0：驾驶画像是**按车**的，换车必须作废（否则 B 车标题下显示 A 车的驾驶习惯）。
@@ -186,6 +199,7 @@ class StatusStore(private val cache: StatusCache? = null) {
         cachedAt = null
         consumption = null
         recentAscentM = null
+        serverRange = null
         drives = emptyList()
         error = null
         // ⚠️ v0.27.0：换服务器 = 全部重来，驾驶画像也要清。
@@ -256,6 +270,17 @@ class StatusStore(private val cache: StatusCache? = null) {
         }
     }
 
+
+
+    /**
+     * ⚠️ **v0.119.0：服务端的续航结论到了。**
+     *
+     * ⚠️ 取不到时**不清空**旧值（与 [fail] 同一个原则）：
+     * 服务器临时算不动不该让首屏的主角数字变成空白。
+     */
+    internal fun updateServerRange(r: RangeEstimate) {
+        serverRange = r
+    }
     /**
      * ⚠️ **v0.27.0：驾驶画像算完了。**
      *

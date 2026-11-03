@@ -1372,6 +1372,88 @@ data class ApiError(
     val error_code: String? = null,
 )
 
+
+/**
+ * ⚠️ **v0.119.0：「真实可达续航」的**服务端结论**。
+ *
+ * ## 为什么 App 要读它
+ *
+ * 这条判定原先**只在客户端**算（`ConsumptionModel.kt`）⇒
+ * ① 飞书 / Hermes 问不出 App 首屏那个数（服务端端点 `/range_estimate` 已补上）；
+ * ② 同一个数在两处各算一遍 ⇒ 迟早漂（ADR #38 / #47）。
+ *
+ * ⇒ 现在 **App 只渲染服务端的结论**；服务端取不到时，才退回本地模型兜底
+ * （服务器挂掉时不能退化成「乐观 50% 的标称」—— v0.9.0 的老教训）。
+ *
+ * ## 字段口径
+ *
+ * 与服务端 `api/range_estimate.go` 的 `RangeEstimate` **逐条对应**
+ * （Hermes 闸门 7 钉住两端的常量）。
+ * ⚠️ `wh_per_km` 是 **Wh/km**（换算成 kWh/100km 是显示层的事）。
+ */
+@Serializable
+data class RangeBand(
+    /** 悲观侧（km） */
+    val lo_km: Int = 0,
+    /** 乐观侧（km） */
+    val hi_km: Int = 0,
+)
+
+@Serializable
+data class RangeEstimate(
+    /** 真实可达（km）。null = 样本不足，**不敢给数**。 */
+    val true_range_km: Double? = null,
+    /** 真实可达的区间（悲观, 乐观）。 */
+    val true_range_band_km: RangeBand? = null,
+    /** 「留 20% 保底还能开多少」（km）。 */
+    val floor_range_km: Double? = null,
+    /** 保底那一行自己的区间。 */
+    val floor_range_band_km: RangeBand? = null,
+    /** 采用的实测档位（Wh/km）。 */
+    val wh_per_km: Double? = null,
+    /** 档位名（如「0–60」）。 */
+    val bucket_label: String = "",
+    /** 该档的样本条数。 */
+    val bucket_samples: Int = 0,
+    /** 参考车速是否**正落在**这一档（false = 借用了邻档）。 */
+    val bucket_exact: Boolean = false,
+    /** 参考车速（km/h）：行驶中用实时车速，停车用巡航均速。 */
+    val reference_speed_kph: Double = 0.0,
+    /** 参考车速是不是**兜底假设值**。 */
+    val speed_assumed: Boolean = false,
+    /** 温度修正系数（1.0 = 没修）。 */
+    val temp_factor: Double = 1.0,
+    /** 温度口径说明（空 = 没有要说的）。 */
+    val temp_caveat: String = "",
+    /** 样本覆盖的温度区间。 */
+    val temp_min_c: Double? = null,
+    val temp_max_c: Double? = null,
+    /** ≤10°C 的样本条数（低温修正可不可信的判据）。 */
+    val low_temp_samples: Int = 0,
+    /** 模型残差的 90 分位（Wh/km）。 */
+    val residual_p90_wh_per_km: Double? = null,
+    /** 残差样本条数（≥100 公里的长途）。 */
+    val residual_samples: Int = 0,
+    /** 模型样本条数（行程条数）。 */
+    val sample_count: Int = 0,
+    /** 样本覆盖的起止时刻。 */
+    @Serializable(with = InstantSer::class) val first_driven_at: Instant? = null,
+    @Serializable(with = InstantSer::class) val last_driven_at: Instant? = null,
+    /** 标定续航（km）。 */
+    val rated_range_km: Double? = null,
+    /** 车外温度（°C）。 */
+    val outside_temp_c: Double? = null,
+    /** 当前电量（%）。 */
+    val battery_level: Int? = null,
+    /** 日常余量（0.90 = 留 10%）。 */
+    val reserve_factor: Double = 0.90,
+    /** 「留 20% 保底」的可用比例。 */
+    val floor_reserve_factor: Double? = null,
+    /** 服务端写好的摘要 / 依据 / 说明（Hermes 用；App 不拼自己的版本）。 */
+    val summary: String = "",
+    val basis: String = "",
+    val note: String = "",
+)
 class Api private constructor(private val base: String, private val token: String) {
 
     /**
@@ -1641,6 +1723,16 @@ class Api private constructor(private val base: String, private val token: Strin
      */
     fun drives(carId: Int, limit: Int = 200, offset: Int = 0): List<Drive> =
         get("/api/v1/cars/$carId/drives?limit=$limit&offset=$offset")
+
+
+    /**
+     * ⚠️ **v0.119.0：服务端算的「真实可达续航」结论。**
+     *
+     * ⚠️ App **不再自己算**这条判定（v0.119.0 起）⇒ 飞书与 App 必然同一个数
+     * （ADR #38 / #47）。取不到时（服务器挂掉）才退回本地模型兜底。
+     */
+    fun rangeEstimate(carId: Int): RangeEstimate =
+        get("/api/v1/cars/$carId/range_estimate")
     fun track(driveId: Int): List<TrackPoint> = get("/api/v1/drives/$driveId/track")
     fun charges(carId: Int, limit: Int = 200): List<Charge> =
         get("/api/v1/cars/$carId/charges?limit=$limit")

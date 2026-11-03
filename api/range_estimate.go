@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -407,4 +409,82 @@ func (m *rangeModel) TrueRangeBandKm(ratedRangeKm *float64, speedKph float64, ou
 	optimistic := base * whEff / (whEff - p90)
 	pessimistic := base * whEff / (whEff + p90)
 	return &RangeBand{Lo: int(math.Round(pessimistic)), Hi: int(math.Round(optimistic))}
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 模型缓存（App 每 15 秒轮询一次 ⇒ 不能每次都重算）
+// ══════════════════════════════════════════════════════════════════════
+
+// rangeModelCacheTTL 缓存有效期。
+//
+// ⚠️ **缓存的是「模型」，不是「结论」**：结论（真实可达 / 区间 / 保底）每次请求
+//
+//	都用**当次的输入**（电量 / 标定续航 / 车外温度 / 车速）重算
+//	⇒ 缓存命中时结论仍然是**当下的**（气温一变立刻反映）。
+const rangeModelCacheTTL = 5 * time.Minute
+
+// rangeModelCacheEntry 一条缓存。
+type rangeModelCacheEntry struct {
+	at         time.Time
+	model      *rangeModel
+	driveCount int
+}
+
+var rangeModelCacheMu sync.Mutex
+var rangeModelCache = map[int]rangeModelCacheEntry{}
+
+// rangeModelCacheValid 这条缓存还能不能用（**纯函数** ⇒ 好测）。
+//
+// ⚠️ **两个失效条件都要有**：
+//
+//	① 超时（TTL）；
+//	② **行程条数变了** —— 新开了一趟 ⇒ 样本总体变了 ⇒ 模型必须重建。
+//
+// 只靠 TTL 的话，「模型样本 N 条」会停在旧数上 ⇒ 与飞书 / 契约自检
+// （都按**当前**行程重算）对不上 ⇒ **假红**。
+func rangeModelCacheValid(hit rangeModelCacheEntry, now time.Time, driveCount int) bool {
+	if hit.driveCount != driveCount {
+		return false
+	}
+	return now.Sub(hit.at) < rangeModelCacheTTL
+}
+
+// sqlRangeDriveCount 这台车的行程条数（缓存失效判据）。
+const sqlRangeDriveCount = `SELECT count(*) FROM drives WHERE car_id = $1`
+
+// fetchRangeDriveCount 取行程条数。
+func fetchRangeDriveCount(carID int) (int, error) {
+	var n int
+	if err := db.QueryRow(context.Background(), sqlRangeDriveCount, carID).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// getRangeModel 取能耗模型（带缓存）。
+//
+// ⚠️ 命中时返回的**可能**是 nil —— 那是「样本不足」的**合法答案**
+//
+//	（与「没有缓存」是两回事，别混）。
+func getRangeModel(carID int) (*rangeModel, error) {
+	cnt, err := fetchRangeDriveCount(carID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	rangeModelCacheMu.Lock()
+	hit, ok := rangeModelCache[carID]
+	rangeModelCacheMu.Unlock()
+	if ok && rangeModelCacheValid(hit, now, cnt) {
+		return hit.model, nil
+	}
+	drives, err := fetchRangeDrives(carID)
+	if err != nil {
+		return nil, err
+	}
+	model := buildRangeModel(drives)
+	rangeModelCacheMu.Lock()
+	rangeModelCache[carID] = rangeModelCacheEntry{at: now, model: model, driveCount: cnt}
+	rangeModelCacheMu.Unlock()
+	return model, nil
 }

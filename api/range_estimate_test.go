@@ -251,3 +251,30 @@ func TestRangeBucketBorrowMarksExactFalse(t *testing.T) {
 		t.Fatalf("借最近的一档应是 60–90，实际 %d–%d", b.MinKph, b.MaxKph)
 	}
 }
+
+// ⚠️ **v0.119.0**：模型缓存的失效判据（纯函数 ⇒ 单测直接钉）。
+//
+// ⚠️ **两个失效条件缺一不可**：
+//
+//	① 超时 ⇒ 重算；
+//	② **行程条数变了** ⇒ 重算（否则「模型样本 N 条」停在旧数上）。
+func TestRangeModelCacheValid(t *testing.T) {
+	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
+	hit := rangeModelCacheEntry{at: now, model: &rangeModel{}, driveCount: 92}
+
+	if !rangeModelCacheValid(hit, now.Add(time.Minute), 92) {
+		t.Fatal("同样的行程条数 + 未超时 ⇒ 缓存应当有效")
+	}
+	if rangeModelCacheValid(hit, now.Add(time.Minute), 93) {
+		t.Fatal("行程条数变了（多开了一趟）⇒ 缓存必须失效")
+	}
+	if rangeModelCacheValid(hit, now.Add(rangeModelCacheTTL+time.Second), 92) {
+		t.Fatal("超过 TTL ⇒ 缓存必须失效")
+	}
+	// ⚠️ 「样本不足」（model == nil）也是一个**合法答案** ⇒ 命中时必须照样返回 nil，
+	//    不能当成「没有缓存」（那会让每次请求都重算）。
+	nilHit := rangeModelCacheEntry{at: now, model: nil, driveCount: 92}
+	if !rangeModelCacheValid(nilHit, now.Add(time.Minute), 92) {
+		t.Fatal("模型为 nil（样本不足）也是有效缓存")
+	}
+}
