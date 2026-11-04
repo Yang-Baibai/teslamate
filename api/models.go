@@ -131,6 +131,12 @@ type CarStatus struct {
 	// 例：「（车端 · 11-03 读数）」/「（GPS 估算）」。
 	OdometerNote string `json:"odometer_note"`
 
+	// ⚠️ **v0.129.0**：座舱闷热的**服务端结论**（暴晒后车内能到 60℃）。
+	//
+	// 阈值与中文文案都在服务端（ADR #38 / #41），App 与 Hermes 只透传。
+	// nil = 没读到 / 车况数据太旧 ⇒ **不知道**（不是「不闷热」）。
+	CabinHeat *CabinHeat `json:"cabin_heat"`
+
 	// ⚠️ v0.21.0：**是否配置了 Fleet API 凭据**。
 	//
 	// false = 这台服务器**没有实时状态源** → 锁车与实时胎压恒为「未知」。

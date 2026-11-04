@@ -304,6 +304,12 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.OdometerVehicleAt = odo.At
 	s.OdometerNote = renderOdometerNote(odo, serverLocation(), time.Now())
 
+	// ⚠️ **v0.129.0**：座舱闷热（暴晒后车内能到 60℃）。
+	//
+	// 阈值与文案都在服务端（[cabinHeat]）⇒ App 的座舱卡与飞书说同一句话。
+	// ⚠️ 数据陈旧 ⇒ 不给结论（宁可说不知道，不可编）。
+	s.CabinHeat = cabinHeat(s.InsideTemp, s.OutsideTemp, &s.UpdatedAt, s.DataStale)
+
 	// 锁车状态来自 Tesla Fleet API 的后台轮询缓存（api/tesla.go）。
 	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。
 	s.Locked, s.LockedAt = teslaLockState()

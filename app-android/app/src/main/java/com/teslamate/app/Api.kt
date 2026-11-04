@@ -378,6 +378,23 @@ data class TelemetryStatus(
     val error: String = "",
 )
 
+/**
+ * ⚠️ **v0.129.0**：座舱闷热 —— 服务端的结论（一组）。
+ *
+ * 阈值（45℃）与中文文案都在服务端（ADR #38 / #41）⇒ App 只透传。
+ */
+@Serializable
+data class CabinHeat(
+    /** 现在闷不闷热。 */
+    val hot: Boolean = false,
+    /** 车内温度（℃）。 */
+    val inside_c: Double? = null,
+    /** 车外温度（℃）。 */
+    val outside_c: Double? = null,
+    /** 闷热时的那句中文原文（服务端唯一一份）；不闷热时为空。 */
+    val text: String = "",
+)
+
 @Serializable
 data class CarStatus(
     val car_id: Int,
@@ -516,6 +533,13 @@ data class CarStatus(
      * 例：「（车端 · 11-03 读数）」/「（GPS 估算）」。
      */
     val odometer_note: String = "",
+    /**
+     * ⚠️ **v0.129.0**：座舱闷热的**服务端结论**（暴晒后车内能到 60℃）。
+     *
+     * 阈值（45℃）与中文文案都在服务端（ADR #38 / #41）⇒ App 只透传。
+     * null = 没读到 / 车况数据太旧 ⇒ **不知道**（不是「不闷热」）。
+     */
+    val cabin_heat: CabinHeat? = null,
     /**
      * ⚠️ v0.21.0：**服务端是否配置了 Fleet API 凭据**。
      *

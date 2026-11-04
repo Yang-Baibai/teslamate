@@ -1256,6 +1256,102 @@ if [ $? -eq 0 ]; then ok "车端里程表的单位换算与来源口径只在服
 rm -f "$TMP"
 
 
+# ── 闸门 16：座舱闷热的**阈值与文案**只在服务端一份 ─────────────────
+#
+# ⚠️ **v0.129.0**：暴晒后这台车的座舱峰值到过 **62.4℃**（车外才 34.0℃），
+# 71 天里 **17 天（24%）**座舱峰值 ≥ 45℃ ⇒ 闷热是**常态**，值得单独判一次。
+#
+# 这道闸门钉五件事：
+#   ① 阈值**只在服务端一份**（客户端不许抄 45℃）；
+#   ② 客户端**不许自己比温度**（自己判 ⇒ 两处各判一次、迟早漂）；
+#   ③ 客户端**不许自己写**闷热文案（文案只有服务端一份，ADR #41）；
+#   ④ App **必须接上**服务端的结论（`cabin_heat` / `ch.hot`）；
+#   ⑤ MCP **只透传**（不自己解释、不自己判）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+HEAT = pathlib.Path('api/cabin_heat.go')
+MODELS = pathlib.Path('api/models.go')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+APIKT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/Api.kt')
+STATUS = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/StatusScreen.kt')
+MAINDIR = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+
+for p in (HEAT, MODELS, MCP, APIKT, STATUS):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+def literals(src):
+    """逐行取字符串字面量（先剥注释 —— 否则注释里引用一句文案就会假红）。"""
+    out = []
+    for line in strip_comments(src).split(chr(10)):
+        s = line.strip()
+        if s.startswith('//') or s.startswith('*') or s.startswith('/*'):
+            continue
+        out.extend(re.findall(r'"((?:[^"\\]|\\.)*)"', line))
+    return out
+
+
+problems = []
+
+heat = strip_comments(HEAT.read_text(encoding='utf-8', errors='replace'))
+models = strip_comments(MODELS.read_text(encoding='utf-8', errors='replace'))
+mcp = strip_comments(MCP.read_text(encoding='utf-8', errors='replace'))
+api_kt = strip_comments(APIKT.read_text(encoding='utf-8', errors='replace'))
+status = strip_comments(STATUS.read_text(encoding='utf-8', errors='replace'))
+
+# ① 阈值的事实源在服务端
+if not re.search(r'cabinHotC\s*=\s*45(\.0)?', heat):
+    problems.append('api/cabin_heat.go 里没有 cabinHotC = 45 ⇒ 阈值没有事实源')
+
+# ② 客户端不许自己比温度（自己判 ⇒ 两处各判一次）
+for kt in MAINDIR.rglob('*.kt'):
+    code = strip_comments(kt.read_text(encoding='utf-8', errors='replace'))
+    for m in re.finditer(r'inside_temp\s*[><]=?\s*[0-9]', code):
+        problems.append('客户端 %s 里自己比车内温度（%s）⇒ 判定只能服务端做'
+                        % (kt.name, m.group(0)))
+
+# ③ 客户端不许自己写闷热文案
+for kt in MAINDIR.rglob('*.kt'):
+    for lit in literals(kt.read_text(encoding='utf-8', errors='replace')):
+        for phrase in ('闷热', '开门窗散热'):
+            if phrase in lit:
+                problems.append('客户端 %s 里出现了服务端文案 %r ⇒ 文案只能服务端有'
+                                % (kt.name, phrase))
+
+# ④ App 必须接上服务端的结论
+if 'cabin_heat' not in api_kt:
+    problems.append('Api.kt 里没有 cabin_heat 字段 ⇒ App 拿不到座舱闷热的结论')
+if 'cabin_heat' not in status or 'ch.hot' not in status:
+    problems.append('ui/StatusScreen.kt 没有用 st.cabin_heat / ch.hot ⇒ 座舱卡不会显示闷热提醒')
+
+# ⑤ MCP 只透传
+if 's.get("cabin_heat")' not in mcp:
+    problems.append('MCP 没有透传 cabin_heat ⇒ 飞书里问不出「车里现在有多热」')
+if 'json:"cabin_heat"' not in models:
+    problems.append('api/models.go 里 CarStatus 缺键 json:"cabin_heat"')
+
+if problems:
+    print('座舱闷热的「阈值与文案」没有收敛到服务端 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 闷不闷热由服务端判、文案只有服务端一份（ADR #38 / #41）')
+    print('      客户端只透传，不许自己比温度、不许自己写文案')
+    sys.exit(1)
+print('座舱闷热：阈值与文案只在服务端一份 ✔（App / MCP 只透传）')
+PYEOF
+if [ $? -eq 0 ]; then ok "座舱闷热的阈值与文案只在服务端一份"; else fail "座舱闷热的阈值或文案跑到了客户端"; cat "$TMP"; fi
+rm -f "$TMP"
+
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

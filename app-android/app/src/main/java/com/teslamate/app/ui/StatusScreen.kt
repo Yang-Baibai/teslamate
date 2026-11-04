@@ -813,6 +813,20 @@ fun StatusScreen(
                             ),
                         )
 
+                        // ⚠️ **v0.129.0**：座舱闷热（暴晒后车内能到 60℃）。
+                        //
+                        // 阈值与中文文案都在**服务端**（ADR #38 / #41）⇒ 这里只透传。
+                        // ⚠️ 只在「闷热」时出现；不闷热时**什么都不显示**（装饰宁删勿留）。
+                        st.cabin_heat?.let { ch ->
+                            if (ch.hot) {
+                                Text(
+                                    ch.text,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+
                         // 能量条 —— 特斯拉最易识别的视觉母题，充电中转绿
                         EnergyBar(
                             soc = st.battery_level,

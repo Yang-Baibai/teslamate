@@ -27,8 +27,8 @@ android {
         //    ⇒ 仍然**没有跳号**。
         // ⚠️ **v0.128.0**：接着 136 之后是 **137**（能耗画像卡主角标签改用「毛耗电」）
         //    ⇒ 仍然**没有跳号**。
-        versionCode = 137
-        versionName = "0.128.0"
+        versionCode = 138
+        versionName = "0.129.0"
     }
 
     buildTypes {

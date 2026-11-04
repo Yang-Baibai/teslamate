@@ -291,6 +291,9 @@ def teslamate_status() -> dict:
         #   现在服务端已换算成公里，MCP **只透传**。
         "里程表口径": s.get("odometer_note"),
         "里程表采集于": s.get("odometer_vehicle_at"),
+        # ⚠️ **v0.129.0**：座舱闷热（暴晒后车内能到 60℃）——
+        # 判定与文案都在服务端，这里**只透传**（ADR #38 / #41）。
+        "座舱闷热": (s.get("cabin_heat") or {}).get("text") or None,
         "已锁": s.get("locked"),
         "锁车状态采集于": s.get("locked_at"),
         # ⚠️ 这两个是 **v0.80.0** 新增的 —— 少了它们，

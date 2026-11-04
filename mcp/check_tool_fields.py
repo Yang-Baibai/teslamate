@@ -559,6 +559,57 @@ def check_odometer_unit_contract() -> list:
     return bad
 
 
+def check_cabin_heat_contract() -> list:
+    """座舱闷热的**判定与文案**必须与服务端是**同一份**。
+
+    ⚠️ 为什么要有这道：暴晒后这台车的座舱峰值到过 **62.4℃**（车外才 34.0℃），
+    「闷不闷热」是个**判定** ⇒ 判定只能服务端做（ADR #38），
+    文案也只能服务端一份（ADR #41）⇒ App 与飞书必须说同一句话。
+
+    ⇒ 这里断言：
+      ① `/status` 的 cabin_heat 结构齐全（hot / inside_c / text）；
+      ② 闷热时文案非空、且**带车内温度**；不闷热时文案为空（说的是没依据的话 = 错）；
+      ③ MCP 的「座舱闷热」与服务端的 text **一字不差**（只透传）。
+    """
+    bad = []
+    try:
+        st = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
+        tool = T.teslamate_status()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(st, dict) or "error" in st:
+        return ["车况取不到：%r" % (st,)]
+    ch = st.get("cabin_heat")
+    if ch is None:
+        # 「不知道」是**合法状态**（车况数据太旧 ⇒ 服务端不给结论，ADR #38）
+        # ⇒ 这时只要求 MCP 也**没有**闷热文案（两边必须一致）。
+        if isinstance(tool, dict) and tool.get("座舱闷热"):
+            bad.append("服务端说「不知道」而 MCP 却有闷热文案 ⇒ 两边不一致")
+        return bad
+    if not isinstance(ch, dict):
+        bad.append("/status 的 cabin_heat 不是对象：%r" % (ch,))
+        return bad
+    for k in ("hot", "inside_c", "text"):
+        if k not in ch:
+            bad.append("/status 的 cabin_heat 缺键 %s" % k)
+    hot = bool(ch.get("hot"))
+    text = str(ch.get("text") or "")
+    inside = ch.get("inside_c")
+    if hot:
+        if not text:
+            bad.append("cabin_heat 说闷热却没有文案 ⇒ 界面上会空着")
+        elif inside is not None and ("%.1f" % float(inside)) not in text:
+            bad.append("闷热文案里没有车内温度 %s ⇒ 用户不知道有多热（%r）" % (inside, text))
+    elif text:
+        bad.append("不闷热却有文案（%r）⇒ 说的是没依据的话" % text)
+    if isinstance(tool, dict) and "错误" not in tool:
+        got = tool.get("座舱闷热")
+        want = text or None
+        if (got or None) != (want or None):
+            bad.append("MCP 的「座舱闷热」= %r，与服务端的 %r 不一致 ⇒ 两边各说各话" % (got, want))
+    return bad
+
+
 def check_feedback_items() -> list:
     """反馈**每一条**都必须带上「id / 时间 / 内容 / 状态」。
 
@@ -1050,6 +1101,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 车端里程表是**公里**（官方原值是英里，服务端换算）"
               % ("teslamate_status", "里程表单位契约"))
     bad.extend(odo_bad)
+
+    cab_bad = check_cabin_heat_contract()
+    for b in cab_bad:
+        print("  ✗ %s" % b)
+    if not cab_bad:
+        print("  ✓ %-26s %-24s 座舱闷热的判定与文案和服务端是**同一份**"
+              % ("teslamate_status", "座舱闷热契约"))
+    bad.extend(cab_bad)
 
     fb_bad = check_feedback_items()
     for b in fb_bad:
