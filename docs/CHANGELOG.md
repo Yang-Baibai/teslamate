@@ -110,7 +110,38 @@ WHPX 拿不到加速器 ⇒ guest 内核根本不启动）⇒ **连续八轮（v
 ⇒ 顺带修掉 **ADR 表第 62 行少了「决策」那一格**（整行只有 5 列 ⇒ 表格渲染错位）——
 ⚠️ 那是 v0.131.0 那轮留下的；本轮补齐。
 
-### 九、影响与回滚
+### 九、⚠️ 顺手发现：Hermes 网关已经**断了 4 天**
+
+核状态时发现 **Hermes 网关进程不在**（`gateway.pid` 记的 pid 1648 已不存在）⇒
+`gateway.log` 最后一条是 **2026-11-01 10:33** ⇒ 主动通知通道（飞书 / 微信）断了 4 天。
+
+⚠️ 根因不是配置错，是**没有任何守护机制**：
+
+- 机器上没有 Hermes 相关的**计划任务或服务** ⇒ 重启 / 登出就死，死了没人知道；
+- 而两个定时任务**照常在跑**（改代码、写文档）⇒ 代码一直在变，
+  **但用户收不到任何推送**（微信那条还在每 10 分钟重试，报
+  `iLink sendmessage session not ready … the user must send the bot a message first`）。
+
+⇒ **已加 Windows 计划任务 `Hermes-Gateway`**（用户确认要的）：
+
+- **登录时**拉起 + **每 10 分钟**自愈心跳；
+- 包装器 `scripts/hermes-gateway-autostart.ps1`
+  （机器本地副本在 `%LOCALAPPDATA%\hermes\gateway-service\`，带 UTF-8 BOM）；
+- **幂等**：已在跑就写一行日志退出 ⇒ 不会每 10 分钟多起一个；
+- ⚠️ 顺带查清了 `gateway-service\Hermes_Gateway.cmd` **拉不起进程**的真因：
+  它是 **UTF-8 无 BOM** ⇒ cmd.exe 按 GBK(936) 解析 ⇒ 路径里的「<用户名>」变乱码 ⇒
+  `cd /d` 失败、python 路径也找不到 ⇒ **静默失败**（日志里连 `gateway.start` 都没有）。
+  ⇒ 包装器改用 **PowerShell**（正确处理 Unicode 路径）。
+
+⇒ **实测**：① 停掉网关 → 跑包装器 → **自己起来了**（PID 6600）；
+② 再跑一次 → 「已在运行 ⇒ 跳过」，进程数仍为 1（幂等）；
+③ `Start-ScheduledTask` → 上次结果 **0**、日志多出那一行 ⇒ 计划任务链路通；
+④ 飞书 + 微信均重新连上（`Gateway running with 2 platform(s)`）。
+
+⚠️ **微信**通道还有一个机器侧修不了的限制：会话过期后必须**用户先给机器人发一条消息**
+（`the user must send the bot a message first (or re-pair)`）⇒ 这一步得你来。飞书不受此限。
+
+### 十、影响与回滚
 
 - **影响**：**App 零改动**；服务端只改了「评估结论」的长度上限与截断留痕；
   反馈结论从此能写完整（实测写到 483 字不再被截）。

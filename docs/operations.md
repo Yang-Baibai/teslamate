@@ -485,3 +485,59 @@ hermes send --to weixin "xxx"
 同一异常只推一次，恢复正常后才重置。
 
 ---
+
+## 11. Hermes 网关自启（Windows 计划任务）
+
+> 2026-11-05 建立。此前网关**没有任何守护机制** ⇒ 机器重启 / 登出就死，
+> 而**死了没人知道** —— 2026-11-01 09:19 起网关就没再起来，
+> 飞书 / 微信的**主动通知通道整整断了 4 天**（定时任务还在跑、代码还在改，
+> 但**用户收不到任何推送**）。
+
+### 11.1 计划任务
+
+| 项 | 值 |
+|---|---|
+| 名称 | `Hermes-Gateway` |
+| 动作 | `pwsh -NoProfile -ExecutionPolicy Bypass -File %LOCALAPPDATA%\hermes\gateway-service\Hermes_Gateway_Auto.ps1` |
+| 触发器 ① | **登录时**（`<主机名>\<用户名>`） |
+| 触发器 ② | **每 10 分钟**（自愈心跳） |
+| 设置 | 允许电池供电 · 错过的立即补跑 · 多实例 = `IgnoreNew` · 失败重试 3 次（间隔 1 分钟）· 执行时限不限 |
+
+包装器源码在仓库里：**`scripts/hermes-gateway-autostart.ps1`**（机器本地副本带 UTF-8 BOM）。
+
+### 11.2 为什么用 PowerShell 而不是仓库里原有的 `Hermes_Gateway.cmd`
+
+⚠️ 那个 `.cmd` 是 **UTF-8 无 BOM** ⇒ `cmd.exe` 按 OEM 码页（936 / GBK）解析
+⇒ 路径里的「<用户名>」变成乱码 ⇒ `cd /d` 失败、python 路径也找不到
+⇒ **静默失败**（日志里连 `gateway.start` 都没有）。
+⇒ 包装器改用 **PowerShell**（正确处理 Unicode 路径）+ UTF-8 编码。
+
+⚠️ 另有一个坑：变量**不能叫 `$home`** —— 那是 PowerShell 的**只读自动变量**
+（用户主目录）⇒ 赋值直接报错「无法覆盖变量 HOME」。本包装器用 `$hroot`。
+
+### 11.3 幂等：每 10 分钟跑一次，怎么保证不多起一个
+
+包装器第一步就查「`hermes_cli.main gateway run` 进程在不在」：
+**在 ⇒ 写一行日志就退出**（不碰现有进程）；**不在 ⇒ 拉起一个新的**。
+⇒ 这同时就是**自愈**：网关被杀 ⇒ 下一个 10 分钟心跳把它拉回来。
+
+### 11.4 日志与排障
+
+| 文件 | 内容 |
+|---|---|
+| `%LOCALAPPDATA%\hermes\logs\gateway-autostart.log` | 每次触发都写一行（「已拉起 PID …」/「已在运行 ⇒ 跳过」）|
+| `…\logs\gateway-auto.out` / `.err` | 网关自己的 stdout / stderr |
+| `…\logs\gateway.log` | 平台连接日志（`✓ feishu connected` / `✓ weixin connected`）|
+
+手动拉起（等不及 10 分钟）：
+
+```powershell
+Start-ScheduledTask -TaskName 'Hermes-Gateway'
+```
+
+### 11.5 微信通道的一个已知限制
+
+微信（iLink）会话过期后，推送会一直报
+`iLink sendmessage session not ready … the user must send the bot a message first (or re-pair)`
+⇒ **需要用户在微信里给机器人发一条消息**才能重建会话（机器侧修不了）。
+飞书不受此限。
