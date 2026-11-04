@@ -548,3 +548,57 @@ Start-ScheduledTask -TaskName 'Hermes-Gateway'
 | ③ 注释凭据 | `.env` 里 `WEIXIN_*` 加 `#` 前缀（原样保留）| `%LOCALAPPDATA%\hermes\.env` |
 
 ⇒ 恢复就是把这三处**反过来**做一遍，再重启网关。
+
+## 12. Windows 计划任务清单（可复现）+ 消弹窗
+
+> 2026-11-05 建立。此前 `TeslaMate-CarWatch` 是**不可复现的手工产物**
+> （仓库里没有创建它的脚本）⇒ 换机器 / 重装就没人知道它该长什么样。
+
+### 12.1 清单
+
+| 任务 | 干什么 | 节奏 | 注册脚本 |
+|---|---|---|---|
+| `TeslaMate-CarWatch` | 车况监听 → Hermes **飞书**推送（告警 / 充电简报）| 每 **5** 分钟 | `scripts/install-watch-task.ps1` |
+| `Hermes-Gateway` | Hermes 网关（**飞书通道的宿主**）| **登录时** + 每 **10** 分钟自愈 | `scripts/install-hermes-gateway-task.ps1` |
+| `TeslaMate-WeeklyDBBackup` | 数据库备份 + 轮转 | 每周日 03:00 | 见 §9 |
+
+两个脚本都**幂等**（先 `Unregister` 再 `Register`），改完直接跑：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/install-watch-task.ps1
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/install-hermes-gateway-task.ps1
+```
+
+### 12.2 ⚠️ 消弹窗：`-WindowStyle Hidden` ≠ 任务 XML 的 `<Hidden>`
+
+现象：任务用 `InteractiveToken` 在**桌面会话**里拉起 `pwsh.exe`，
+而 `pwsh.exe` 是**控制台程序** ⇒ 每轮都弹一个可见 cmd 窗口。
+（窗口里那行「数据过期」是脚本**每轮必打印的运行摘要**，不是报错。）
+
+| 做法 | 真实作用 | 能消掉弹窗吗 |
+|---|---|---|
+| 任务 XML 的 `<Settings><Hidden>true</Hidden>` | **在任务计划程序 UI 里隐藏这个任务** | ❌ **不能** |
+| 动作参数 `-WindowStyle Hidden` | 给 pwsh 传 `STARTUPINFO.wShowWindow = SW_HIDE` ⇒ 控制台窗口**创建时就是隐藏的** | ✅ 能 |
+
+⇒ 本项目两个都做（见上面两个 install 脚本的 XML）。
+
+⚠️ **弹窗没法程序化验证**：它属**桌面会话**，后台脚本枚举不到可见窗口
+（实测枚举可见顶层窗口 = 0 个）⇒ **改完要肉眼确认**：
+坐等一个 5 分钟窗口，看还弹不弹。
+
+### 12.3 排障
+
+```powershell
+# 看任务全貌（动作里有没有 -WindowStyle Hidden）
+schtasks /Query /TN "TeslaMate-CarWatch" /FO LIST /V
+Export-ScheduledTask -TaskName "TeslaMate-CarWatch"     # 看 <Hidden> 与动作参数
+
+# 立刻触发一次（改完用它验证）
+schtasks /Run /TN "TeslaMate-CarWatch"
+
+# 看脚本每轮打印了什么（= 窗口里原本会显示的内容）
+Get-Content C:\tm-ws\scripts\.watch-car.log -Tail 5 -Encoding utf8
+
+# 网关自启日志（每次触发都写一行）
+Get-Content "$env:LOCALAPPDATA\hermes\logs\gateway-autostart.log" -Tail 5 -Encoding utf8
+```
