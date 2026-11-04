@@ -112,6 +112,53 @@ func TestNormalizeFeedbackDecision(t *testing.T) {
 	}
 }
 
+// ⚠️ **v0.132.0**：评估结论**不许被静默截断**。
+//
+// 真因：原来结论被硬截到 `feedbackContextMax*4` = 256 字，且**不报错**
+// ⇒ 一次真实回写就把三条结论截成半句话（「…真机复核通过（… · App 」），
+// 而调用方拿到 200 OK ⇒ 写的人以为写进去了。
+//
+// 三条规矩：
+//
+//	① 正常长度（几百字）**原样保留** —— 一条真机复核结论本来就该写得下；
+//	② 超过上限 ⇒ **截断但留痕**：末尾必须带「已截断」标记，
+//	   让读的人知道这句话没写全（不许半句悄悄躺在库里）；
+//	③ 截断后长度**仍不超过上限**（标记本身要算进去）。
+func TestFeedbackDecisionIsNotSilentlyTruncated(t *testing.T) {
+	// ① 一条真实的复核结论（几百字）必须原样保留
+	real := strings.Repeat("真机复核通过。", 80) // 480 字
+	_, note, err := normalizeFeedbackDecision("done", real)
+	if err != nil {
+		t.Fatalf("done 不该报错，实际 %v", err)
+	}
+	if note != real {
+		t.Errorf("正常长度的结论应原样保留，实际被截成 %d 字（原文 %d 字）", len([]rune(note)), len([]rune(real)))
+	}
+
+	// ② 超长 ⇒ 必须留痕
+	tooLong := strings.Repeat("字", feedbackDecisionMax+500)
+	_, note2, err := normalizeFeedbackDecision("done", tooLong)
+	if err != nil {
+		t.Fatalf("done 不该报错，实际 %v", err)
+	}
+	if !strings.Contains(note2, "已截断") {
+		t.Errorf("超长结论被截断后必须带「已截断」标记，实际末尾是 %q", tailRunes(note2, 30))
+	}
+	// ③ 截断后长度仍不超过上限（含标记）
+	if n := len([]rune(note2)); n > feedbackDecisionMax {
+		t.Errorf("截断后长度 %d 超过上限 %d", n, feedbackDecisionMax)
+	}
+}
+
+// tailRunes 取字符串末尾 n 个字（用来打印，不影响断言）。
+func tailRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[len(r)-n:])
+}
+
 // ⚠️ 图片类型**只认魔数** —— 客户端给的文件名与 Content-Type 都可以随手伪造。
 func TestDetectImageType(t *testing.T) {
 	cases := []struct {

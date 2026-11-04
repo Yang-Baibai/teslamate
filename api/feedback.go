@@ -200,6 +200,27 @@ const (
 	feedbackContextMax = 64
 	// feedbackImageMax 截图大小上限（字节）。
 	feedbackImageMax = 5 << 20 // 5 MB
+
+	// feedbackDecisionMax 评估结论长度上限（**按 rune 数**）。
+	//
+	// ⚠️ **v0.132.0（真机复核轮次发现）**：原来这里没有独立上限，
+	// 结论被硬截到 `feedbackContextMax*4` = **256 字** ——
+	// 那是拿「上下文字段」（64 字）的上限**凑**的，结论根本写不下那么多字。
+	// ⇒ 一次真实的真机复核回写，就把三条结论**静默截成了半句话**：
+	// 「…真机复核通过（2026-11-04 · 真机 <真机序列号> · App 」
+	// 而调用方拿到的是 **200 OK** ⇒ 写结论的人**以为写进去了**。
+	//
+	// ⚠️ 为什么必须放开：结论的读者是**下一轮的 agent**，
+	// 它会把半句话当成完整结论继续往下推 ⇒ 越写越歪。
+	feedbackDecisionMax = 4000
+
+	// feedbackDecisionTruncMark 超长截断时**必须**留的痕迹。
+	//
+	// ⚠️ 与本文件里**正文超长直接 400 拒绝**是同一条原则：
+	// 「截掉一半等于让用户以为自己说清楚了，其实没有」——
+	// 结论同理，只是这里**不能拒绝**（结论是内部数据，拒了会让反馈卡住），
+	// 所以改成**截断但留痕**：读的人一眼知道这句话没写全。
+	feedbackDecisionTruncMark = "…（结论过长，已截断）"
 )
 
 // normalizeFeedbackMessage 校验并裁剪正文。
@@ -260,8 +281,12 @@ func normalizeFeedbackDecision(status, note string) (string, string, error) {
 	if s == feedbackStatusNew {
 		n = ""
 	}
-	if len([]rune(n)) > feedbackContextMax*4 {
-		n = string([]rune(n)[:feedbackContextMax*4])
+	if r := []rune(n); len(r) > feedbackDecisionMax {
+		keep := feedbackDecisionMax - len([]rune(feedbackDecisionTruncMark))
+		if keep < 0 {
+			keep = 0
+		}
+		n = string(r[:keep]) + feedbackDecisionTruncMark
 	}
 	return s, n, nil
 }
