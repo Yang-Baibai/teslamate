@@ -468,6 +468,42 @@ def check_brief_battery_contract() -> list:
     return bad
 
 
+
+def check_battery_measurement_contract() -> list:
+    """简报里的**测量时刻口径**必须与 /battery 的 measurement 是**同一句**。
+
+    ⚠️ 为什么比「有没有测量时刻」更重要：三个出口（App 副标题 / 飞书工具 / 周期简报）
+    各写各的措辞 ⇒ 用户看到「App 说 10-31 实测、飞书说的是另一句」⇒
+    **同一个事实两套话**（ADR #38 / #47）。
+
+    ⇒ 这里断言：**简报正文里含有** /battery 的 measurement.note_short 原文
+    （不是「差不多」，是同一句 —— 措辞只有服务端一份）。
+    """
+    bad = []
+    try:
+        brief = T.teslamate_charge_brief("7d")
+        raw = T._get("/api/v1/cars/%s/battery" % T.CAR_ID)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(brief, dict) or "错误" in brief:
+        return ["充电简报取不到：%r" % (brief,)]
+    if not isinstance(raw, dict) or "error" in raw:
+        return ["电池健康取不到：%r" % (raw,)]
+    meas = raw.get("measurement") or {}
+    short = meas.get("note_short")
+    note = meas.get("note")
+    if not short:
+        bad.append("/battery 没有 measurement.note_short ⇒ 测量时刻口径没有事实源")
+        return bad
+    if not note:
+        bad.append("/battery 没有 measurement.note ⇒ 完整口径没有事实源")
+    body = str(brief.get("正文") or "")
+    if short not in body:
+        bad.append("简报正文里没有测量口径 %r（正文：%r）⇒ 简报与 App 会说两套话"
+                   % (short, body[:200]))
+    return bad
+
+
 def check_feedback_items() -> list:
     """反馈**每一条**都必须带上「id / 时间 / 内容 / 状态」。
 
@@ -943,6 +979,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 保养 / 轮胎提醒与服务端同一个判定、同一句话"
               % ("teslamate_maintenance", "保养契约"))
     bad.extend(maint_bad)
+
+    meas_bad = check_battery_measurement_contract()
+    for b in meas_bad:
+        print("  ✗ %s" % b)
+    if not meas_bad:
+        print("  ✓ %-26s %-24s 简报与电池页说**同一句**测量时刻口径"
+              % ("teslamate_charge_brief", "测量口径契约"))
+    bad.extend(meas_bad)
 
     fb_bad = check_feedback_items()
     for b in fb_bad:

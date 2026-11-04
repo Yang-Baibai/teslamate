@@ -391,9 +391,30 @@ func TestChargeBriefBatteryJSONContract(t *testing.T) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		t.Fatalf("反序列化失败: %v", err)
 	}
-	for _, k := range []string{"soh_percent", "full_count", "windowed", "first_kwh", "last_kwh", "min_kwh", "max_kwh", "first_at", "last_at"} {
+	for _, k := range []string{"soh_percent", "full_count", "windowed", "first_kwh", "last_kwh", "min_kwh", "max_kwh", "first_at", "last_at", "at", "age_days", "note_short"} {
 		if _, ok := m[k]; !ok {
 			t.Errorf("battery 缺键 %q", k)
 		}
+	}
+}
+
+// ⑱ **时间诚实性**：SOH 后面必须紧跟「哪一次充电测的」——
+//
+// ⚠️ 没有它，「当前 83.1%」会被读成「此刻的读数」，
+// 而它其实来自**最近一次充到 90% 以上**的那场充电。
+func TestChargeBriefBatteryCarriesMeasurement(t *testing.T) {
+	got := renderBatteryBriefLine(&ChargeBriefBattery{SohPercent: briefFloatp(83.13), NoteShort: "10-31 实测"})
+	want := "电池健康：当前 83.1% · 10-31 实测"
+	if got != want {
+		t.Errorf("电池段 = %q，期望 %q", got, want)
+	}
+}
+
+// ⑲ 偏旧时短口径也要带出来（数据旧是**用户要马上知道的事**）。
+func TestChargeBriefBatteryStaleMeasurement(t *testing.T) {
+	got := renderBatteryBriefLine(&ChargeBriefBattery{SohPercent: briefFloatp(83.13), NoteShort: "08-02 实测 · 数据偏旧"})
+	want := "电池健康：当前 83.1% · 08-02 实测 · 数据偏旧"
+	if got != want {
+		t.Errorf("电池段 = %q，期望 %q", got, want)
 	}
 }

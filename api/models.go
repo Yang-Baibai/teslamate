@@ -1032,6 +1032,13 @@ type ChargeBriefBattery struct {
 	// FirstAt / LastAt 那两次实测的时刻。
 	FirstAt *time.Time `json:"first_at"`
 	LastAt  *time.Time `json:"last_at"`
+	// At / AgeDays / NoteShort 这个「当前 SOH」是**哪一次充电**测的。
+	//
+	// ⚠️ **与服务端 /battery 的 measurement 同源**（都来自 computeBatteryHealth）
+	// ⇒ 简报正文里那个短口径与 App 电池页上的那个短口径是**同一句话**。
+	At        *time.Time `json:"at"`
+	AgeDays   *int       `json:"age_days"`
+	NoteShort string     `json:"note_short"`
 }
 
 // ChargeBriefEnergy 简报的能耗段（窗口与充电段完全相同）。
@@ -1172,6 +1179,34 @@ type BatteryHealth struct {
 	// 实测本机只覆盖 83 天 / 9,936 公里 = 车龄的 10%，且**没有任何冬季数据**。
 	SeriesSpanDays *int     `json:"series_span_days"` // 序列覆盖的天数
 	OdometerSpanKm *float64 `json:"odometer_span_km"` // 序列覆盖的里程
+	// Measurement 这个「现在还能装 X 度」是**哪一次充电**测的（+ 有多旧）。
+	//
+	// ⚠️ **nil = 不知道**（不是「新鲜」）：没有测量点时不给这个数，
+	// 宁可空着也不能让缺数据看起来像好消息。
+	Measurement *BatteryMeasurement `json:"measurement"`
+}
+
+// BatteryMeasurement 「现在还能装 X 度」这个数是**哪一次充电**测出来的。
+//
+// ⚠️ **为什么要有它**：那个数来自**最近一次充到 90% 以上**的充电（sqlBattery），
+// 而 App 印的是「现在还能装」、简报印的是「当前 83.3%」——
+// 两处都**没有说是哪一次**测的 ⇒ 用户默认它是「此刻」的读数。
+// ⇒ 车停着不动、用户两个月不充电时，这两句话就在**把旧值当现在讲**。
+//
+// ⚠️ **文案只有服务端一份**（ADR #41）：Note / NoteShort 都在服务端生成，
+// App 与 Hermes **只读**，不许自己算日期、不许自己拼措辞
+// （Hermes 闸门 14 机器核对）。
+type BatteryMeasurement struct {
+	// At 那次充电的结束时刻。
+	At *time.Time `json:"at"`
+	// AgeDays 距今多少天（向下取整；时钟回拨时为 0）。
+	AgeDays *int `json:"age_days"`
+	// Note 完整口径说明（长版：给飞书工具与 App 的角标）。
+	Note string `json:"note"`
+	// NoteShort 短版（给简报正文与 App 的副标题行 —— 长版放不下）。
+	NoteShort string `json:"note_short"`
+	// Stale 这个数是不是已经**偏旧**（超过新鲜期）。
+	Stale bool `json:"stale"`
 }
 
 type BatteryPoint struct {

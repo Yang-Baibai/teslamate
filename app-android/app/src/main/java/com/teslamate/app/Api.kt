@@ -1053,6 +1053,35 @@ data class BatteryHealth(
     val series_span_days: Int? = null,
     /** 序列覆盖的里程 */
     val odometer_span_km: Double? = null,
+    /**
+     * ⚠️ **v0.125.0**：这个「健康度」是**哪一次充电**测的（+ 有多旧）。
+     *
+     * 「现在还能装 X 度」来自**最近一次充到 90% 以上**的那场充电，
+     * 不是此刻的读数 ⇒ 不标出时刻就是把旧值当现在讲。
+     *
+     * ⚠️ 文案由**服务端**生成（ADR #41：文案只有一份），App **只透传**。
+     */
+    val measurement: BatteryMeasurement? = null,
+)
+
+/**
+ * ⚠️ **v0.125.0**：「现在还能装 X 度」这个数的**测量时刻**与新鲜度。
+ *
+ * ⚠️ note / note_short 是**服务端写好的中文**，App 不自己算日期、不自己拼措辞
+ * （Hermes 闸门 14 机器核对：各端自己格式化日期 ⇒ 迟早漂）。
+ */
+@Serializable
+data class BatteryMeasurement(
+    /** 那次充电的结束时刻（RFC3339） */
+    val at: String? = null,
+    /** 距今多少天 */
+    val age_days: Int? = null,
+    /** 完整口径说明（长版） */
+    val note: String = "",
+    /** 短版（给副标题行） */
+    val note_short: String = "",
+    /** 这个数是不是已经偏旧 */
+    val stale: Boolean = false,
 )
 
 /**

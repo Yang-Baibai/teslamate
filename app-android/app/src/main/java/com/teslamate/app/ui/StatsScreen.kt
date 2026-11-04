@@ -1022,10 +1022,13 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // 真机上三个角标竖排在一起，谁也说不清哪个解释哪个指标。
                             // 现在 ⓘ 挂在副标题上，而副标题字面就是这条口径的两个操作数。
                             TextWithNote(
-                                text = buildString {
-                                    append("现在还能装 ${b.current_capacity_kwh!!.fmt(1)} 度")
-                                    nominalKwh?.let { append(" · 新电池标称 ${it.fmt(1)} 度") }
-                                },
+                                // ⚠️ **v0.125.0**：副标题带「哪一次充电测的」（时间诚实性）。
+                                //    文案由服务端生成，App 只透传（ADR #41）。
+                                text = batteryCapacitySubtitle(
+                                    b.current_capacity_kwh,
+                                    nominalKwh,
+                                    b.measurement?.note_short,
+                                ),
                                 // ⚠️ **v0.99.0**：口径正文搬进 `ui/BatteryNote.kt` 的纯函数。
                                 //
                                 // 为什么搬：这条 ⓘ 里有**插值的数字**（那个百分比），

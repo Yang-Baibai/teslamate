@@ -35,6 +35,8 @@
 #   13. **保养 / 轮胎提醒的判定与文案只在服务端一份**
 #      （基准原先只在手机本地 ⇒ 飞书问不出「我轮胎还能跑多少」；
 #        客户端那份只是**兜底**，两侧阈值必须一致）
+#   14. **电池健康度的「测量时刻口径」只在服务端一份**
+#      （「现在还能装 X 度」来自**最近一次充电**，不说何时测的 = 把旧值当现在讲）
 #  10. **契约自检必须真的在跑**（定义了函数 ≠ 生效）
 #      （注册条件写错 ⇒ 那条自检一次都没跑，而自检照样报「0 项不合规」⇒ 假绿）
 
@@ -1034,6 +1036,125 @@ if problems:
 print('保养 / 轮胎提醒：判定与文案只在服务端一份 ✔（客户端那份仅兜底，阈值一致）')
 PYEOF
 if [ $? -eq 0 ]; then ok "保养 / 轮胎提醒的判定与文案只在服务端一份"; else fail "保养 / 轮胎提醒的判定跑到了客户端"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 14：电池健康度的「测量时刻口径」只在服务端一份 ──────────────
+#
+# ⚠️ **v0.125.0**：「现在还能装 X 度」「当前 83.3%」这两个说法，
+# 都没说**是哪一次充电测的** —— 而它其实来自**最近一次充到 90% 以上**的那场充电。
+# ⇒ 停了一个多月时，那句话就在**把旧值当现在讲**（项目红线第 2 条）。
+#
+# 这道闸门钉四件事：
+#   ① 服务端有 measurement 出口（时刻 + 口径文案）；
+#   ② **新鲜期阈值只在服务端一份**（客户端不许自己判「旧不旧」）；
+#   ③ App / MCP **只透传**服务端的短口径，**不许自己格式化日期**
+#      （各端各拼一次 ⇒ 迟早漂：本项目吃过「60 分」抄第二份的亏）；
+#   ④ **服务端文案不许被抄到客户端**（「数据偏旧」这种措辞只能服务端有）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+MODELS = pathlib.Path('api/models.go')
+MEAS = pathlib.Path('api/battery_measurement.go')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+APIKT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/Api.kt')
+NOTEKT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/BatteryNote.kt')
+KTDIR = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+
+for p in (MODELS, MEAS, MCP, APIKT, NOTEKT):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+def literals(src):
+    """逐行取字符串字面量（跳过行首注释行）。
+
+    ⚠️ 先剥注释再提字面量 —— 否则**注释里**引用一句文案就会假红。
+    """
+    out = []
+    for line in strip_comments(src).split(chr(10)):
+        s = line.strip()
+        if s.startswith('//') or s.startswith('*') or s.startswith('/*'):
+            continue
+        out.extend(re.findall(r'"((?:[^"\\]|\\.)*)"', line))
+    return out
+
+
+models = strip_comments(MODELS.read_text(encoding='utf-8', errors='replace'))
+meas = strip_comments(MEAS.read_text(encoding='utf-8', errors='replace'))
+mcp = strip_comments(MCP.read_text(encoding='utf-8', errors='replace'))
+api_kt = strip_comments(APIKT.read_text(encoding='utf-8', errors='replace'))
+note_raw = NOTEKT.read_text(encoding='utf-8', errors='replace')
+note_kt = strip_comments(note_raw)
+
+problems = []
+
+# ① 服务端有 measurement 出口
+if 'Measurement *BatteryMeasurement' not in models or 'json:"measurement"' not in models:
+    problems.append('api/models.go 里 BatteryHealth 没有 measurement 字段 ⇒ 测量时刻没有出口')
+for k in ('json:"at"', 'json:"note"', 'json:"note_short"', 'json:"age_days"'):
+    if k not in models:
+        problems.append('api/models.go 里 BatteryMeasurement 缺键 %s' % k)
+
+# ② 新鲜期阈值只在服务端一份
+for c in ('batteryMeasurementFreshDays', 'batteryMeasurementRefreshDays'):
+    if not re.search(c + r'\s*=\s*\d+', meas):
+        problems.append('api/battery_measurement.go 里找不到常量 %s ⇒ 新鲜期阈值没有事实源' % c)
+
+# ③ MCP 只透传
+if 'get("measurement")' not in mcp:
+    problems.append('MCP 没有透传 measurement ⇒ 飞书里问不出「这个数是什么时候测的」')
+
+# ④ App 读了服务端的字段
+if 'measurement: BatteryMeasurement?' not in api_kt:
+    problems.append('Api.kt 里 BatteryHealth 没有 measurement 字段 ⇒ App 拿不到测量时刻')
+
+# ⑤ App 的副标题必须接上服务端的短口径
+defs = re.findall(r'fun batteryCapacitySubtitle\b', note_kt)
+if len(defs) != 1:
+    problems.append('ui/BatteryNote.kt 里 batteryCapacitySubtitle 应恰好定义 1 次，实际 %d 次 ⇒ 判据不精确' % len(defs))
+else:
+    mm = re.search(r'fun batteryCapacitySubtitle\b', note_kt)
+    rest = note_kt[mm.end():]
+    nxt = re.search(r'(?m)^fun ', rest)
+    body = rest[:nxt.start()] if nxt else rest
+    if 'append(noteShort)' not in body:
+        problems.append('batteryCapacitySubtitle 没把服务端的 noteShort 接进副标题 ⇒ App 只说「现在还能装」而不说何时测的')
+
+# ⑥ 客户端不许自己格式化日期 / 自己判新鲜度
+for bad_api in ('SimpleDateFormat', 'DateTimeFormatter', 'LocalDate', 'LocalDateTime', 'OffsetDateTime'):
+    if bad_api in note_kt:
+        problems.append('ui/BatteryNote.kt 里出现了 %s ⇒ 客户端自己在算日期（日期口径只能服务端算）' % bad_api)
+if re.search(r'\.substring\(', note_kt):
+    problems.append('ui/BatteryNote.kt 里用了 substring ⇒ 客户端自己在切日期')
+for bad_const in ('FreshDays', 'RefreshDays', 'MEASUREMENT_FRESH', 'MEASUREMENT_REFRESH'):
+    if bad_const in note_kt or bad_const in api_kt:
+        problems.append('客户端出现了 %s ⇒ 新鲜期阈值跑到客户端了（只能服务端一份）' % bad_const)
+
+# ⑦ 服务端文案不许被抄到客户端（全 App 扫字符串字面量）
+for phrase in ('那次充电实测', '数据偏旧'):
+    for kt in KTDIR.rglob('*.kt'):
+        for lit in literals(kt.read_text(encoding='utf-8', errors='replace')):
+            if phrase in lit:
+                problems.append('客户端 %s 里出现了服务端文案 %r ⇒ 文案要只有一份（ADR #41）'
+                                % (kt.name, phrase))
+
+if problems:
+    print('电池健康度的「测量时刻口径」没有收敛到服务端 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 时刻与口径文案只在服务端一份（ADR #38 / #41）')
+    print('      客户端只透传，不许自己算日期、不许自己判新鲜度')
+    sys.exit(1)
+print('电池健康度：测量时刻与口径只在服务端一份 ✔（App / MCP 只透传）')
+PYEOF
+if [ $? -eq 0 ]; then ok "电池健康度的测量时刻口径只在服务端一份"; else fail "电池健康度的测量时刻口径跑到了客户端"; cat "$TMP"; fi
 rm -f "$TMP"
 
 

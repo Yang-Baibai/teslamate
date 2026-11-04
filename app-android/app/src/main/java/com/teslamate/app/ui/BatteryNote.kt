@@ -87,3 +87,37 @@ fun noteFullChargeRange(dateText: String?, gapKm: Int?): String = buildString {
     append("读数有 445~455 km 温度波动，差是区间不是精确值。")
     append("官方标称续航是新车认证值，不能跟这把尺子相除。")
 }
+/**
+ * ⚠️ **v0.125.0**：电池健康卡的**副标题**（纯函数）。
+ *
+ * ## 为什么它必须带「哪一次充电测的」
+ *
+ * 「现在还能装 X 度」这个数来自**最近一次充到 90% 以上**的那场充电
+ * （服务端 sqlBattery 的最后一个有容量的点），**不是此刻的读数**。
+ * ⇒ 只印「现在还能装」＝把**旧值当现在讲**（项目红线第 2 条）。
+ *
+ * ## 为什么 `noteShort` 是参数而不是这里算的
+ *
+ * 「10-31 实测」「数据偏旧」这些措辞由**服务端**生成（ADR #41：文案只有一份），
+ * 新鲜期阈值也只在服务端一处 ⇒ App **只透传**，不许自己格式化日期。
+ *
+ * @param capacityKwh 最近一次充电实测的可用容量（度）；null ⇒ 不提
+ * @param nominalKwh 新电池标称容量（度）；null ⇒ 不提
+ * @param noteShort 服务端给的测量口径短文案（可空 ⇒ 不提）
+ */
+fun batteryCapacitySubtitle(capacityKwh: Double?, nominalKwh: Double?, noteShort: String?): String =
+    buildString {
+        if (capacityKwh != null) {
+            append("现在还能装 ").append(capacityKwh.fmt(1)).append(" 度")
+        }
+        if (nominalKwh != null) {
+            if (isNotEmpty()) append(" · ")
+            append("新电池标称 ").append(nominalKwh.fmt(1)).append(" 度")
+        }
+        // ⚠️ 时间诚实性：把「哪一次充电测的」接在末尾。
+        if (!noteShort.isNullOrBlank()) {
+            if (isNotEmpty()) append(" · ")
+            append(noteShort)
+        }
+    }
+

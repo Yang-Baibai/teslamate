@@ -1,6 +1,7 @@
 package com.teslamate.app.ui
 
 import com.teslamate.app.BatteryDecay
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -37,6 +38,39 @@ import org.junit.Test
  *   （v0.41.0 的注释早就写过「必须是同一份」）。
  */
 class BatteryNoteTest {
+
+    // ── ⓪ 副标题：必须带「哪一次充电测的」（v0.125.0）─────────────
+
+    /**
+     * 「现在还能装 X 度」来自**最近一次充到 90% 以上**的那场充电，
+     * 不是此刻的读数 ⇒ 副标题必须带上测量时刻，否则是把旧值当现在讲。
+     */
+    @Test
+    fun `副标题带上测量时刻`() {
+        val s = batteryCapacitySubtitle(65.30476, 78.4, "10-31 实测")
+        assertEquals("现在还能装 65.3 度 · 新电池标称 78.4 度 · 10-31 实测", s)
+    }
+
+    /** 没有测量口径时**不许编一个** —— 保持原样。 */
+    @Test
+    fun `没有测量口径时不编`() {
+        val s = batteryCapacitySubtitle(65.30476, 78.4, null)
+        assertEquals("现在还能装 65.3 度 · 新电池标称 78.4 度", s)
+    }
+
+    /** 空串 / 纯空格 ⇒ 当作没有（服务端没给就是没给）。 */
+    @Test
+    fun `空白测量口径不渲染`() {
+        val s = batteryCapacitySubtitle(65.30476, null, "   ")
+        assertEquals("现在还能装 65.3 度", s)
+    }
+
+    /** 容量都没有 ⇒ 不拼出「现在还能装 度」这种残句。 */
+    @Test
+    fun `缺容量时不拼残句`() {
+        val s = batteryCapacitySubtitle(null, null, "10-31 实测")
+        assertEquals("10-31 实测", s)
+    }
 
     // ── ① 「电池健康度」ⓘ ───────────────────────────────────────
 

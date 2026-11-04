@@ -1647,6 +1647,10 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 	// 换第二台车 / 老库 / 刚买的车**必然踩到**。
 	h := &BatteryHealth{Series: []*BatteryPoint{}}
 	var last *float64
+	// ⚠️ lastCapAt 必须与 last **严格同步** —— 它是「现在还能装 X 度」
+	// 那次充电的时刻（lastDate 是「最后一个点」，两者**可能不是同一个点**：
+	// 最后一个点的 capacity_kwh 可能是 NULL ⇒ 那时 last 更早）。
+	var lastCapAt *time.Time
 	// ⚠️ v0.22.0（电池健康专家 P1-5 / P1-1 / P0-3）：下面这些累加器。
 	var (
 		lastOdo      *float64
@@ -1686,6 +1690,8 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 				baselineCaps = append(baselineCaps, *p.CapacityKwh)
 			}
 			last = p.CapacityKwh
+			// ⚠️ 与 last 同一个点（不许另取）—— 时间口径要指向的就是这个数。
+			lastCapAt = &p.Date
 		}
 		if p.CapacityKwhEnergy != nil {
 			energyCaps = append(energyCaps, *p.CapacityKwhEnergy)
@@ -1763,6 +1769,15 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 	}
 	h.CurrentCapacityKwh = last
 	h.MaxCapacityKwhStrict = strictMax
+	// ⚠️ **时间诚实性**：这个数是**哪一次充电**测的（+ 有多旧）。
+	//
+	// 为什么要在这里挂：「现在还能装 X 度」这句话在 App 与简报里都出现过，
+	// 而它**不是此刻的读数** —— 是最近一次充到 90% 以上那场充电的折算值。
+	// ⇒ 不标出时刻 = 把旧值当现在讲（项目红线第 2 条）。
+	//
+	// ⚠️ lastCapAt 为 nil（一个测量点都没有）⇒ Measurement 为 nil
+	// ⇒ 那是「不知道」，**不是**「新鲜」。
+	h.Measurement = batteryMeasurement(lastCapAt, time.Now())
 
 	// ⚠️ **v0.35.0：电池容量衰减的判定**（服务端唯一事实源）。
 	//

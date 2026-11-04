@@ -188,6 +188,15 @@ func renderBatteryBriefLine(b *ChargeBriefBattery) string {
 	if b.SohPercent != nil {
 		// ⚠️ 「当前」两个字**必须**有 —— 它标明这个数与窗口无关。
 		parts = append(parts, fmt.Sprintf("当前 %.1f%%", *b.SohPercent))
+		// ⚠️ **时间诚实性**：紧跟着说清它是**哪一次充电**测的。
+		//
+		// 为什么必须在这里说：光说「当前」会把「上次充电的折算值」
+		// 读成「此刻的读数」⇒ 停了一个多月时那就是在**把旧值当现在讲**。
+		//
+		// ⚠️ 文案由服务端生成（ADR #41），这里只转述。
+		if b.NoteShort != "" {
+			parts = append(parts, b.NoteShort)
+		}
 	}
 	if b.FullCount > 0 && b.MinKwh != nil && b.MaxKwh != nil {
 		if b.FullCount == 1 {
@@ -272,6 +281,13 @@ func chargeBriefBatteryFromHealth(h *BatteryHealth, ws, we *time.Time) *ChargeBr
 		return nil
 	}
 	out := &ChargeBriefBattery{SohPercent: h.HealthPercent}
+	// ⚠️ **时间口径与 SOH 同一个来源**（都来自 computeBatteryHealth）
+	// ⇒ 简报说的「当前」和 /battery 说的「现在还能装」指的是**同一次充电**。
+	if m := h.Measurement; m != nil {
+		out.At = m.At
+		out.AgeDays = m.AgeDays
+		out.NoteShort = m.NoteShort
+	}
 	if ws == nil || we == nil {
 		// ⚠️ 没有窗口 ⇒ 这一段**只有当前值**，没有「窗口内」可言。
 		return out

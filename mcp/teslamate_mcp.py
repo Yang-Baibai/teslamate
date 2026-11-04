@@ -358,9 +358,15 @@ def teslamate_battery() -> dict:
     b = _get(f"/api/v1/cars/{CAR_ID}/battery")
     if not isinstance(b, dict) or "error" in b:
         return b
+    # ⚠️ **时间诚实性**：「健康度」这个数是**哪一次充电**测的
+    # ⇒ 时刻与口径文案都由服务端给，这里**只透传**（ADR #41：文案只有一份）。
+    meas = b.get("measurement") or {}
     out = {
         "现在还能装(度)": b.get("current_capacity_kwh"),
         "健康度%(相对出厂可用容量)": b.get("health_percent"),
+        "健康度测量于": meas.get("at"),
+        "健康度测量口径": meas.get("note"),
+        "健康度数据距今(天)": meas.get("age_days"),
         "新电池标称(度)": b.get("nominal_capacity_kwh"),
         # ⚠️ **v0.90.0**：补上「历史最好时」——
         # App 的用量页把这一行折进了「更多明细」（默认看不见），
