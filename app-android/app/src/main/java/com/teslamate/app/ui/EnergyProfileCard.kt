@@ -131,7 +131,9 @@ fun EnergyProfileCard(
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                "最省电速度档的能耗（kWh/100km，不含回充抵扣）",
+                // ⚠️ **v0.128.0**：口径改用「毛耗电」（与明细行的「净」对仗），
+                // 「不含回充抵扣」与卡底 ⓘ 重复 ⇒ 删掉 ⇒ 视觉宽度 45 → 33（退出啰嗦棘轮）。
+                energyBestBandCaption(),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

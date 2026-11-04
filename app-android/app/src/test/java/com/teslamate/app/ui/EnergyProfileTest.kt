@@ -33,6 +33,27 @@ class EnergyProfileTest {
     }
 
     @Test
+    fun `主角标签用毛耗电_与明细行的净对仗`() {
+        assertEquals("最省电速度档的毛耗电（kWh/100km）", energyBestBandCaption())
+        // 「不含回充抵扣」在卡底 ⓘ 里已经说过一次 ⇒ 主角标签不再重复
+        assertFalse(
+            "不该再重复「不含回充抵扣」: " + energyBestBandCaption(),
+            energyBestBandCaption().contains("不含回充抵扣"),
+        )
+    }
+
+    /**
+     * ⚠️ **v0.128.0**：主角标签已**退出啰嗦棘轮**（视觉宽度 < 44 ⇒ 不再是常驻长说明块）。
+     *
+     * ⚠️ 口径说明：闸门 5 的视觉宽度是「汉字/全角 = 2，其余 = 1，**空格不算**」，
+     * 而 [noteVisualWidth] 把空格也算 1 —— 这个串**没有空格** ⇒ 两套口径**同值**。
+     */
+    @Test
+    fun `主角标签已退出啰嗦棘轮`() {
+        assertEquals(33, noteVisualWidth(energyBestBandCaption()))
+    }
+
+    @Test
     fun `两行都不许有冒号与只有一行的动词`() {
         val lines = listOf(bestBandLine("100–110", 1234), mostDrivenBandLine("130+", 1156, 187.0))
         for (s in lines) {

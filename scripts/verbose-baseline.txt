@@ -1,7 +1,5 @@
 # ⚠️ v0.74.0：常驻可见长说明块基线（每行一条，已审议过、允许常驻）。
 # 新增一条 = 一次有记录的决策：为什么它该常驻而不是折进 ⓘ。
-EnergyProfileCard.kt::最省电速度档的能耗（kWh/100km，不含回充抵扣）
-EnergyProfileCard.kt::跑得最多的档：… km/h · … 公里 · … kWh/100km
 RangeSegments.kt::基于 … 段实测 · 官方标称 … 公里，实测高 …%，实测低 …%
 RoutePlan.kt::…（往返）· … 公里… → … · … 公里
 RoutePlan.kt::距终点  公里 · 估到终点剩 % ⚠ 低于 % 保底 · 到终点还差  个点

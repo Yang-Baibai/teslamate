@@ -2959,6 +2959,8 @@ PAIRS = [
     ('692.12', '同一句 @26sp（200% 字号）', '本次实测：从 68% 充到 80%'),
     ('145.34', '新标签「本次实测：68% 充到 80%」@13sp', '本次实测：68% 充到 80%'),
     ('290.68', '新标签 @26sp（200% 字号）', '本次实测：68% 充到 80%'),
+    ('308.23', '旧文案「最省电速度档的能耗（kWh/100km，不含回充抵扣）」@13sp（视觉宽度 45 ⇒ 登记在棘轮基线里）', '最省电速度档的能耗（kWh/100km，不含回充抵扣）'),
+    ('230.23', '新标签「最省电速度档的毛耗电（kWh/100km）」@13sp（视觉宽度 33 ⇒ 退出棘轮）', '最省电速度档的毛耗电（kWh/100km）'),
 ]
 
 problems = []
@@ -3364,6 +3366,78 @@ if problems:
 print('\u80fd\u8017\u753b\u50cf\u5361\u90a3\u4e24\u884c\u540c\u5f62\uff08bestBandLine / mostDrivenBandLine\uff09')
 PYEOF
 if [ $? -eq 0 ]; then ok "能耗画像卡两行对照数据同形"; else fail "能耗画像卡两行又不同形了"; cat "$TMP"; fi
+rm -f "$TMP"
+
+# ── 闸门 32：能耗画像卡的主角标签不许再重复 ⓘ 里已经说过的口径 ──────────────
+#
+# ⚠️ **v0.128.0**：原来写的是「最省电速度档的能耗（kWh/100km，不含回充抵扣）」——
+#   ① 「不含回充抵扣」在卡底 ⓘ 口径说明里**还会出现一次** ⇒ 同一句口径说了两遍；
+#   ② 视觉宽度 45（逼近啰嗦棘轮的 44 门槛）⇒ 它是一块「常驻长说明块」；
+#   ③ 而明细行并排列着「净 X」⇒ 读者需要知道主角那个数是**毛**的。
+# ⇒ 现在标签用「毛耗电」与明细行的「净」对仗 ⇒ 重复那半句删掉 ⇒ 视觉宽度 33 ⇒ **退出**棘轮。
+#
+# ⚠️ 判据必须先剥注释 —— 否则注释里提一句旧句式就误报。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+KT = ROOT / 'app-android/app/src/main/java/com/teslamate/app/ui'
+EP = KT / 'EnergyProfile.kt'
+CARD = KT / 'EnergyProfileCard.kt'
+BASE = ROOT / 'scripts/verbose-baseline.txt'
+
+for p in (EP, CARD, BASE):
+    if not p.exists():
+        print('\u627e\u4e0d\u5230 %s \u2014\u2014 \u8fd9\u9053\u95f8\u95e8\u8981\u8ddf\u7740\u6539' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+card = strip_comments(CARD.read_text(encoding='utf-8', errors='replace'))
+ep = strip_comments(EP.read_text(encoding='utf-8', errors='replace'))
+
+problems = []
+
+# \u2460 \u754c\u9762\u5fc5\u987b\u8c03\u90a3\u4e2a\u7eaf\u51fd\u6570
+if 'energyBestBandCaption(' not in card:
+    problems.append('EnergyProfileCard.kt \u91cc\u6ca1\u6709\u8c03 energyBestBandCaption( \u21d2 \u6587\u6848\u6ca1\u8d70\u552f\u4e00\u4e8b\u5b9e\u6e90')
+
+# \u2461 \u7eaf\u51fd\u6570\u91cc\u4e0d\u8bb8\u518d\u51fa\u73b0\u300c\u4e0d\u542b\u56de\u5145\u62b5\u6263\u300d
+if '\u4e0d\u542b\u56de\u5145\u62b5\u6263' in ep:
+    problems.append('ui/EnergyProfile.kt \u91cc\u8fd8\u6709\u300c\u4e0d\u542b\u56de\u5145\u62b5\u6263\u300d\u21d2 \u4e0e\u5361\u5e95 \u24d8 \u91cc\u7684\u53e3\u5f84\u8bf4\u660e\u91cd\u590d\u4e86')
+
+# \u2462 \u5168 App\uff08\u5265\u6ce8\u91ca\uff09\u91cc\u300c\u4e0d\u542b\u56de\u5145\u62b5\u6263\u300d 0 \u6b21
+hits = 0
+for f in sorted(KT.rglob('*.kt')):
+    hits += strip_comments(f.read_text(encoding='utf-8', errors='replace')).count('\u4e0d\u542b\u56de\u5145\u62b5\u6263')
+if hits != 0:
+    problems.append('\u5168 App \u91cc\u300c\u4e0d\u542b\u56de\u5145\u62b5\u6263\u300d\u51fa\u73b0 %d \u6b21 \u21d2 \u540c\u4e00\u53e5\u53e3\u5f84\u8bf4\u4e86\u4e24\u904d' % hits)
+
+# \u2463 \u7eaf\u51fd\u6570\u5b9a\u4e49\u6070\u597d\u4e00\u6b21
+n = len(re.findall(r'fun\s+energyBestBandCaption\s*\(', ep))
+if n != 1:
+    problems.append('ui/EnergyProfile.kt \u91cc energyBestBandCaption \u5b9a\u4e49\u4e86 %d \u6b21\uff08\u5e94\u4e3a 1\uff09' % n)
+
+# \u2464 \u54c8\u55dc\u57fa\u7ebf\u91cc\u4e0d\u8bb8\u518d\u6709 EnergyProfileCard \u7684\u6761\u76ee\uff08\u90a3\u4e24\u884c\u5df2\u9000\u51fa\u68d7\u8f6e\uff09
+base = BASE.read_text(encoding='utf-8', errors='replace')
+if 'EnergyProfileCard.kt::' in base:
+    problems.append('scripts/verbose-baseline.txt \u91cc\u8fd8\u6709 EnergyProfileCard \u7684\u6761\u76ee \u21d2 \u90a3\u4e24\u884c\u5df2\u9000\u51fa\u68d7\u8f6e\uff0c\u4e0d\u8bb8\u7559\u7740')
+
+if problems:
+    print('\u80fd\u8017\u753b\u50cf\u5361\u4e3b\u89d2\u6807\u7b7e\u8fd8\u6709\u95ee\u9898 %d \u5904 \u2014\u2014' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   \u21d2 \u6807\u7b7e\u7528\u300c\u6bdb\u8017\u7535\u300d\u4e0e\u660e\u7ec6\u884c\u7684\u300c\u51c0\u300d\u5bf9\u4e14\uff1b\u91cd\u590d\u7684\u53e3\u5f84\u53ea\u5728\u5361\u5e95 \u24d8 \u91cc\u8bf4\u4e00\u6b21')
+    sys.exit(1)
+
+print('\u80fd\u8017\u753b\u50cf\u5361\u4e3b\u89d2\u6807\u7b7e\u7528\u300c\u6bdb\u8017\u7535\u300d\uff08\u4e0e\u660e\u7ec6\u884c\u7684\u300c\u51c0\u300d\u5bf9\u4e14\uff09\uff0c\u4e14\u5df2\u9000\u51fa\u68d7\u8f6e')
+PYEOF
+if [ $? -eq 0 ]; then ok "能耗画像卡主角标签不重复口径（毛/净对仗）且已退出棘轮"; else fail "能耗画像卡主角标签还有问题"; cat "$TMP"; fi
 rm -f "$TMP"
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
