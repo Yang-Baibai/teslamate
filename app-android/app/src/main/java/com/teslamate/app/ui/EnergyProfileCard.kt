@@ -136,9 +136,11 @@ fun EnergyProfileCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(2.dp))
+            // ⚠️ **v0.126.0**：这行原来带一个**只有它有**的动词「跑了」，
+            // 而下一行（跑得最多的档）是纯数据行 ⇒ 同一类数据两种句式。
+            // ⇒ 现在两行**同形**，文案由 [bestBandLine] 唯一给出。
             Text(
-                "${best.label} km/h" +
-                    if (best.km > 0) " · 跑了 ${best.km.roundToInt()} 公里" else "",
+                bestBandLine(best.label, best.km.roundToInt()),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -162,9 +164,10 @@ fun EnergyProfileCard(
                     //
                     // ⚠️ 口径不变：这里的「跑得最多」按**里程**（km）算，不是按趟数 ——
                     // 48.9% 的趟其实只有 0–5 公里，两者不是一回事（见下方 ⓘ 口径说明）。
+                    // ⚠️ **v0.126.0**：标签与数据原来用**冒号**分隔，
+                    // 而全 App 的并列项一律用「·」（ADR #50）⇒ 现在也走纯函数。
                     Text(
-                        "跑得最多的档：${mb.label} km/h · ${mb.km.roundToInt()} 公里 · " +
-                            "${mb.wh_per_km_gross.fmtKwh100()} kWh/100km",
+                        mostDrivenBandLine(mb.label, mb.km.roundToInt(), mb.wh_per_km_gross),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

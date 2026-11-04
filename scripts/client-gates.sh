@@ -3304,6 +3304,68 @@ PYEOF
 if [ $? -eq 0 ]; then ok "「全程最低」只渲染一处（且落点与公里同源）"; else fail "「全程最低」又印了两遍 / 落点与公里不同源"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 31：能耗画像卡那两行对照数据必须**同形** ───────────────────────
+#
+# ⚠️ **v0.126.0**：行 A「100–110 km/h · 跑了 1234 公里」与行 B
+#   「跑得最多的档：130+ km/h · 1156 公里 · 18.7 kWh/100km」是**同一类数据**，
+#   却用了两种句式（一个带只有它有的动词、一个用冒号分隔标签与数据）
+#   ⇒ 读者要在这两行之间换一次阅读方式（用户反馈 #25：「把文字的布局尽量统一」）。
+# ⇒ 现在两行同形（`档位 · 公里`），文案只由 ui/EnergyProfile.kt 的两个纯函数给出。
+#
+# ⚠️ 判据必须先剥注释 —— 否则注释里提一句旧句式就误报。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+KT = ROOT / 'app-android/app/src/main/java/com/teslamate/app/ui'
+EP = KT / 'EnergyProfile.kt'
+CARD = KT / 'EnergyProfileCard.kt'
+
+for p in (EP, CARD):
+    if not p.exists():
+        print('\u627e\u4e0d\u5230 %s \u2014\u2014 \u8fd9\u9053\u95f8\u95e8\u8981\u8ddf\u7740\u6539' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    # \u5757\u6ce8\u91ca\uff08\u542b KDoc\uff09\u5148\u5265\uff0c\u518d\u6309\u884c\u5265 // \u6ce8\u91ca\u3002
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+ep = strip_comments(EP.read_text(encoding='utf-8', errors='replace'))
+card = strip_comments(CARD.read_text(encoding='utf-8', errors='replace'))
+
+problems = []
+
+# \u2460 \u754c\u9762\u5fc5\u987b\u8c03\u90a3\u4e24\u4e2a\u7eaf\u51fd\u6570\uff08\u6587\u6848\u4e0d\u5728\u754c\u9762\u91cc\u73b0\u62fc\uff09
+for fn in ('bestBandLine(', 'mostDrivenBandLine('):
+    if fn not in card:
+        problems.append('EnergyProfileCard.kt \u91cc\u6ca1\u6709\u8c03 %s \u21d2 \u6587\u6848\u6ca1\u8d70\u552f\u4e00\u4e8b\u5b9e\u6e90' % fn)
+
+# \u2461 \u7eaf\u51fd\u6570\u91cc\u4e0d\u8bb8\u518d\u51fa\u73b0\u5192\u53f7 / \u53ea\u6709\u4e00\u884c\u624d\u6709\u7684\u52a8\u8bcd
+for bad in ('\uff1a', '\u8dd1\u4e86'):
+    if bad in ep:
+        problems.append('ui/EnergyProfile.kt \u91cc\u8fd8\u6709\u300c%s\u300d\u21d2 \u4e24\u884c\u53c8\u4e0d\u540c\u5f62\u4e86' % bad)
+
+# \u2462 \u754c\u9762\u91cc\u4e0d\u8bb8\u628a\u8fd9\u4e24\u884c\u7684\u65e7\u53e5\u5f0f\u5199\u56de\u53bb
+for bad in ('\u8dd1\u5f97\u6700\u591a\u7684\u6863\uff1a', '\u8dd1\u4e86'):
+    if bad in card:
+        problems.append('EnergyProfileCard.kt \u91cc\u8fd8\u6709\u65e7\u53e5\u5f0f\u300c%s\u300d\u21d2 \u53c8\u5199\u56de\u81ea\u7531\u53e5\u4e86' % bad)
+
+if problems:
+    print('\u80fd\u8017\u753b\u50cf\u5361\u90a3\u4e24\u884c\u8fd8\u6709\u95ee\u9898 %d \u5904 \u2014\u2014' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   \u21d2 \u6587\u6848\u53ea\u7531 ui/EnergyProfile.kt \u7684 bestBandLine / mostDrivenBandLine \u7ed9\u51fa')
+    sys.exit(1)
+
+print('\u80fd\u8017\u753b\u50cf\u5361\u90a3\u4e24\u884c\u540c\u5f62\uff08bestBandLine / mostDrivenBandLine\uff09')
+PYEOF
+if [ $? -eq 0 ]; then ok "能耗画像卡两行对照数据同形"; else fail "能耗画像卡两行又不同形了"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
