@@ -32,7 +32,7 @@ TeslaMate（开源采集）→ PostgreSQL → 自写 Go API → 自写 Android A
 | `api/` | **Go 服务**（唯一的判定与聚合层） | `main.go`（路由表）· `handlers.go`（端点）· `models.go`（响应结构）· `queries.go`（SQL）· `alerts.go`（阈值判定）· `vehicle_safety.go` + `telemetry_vehicle.go`（车窗/车门/哨兵）· `battery_decay.go`（电池衰减）· `charge_outcome.go`（充电结局）· `charge_brief.go`（充电简报：服务端渲染好的标题+正文）· `tesla_command.go`（车控）· `feedback.go`（用户反馈 + 截图） |
 | `app-android/` | **Android App**（Compose，Kotlin） | `Api.kt`（所有 HTTP 与数据类）· `ui/AppRoot.kt`（导航与 App 级状态）· `ui/StatusScreen.kt`（车况页）· `ui/RecordsScreen.kt` · `ui/ChargesScreen.kt` · `ui/StatsScreen.kt`（用量页）· `ui/SettingsScreen.kt`（设置 + 所有二级页）· `ui/Theme.kt`（颜色/字阶令牌）· `ui/Motion.kt`（动效令牌）· `ui/Widgets.kt`（共用组件） |
 | `mcp/` | **MCP 服务**（给 Hermes/agent 用的工具集） | `teslamate_mcp.py`（全部工具）· `check_tool_fields.py`（**字段映射自检**）· `selftest_mcp.py` |
-| `scripts/` | **运维与发版脚本** | `watch-car.ps1`（主动通知引擎）· `watch-car-selftest.ps1`（它的自测）· `release.sh`（一键发版）· `release-feedback-gate.sh`（**发版前的用户反馈闸门**）· `smoke.sh`（冒烟）· `client-gates.sh` / `server-gates.sh`（门禁）· `hermes-gates.sh`（**Hermes 链路**门禁：服务端↔MCP↔推送脚本）· `unit-tests.sh`（JVM 单测）· `backup-db.sh` / `backup-weekly.sh` · `tesla-authorize.ps1` / `tesla-partner.ps1`（Tesla 授权与车控签名） |
+| `scripts/` | **运维与发版脚本** | `watch-car.ps1`（主动通知引擎）· `watch-car-selftest.ps1`（它的自测）· `release.sh`（一键发版）· `release-feedback-gate.sh`（**发版前的用户反馈闸门**）· `smoke.sh`（冒烟）· `client-gates.sh` / `server-gates.sh`（门禁）· `hermes-gates.sh`（**Hermes 链路**门禁：服务端↔MCP↔推送脚本）· `probe-run.sh`（**负向探针**助手：在隔离副本里改坏源码 ⇒ 闸门必须报红）· `unit-tests.sh`（JVM 单测）· `backup-db.sh` / `backup-weekly.sh` · `tesla-authorize.ps1` / `tesla-partner.ps1`（Tesla 授权与车控签名） |
 | `docs/` | **文档**（先读 `INDEX.md` 再读别的） | `CHANGELOG.md`（**改动史与决策记录**）· `api-spec.md`（接口）· `architecture.md` · `data-dictionary.md` · `operations.md`（运维手册）· `adr.md`（架构决策）· `手机客户端使用说明.md`（给车主看的）· `真机复核清单.md` |
 | `apk/` | 发版产物（APK，由 API 静态分发） | — |
 | `database/` `grafana/` `mosquitto/` `fleet-telemetry/` | 运行数据与配套服务 | — |
@@ -72,6 +72,7 @@ bash scripts/client-gates.sh            # 客户端 33 道闸门
 bash scripts/smoke.sh                   # 冒烟（49 项）
 bash scripts/hermes-gates.sh           # Hermes 链路闸门（服务端↔MCP↔推送脚本）
 python mcp/check_tool_fields.py         # MCP 字段自检
+bash scripts/probe-run.sh hermes-gates.sh /path/to/probe.py  # 负向探针：隔离副本里改坏 ⇒ 闸门必须报红
 
 # ④ 构建 App（**必须走 ASCII 路径**，见 §5）
 gradle -p C:/tm-ws/app-android assembleDebug --console=plain --offline

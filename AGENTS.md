@@ -69,6 +69,7 @@ bash scripts/client-gates.sh     # 客户端 33 道闸门（啰嗦棘轮等）
 bash scripts/smoke.sh            # 冒烟（49 项）
 bash scripts/hermes-gates.sh    # Hermes 链路闸门（服务端↔MCP↔推送脚本）
 python mcp/check_tool_fields.py  # MCP 字段映射自检
+bash scripts/probe-run.sh hermes-gates.sh /path/to/probe.py  # 负向探针：在**隔离副本**里改坏 ⇒ 闸门必须精确报红
 ```
 
 **构建 App 必须走 ASCII 路径**（Gradle 拒绝含非 ASCII 字符的项目路径）：
