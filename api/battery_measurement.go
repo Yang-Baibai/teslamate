@@ -39,6 +39,32 @@ const (
 	batteryMeasurementRefreshDays = 30
 )
 
+// batteryLocation 服务端时区（默认 Asia/Shanghai）。
+//
+// ⚠️ **为什么不用 time.Local**：容器里 time.Local 是 UTC
+// （alpine 没有 /etc/localtime）⇒ 「几天前」会按 UTC 日历算，
+// 与用户看到的日期差一天（v0.98.0 的 8 小时同款坑）。
+func batteryLocation() *time.Location {
+	loc, err := time.LoadLocation(getenv("TZ_NAME", "Asia/Shanghai"))
+	if err != nil {
+		// 兜底：中国全境 UTC+8 且无夏令时 ⇒ 固定偏移是安全的。
+		return time.FixedZone("CST", 8*3600)
+	}
+	return loc
+}
+
+// calendarDaysBetween 两个时刻在给定时区里的**日历日差**（纯函数，可单测）。
+//
+// ⚠️ 两个日期都归零到同一天再相减 ⇒ 结果是整数天，
+// 且与用户在心里数的「10-31 到 11-04 = 4 天」一致。
+func calendarDaysBetween(from, to time.Time, loc *time.Location) int {
+	f := from.In(loc)
+	t := to.In(loc)
+	fd := time.Date(f.Year(), f.Month(), f.Day(), 0, 0, 0, 0, loc)
+	td := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+	return int(td.Sub(fd).Hours() / 24)
+}
+
 // batteryMeasurement 算「这个数是什么时候测的」（纯函数，可单测）。
 //
 // 参数：
@@ -47,23 +73,32 @@ const (
 //
 // ⚠️ **返回 nil 时调用方必须当成「不知道」** —— 不是「正常」，
 // 更不能当成「新鲜」（那是把缺数据当好消息，v0.9.2 踩过同款坑）。
-func batteryMeasurement(at *time.Time, now time.Time) *BatteryMeasurement {
+func batteryMeasurement(at *time.Time, now time.Time, loc *time.Location) *BatteryMeasurement {
 	if at == nil {
 		return nil
 	}
+	if loc == nil {
+		loc = batteryLocation()
+	}
 	m := &BatteryMeasurement{At: at}
 
+	// ⚠️ 用**日历日差**，不用「经过时长 ÷ 24」。
+	//
+	// 为什么：后者会出现「昨天 23:50 充的、今天 00:10 看到」被说成「今天」——
+	// 而日历上那是**昨天**。⇒ 文案里的「10-31」与「几天前」会互相打架。
+	// ⚠️ 日历日差也**更保守**（说得更旧）⇒ 合「宁可说旧，不可说新」。
+	age := calendarDaysBetween(*at, now, loc)
 	// ⚠️ 负数（时钟回拨 / 数据来自未来）⇒ 当作 0 天，不说「负 1 天」。
-	age := int(now.Sub(*at).Hours() / 24)
 	if age < 0 {
 		age = 0
 	}
 	m.AgeDays = &age
 
 	// ⚠️ 跨年时写完整日期 —— 只写「10-31」会让人以为是**今年**的 10-31。
-	day := at.Format("01-02")
-	if at.Year() != now.Year() {
-		day = at.Format("2006-01-02")
+	// ⚠️ 年份/日期都按**服务端时区**看（at 存的是 UTC 时刻）。
+	day := at.In(loc).Format("01-02")
+	if at.In(loc).Year() != now.In(loc).Year() {
+		day = at.In(loc).Format("2006-01-02")
 	}
 
 	switch {

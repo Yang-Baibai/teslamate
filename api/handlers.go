@@ -1777,7 +1777,7 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 	//
 	// ⚠️ lastCapAt 为 nil（一个测量点都没有）⇒ Measurement 为 nil
 	// ⇒ 那是「不知道」，**不是**「新鲜」。
-	h.Measurement = batteryMeasurement(lastCapAt, time.Now())
+	h.Measurement = batteryMeasurement(lastCapAt, time.Now(), batteryLocation())
 
 	// ⚠️ **v0.35.0：电池容量衰减的判定**（服务端唯一事实源）。
 	//
