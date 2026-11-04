@@ -2,6 +2,66 @@
 
  > 记录规则：按日期倒序；每条含「做了什么 / 为什么 / 影响 / 回滚方式」。
  > ⚠️ **插新段的规矩**（2026-11-04 **连踩两次**）：① 锚点要选**顶部第一个二级标题**（**行首是「两个井号」的那一行**）之前，**不要**锚某个版本号标题（每发一版它就变了 ⇒ v0.126.0 那段就是这样被插到中间的）；② **段间不留空行**（本文件的惯例）；③ ⚠️ **脚本要按行遍历、判行首**，别在整篇文本里 find 子串 —— 上一版规矩把那个字面量写进了**自己**（标题就在头部下面 ⇒ 先命中规矩行 ⇒ 段插错位置、规矩被截断）。
+## 2026-11-05（v0.133.0 · 微信通道关闭 —— 以后只用飞书）
+
+> ⚠️ **App 版本不变**（仍是 `0.130.0` / code 139）—— 这一轮只改**本机 Hermes 配置 + 文档**，
+> 不需要重新发版。
+
+### 一、为什么关
+
+2026-11-04 复核时发现微信（iLink）那条通道**一直在报错**：
+
+```
+[Weixin] send failed to=o9cq80-l: iLink sendmessage session not ready: ret=-2
+  errmsg=prepare failed — the user must send the bot a message first (or re-pair)
+```
+
+⇒ 而 `TeslaMate-CarWatch`（每 10 分钟一次）**一直在重试** ⇒
+飞书那 10 分钟里正常到达的告警，微信那条**每 10 分钟刷一次错误日志**。
+
+**用户决定：微信通道整个关掉，以后只用飞书。**
+
+### 二、怎么关的（三步，缺一步都不算关干净）
+
+⚠️ **只禁插件是不够的** —— 实测：只把 `platforms/weixin` 加进 `plugins.disabled`，
+重启后日志变成 `No adapter available for weixin`，而且网关**还会给它起一个重连监视**
+（`Starting reconnection watcher for 1 failed platform(s): weixin`）⇒ 继续重试刷日志。
+
+⇒ 三步一起做：
+
+| 步骤 | 做什么 | 在哪 |
+|---|---|---|
+| ① 禁插件 | `plugins.disabled` 加 `- platforms/weixin`（那列表本已禁了 dingtalk / wecom）| `%LOCALAPPDATA%\hermes\config.yaml` |
+| ② 移走账号状态 | `hermes\weixin` → `hermes\weixin.disabled-20261105`（**数据保留**，随时可恢复）| `%LOCALAPPDATA%\hermes\` |
+| ③ 注释凭据 | `.env` 里 8 行 `WEIXIN_*` 加 `#` 前缀（**原样保留在文件里**）| `%LOCALAPPDATA%\hermes\.env` |
+
+⇒ 前两步都做了备份（`config.yaml.bak-20261105-before-disable-weixin`、`.env.bak-…`）。
+
+### 三、验过了（不是「改完就说关了」）
+
+- 重启网关 ⇒ `Connecting to feishu...` → `✓ feishu connected` →
+  **`Gateway running with 1 platform(s)`**（原来 2 个）；
+- **新增日志里提到微信的行数 = 0**（连 `No adapter available` 都没了 ⇒ 它不再被当成平台）；
+- **静置 30 秒仍是 0 行** ⇒ 不会再去重连重试；
+- **飞书真实投递成功**：`hermes send --to feishu` ⇒ 退出码 0、
+  `Sent to feishu home channel (chat_id: oc_e75bb04e96989f6985393c7620ebdf38)`
+  ⇒ 唯一剩下的通知通道**确实能送到**。
+
+### 四、文档口径同步（4 处）
+
+`docs/operations.md` §11.5 · `docs/手机客户端使用说明.md`「车况提醒」·
+`docs/adr.md` #20（车况提醒走 Hermes）· `docs/api-spec.md` 的举例 ⇒
+「微信/飞书」统一改成「**飞书**」，并记下关闭日期。
+
+### 五、影响与回滚
+
+- **影响**：**只保留飞书**；微信不再接收任何推送（告警、充电简报都只发飞书）。
+  ⚠️ 推送脚本 `scripts/watch-car.ps1` 的目标本来就是 `feishu`
+  （`WATCH_HERMES_TARGET` 默认值，`.env` 未覆盖）⇒ **推送侧本就没变**，
+  变的只是「微信这个备用通道不再存在」。
+- **回滚**（想恢复微信）：① `config.yaml` 的 `plugins.disabled` 去掉 `platforms/weixin`；
+  ② `weixin.disabled-20261105` 改回 `weixin`；③ `.env` 里 8 行 `WEIXIN_*` 去掉 `#` 前缀；
+  ④ 重启网关。
 ## 2026-11-04（v0.132.0 · 真机复核：手机终于插上了 —— 25 个版本的欠账一次性结清）
 
 > ⚠️ **App 版本不变**（仍是 `0.130.0` / code 139）—— 这一轮只动**服务端一处 + 文档**，
@@ -138,8 +198,9 @@ WHPX 拿不到加速器 ⇒ guest 内核根本不启动）⇒ **连续八轮（v
 ③ `Start-ScheduledTask` → 上次结果 **0**、日志多出那一行 ⇒ 计划任务链路通；
 ④ 飞书 + 微信均重新连上（`Gateway running with 2 platform(s)`）。
 
-⚠️ **微信**通道还有一个机器侧修不了的限制：会话过期后必须**用户先给机器人发一条消息**
-（`the user must send the bot a message first (or re-pair)`）⇒ 这一步得你来。飞书不受此限。
+⚠️ **微信**通道当时还有一个机器侧修不了的限制：会话过期后必须**用户先给机器人发一条消息**
+（`the user must send the bot a message first (or re-pair)`）。
+⇒ **2026-11-05 已把微信通道整个关掉**（用户决定只用飞书）⇒ 这条限制随之作废，见 v0.133.0。
 
 ### 十、影响与回滚
 

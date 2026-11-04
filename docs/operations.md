@@ -535,9 +535,16 @@ hermes send --to weixin "xxx"
 Start-ScheduledTask -TaskName 'Hermes-Gateway'
 ```
 
-### 11.5 微信通道的一个已知限制
+### 11.5 微信通道：已于 2026-11-05 关闭（只用飞书）
 
-微信（iLink）会话过期后，推送会一直报
-`iLink sendmessage session not ready … the user must send the bot a message first (or re-pair)`
-⇒ **需要用户在微信里给机器人发一条消息**才能重建会话（机器侧修不了）。
-飞书不受此限。
+用户决定：**以后只用飞书**。微信通道**整个关掉**，不再接收任何推送。
+
+关它要**三步**（只禁插件会被网关当成「配过但连不上」⇒ 起重连监视继续刷日志）：
+
+| 步骤 | 做什么 | 在哪 |
+|---|---|---|
+| ① 禁插件 | `plugins.disabled` 加 `- platforms/weixin` | `%LOCALAPPDATA%\hermes\config.yaml` |
+| ② 移走账号状态 | `weixin` → `weixin.disabled-20261105`（数据保留，可恢复）| `%LOCALAPPDATA%\hermes\` |
+| ③ 注释凭据 | `.env` 里 `WEIXIN_*` 加 `#` 前缀（原样保留）| `%LOCALAPPDATA%\hermes\.env` |
+
+⇒ 恢复就是把这三处**反过来**做一遍，再重启网关。
