@@ -3440,6 +3440,76 @@ PYEOF
 if [ $? -eq 0 ]; then ok "能耗画像卡主角标签不重复口径（毛/净对仗）且已退出棘轮"; else fail "能耗画像卡主角标签还有问题"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 33：充电列表页「只列最近 N 条」那一行 ⇒ 并列信息用「·」，不许括号降级 ──
+#
+# ⚠️ **v0.130.0**：那一行原来写「只列最近 100 条（共 128 次）」，
+#   而**同一张卡**里的邻居都是「· 平行并列」（「直流 1,234 度 · 56 次」…）
+#   ⇒ 并列的第二个事实被括号**降级**成补充说明（ADR #50）。
+#
+# ⚠️ 判据按「**同一句话只许出现在一个文件**」写 —— 这样**所有写法形态**都盖住：
+#   有人在界面里把那句现拼回来 ⇒ ③ 会红；有人在纯函数里写回括号 ⇒ ④ 会红。
+# ⚠️ 判据必须先剥注释 —— 否则注释里提一句旧句式就误报。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+KT = ROOT / 'app-android/app/src/main/java/com/teslamate/app/ui'
+CAP = KT / 'ChargeListCap.kt'
+PAGE = KT / 'ChargeListPage.kt'
+
+for p in (CAP, PAGE):
+    if not p.exists():
+        print('\u627e\u4e0d\u5230 %s \u2014\u2014 \u8fd9\u9053\u95f8\u95e8\u8981\u8ddf\u7740\u6539' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+cap = strip_comments(CAP.read_text(encoding='utf-8', errors='replace'))
+page = strip_comments(PAGE.read_text(encoding='utf-8', errors='replace'))
+
+problems = []
+
+# \u2460 \u7eaf\u51fd\u6570\u5b9a\u4e49\u6070\u597d\u4e00\u6b21
+n = len(re.findall(r'fun\s+chargeListCapLine\s*\(', cap))
+if n != 1:
+    problems.append('ui/ChargeListCap.kt \u91cc chargeListCapLine \u5b9a\u4e49\u4e86 %d \u6b21\uff08\u5e94\u4e3a 1\uff09' % n)
+
+# \u2461 \u754c\u9762\u5fc5\u987b\u8c03\u5b83
+if 'chargeListCapLine(' not in page:
+    problems.append('ChargeListPage.kt \u91cc\u6ca1\u6709\u8c03 chargeListCapLine( \u21d2 \u6587\u6848\u6ca1\u8d70\u552f\u4e00\u4e8b\u5b9e\u6e90')
+
+# \u2462 \u300c\u53ea\u5217\u6700\u8fd1\u300d\u8fd9\u53e5\u8bdd\u5168 App \u53ea\u8bb8\u51fa\u73b0\u5728\u90a3\u4e00\u4e2a\u6587\u4ef6\u91cc
+hits = []
+for f in sorted(KT.rglob('*.kt')):
+    src = strip_comments(f.read_text(encoding='utf-8', errors='replace'))
+    if '\u53ea\u5217\u6700\u8fd1' in src:
+        hits.append(f.name)
+if sorted(hits) != ['ChargeListCap.kt']:
+    problems.append('\u300c\u53ea\u5217\u6700\u8fd1\u300d\u51fa\u73b0\u5728 %s \u2014\u2014 \u5e94\u53ea\u5728 ui/ChargeListCap.kt\uff08\u540c\u4e00\u53e5\u8bdd\u53ea\u8bb8\u6709\u4e00\u5904\uff09' % (hits or ['(none)']))
+
+# \u2463 \u90a3\u4e00\u884c\u4e0d\u8bb8\u518d\u7528\u62ec\u53f7\u964d\u7ea7
+for bad in ('\uff08', '\uff09'):
+    if bad in cap:
+        problems.append('ui/ChargeListCap.kt \u91cc\u8fd8\u6709\u5168\u89d2\u62ec\u53f7 \u21d2 \u5e76\u5217\u4e8b\u5b9e\u88ab\u964d\u7ea7\u4e86')
+        break
+
+if problems:
+    print('\u5145\u7535\u5217\u8868\u9875\u90a3\u4e00\u884c\u8fd8\u6709\u95ee\u9898 %d \u5904 \u2014\u2014' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   \u21d2 \u6587\u6848\u53ea\u7531 ui/ChargeListCap.kt \u7684 chargeListCapLine \u7ed9\u51fa\uff1b\u5e76\u5217\u4e8b\u5b9e\u7528\u300c\u00b7\u300d\u4e0d\u7528\u62ec\u53f7')
+    sys.exit(1)
+
+print('\u5145\u7535\u5217\u8868\u9875\u90a3\u4e00\u884c\uff1a\u5e76\u5217\u4e8b\u5b9e\u7528\u300c\u00b7\u300d\uff08\u4e0d\u7528\u62ec\u53f7\u964d\u7ea7\uff09')
+PYEOF
+if [ $? -eq 0 ]; then ok "充电列表页「只列最近 N 条」用「·」不用括号"; else fail "充电列表页那一行又括号降级 / 现拼了"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

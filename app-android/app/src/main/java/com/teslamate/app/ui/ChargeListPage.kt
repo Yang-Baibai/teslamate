@@ -227,7 +227,7 @@ fun ChargeListPage(
             if (totalCharges != null && charges.size < totalCharges) {
                 item(key = "list-cap") {
                     Text(
-                        "只列最近 ${charges.size} 条（共 $totalCharges 次）",
+                        chargeListCapLine(charges.size, totalCharges),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
