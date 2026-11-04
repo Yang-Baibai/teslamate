@@ -1315,14 +1315,16 @@ if not re.search(r'cabinHotC\s*=\s*45(\.0)?', heat):
 # ② 客户端不许自己比温度（自己判 ⇒ 两处各判一次）
 for kt in MAINDIR.rglob('*.kt'):
     code = strip_comments(kt.read_text(encoding='utf-8', errors='replace'))
-    for m in re.finditer(r'inside_temp\s*[><]=?\s*[0-9]', code):
+    # ⚠️ 写法形态要**全盖**：`inside_temp >= 45` 与 `(inside_temp ?: 0.0) >= 45` 都是「自己判」，
+    #    只认前一种 ⇒ 另一种写法**假绿**（2026-11-04 负向探针当场抓到）。
+    for m in re.finditer(r'inside_temp[^\n]{0,40}[><]=?\s*[0-9]+(?:\.[0-9]+)?', code):
         problems.append('客户端 %s 里自己比车内温度（%s）⇒ 判定只能服务端做'
-                        % (kt.name, m.group(0)))
+                        % (kt.name, m.group(0).strip()))
 
 # ③ 客户端不许自己写闷热文案
 for kt in MAINDIR.rglob('*.kt'):
     for lit in literals(kt.read_text(encoding='utf-8', errors='replace')):
-        for phrase in ('闷热', '开门窗散热'):
+        for phrase in ('闷热', '很闷', '开门窗', '上车前', '散热'):
             if phrase in lit:
                 problems.append('客户端 %s 里出现了服务端文案 %r ⇒ 文案只能服务端有'
                                 % (kt.name, phrase))
