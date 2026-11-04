@@ -45,12 +45,9 @@ const (
 // （alpine 没有 /etc/localtime）⇒ 「几天前」会按 UTC 日历算，
 // 与用户看到的日期差一天（v0.98.0 的 8 小时同款坑）。
 func batteryLocation() *time.Location {
-	loc, err := time.LoadLocation(getenv("TZ_NAME", "Asia/Shanghai"))
-	if err != nil {
-		// 兜底：中国全境 UTC+8 且无夏令时 ⇒ 固定偏移是安全的。
-		return time.FixedZone("CST", 8*3600)
-	}
-	return loc
+	// ⚠️ **v0.127.0**：时区只有一个事实源（[serverLocation]）——
+	// 电池口径与里程表口径都用它 ⇒ 两处的日期不会差一天。
+	return serverLocation()
 }
 
 // calendarDaysBetween 两个时刻在给定时区里的**日历日差**（纯函数，可单测）。

@@ -107,15 +107,29 @@ type CarStatus struct {
 	// （项目自己的方向：见 `Fmt.kt` 里那段「已知未修」的说明）。
 	ServerTimezone string `json:"server_timezone"`
 
-	// ⚠️ v0.21.0：**车端里程表**（km），来源 Fleet API 的 vehicle_state.odometer。
+	// ⚠️ v0.21.0：**车端里程表**（**km**），来源 Fleet API 的 vehicle_state.odometer。
 	//
-	// 与 `odometer`（TeslaMate 按 GPS 点累计）的区别：
-	// 车端里程表是**车辆自己**记的数，保养基准应该对齐它 ——
-	// 基准是车主的知识（他记的是仪表盘上的数），
-	// 拿一个偏了几百公里的数去套，告警会偏同样多公里。
+	// ⚠️ **v0.127.0 订正**：官方那个字段的原始单位是**英里**，
+	// 服务端已换算（[odometerKmFromMiles]）⇒ **这个字段是公里**。
+	//   （v0.127.0 之前这里给的是英里却标成公里 ⇒ App 显示「里程表 63,055 公里」，
+	//     保养超期判定也跟着少算了 38,412 公里。）
 	//
-	// nil = 没读到（没配 Fleet 凭据 / 车在休眠），**不是 0**。
+	// 与 `odometer`（TeslaMate 那份，也是公里）的区别：
+	// 车端里程表是**车辆自己**记的数、没有采样噪声，保养基准应该对齐它 ——
+	// 基准是车主的知识（他记的是仪表盘上的数）。
+	//
+	// nil = 没读到（没配 Fleet 凭据 / 车在休眠 / 遥测也没接上），**不是 0**。
 	OdometerVehicle *float64 `json:"odometer_vehicle"`
+
+	// ⚠️ **v0.127.0**：车端里程表的**采集时刻**（车端上报的时刻）。
+	//
+	// nil = 不知道什么时候读的 ⇒ 调用方**不许**当成「此刻」。
+	OdometerVehicleAt *time.Time `json:"odometer_vehicle_at"`
+
+	// ⚠️ **v0.127.0**：「里程表」那一行的**限定语**（服务端唯一一份文案，ADR #41）。
+	//
+	// 例：「（车端 · 11-03 读数）」/「（GPS 估算）」。
+	OdometerNote string `json:"odometer_note"`
 
 	// ⚠️ v0.21.0：**是否配置了 Fleet API 凭据**。
 	//

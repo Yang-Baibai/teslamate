@@ -292,9 +292,17 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.FleetState = teslaFleetState()
 
 	// ⚠️ v0.21.0：**车端里程表**（Fleet API 的 vehicle_state.odometer）。
-	// 与 `s.Odometer`（TeslaMate 按 GPS 点累计）不同：
+	// 与 `s.Odometer`（TeslaMate 那份）不同：
 	// 车端那个数是车辆自己记的，保养基准应该对齐它。
-	s.OdometerVehicle = teslaOdometer()
+	//
+	// ⚠️ **v0.127.0**：
+	//   · 官方那个字段的原始单位是**英里** ⇒ 服务端换算成公里（[odometerKmFromMiles]）；
+	//   · 加了**遥测**这一路 ⇒ 车睡着时也有值（以前这里恒为 null）；
+	//   · 限定语（来源 + 读数日期）由服务端给（ADR #41）。
+	odo := resolveVehicleOdometer(r.Context(), id)
+	s.OdometerVehicle = odo.Km
+	s.OdometerVehicleAt = odo.At
+	s.OdometerNote = renderOdometerNote(odo, serverLocation(), time.Now())
 
 	// 锁车状态来自 Tesla Fleet API 的后台轮询缓存（api/tesla.go）。
 	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。

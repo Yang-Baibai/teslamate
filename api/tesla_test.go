@@ -198,8 +198,14 @@ func TestFetchVehicleStateParsesTPMS(t *testing.T) {
 	if st.Locked == nil || !*st.Locked {
 		t.Fatalf("locked = %v, want true", st.Locked)
 	}
-	if st.Odometer == nil || *st.Odometer < 63041 || *st.Odometer > 63042 {
-		t.Fatalf("odometer = %v, want ≈63041.14", st.Odometer)
+	// ⚠️ **v0.127.0**：官方那个字段的原始单位是**英里**
+	//   （上面的载荷就是真机实测值 63041.137767 英里）
+	//   ⇒ 解析处已换算成公里：63041.137767 英里 = 101,454.8768 公里。
+	//
+	//   ⚠️ v0.127.0 之前这里断言的是**英里原值** ⇒ 等于把
+	//   「把英里当公里」这个 bug 写进了测试（它自己就是帮凶）。
+	if st.Odometer == nil || *st.Odometer < 101454.8 || *st.Odometer > 101454.9 {
+		t.Fatalf("odometer = %v, want ≈101454.88 公里（63041.137767 英里换算而来）", st.Odometer)
 	}
 	if st.LockedAt == nil || st.LockedAt.UnixMilli() != 1792851782915 {
 		t.Fatalf("采集时刻 = %v, want 1792851782915", st.LockedAt)

@@ -480,12 +480,15 @@ fun StatusScreen(
                             //
                             // ⚠️ v0.21.0：**优先用车端里程表** ——
                             // 车主填的保养基准是他**仪表盘上看到的数**（车端），
-                            // 拿 TeslaMate 按 GPS 点累计的数去套，会偏几百公里。
+                            // TeslaMate 那份带采样噪声，不能当基准。
                             //
-                            // ⚠️ **v0.75.0（查库实测）：那个回落**不只偏几百公里，是偏 38,422 公里** ——
-                            // `positions.odometer` 的绝对值被停车时的 GPS 抖动污染（实测日漂移可达 1,143 公里）。
-                            // 拿它当基准算出来的会是「保养 **超期 38,422 公里**」——
-                            // **误报的方向最危险**（让人以为车立刻要保养，白花钱）。
+                            // ⚠️ **v0.75.0 的教训仍然成立**：那份带采样噪声
+                            // （实测单日跨度可达 1,143 公里）⇒ 拿它当基准会报出
+                            // 「保养超期一大截」——**误报的方向最危险**（让人以为车立刻要保养，白花钱）。
+                            //
+                            // ⚠️ **v0.127.0 订正**：当年写的「偏 38,422 公里」是**单位错误**
+                            // （官方那个字段是**英里**，被当成了公里）⇒ 两者其实是同一个数。
+                            // 理由从「偏了三万多公里」换成了「带噪声」。
                             //
                             // ⇒ **车端读不到就不报**（宁可不报，也不误报）。
                             // 车醒着时 Fleet API 会给出仪表里程表，提醒照常出现。
@@ -1118,7 +1121,7 @@ private fun RangeConclusions(model: RangeModel) {
  */
 @Composable
 private fun OdometerLine(st: CarStatus) {
-    val (numText, qualifier) = odometerParts(st.odometer, st.odometer_vehicle)
+    val (numText, qualifier) = odometerParts(st.odometer, st.odometer_vehicle, st.odometer_note)
     Row(
         Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.Top,
@@ -1139,11 +1142,11 @@ private fun OdometerLine(st: CarStatus) {
             //   st.odometer_vehicle  = 车辆自己记的（真值）
             // 说清楚来源，比只给一个数更让人放心。
             //
-            // ⚠️ **v0.75.0（查库实测）：「里程表」= 仪表盘上那个数 = 车端。**
+            // ⚠️ **v0.127.0 订正**：「里程表」= 仪表盘上那个数 = 车端。
             // 口径与理由见 [odometerParts]（Fmt.kt）：
-            // `positions.odometer` 的**绝对值**被停车时的 GPS 抖动污染
-            // （本机实测日漂移可达 1,143 公里，全窗口偏 **38,422 公里**），
-            // 而它的窗口**跨度**是准的 —— 所以绝对值不能叫「里程表」。
+            // 官方那个字段的原始单位是**英里**，服务端已换算成公里
+            // （v0.127.0 之前这里给的是英里却当公里 ⇒ 差了 38,412 公里）。
+            // TeslaMate 那份带采样噪声（单日跨度到过 1,143 公里）⇒ 只能算「估算」。
             //
             // 原来是把两个数并列（GPS 估算 + 车端 + 差 N 公里），
             // 那恰恰会制造 v0.21.0 想消灭的怀疑：「我拿 App 的里程表和特斯拉 App 对，

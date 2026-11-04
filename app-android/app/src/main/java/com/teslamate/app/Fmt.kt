@@ -191,7 +191,16 @@ fun stateCn(s: String?): String = when (s) {
 }
 
 /**
- * ⚠️ **v0.75.0（查库实测）：「里程表」那一行怎么写。**
+ * ⚠️ **v0.127.0 订正：「车端里程表」的单位 —— 官方给的是英里，本项目当成了公里。**
+ *
+ * ## 事实（本机 car 1 实测，2026-11-04 复核）
+ *
+ * | 量 | 值 |
+ * |---|---|
+ * | 官方 `vehicle_state.odometer` / 遥测 `Odometer` | **63,250.31（英里）** |
+ * | 换算成公里（× 1.609344） | **101,791.508834 公里** |
+ * | TeslaMate 的 `positions.odometer` | **101,791.508834 公里** |
+ * | 差 | **0.0003 公里** |
  *
  * ## 为什么不能并列两个数
  *
@@ -202,13 +211,16 @@ fun stateCn(s: String?): String = when (s) {
  * |---|---|
  * | `positions.odometer` 的**日跨度**最大 | **1,143 公里**（一天 109,457 条采样） |
  * | `drives` 实际里程之和 | 8,782.4 公里 |
- * | `positions.odometer` **绝对值** | 101,477.4 |
- * | **车端里程表（真值）** | **63,055.1** |
- * | 差 | **38,422 公里** |
+ * | `positions.odometer` **绝对值** | 101,477.41 公里 |
+ * | **车端里程表（官方原值：英里）** | **63,055.1 英里** = **101,477.35 公里** |
+ * | 差 | **0.06 公里**（⚠️ v0.127.0 订正：当年这里写的是「38,422 公里」，那是**单位错误**） |
  *
- * ⇒ `positions.odometer` 的**绝对值被停车时的 GPS 抖动污染**，
- * 而它的**窗口跨度是准的**（只统计行驶中的采样）。
- * 一个被放大了 38,422 公里的数**不能叫「里程表」** ——
+ * ⇒ 那两个数其实是**同一个数**、只是单位不同。
+ * ⚠️ **v0.127.0 订正**：v0.75.0 当年写的「偏 38,422 公里」是**单位错误**（把英里当公里）——
+ * 那个「漂移」从来没发生过。
+ * 规则本身仍然成立（那份**带采样噪声**：单日跨度到过 1,143 公里），
+ * 但**理由**换成了「带噪声」，不是「偏了三万多公里」。
+ *
  * 而 v0.21.0 原本要解决的正是「我拿 App 的里程表和特斯拉 App 对，
  * 于是我怀疑车被人动了」。**并列两个数 = 制造那种怀疑。**
  *
@@ -216,6 +228,9 @@ fun stateCn(s: String?): String = when (s) {
  *
  * - **车端有值** ⇒ 只显示车端（那才是仪表盘上的里程表）；
  * - **车端读不到**（车休眠 / 没配 Fleet 凭据）⇒ 显示 GPS 估算，并**明说它是估算**。
+ *
+ * ⚠️ **限定语由服务端给**（`odometer_note`，ADR #41）——
+ * 客户端不自己拼「（车端）」，也不自己写日期。
  */
 /**
  * ⚠️ **v0.94.0**：里程表那一行拆成**数字部分**与**限定语**两半。
@@ -234,12 +249,10 @@ fun stateCn(s: String?): String = when (s) {
  *
  * @return (数字部分, 限定语)
  */
-fun odometerParts(gpsKm: Double?, vehicleKm: Double?): Pair<String, String> =
-    if (vehicleKm != null) {
-        "里程表 ${vehicleKm.fmtThousands()} 公里" to "（车端）"
-    } else {
-        "里程表 ${gpsKm.fmtThousands() ?: "—"} 公里" to "（GPS 估算）"
-    }
+fun odometerParts(gpsKm: Double?, vehicleKm: Double?, note: String? = null): Pair<String, String> {
+    val km = vehicleKm ?: gpsKm
+    return "里程表 ${km.fmtThousands()} 公里" to (note?.trim().orEmpty())
+}
 
 /**
  * 里程表那一行（完整一句话）。
@@ -247,8 +260,8 @@ fun odometerParts(gpsKm: Double?, vehicleKm: Double?): Pair<String, String> =
  * ⚠️ 单测盯的是它（`OdometerLineTest`）；界面用的是 [odometerParts] 的两半。
  * 两者由**同一个函数**派生 ⇒ 不会各写各的、口径漂移。
  */
-fun odometerLine(gpsKm: Double?, vehicleKm: Double?): String =
-    odometerParts(gpsKm, vehicleKm).let { (num, qualifier) -> num + qualifier }
+fun odometerLine(gpsKm: Double?, vehicleKm: Double?, note: String? = null): String =
+    odometerParts(gpsKm, vehicleKm, note).let { (num, qualifier) -> num + qualifier }
 
 /**
  * 相对时间：「3 分钟前」而不是「14:30:12」。

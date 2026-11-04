@@ -494,14 +494,28 @@ data class CarStatus(
      */
     val update_pending: Boolean = false,
     /**
-     * ⚠️ v0.21.0：**车端里程表**（km，来源 Tesla Fleet API 的 `vehicle_state.odometer`）。
+     * ⚠️ v0.21.0：**车端里程表**（**km**，来源 Tesla Fleet API 的 `vehicle_state.odometer`）。
      *
-     * 与 [odometer]（TeslaMate 按 GPS 点累计）不同：
-     * 车端那个数是**车辆自己**记的，保养基准应该对齐它 ——
-     * 基准是车主的知识（他记的是仪表盘上的数），
-     * 拿一个偏了几百公里的数去套，告警会偏同样多公里。
+     * ⚠️ **v0.127.0 订正**：官方那个字段的原始单位是**英里**，服务端已换算成公里
+     * ⇒ 这个字段是公里（v0.127.0 之前这里给的是英里却当公里用，差了 38,412 公里）。
+     *
+     * 与 [odometer]（TeslaMate 那份，也是公里）不同：
+     * 车端那个数是**车辆自己**记的、没有采样噪声，保养基准应该对齐它 ——
+     * 基准是车主的知识（他记的是仪表盘上的数）。
      */
     val odometer_vehicle: Double? = null,
+    /**
+     * ⚠️ **v0.127.0**：车端里程表的**采集时刻**（车端上报的时刻）。
+     *
+     * null = 不知道什么时候读的 ⇒ 不许当成「此刻」。
+     */
+    val odometer_vehicle_at: String? = null,
+    /**
+     * ⚠️ **v0.127.0**：「里程表」那一行的**限定语**（服务端唯一一份文案，ADR #41）。
+     *
+     * 例：「（车端 · 11-03 读数）」/「（GPS 估算）」。
+     */
+    val odometer_note: String = "",
     /**
      * ⚠️ v0.21.0：**服务端是否配置了 Fleet API 凭据**。
      *

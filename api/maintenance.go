@@ -32,10 +32,13 @@ import (
 // ② **文案只有一份**（ADR #41）：这里的 renderMaintenanceText 出中文原文，
 //    App 印它、Hermes 念它 ⇒ 两边不会各说各话。
 // ③ **车端里程表读不到就不报**（v0.75.0 的教训）：
-//    TeslaMate 的 positions.odometer 是按 GPS 点累计的，
-//    实测能偏 38,422 公里 ⇒ 拿它当保养基准会报出
-//    「保养超期 38,422 公里」这种**假告警**。
-//    ⇒ 只用 Fleet API 的 vehicle_state.odometer（车端自己记的那个）。
+//    TeslaMate 那份 positions.odometer 带采样噪声（历史上单日跨度到过 1,143 公里），
+//    拿它当保养基准会报出「保养超期一大截」这种**假告警**。
+//    ⇒ 只用车端自己记的那个（Fleet API 的 vehicle_state.odometer）。
+//
+// ⚠️ **v0.127.0 订正**：v0.75.0 当年写的「实测能偏 38,422 公里」是**单位错误**
+//    （官方那个字段是**英里**，被当成了公里）⇒ 两个数其实是同一个数。
+//    规则本身仍然成立（噪声还在），但**理由**换了。
 //
 // ## 基准是**车主的线下行为**（不是遥测）
 //
@@ -159,7 +162,7 @@ const maintenanceDueSoonKm = 2000
 // maintenanceItem 算一项提醒的结论。
 //
 // ⚠️ odometerKm 为 nil ⇒ 返回 nil（**不报**）—— 车端读不到时宁可不说，
-// 也不拿 GPS 累计值去套（v0.75.0：那样会报「超期 38,422 公里」的假告警）。
+// 也不拿带噪声的那份去套（v0.75.0：那样会报「超期一大截」的假告警）。
 func maintenanceItem(label string, baseOdoKm float64, intervalKm int, odometerKm *float64) *MaintenanceItem {
 	if baseOdoKm <= 0 || odometerKm == nil || *odometerKm <= 0 {
 		return nil
@@ -251,11 +254,14 @@ func computeMaintenance(ctx context.Context, carID int) (*MaintenanceReport, err
 		Baseline:       b,
 		OdometerSource: "未知",
 	}
-	// ⚠️ **车端里程表**（Fleet API 的 vehicle_state.odometer）——
-	// 车主填的基准是他**仪表盘上看到的数**（车端），拿 GPS 累计值去套会偏几万公里。
-	odo := teslaOdometer()
-	if odo != nil && *odo > 0 {
-		rep.OdometerKm = odo
+	// ⚠️ **车端里程表**（Fleet API 的 vehicle_state.odometer，已换算成公里）——
+	// 车主填的基准是他**仪表盘上看到的数**（车端）。
+	//
+	// ⚠️ **v0.127.0**：与 `/status` **走同一个取数函数** ⇒ 两处不会各说各的
+	// （以前这里只取轮询那一路，现在取「轮询 + 遥测里更新的那个」）。
+	odo := resolveVehicleOdometer(ctx, carID)
+	if odo.Known() {
+		rep.OdometerKm = odo.Km
 		rep.OdometerSource = "车端"
 	}
 	rep.Service = maintenanceItem("保养", b.ServiceOdoKm, b.ServiceIntervalKm, rep.OdometerKm)

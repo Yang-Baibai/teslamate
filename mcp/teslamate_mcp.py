@@ -286,6 +286,11 @@ def teslamate_status() -> dict:
         "标定续航km": s.get("rated_range_km"),
         "估算续航km": s.get("est_range_km"),
         "里程表km": s.get("odometer_vehicle") or s.get("odometer"),
+        # ⚠️ **v0.127.0**：车端里程表的**口径与采集时刻**（服务端给的原文，ADR #41）。
+        #   ⚠️ 服务端那个字段原本是**英里**却被当公里 ⇒ 飞书里也会说错；
+        #   现在服务端已换算成公里，MCP **只透传**。
+        "里程表口径": s.get("odometer_note"),
+        "里程表采集于": s.get("odometer_vehicle_at"),
         "已锁": s.get("locked"),
         "锁车状态采集于": s.get("locked_at"),
         # ⚠️ 这两个是 **v0.80.0** 新增的 —— 少了它们，

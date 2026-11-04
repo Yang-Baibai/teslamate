@@ -504,6 +504,61 @@ def check_battery_measurement_contract() -> list:
     return bad
 
 
+def check_odometer_unit_contract() -> list:
+    """车端里程表必须是**公里**，且必须与遥测原值换算后对得上。
+
+    ⚠️ 为什么必须有这道：官方 `vehicle_state.odometer` 与遥测 `Odometer`
+    给的是**英里**，而本项目全链路用公里。
+    v0.127.0 之前本项目把英里当公里 ⇒ App 显示「里程表 63,055 公里」
+    （真值约 101,467 公里），**保养超期判定也跟着少算了 38,412 公里**
+    ⇒ 该保养时不报（漏报方向，比误报更隐蔽）。
+
+    ⇒ 这里断言两件事：
+      ① `/status` 的 `odometer_vehicle` 与遥测原值 × 1.609344 **对得上**；
+      ② 它**不等于**遥测原值（否则就是「把英里当公里」那个 bug 复现）。
+    """
+    bad = []
+    try:
+        st = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
+        tv = T._get("/api/v1/cars/%s/telemetry_vehicle" % T.CAR_ID)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(st, dict) or "error" in st:
+        return ["车况取不到：%r" % (st,)]
+    if not isinstance(tv, dict) or "error" in tv:
+        return ["遥测车况取不到：%r" % (tv,)]
+    miles = None
+    for f in (tv.get("fields") or []):
+        if f.get("field") == "Odometer":
+            miles = f.get("num")
+            break
+    if miles is None:
+        return ["遥测里没有 Odometer 字段 ⇒ 没法核对车端里程表的单位"]
+    km = st.get("odometer_vehicle")
+    if km is None:
+        return ["/status 的 odometer_vehicle 是 null ⇒ 车端里程表没有出口"]
+    km = float(km)
+    want = float(miles) * 1.609344
+    if abs(km - want) / max(want, 1.0) > 0.10:
+        bad.append("车端里程表 %.1f 公里 与遥测原值换算出来的 %.1f 公里（%s 英里）对不上 ⇒ 单位或换算有问题"
+                   % (km, want, miles))
+    if abs(km - float(miles)) / max(float(miles), 1.0) < 0.30:
+        bad.append("车端里程表 %.1f 与遥测原值 %.1f 几乎相同 ⇒ 那个英里值被当成公里用了"
+                   "（v0.127.0 修掉的 bug）" % (km, float(miles)))
+    if not st.get("odometer_note"):
+        bad.append("/status 没有 odometer_note ⇒ 界面上没有来源口径（ADR #41）")
+    try:
+        tool = T.teslamate_status()
+        if isinstance(tool, dict) and "错误" not in tool:
+            got = tool.get("里程表km")
+            if got is not None and abs(float(got) - km) > 0.01:
+                bad.append("MCP 的「里程表km」= %s，与服务端的 %.1f 不一致 ⇒ MCP 自己换算了一遍"
+                           % (got, km))
+    except Exception as e:
+        bad.append("MCP 车况工具调用异常 %r" % (e,))
+    return bad
+
+
 def check_feedback_items() -> list:
     """反馈**每一条**都必须带上「id / 时间 / 内容 / 状态」。
 
@@ -987,6 +1042,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 简报与电池页说**同一句**测量时刻口径"
               % ("teslamate_charge_brief", "测量口径契约"))
     bad.extend(meas_bad)
+
+    odo_bad = check_odometer_unit_contract()
+    for b in odo_bad:
+        print("  ✗ %s" % b)
+    if not odo_bad:
+        print("  ✓ %-26s %-24s 车端里程表是**公里**（官方原值是英里，服务端换算）"
+              % ("teslamate_status", "里程表单位契约"))
+    bad.extend(odo_bad)
 
     fb_bad = check_feedback_items()
     for b in fb_bad:

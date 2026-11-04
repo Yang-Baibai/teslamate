@@ -131,13 +131,18 @@ type teslaClient struct {
 	locked     *bool
 	lockedAt   *time.Time
 	liveTPMS   TeslaTPMS // 实时胎压快照（来源 Fleet API 的 vehicle_state）
-	// ⚠️ v0.21.0：车端里程表（km），同样来自 Fleet API 的 vehicle_state.odometer。
+	// ⚠️ v0.21.0：车端里程表（**km**），来自 Fleet API 的 vehicle_state.odometer。
 	//
-	// 为什么需要它：TeslaMate 的 `positions.odometer` 是**按 GPS 点累计**的里程表，
-	// 与车端真实里程表有偏差（实测差几百公里）。
-	// 保养超期是拿里程表算的 —— 基准是车主的知识，
-	// 拿一个偏了的数去套，会让告警**偏**同样多公里。
+	// ⚠️ **v0.127.0 订正**：官方那个字段的原始单位是**英里**，
+	// 换算在 [odometerKmFromMiles] 里做（解析处）⇒ 缓存里从此**只有公里**。
+	//
+	// 为什么需要它：TeslaMate 那份 positions.odometer **也是车的里程表**（也是公里），
+	// 但它带采样噪声（历史上单日跨度到过 1,143 公里）⇒ 那份只能算「估算」。
+	// 保养超期是拿里程表算的 —— 基准是车主的知识（他记的是仪表盘上的数），
+	// 拿一个可能偏上千公里的数去套，会让告警**偏**同样多公里。
 	odoVehicle *float64
+	// odoVehicleAt 车端里程表的采集时刻（车端上报的时刻）。
+	odoVehicleAt *time.Time
 
 	// ⚠️ v0.9.0：轮询健康状态。
 	//   fleetErr    非空 = 轮询失败时的原因（空 = 正常）
@@ -247,15 +252,27 @@ func teslaFleetError() string {
 	return err
 }
 
-// ⚠️ v0.21.0：车端里程表（km）。
+// ⚠️ v0.21.0：车端里程表（**km**）。
 //
-// 与 `positions.odometer`（TeslaMate 按 GPS 点累计）的区别：
-// 车端里程表是**车辆自己**记的，是保养基准应该对齐的那个数。
+// ⚠️ **v0.127.0 订正**：官方那个字段的原始单位是**英里**，
+// 已在解析处换算（[odometerKmFromMiles]）⇒ 这里拿到的**已经是公里**。
+//
+// 与 `positions.odometer`（TeslaMate 那份，也是公里）的区别：
+// 车端这个数是**车辆自己**记的、没有采样噪声，
+// 是保养基准应该对齐的那个数。
 func teslaOdometer() *float64 {
 	if tesla == nil {
 		return nil
 	}
 	return tesla.Odometer()
+}
+
+// teslaOdometerAt 车端里程表的采集时刻（nil = 不知道什么时候读的）。
+func teslaOdometerAt() *time.Time {
+	if tesla == nil {
+		return nil
+	}
+	return tesla.OdometerAt()
 }
 
 // ⚠️ **v0.77.0：开着哪几扇窗**（推送引擎的「车窗未关」判定用）。
@@ -644,10 +661,11 @@ func (c *teslaClient) setLiveTPMS(t TeslaTPMS) {
 // setOdometer 记下本次采集到的车端里程表。
 //
 // ⚠️ v0.21.0：nil = 没读到（车休眠 / 字段缺失），**不是 0**。
-func (c *teslaClient) setOdometer(km *float64) {
+func (c *teslaClient) setOdometer(km *float64, at *time.Time) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 	c.odoVehicle = km
+	c.odoVehicleAt = at
 }
 
 // Odometer 返回缓存的车端里程表（读侧不加锁排队）。
@@ -658,6 +676,16 @@ func (c *teslaClient) Odometer() *float64 {
 	c.stateMu.RLock()
 	defer c.stateMu.RUnlock()
 	return c.odoVehicle
+}
+
+// OdometerAt 返回车端里程表的采集时刻（nil = 不知道什么时候读的）。
+//
+// ⚠️ **v0.127.0**：里程表是**单调递增**的量，但**读数时刻**仍要带着 ——
+// 界面说「里程表 X 公里」时得能说清那是**什么时候**读的。
+func (c *teslaClient) OdometerAt() *time.Time {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.odoVehicleAt
 }
 
 // clearVehicleState 降级成「未知」。
@@ -844,7 +872,7 @@ func (c *teslaClient) pollOnce(ctx context.Context) error {
 	// ⚠️ v0.21.0：车端里程表与胎压来自**同一个** vehicle_data 响应，
 	// 一并缓存（里程表是单调递增的量，保留旧值比清空安全）。
 	if st.Odometer != nil {
-		c.setOdometer(st.Odometer)
+		c.setOdometer(st.Odometer, st.LockedAt)
 	}
 	// ⚠️ **v0.67.0**：缓存原始 vehicle_data（下游要原样拿）。
 	if st.Raw != nil {
@@ -1090,7 +1118,7 @@ func (f *flexString) UnmarshalJSON(b []byte) error {
 type teslaVehicleState struct {
 	Locked   *bool      // 车门锁状态
 	LockedAt *time.Time // 车端上报的采集时刻
-	Odometer *float64   // 里程表 km
+	Odometer *float64   // 里程表 **km**（官方原始值是英里，已换算）
 	TPMS     TeslaTPMS  // 四轮实时胎压
 
 	// ⚠️ **v0.67.0**：Tesla 的**原始** vehicle_data 段（`response` 里的全部状态组）。
@@ -1103,9 +1131,12 @@ type teslaVehicleState struct {
 // 全部用指针：缺字段 = 没读到（nil），而不是 0。
 // 胎压 0 bar 是不可能值，缺字段压成 0 会让 App 显示一眼假的读数。
 type vehicleStateJSON struct {
-	Locked    *bool    `json:"locked"`
-	Timestamp *int64   `json:"timestamp"` // 毫秒
-	Odometer  *float64 `json:"odometer"`  // km
+	Locked    *bool  `json:"locked"`
+	Timestamp *int64 `json:"timestamp"` // 毫秒
+	// ⚠️ **v0.127.0**：官方原始单位是**英里（mile）** —— 不是公里。
+	//   （实测：63,250.31 英里 = 101,791.51 公里，与公里侧的 101,791.508834 逐位相同）
+	//   ⇒ 换算在 [odometerKmFromMiles] 里做，这里**不做任何单位假设**。
+	Odometer *float64 `json:"odometer"`
 
 	// 实时胎压（bar）
 	PressureFL *float64 `json:"tpms_pressure_fl"`
@@ -1128,8 +1159,10 @@ type vehicleStateJSON struct {
 // toState 把 vehicle_state 段转成内部快照。
 func (v *vehicleStateJSON) toState() teslaVehicleState {
 	st := teslaVehicleState{
-		Locked:   v.Locked,
-		Odometer: v.Odometer,
+		Locked: v.Locked,
+		// ⚠️ **v0.127.0**：官方给的是**英里** ⇒ 这里换成公里，
+		// 内部一律公里（下游谁拿到都不用再操心单位）。
+		Odometer: odometerKmFromMiles(v.Odometer),
 	}
 	if v.Timestamp != nil && *v.Timestamp > 0 {
 		t := time.UnixMilli(*v.Timestamp).UTC()

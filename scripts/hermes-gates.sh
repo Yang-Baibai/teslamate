@@ -1158,6 +1158,104 @@ if [ $? -eq 0 ]; then ok "电池健康度的测量时刻口径只在服务端一
 rm -f "$TMP"
 
 
+# ── 闸门 15：车端里程表的「单位换算与来源口径」只在服务端一份 ─────────
+#
+# ⚠️ **v0.127.0**：官方 `vehicle_state.odometer` 与遥测 `Odometer` 给的是**英里**，
+# 而本项目全链路用**公里** ⇒ v0.127.0 之前本项目把英里当公里用了十几个版本：
+# App 显示「里程表 63,055 公里」（真值约 101,467 公里），
+# **保养超期判定也跟着少算了 38,412 公里** ⇒ 该保养时不报（漏报方向）。
+#
+# 这道闸门钉五件事：
+#   ① 换算常数**只在服务端一份**（客户端不许抄 1.609344）；
+#   ② 服务端**在解析处**换算（不许把原始英里塞进缓存往下传）；
+#   ③ 客户端**不许自己拼**里程表的限定语（来源口径只有服务端一份，ADR #41）；
+#   ④ App **必须接上**服务端的限定语（`odometer_note`）；
+#   ⑤ 服务端**必须有出口**（`odometer_vehicle_at` / `odometer_note`）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UNIT = pathlib.Path('api/odometer_unit.go')
+TESLA = pathlib.Path('api/tesla.go')
+MODELS = pathlib.Path('api/models.go')
+STATUS = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/StatusScreen.kt')
+APPSRC = pathlib.Path('app-android/app/src')
+MAINDIR = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+
+for p in (UNIT, TESLA, MODELS, STATUS):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+def literals(src):
+    """逐行取字符串字面量（先剥注释 —— 否则注释里引用一句文案就会假红）。"""
+    out = []
+    for line in strip_comments(src).split(chr(10)):
+        s = line.strip()
+        if s.startswith('//') or s.startswith('*') or s.startswith('/*'):
+            continue
+        out.extend(re.findall(r'"((?:[^"\\]|\\.)*)"', line))
+    return out
+
+
+problems = []
+
+unit = strip_comments(UNIT.read_text(encoding='utf-8', errors='replace'))
+tesla = strip_comments(TESLA.read_text(encoding='utf-8', errors='replace'))
+models = strip_comments(MODELS.read_text(encoding='utf-8', errors='replace'))
+
+# ① 换算常数只在服务端一份
+if not re.search(r'milesPerKm\s*=\s*1\.609344', unit):
+    problems.append('api/odometer_unit.go 里没有 milesPerKm = 1.609344 ⇒ 换算没有事实源')
+
+# ② 客户端不许抄换算常数
+for kt in APPSRC.rglob('*.kt'):
+    code = strip_comments(kt.read_text(encoding='utf-8', errors='replace'))
+    for bad in ('1.609344', '1.6093', '0.621371'):
+        if bad in code:
+            problems.append('客户端 %s 里出现了换算常数 %s ⇒ 换算只能服务端做' % (kt.name, bad))
+
+# ③ 服务端必须在解析处换算（不许把原始英里往下传）
+if not re.search(r'Odometer:\s*odometerKmFromMiles\(v\.Odometer\)', tesla):
+    problems.append('api/tesla.go 的 toState() 没有用 odometerKmFromMiles 换算 ⇒ 原始英里会流到下游')
+
+# ④ 客户端不许自己拼里程表限定语（来源口径只有服务端一份，ADR #41）
+for kt in MAINDIR.rglob('*.kt'):
+    for lit in literals(kt.read_text(encoding='utf-8', errors='replace')):
+        for phrase in ('（车端', '（GPS 估算'):
+            if phrase in lit:
+                problems.append('客户端 %s 里出现了服务端文案 %r ⇒ 限定语只能服务端给'
+                                % (kt.name, phrase))
+
+# ⑤ App 必须接上服务端的限定语
+status = strip_comments(STATUS.read_text(encoding='utf-8', errors='replace'))
+if 'odometer_note' not in status:
+    problems.append('ui/StatusScreen.kt 没有用 st.odometer_note ⇒ 界面不会显示服务端的来源口径')
+
+# ⑥ 服务端必须有出口
+for k in ('json:"odometer_vehicle"', 'json:"odometer_vehicle_at"', 'json:"odometer_note"'):
+    if k not in models:
+        problems.append('api/models.go 里 CarStatus 缺键 %s' % k)
+
+if problems:
+    print('车端里程表的「单位」没有收敛到服务端 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 英里→公里的换算与来源口径只在服务端一份（ADR #38 / #41）')
+    print('      客户端只透传公里数，不许自己乘、不许自己拼限定语')
+    sys.exit(1)
+print('车端里程表：单位换算与来源口径只在服务端一份 ✔（App / MCP 只透传）')
+PYEOF
+if [ $? -eq 0 ]; then ok "车端里程表的单位换算与来源口径只在服务端一份"; else fail "车端里程表的单位换算跑到了客户端"; cat "$TMP"; fi
+rm -f "$TMP"
+
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"
