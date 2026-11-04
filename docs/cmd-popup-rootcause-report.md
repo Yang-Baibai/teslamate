@@ -1,6 +1,8 @@
 # 弹窗根因报告：Windows 定时任务拉起控制台窗口
 
 - 报告时间：2026-11-05 00:30
+- **状态：已交接并落地** —— 修复见 v0.134.0（commit `af4ca29`），
+  报告随 commit `e15222e` 入库；本文件已按落地实测更正（见 §2.1 的更正说明）
 - 报告人：定位定时弹出 cmd 窗口的数据过期原因（会话 `mvs_cff54286279b4b7899878e550ae1c950`）
 - 交接对象：熟悉项目并担任项目负责人（会话 `mvs_fbc78974f80b43ef85b8801295e1dcf7`）
 - 结论一句话：**弹窗是 TeslaMate 项目的 Windows 计划任务 `TeslaMate-CarWatch` 每 5 分钟跑 `scripts/watch-car.ps1` 时，把控制台窗口显示出来了；窗口里那行「数据过期」是这个脚本每轮必打印的运行摘要，不是报错。**
@@ -25,8 +27,15 @@
 | LastResult | 0（一直成功，不是崩溃） |
 
 **机制**：任务以 `InteractiveToken` 身份在当前桌面会话直接拉起 `pwsh.exe` 控制台程序，
-且任务 XML 里 **没有 `<Hidden>true</Hidden>`** ⇒ Windows 分配一个可见的控制台窗口；
-脚本跑完（几秒）窗口随进程退出而关闭 ⇒ 表现为「定时弹出来一下然后就关闭」。
+⇒ Windows 分配一个可见的控制台窗口；脚本跑完（几秒）窗口随进程退出而关闭
+⇒ 表现为「定时弹出来一下然后就关闭」。
+
+> ⚠️ **本报告初版把「加 `<Hidden>true</Hidden>`」当作消弹窗手段，这是错的**（已修正）。
+> 任务 XML 的 `<Settings><Hidden>true</Hidden>` 只让任务**在任务计划程序 UI 里不显示**，
+> **对控制台窗口毫无影响**；真正消弹窗的是动作参数 **`-WindowStyle Hidden`**
+> （给 pwsh 传 `STARTUPINFO.wShowWindow = SW_HIDE` ⇒ 窗口创建时就是隐藏的）。
+> ⇒ 两者**都做**：`-WindowStyle Hidden` 管消弹窗，`<Hidden>` 管不碍眼。
+> （实证更正来自「熟悉项目并担任项目负责人」在 v0.134.0 的落地实测。）
 
 **与 5 分钟节奏完全吻合**——`scripts/.watch-car.log` 里「本轮结束」的时间戳逐轮对得上：
 
@@ -64,12 +73,22 @@ Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAle
 ⇒ 该告警**早已通过飞书推过一次**（`alerted.data_stale=true` ⇒ 上升沿已触发，不会重复推），
 弹窗只是让人误以为「报错了」。
 
-## 三、修复建议（**由项目负责人排期，本轮未改动任何生产文件**）
+## 三、修复建议（**已由「熟悉项目并担任项目负责人」在 v0.134.0 落地**）
 
-### 3.1 首选：给任务加 `<Hidden>true</Hidden>`
+### 3.1 首选：动作参数加 `-WindowStyle Hidden`（消弹窗靠这个）
 
-在 `Export-ScheduledTask` 的 `<Settings>` 里加 `<Hidden>true</Hidden>`，
-并重新注册该任务。**必须改任务的注册源头**，否则重装/重建会退回有窗口的版本。
+把任务动作改成：
+
+```
+pwsh.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\tm-ws\scripts\watch-car.ps1"
+```
+
+⇒ pwsh 收到的 `STARTUPINFO.wShowWindow = SW_HIDE` ⇒ 控制台窗口**创建时就是隐藏的** ⇒ 不弹。
+
+同时可加任务 XML 的 `<Settings><Hidden>true</Hidden>`——但那**只是不显示在任务计划程序 UI 里**，
+**不能消弹窗**，两者别混为一谈。
+
+**必须改任务的注册源头**，否则重装/重建会退回有窗口的版本。
 
 ⚠️ **注意**：仓库里目前**没有**创建 `TeslaMate-CarWatch` 的脚本
 （`grep Register-ScheduledTask|schtasks /Create` 只命中 `scripts/hermes-gateway-autostart.ps1` 的注释，
@@ -77,7 +96,7 @@ Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAle
 ⇒ 建议负责人**新增 `scripts/install-watch-task.ps1`**（幂等：先 `Unregister` 再 `Register`），
 把「注册 + Hidden + 每 5 分钟」固化进仓库，避免这台机器上的任务成为**不可复现的手工产物**。
 
-### 3.2 备选 / 配合：把 stdout 从窗口挪走
+### 3.2 未采纳：改 `Write-Log` 的 stdout 语义（保持原样）
 
 `watch-car.ps1` 的 `Write-Log` 用 `Write-Output` 写 stdout，是窗口里那行字的直接来源。
 但 `Write-Log` 同时也写日志文件（`Write-LogQuiet`），**且被大量逻辑依赖**（返回值语义有陷阱，见脚本注释），
@@ -85,16 +104,20 @@ Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAle
 
 ⇒ 更稳的做法是**只做 3.1**（隐藏窗口），stdout 内容随窗口一起不再可见，日志文件与推送行为完全不受影响。
 
+> ✅ **落地确认**：「熟悉项目并担任项目负责人」采纳了这条判断——v0.134.0 **未改** `watch-car.ps1` 的
+> `Write-Log` 语义，只做隐藏窗口；stdout / 日志 / 推送行为均未受影响。
+
 ### 3.3 参考：本机已有的「隐藏启动」范式
 
 同机 Hermes 已用 VBS 隐藏启动（启动文件夹 `Hermes_Gateway.vbs` → `sh.Run …, 0, False`），
 且 `Hermes_Gateway_Auto.ps1:62-68` 内部 `Start-Process -WindowStyle Hidden`。
-⇒ `TeslaMate-CarWatch` 若走同一范式（VBS 包装器或 `-WindowStyle Hidden`）也能消窗，
-但**任务级 `<Hidden>` 更直接**，且不新增包装文件。
+⇒ `TeslaMate-CarWatch` 走 `-WindowStyle Hidden` 即可消窗（无需新增包装文件），
+这是比 VBS 包装器更轻的做法。
 
-⚠️ **本轮未能实测 `<Hidden>` 方案的可见窗口差异**：用 `EnumWindows` 枚举可见顶层窗口时，
+⚠️ **弹窗本身无法程序化验证**：用 `EnumWindows` 枚举可见顶层窗口时，
 对照组与实验组都探到 0 个可见 pwsh 窗口（探针自身在后台会话里跑，无法真实复现桌面弹窗）。
-⇒ 修复方案**必须由负责人实机验证**：改完后坐等一个 5 分钟窗口，确认不再弹。
+⇒ 修复方案**必须实机肉眼验证**：改完后坐等一个 5 分钟窗口，确认不再弹。
+（已写入 `docs/operations.md` §12.2 与 CHANGELOG v0.134.0，作为留给用户的最后一步。）
 
 ### 3.4 顺带发现的另一个同源问题（优先级低于本条）
 
@@ -102,7 +125,7 @@ Write-Log "本轮结束：充电=$charging 电量=$battery 胎压告警=$tpmsAle
 `pwsh.exe -NoProfile … -File "…\Hermes_Gateway_Auto.ps1"`（**每 10 分钟**），
 且该脚本内部 `Start-Process -WindowStyle Hidden` 只作用于**子进程**，
 **它自己那层 pwsh 仍会弹窗** ⇒ 用户看到的可能是**两个**来源交替弹（5 分钟 + 10 分钟）。
-⇒ 建议同批修掉。
+⇒ 建议同批修掉（同样是给**任务动作**加 `-WindowStyle Hidden`，不是加 `<Hidden>`）。
 
 ## 四、复现与核验命令（交负责人）
 
@@ -121,7 +144,10 @@ Get-Content C:\tm-ws\scripts\.watch-car.log -Tail 5 -Encoding utf8
 pwsh -NoProfile -File C:\tm-ws\scripts\watch-car.ps1 -DryRun -StateFile <临时> -LogFile <临时>
 ```
 
-## 五、本轮边界（重要）
+## 五、本轮边界与落地状态
+
+**排查轮（定位定时弹出 cmd 窗口的数据过期原因）的边界**：
+
 
 - 本轮**只做只读排查**：未修改任何任务、脚本、配置、数据库；未触发任何用户可见推送
   （验证用 `-DryRun` + 临时状态/日志文件）
@@ -129,3 +155,23 @@ pwsh -NoProfile -File C:\tm-ws\scripts\watch-car.ps1 -DryRun -StateFile <临时>
 - 未动 `scripts/.watch-car-state.json` 与 `.watch-car.log`
 - 按项目规则，**代码改动与版本号归属由「熟悉项目并担任项目负责人」决定**
   （当前线上版本号以 `/api/v1/app/latest` 与 CHANGELOG 顶部交接位为准）
+
+---
+
+## 六、落地状态（v0.134.0 · commit `af4ca29`，已逐字节核对）
+
+| 项 | 状态 |
+|---|---|
+| `TeslaMate-CarWatch` 动作参数 | ✅ `-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\tm-ws\scripts\watch-car.ps1"` |
+| `TeslaMate-CarWatch` 任务 XML | ✅ `<Hidden>true</Hidden>`；`LogonType=InteractiveToken`；`Interval=PT5M` |
+| `Hermes-Gateway` 动作参数 | ✅ 同样带 `-WindowStyle Hidden` |
+| `Hermes-Gateway` 任务 XML | ✅ `<Hidden>true</Hidden>` |
+| 新增 `scripts/install-watch-task.ps1` | ✅ 幂等（先 `Unregister` 再 `Register`），4537 字节 |
+| 新增 `scripts/install-hermes-gateway-task.ps1` | ✅ 幂等，4729 字节 |
+| 运行验证 | ✅ CarWatch 手动触发后日志照常多一行「本轮结束：…」、`LastResult=0`；Hermes-Gateway 幂等跳过、网关进程数仍为 1 |
+| 飞书通道 | ✅ 未受影响（`Gateway running with 1 platform(s)`） |
+| `watch-car.ps1` 的 `Write-Log` 语义 | ✅ 未改（stdout / 日志 / 推送行为不受影响） |
+| **弹窗是否真的不弹了** | ⏳ **仍待肉眼确认** —— 桌面弹窗无法程序化验证（后台会话枚举可见顶层窗口 = 0，两组探针都探不到差异）⇒ **请坐等一个 5 分钟窗口看一眼** |
+
+> 📌 **本文件已按落地实测更正**：初版把「加 `<Hidden>true</Hidden>`」当作消弹窗手段是**错的**——
+> 它只让任务在任务计划程序 UI 里不显示；真正消弹窗的是动作参数 `-WindowStyle Hidden`。
