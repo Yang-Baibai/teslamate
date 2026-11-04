@@ -14,8 +14,12 @@ MSG="${1:-}"
 echo "══ 前置：用户反馈闸门 ══"
 bash scripts/release-feedback-gate.sh
 
-APP_DIR=/c/tm-app/teslamate-app   # canonical 构建目录（ASCII 路径，原因见 README）
+APP_DIR=/c/tm-app/teslamate-app   # ASCII 构建目录（Gradle 拒绝中文路径；原因见 README）
 echo "══ 1/6 构建 App ══"
+# ⚠️ **v0.131.0**：构建前**先从仓库同步**到构建目录 ——
+#    构建目录只是一份**会被写旧的副本**（2026-11-04 实测：仓库 v0.130.0，副本还停在 v0.103.0）。
+#    不同步 ⇒ 构建的就是 17 个版本前的源码。
+bash scripts/sync-app-build-dir.sh
 cd "$APP_DIR"
 export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot' \
        ANDROID_HOME='C:\Users\<用户名>\AppData\Local\Android\Sdk' \
@@ -31,10 +35,15 @@ ROOT="C:/Users/<用户名>/OneDrive/文档/teslamate"
 cp app/build/outputs/apk/debug/app-debug.apk "$ROOT/apk/teslamate-app.apk"
 echo "   APK 已就位 $(stat -c%s "$ROOT/apk/teslamate-app.apk") bytes"
 
-echo "══ 3/6 同步源码到工作区镜像 ══"
+echo "══ 3/6 确认构建目录与仓库一致 ══"
+# ⚠️ **v0.131.0：这一步原来是「把构建目录 robocopy 回仓库」** ——
+#    那正是把**旧副本覆盖回仓库**的那一刀（17 个版本的改动会凭空消失，且不报错）。
+#    ⇒ 现在**只保留一个方向**：仓库 → 构建目录（第 1 步前已同步过）。
+#    源码的真相始终在仓库里（`app-android/`），构建目录只是暂存。
 cd "$ROOT"
-cmd //c "robocopy C:\tm-app\teslamate-app\app\src\main app-android\app\src\main /E /XD build .gradle .kotlin /NFL /NDL /NJH /NJS /NC /NS /NP" >/dev/null 2>&1 || true
-cp "$APP_DIR/app/build.gradle.kts" app-android/app/build.gradle.kts
+diff -q "$APP_DIR/app/build.gradle.kts" app-android/app/build.gradle.kts >/dev/null 2>&1 \
+  && echo "   ✓ 构建目录与仓库的版本配置一致（$(grep -oE 'versionCode = [0-9]+' app-android/app/build.gradle.kts | grep -oE '[0-9]+')）" \
+  || { echo "   ❌ 构建目录与仓库不一致 —— 请先跑 scripts/sync-app-build-dir.sh"; exit 1; }
 
 echo "══ 4/6 升 .env 元数据 ══"
 # ⚠️ **v0.91.0**：原来用 `sed "s/.../.../"` 改这三行 ——

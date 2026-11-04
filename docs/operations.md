@@ -77,6 +77,8 @@ docker compose build api && docker compose up -d api
 ### 3.4 Android App 构建
 ```bash
 # 构建机（本机）：
+# ⚠️ v0.131.0：先从仓库同步（构建目录只是一份会被写旧的副本）
+bash scripts/sync-app-build-dir.sh
 cd /c/tm-app/teslamate-app
 export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot' \
        ANDROID_HOME='C:\Users\<用户名>\AppData\Local\Android\Sdk' \
@@ -92,16 +94,18 @@ cmd //c "C:\gradle\gradle-8.10.2\bin\gradle.bat assembleDebug"
 > 用户会下载到旧版却显示版本号已更新。
 
 ```bash
-# 1. 构建（canonical 构建目录，见 README「两个目录」说明）
+# 1. 同步 + 构建（构建目录只是暂存，见 README「两个 Android 目录」）
+bash scripts/sync-app-build-dir.sh
 cd /c/tm-app/teslamate-app && cmd //c "C:\gradle\gradle-8.10.2\bin\gradle.bat assembleDebug"
 
 # 2. 部署到固定路径（API 通过 FileServer 暴露 ./apk/teslamate-app.apk）
 cp /c/tm-app/teslamate-app/app/build/outputs/apk/debug/app-debug.apk \
    "C:/Users/<用户名>/OneDrive/文档/teslamate/apk/teslamate-app.apk"
 
-# 3. 同步源码回工作区镜像（排除 build 产物）
-cmd //c "robocopy C:\tm-app\teslamate-app\app\src\main C:\Users\<用户名>\OneDrive\文档\teslamate\app-android\app\src\main /E /XD build .gradle .kotlin /NFL /NDL"
-cp /c/tm-app/teslamate-app/app/build.gradle.kts "C:/Users/<用户名>/OneDrive/文档/teslamate/app-android/app/build.gradle.kts"
+# 3. ~~同步源码回工作区镜像~~ —— **v0.131.0 起取消这一步**
+#    ⚠️ 它把**构建目录（副本）拷回仓库** ⇒ 副本一旧（实测差 17 个版本），
+#       仓库里的 App 改动就被覆盖掉，且不报错。
+#    现在源码的真相始终在仓库里（app-android/），构建目录只是构建前的暂存。
 
 # 4. 升版本号（两处必须一致）
 #    app/build.gradle.kts：versionCode +1、versionName 改新

@@ -7,7 +7,7 @@
 | 用途 | 位置 |
 |---|---|
 | 项目根（Compose 工作区） | `C:\Users\<用户名>\OneDrive\文档\teslamate`（下称 `ROOT`） |
-| App canonical 构建目录 | `C:\tm-app\teslamate-app`（ASCII 路径，见下方"为什么不是 ROOT"） |
+| App 构建目录（暂存） | `C:\tm-app\teslamate-app`（ASCII 路径，见下方"为什么不是 ROOT"） |
 | Gradle 用户目录 | `C:\gradle\gradle-home` |
 | Gradle 发行版 | `C:\gradle\gradle-8.10.2\bin\gradle.bat` |
 | JDK / Android SDK | `C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot` / `%LOCALAPPDATA%\Android\Sdk` |
@@ -18,8 +18,12 @@
 项目路径含**中文用户名**且在 **OneDrive 同步目录**内。Gradle 构建会产生数万个小文件，
 在这两个条件下会出现文件锁、编码、同步冲突。实测踩过多次。
 
-**规则**：代码编辑可以两处都改，但 **APK 只从 `C:\tm-app\teslamate-app` 构建**，
-构建后用 `robocopy` 把 `app/src/main` 同步回 `ROOT/app-android/`（只做源码镜像，不带 build 产物）。
+**规则（v0.131.0）**：**代码只改 `ROOT/app-android/`（唯一真相）**，
+构建/测试前跑 `bash scripts/sync-app-build-dir.sh` 把仓库同步到构建目录，**APK 从构建目录产出**。
+
+⚠️ **不要**在构建目录里改代码（随时被同步覆盖），**更不要**把它同步回仓库 ——
+副本会被写旧（2026-11-04 实测：仓库 v0.130.0、副本 v0.103.0，差 17 个版本）⇒
+反向同步就是**旧副本覆盖新代码**，改动凭空消失且不报错。
 
 ## 1. 改动流程（标准动作）
 
@@ -27,7 +31,7 @@
 1. 备份（动数据库前）：bash scripts/backup-db.sh
 2. 改代码（api/ 或 app-android/）
 3. 跑验证：bash scripts/smoke.sh          （改了 api/ 必跑）
-   App 改动：cd /c/tm-app/teslamate-app && gradle assembleDebug
+   App 改动：bash scripts/sync-app-build-dir.sh && cd /c/tm-app/teslamate-app && gradle assembleDebug
 4. 真机验证（改了 UI）：adb install -r ... && 真机点一遍，别只信编译过
 5. 更新文档（见下"什么改动必须改哪份文档"）
 6. 提交：
@@ -81,7 +85,8 @@
 
 ## 5. 版本与发版
 
-- App 版本号在 **App canonical 的** `app/build.gradle.kts`：`versionCode`（整数，递增）+ `versionName`（语义化）。
+- App 版本号在**仓库的** `app-android/app/build.gradle.kts`：`versionCode`（整数，递增）+ `versionName`（语义化）。
+  （构建目录里的那份由同步脚本带过去，**不要**在那边改。）
 - 发版元数据在 `ROOT/.env`：`APP_VERSION_CODE / APP_VERSION_NAME / APP_RELEASE_NOTES`，必须与 App 的 versionCode 一致，否则手机弹不出更新或版本号对不上。
 - **发版顺序不可反**：先 `cp` APK 到 `ROOT/apk/teslamate-app.apk`，再改 `.env`，再 `docker compose up -d api`。反了会出现"提示新版本但下载到旧包"。
 - `scripts/release.sh` 已把这套流程固化，按它来。

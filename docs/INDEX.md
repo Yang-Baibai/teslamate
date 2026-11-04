@@ -134,6 +134,11 @@ cd /c/tm-ws && export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.1
 #    （「Your project path contains non-ASCII characters」）。
 gradle -p C:/tm-ws/app-android assembleDebug --console=plain --offline
 
+# 若要用 ASCII 的**构建目录**（C:\tm-app\teslamate-app）：先同步
+bash scripts/sync-app-build-dir.sh   # 仓库 → 构建目录（方向唯一）
+# ⚠️ 那份副本会被写旧（2026-11-04 实测差 17 个版本）⇒
+#    绝不要在它里面改代码，也绝不要把它同步回仓库（= 旧副本覆盖新代码）。
+
 # ⚠️ 写/删文件（拷 APK、删临时文件）必须用**真实路径** + **单条顶层命令**：
 #    C:\tm-ws 会被判成「工作区外」，`cd ... && cp ...` 复合命令也会被拦。
 #    （只读与构建走 ASCII 路径没问题。）

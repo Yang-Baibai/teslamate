@@ -55,8 +55,15 @@
 
  前置：JDK 17、Android SDK（platform 35 / build-tools 35.0.0）。Windows 下参考主项目 `setup-android-sdk.sh`。
 
- **canonical 构建目录** = `C:\tm-app\teslamate-app`（为什么不在工作区构建，见主项目 `docs/architecture.md` §2.6）。
- 本目录 `app-android/` 是源码镜像，不在此处执行 Gradle（避免 OneDrive + 中文路径上的 `app/build/` 文件锁）。
+ **构建目录** = `C:\tm-app\teslamate-app`（为什么不在工作区构建，见主项目 `docs/architecture.md` §2.6）。
+ 本目录 `app-android/` 是**源码的唯一真相** —— 改代码只在这里改；
+构建目录只是**构建前的暂存**，由 `scripts/sync-app-build-dir.sh` 自动同步过去。
+
+> ⚠️ **同步方向只有一个：仓库 → 构建目录。**
+> 构建/测试前跑 `bash scripts/sync-app-build-dir.sh`（`release.sh` 与 `unit-tests.sh` 已自动调它）。
+> **不要**在构建目录里改代码（随时被覆盖），**更不要**把它同步回仓库 ——
+> 2026-11-04 实测：仓库已到 v0.130.0，构建目录还停在 v0.103.0，
+> 那样一同步就是**旧副本覆盖新代码**，改动凭空消失且不报错。
 
  ```powershell
  cd C:\tm-app\teslamate-app
@@ -75,13 +82,17 @@
  - 安装：`adb install -r app-debug.apk`，或直接把 APK 拷到手机点击安装（允许"安装未知应用"）。
  - 首次配置与日常使用见 [docs/手机客户端使用说明.md](../docs/手机客户端使用说明.md)。
 
- ## 源码同步约定
+ ## 源码同步约定（v0.131.0 起只有一个方向）
 
- 在 `C:\tm-app\teslamate-app` 改代码后，在 `cmd` 跑下面这条把源码镜像回本目录（`C:\tm-ws` 是主项目根的 junction，见主项目 `docs/operations.md`；它绕开 Windows + cmd.exe 对中文路径的解析坑）：
+**本目录是唯一真相** ⇒ 构建/测试前把**它**同步到构建目录：
 
- ```cmd
- robocopy "C:\tm-app\teslamate-app" "C:\tm-ws\app-android" /E /XD build .gradle .kotlin /R:1 /W:1 /NFL /NDL
- ```
+```bash
+bash scripts/sync-app-build-dir.sh
+```
+
+⚠️ **反向同步（构建目录 → 本目录）已取消**：构建目录只是一份副本，而副本会被写旧
+（2026-11-04 实测：仓库 v0.130.0、副本还停在 v0.103.0，差 17 个版本）⇒
+反向同步等于**旧副本覆盖新代码**，改动凭空消失且不报错。
 
 ## 版本历史
 

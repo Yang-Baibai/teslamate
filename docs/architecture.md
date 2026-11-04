@@ -50,7 +50,12 @@
 
 ### 2.6 为什么 App 构建目录在 C:\tm-app 而不是工作区？
 - 工作区路径含中文用户名 + OneDrive 实时同步；Gradle 构建会产生数万小文件，两者组合是已知雷区（文件锁/编码）。
-- 方案：构建目录 `C:\tm-app\teslamate-app`（纯 ASCII），`GRADLE_USER_HOME=C:\gradle\gradle-home`；构建成功后源码副本同步回工作区 `app-android/`（不含 build 产物）。
+- 方案：构建目录 `C:\tm-app\teslamate-app`（纯 ASCII），`GRADLE_USER_HOME=C:\gradle\gradle-home`。
+- ⚠️ **v0.131.0：方向改成「仓库 → 构建目录」**。原来构建完把源码副本**同步回**工作区，
+  而副本会被写旧（2026-11-04 实测：仓库 v0.130.0、副本 v0.103.0，差 17 个版本）⇒
+  那一步等于**旧副本覆盖新代码**，改动凭空消失且不报错。
+  现在：`app-android/` 是**唯一真相**，构建目录只是构建前的暂存，
+  由 `scripts/sync-app-build-dir.sh` 自动同步（`release.sh` / `unit-tests.sh` 已调它）。
 
 ### 2.7 网络/镜像源事实
 

@@ -78,6 +78,15 @@ bash scripts/probe-run.sh hermes-gates.sh /path/to/probe.py  # 负向探针：�
 gradle -p C:\tm-ws\app-android assembleDebug --console=plain --offline
 ```
 
+⚠️ **构建目录只剩「暂存」这一个角色**（v0.131.0）：
+`C:\tm-app\teslamate-app` 是一份**会被写旧的副本**
+（2026-11-04 实测：仓库已到 v0.130.0，副本还停在 v0.103.0 —— **差 17 个版本**）。
+⇒ **源码的真相只在仓库**（`app-android/`）；构建/测试前跑
+   `bash scripts/sync-app-build-dir.sh`（`release.sh` 与 `unit-tests.sh` 已自动调它）。
+⇒ **绝不**在构建目录里改代码（随时被同步覆盖），
+   更**绝不**把它同步回仓库 —— 那是**旧副本覆盖新代码**，
+   改动会凭空消失**而且不报错**。
+
 **跑 JVM 单测**（同样走 ASCII 路径；⚠️ `GRADLE_USER_HOME` 要固定到 `C:\gradle\gradle-home`）：
 
 ```bash

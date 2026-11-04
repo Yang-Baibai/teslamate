@@ -24,6 +24,13 @@ if [ ! -d "$CANON_APP" ] || [ ! -f "$GRADLE_BIN" ]; then
   exit 0
 fi
 
+# ⚠️ **v0.131.0**：测之前**先从仓库同步** ——
+#    构建目录是一份**会被写旧的副本**（2026-11-04 实测：仓库 v0.130.0，副本 v0.103.0）。
+#    不同步 ⇒ 测的是 17 个版本前的代码 ⇒ 单测全绿也说明不了任何事。
+if [ -x "$(command -v bash)" ] && [ -f scripts/sync-app-build-dir.sh ]; then
+  bash scripts/sync-app-build-dir.sh || exit 1
+fi
+
 export JAVA_HOME="${JAVA_HOME:-C:\\Program Files\\Eclipse Adoptium\\jdk-17.0.20.101-hotspot}"
 export ANDROID_HOME="${ANDROID_HOME:-${LOCALAPPDATA:-C:/Users/$USERNAME/AppData/Local}/Android/Sdk}"
 export GRADLE_USER_HOME="${GRADLE_USER_HOME:-C:\\gradle\\gradle-home}"

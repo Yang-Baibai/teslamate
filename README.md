@@ -121,10 +121,16 @@ teslamate/                          ← 项目根（Docker Compose 工作区）
 
 | 目录 | 角色 |
 |---|---|
-| `C:\tm-app\teslamate-app` | **canonical 构建目录**，Gradle 在此跑，APK 在此产出 |
-| `./app-android/` | **只读源码镜像**，用于版本管理与交接 |
+| `./app-android/` | **源码的唯一真相** —— 改代码只在这里改 |
+| `C:\tm-app\teslamate-app` | **构建前的暂存**（Gradle 拒绝中文路径 ⇒ 构建必须在这） |
 
-原因见 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) §0：工作区路径含中文用户名且在 OneDrive 内，Gradle 在此构建会锁死。同步用 `scripts/release.sh` 第 3 步。
+原因见 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) §0：工作区路径含中文用户名且在 OneDrive 内，Gradle 在此构建会锁死。
+
+> ⚠️ **同步方向只有一个：仓库 → 构建目录。**
+> 构建/测试前跑 `bash scripts/sync-app-build-dir.sh`（`release.sh` 与 `unit-tests.sh` 已自动调它）。
+> **不要**在构建目录里改代码（随时被覆盖），**更不要**把它同步回仓库 ——
+> 2026-11-04 实测：仓库已到 v0.130.0，构建目录还停在 v0.103.0，
+> 那样一同步就是**旧副本覆盖新代码**，改动凭空消失且不报错。
 
 ---
 
