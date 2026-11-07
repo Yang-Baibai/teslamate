@@ -1,8 +1,10 @@
 # 弹窗根因报告：Windows 定时任务拉起控制台窗口
 
 - 报告时间：2026-11-05 00:30
-- **状态：已交接并落地** —— 修复见 v0.134.0（commit `af4ca29`），
-  报告随 commit `e15222e` 入库；本文件已按落地实测更正（见 §2.1 的更正说明）
+- **状态：已交接并落地（v0.134.0 首轮方案无效，v0.135.0 已修对）** ——
+  v0.134.0（commit `af4ca29`）加的 `-WindowStyle Hidden` **在这台机器上不起作用**（用户 2026-11-07 22:19 回报仍在弹）；
+  v0.135.0 改用 **`conhost.exe --headless` 显式承载 pwsh**（绕过 Windows Terminal 的 ConPTY 接管）⇒ 实测零窗口。
+  报告随 commit `e15222e` 入库；更正随 commit `3744bbd` 入库
 - 报告人：定位定时弹出 cmd 窗口的数据过期原因（会话 `mvs_cff54286279b4b7899878e550ae1c950`）
 - 交接对象：熟悉项目并担任项目负责人（会话 `mvs_fbc78974f80b43ef85b8801295e1dcf7`）
 - 结论一句话：**弹窗是 TeslaMate 项目的 Windows 计划任务 `TeslaMate-CarWatch` 每 5 分钟跑 `scripts/watch-car.ps1` 时，把控制台窗口显示出来了；窗口里那行「数据过期」是这个脚本每轮必打印的运行摘要，不是报错。**
@@ -162,16 +164,65 @@ pwsh -NoProfile -File C:\tm-ws\scripts\watch-car.ps1 -DryRun -StateFile <临时>
 
 | 项 | 状态 |
 |---|---|
-| `TeslaMate-CarWatch` 动作参数 | ✅ `-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\tm-ws\scripts\watch-car.ps1"` |
-| `TeslaMate-CarWatch` 任务 XML | ✅ `<Hidden>true</Hidden>`；`LogonType=InteractiveToken`；`Interval=PT5M` |
-| `Hermes-Gateway` 动作参数 | ✅ 同样带 `-WindowStyle Hidden` |
-| `Hermes-Gateway` 任务 XML | ✅ `<Hidden>true</Hidden>` |
-| 新增 `scripts/install-watch-task.ps1` | ✅ 幂等（先 `Unregister` 再 `Register`），4537 字节 |
-| 新增 `scripts/install-hermes-gateway-task.ps1` | ✅ 幂等，4729 字节 |
-| 运行验证 | ✅ CarWatch 手动触发后日志照常多一行「本轮结束：…」、`LastResult=0`；Hermes-Gateway 幂等跳过、网关进程数仍为 1 |
-| 飞书通道 | ✅ 未受影响（`Gateway running with 1 platform(s)`） |
+| **`TeslaMate-CarWatch` 动作（v0.135.0）** | ✅ `C:\WINDOWS\System32\conhost.exe --headless "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\tm-ws\scripts\watch-car.ps1"` |
+| **`Hermes-Gateway` 动作（v0.135.0）** | ✅ 同样改为 `conhost.exe --headless` 承载 |
+| 两个任务 XML | ✅ 均保留 `<Hidden>true</Hidden>`（只管 UI 不碍眼）、`LogonType=InteractiveToken`、`PT5M` / `PT10M` |
+| `scripts/install-watch-task.ps1` | ✅ 已改为 conhost 承载 + 补 `$conhost` 存在性校验 + 文件头写真因与实测对照表 |
+| `scripts/install-hermes-gateway-task.ps1` | ✅ 同上 |
+| 安装脚本可重现性 | ✅ 跑完两个脚本 ⇒ 注册结果与现网一致（重建不会退回有窗口的版本） |
+| 运行验证 | ✅ CarWatch `LastResult=0`、`scripts/.watch-car.log` 照常追加「本轮结束：…」；Hermes `LastResult=0`、网关进程数仍为 1、自启日志「已在运行 ⇒ 跳过」（幂等没坏） |
+| 飞书通道 | ✅ 未受影响（网关进程数始终为 1） |
 | `watch-car.ps1` 的 `Write-Log` 语义 | ✅ 未改（stdout / 日志 / 推送行为不受影响） |
-| **弹窗是否真的不弹了** | ⏳ **仍待肉眼确认** —— 桌面弹窗无法程序化验证（后台会话枚举可见顶层窗口 = 0，两组探针都探不到差异）⇒ **请坐等一个 5 分钟窗口看一眼** |
+| **弹窗实测** | ✅ **22:44:16 真实触发点，观察者捕获到 0 个可见窗口**（同一观察者在 22:34:16 / 22:39:18 两个触发点都抓到了 `PseudoConsoleWindow` ⇒ 探针有效） |
+| **最终肉眼确认** | ⏳ 仍请用户看一眼接下来的触发点（22:51 / 22:56 / 23:01 …） |
 
 > 📌 **本文件已按落地实测更正**：初版把「加 `<Hidden>true</Hidden>`」当作消弹窗手段是**错的**——
-> 它只让任务在任务计划程序 UI 里不显示；真正消弹窗的是动作参数 `-WindowStyle Hidden`。
+> 它只让任务在任务计划程序 UI 里不显示。
+
+---
+
+## 七、v0.135.0 续：v0.134.0 的方案也是错的（用户回报仍在弹）
+
+### 7.1 现象
+
+v0.134.0 落地后，用户 2026-11-07 22:19 回报：**仍然弹，而且一次弹两个，一瞬间就关**。
+⇒ 两个任务当次 LastRun 恰为 **22:19:16 / 22:19:18**（相差 2 秒）⇒ 与描述完全吻合。
+
+### 7.2 真因：`-WindowStyle Hidden` 在这台机器上无效
+
+本机 pwsh 由 **Windows Terminal** 承载（`HKCU\Console\%%Startup\DelegateTerminal` 为空 ⇒ 交给 Windows 决定 ⇒ 选 Terminal）。
+⇒ Terminal 用 **ConPTY / `PseudoConsoleWindow`** 渲染会话，**它不看 `STARTUPINFO.wShowWindow`**
+⇒ pwsh 自己设的 `SW_HIDE` **被忽略** ⇒ 窗口照弹。
+
+⇒ **`<Hidden>` 与 `-WindowStyle Hidden` 在这台机器上都不能消弹窗。**
+
+### 7.3 探针方法论修正（这一轮最值钱的东西）
+
+前两轮用 `EnumWindows` 枚举可见顶层窗口，**对照组与实验组都探到 0** ⇒ 当时判「弹窗无法程序化验证」。
+
+⇒ **那个结论本身是错的**：探针跑在**后台会话**里，桌面窗口属于**交互式会话**（WinSta0\Default），
+**后台会话枚举不到桌面窗口** ⇒ 差异被一起抹平 ⇒ 实验无效。
+
+⇒ **正解：观察者自己也要跑在交互式会话里**（用同样 `InteractiveToken` 的计划任务拉起它）。
+⇒ 改后立刻看见桌面上 17~19 个真实窗口（explorer / Edge / Lightroom / MiniMax Code…），实验才成立。
+
+### 7.4 实测对照表（观察者 40ms 轮询可见顶层窗口）
+
+| 时刻 | 方案 | 捕获结果 |
+|---|---|---|
+| 22:34:16 | `-WindowStyle Hidden`（v0.134.0 方案） | ⚠️ `proc=pwsh class='PseudoConsoleWindow'` ⇒ **弹了** |
+| 22:39:18 | 同上（Hermes） | ⚠️ `proc=pwsh class='PseudoConsoleWindow'` ⇒ **弹了** |
+| 22:44:16 | `conhost.exe --headless` 承载 pwsh | ✅ **无任何窗口** |
+
+### 7.5 修法
+
+动作改用 **`conhost.exe --headless` 显式承载 pwsh** ⇒ 绕开 Terminal 的 ConPTY 接管 ⇒ 桌面根本不创建窗口。
+两个任务都改了，两个 `install-*.ps1` 都同步固化（含 `$conhost` 存在性校验）。
+
+### 7.6 试过但**没采用**
+
+1. **VBS 包装器**（`WScript.Shell.Run …, 0, False`）—— ⚠️ **WScript 按 ANSI 解码命令行参数**
+   ⇒ 中文路径变乱码（实测：`arg0` 里「<用户名>」被解成 **GBK 乱码**而不是中文）⇒ `FileExists` 失败 ⇒ **静默退出**。
+   要它工作，VBS 与被调脚本**路径必须全 ASCII**；加上「静默失败 = 任务静默不工作」的风险，
+   不如 `conhost --headless`（Windows 自带、参数即失败码）。
+2. **改系统 `DelegateTerminal=0`** —— 会改变用户全局终端行为，副作用超出本项目范围 ⇒ 不做。

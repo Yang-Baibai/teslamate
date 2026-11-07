@@ -569,22 +569,40 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/install-watch-task.ps1
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/install-hermes-gateway-task.ps1
 ```
 
-### 12.2 ⚠️ 消弹窗：`-WindowStyle Hidden` ≠ 任务 XML 的 `<Hidden>`
+### 12.2 ⚠️ 消弹窗：`conhost.exe --headless` 显式承载 pwsh
 
 现象：任务用 `InteractiveToken` 在**桌面会话**里拉起 `pwsh.exe`，
 而 `pwsh.exe` 是**控制台程序** ⇒ 每轮都弹一个可见 cmd 窗口。
 （窗口里那行「数据过期」是脚本**每轮必打印的运行摘要**，不是报错。）
 
+**三个容易混淆的东西（都不是一回事）**：
+
 | 做法 | 真实作用 | 能消掉弹窗吗 |
 |---|---|---|
 | 任务 XML 的 `<Settings><Hidden>true</Hidden>` | **在任务计划程序 UI 里隐藏这个任务** | ❌ **不能** |
-| 动作参数 `-WindowStyle Hidden` | 给 pwsh 传 `STARTUPINFO.wShowWindow = SW_HIDE` ⇒ 控制台窗口**创建时就是隐藏的** | ✅ 能 |
+| 动作参数 `-WindowStyle Hidden` | 给 pwsh 传 `STARTUPINFO.wShowWindow = SW_HIDE` | ❌ **在这台机器上不能** |
+| **`conhost.exe --headless` 显式承载 pwsh** | conhost 创建**无窗口**的控制台 | ✅ **能** |
 
-⇒ 本项目两个都做（见上面两个 install 脚本的 XML）。
+⇒ **本项目用第三行**（两个 install 脚本的 XML 里都是它）；`<Hidden>` 保留，只管 UI 不碍眼。
 
-⚠️ **弹窗没法程序化验证**：它属**桌面会话**，后台脚本枚举不到可见窗口
-（实测枚举可见顶层窗口 = 0 个）⇒ **改完要肉眼确认**：
-坐等一个 5 分钟窗口，看还弹不弹。
+⚠️ **为什么 `-WindowStyle Hidden` 在这台机器上无效**（2026-11-07 实测）：
+本机 pwsh 由 **Windows Terminal** 承载（`HKCU\Console\%%Startup\DelegateTerminal` 为空
+⇒ 交给 Windows 决定 ⇒ 选 Terminal）⇒ Terminal 用 **ConPTY / `PseudoConsoleWindow`** 渲染会话，
+**它不看 `STARTUPINFO.wShowWindow`** ⇒ pwsh 自己设的 `SW_HIDE` 被忽略 ⇒ 窗口照弹。
+⇒ `conhost.exe --headless` **显式承载** pwsh ⇒ 绕开 Terminal 的接管 ⇒ 桌面根本不创建窗口。
+
+**实测对照**（观察者跑在交互式会话里，40ms 轮询可见顶层窗口）：
+
+| 时刻 | 方案 | 捕获结果 |
+|---|---|---|
+| 22:34:16 | `-WindowStyle Hidden` | ⚠️ `proc=pwsh class='PseudoConsoleWindow'` ⇒ **弹了** |
+| 22:44:16 | `conhost --headless` | ✅ **无任何窗口** |
+
+⚠️ **探针必须与被测对象同会话**：后台会话枚举不到桌面窗口（永远探到 0）
+⇒ 对照组与实验组**一起被抹平** ⇒ 实验无效。
+⇒ 观察者自己也要用 `InteractiveToken` 的计划任务拉起。
+
+⚠️ 修完仍要**肉眼确认**一个 5 分钟窗口。
 
 ### 12.3 排障
 

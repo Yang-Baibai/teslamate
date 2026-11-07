@@ -2,6 +2,91 @@
 
  > 记录规则：按日期倒序；每条含「做了什么 / 为什么 / 影响 / 回滚方式」。
  > ⚠️ **插新段的规矩**（2026-11-04 **连踩两次**）：① 锚点要选**顶部第一个二级标题**（**行首是「两个井号」的那一行**）之前，**不要**锚某个版本号标题（每发一版它就变了 ⇒ v0.126.0 那段就是这样被插到中间的）；② **段间不留空行**（本文件的惯例）；③ ⚠️ **脚本要按行遍历、判行首**，别在整篇文本里 find 子串 —— 上一版规矩把那个字面量写进了**自己**（标题就在头部下面 ⇒ 先命中规矩行 ⇒ 段插错位置、规矩被截断）。
+## 2026-11-07（v0.135.0 · 弹窗还在弹：`-WindowStyle Hidden` 在这台机器上是假的）
+
+> ⚠️ **App 版本不变**（仍是 `0.130.0` / code 139）—— 这一轮只改**本机计划任务 + 文档**。
+
+### 一、现象：v0.134.0 说修好了，用户说还在弹
+
+v0.134.0 给两个任务加了动作参数 `-WindowStyle Hidden` + 任务 XML 的 `<Hidden>true</Hidden>`，
+并在 CHANGELOG / operations.md 里写明「修完要肉眼确认」。
+
+⇒ **用户 2026-11-07 22:19 回报：仍然弹，而且一次弹两个，一瞬间就关。**
+⇒ 两个任务当次 LastRun 恰好是 **22:19:16 / 22:19:18**（相差 2 秒）⇒ 与用户描述完全吻合。
+
+### 二、真因：`-WindowStyle Hidden` 在这台机器上**根本不起作用**
+
+⚠️ **本机 pwsh 由 Windows Terminal 承载**（`HKCU\Console\%%Startup\DelegateTerminal` 为空 ⇒ 交给 Windows 决定 ⇒ 选 Terminal）。
+⇒ Terminal 用 **ConPTY / `PseudoConsoleWindow`** 渲染会话，**它不看 `STARTUPINFO.wShowWindow`**
+⇒ pwsh 自己设的 `SW_HIDE` **被忽略** ⇒ 窗口照弹。
+
+⇒ 结论：**`<Hidden>` 与 `-WindowStyle Hidden` 两个开关，在这台机器上都不能消弹窗。**
+（`<Hidden>` 本来就只管「任务在 UI 里不显示」，而 `-WindowStyle Hidden` 只对 conhost 承载的 pwsh 有效。）
+
+### 三、探针方法论修正（这一轮最值钱的东西）
+
+前两轮（2026-11-05）用 `EnumWindows` 枚举可见顶层窗口，**对照组与实验组都探到 0** ⇒ 当时判定「弹窗无法程序化验证」。
+
+⇒ **那个结论本身是错的**：探针跑在**后台会话**里，而桌面窗口属于**交互式会话**（WinSta0\Default），
+**后台会话根本枚举不到桌面窗口** ⇒ 差异被一起抹平 ⇒ 实验无效。
+
+⇒ **正解：观察者自己也要跑在交互式会话里**（用同样 `InteractiveToken` 的计划任务拉起它）。
+⇒ 改成这样之后，观察者立刻看见了桌面上 17~19 个真实窗口（explorer / Edge / Lightroom / MiniMax Code…），实验才成立。
+
+⚠️ 这与 AGENTS.md 里「新建闸门必须先跑负向探针」是同一条：**探针跑绿不等于它在检查东西**。
+
+### 四、实测对照表（观察者 40ms 轮询可见顶层窗口）
+
+| 时刻 | 方案 | 捕获结果 |
+|---|---|---|
+| 22:34:16 | `-WindowStyle Hidden`（v0.134.0 方案） | ⚠️ `proc=pwsh class='PseudoConsoleWindow'` ⇒ **弹了** |
+| 22:39:18 | 同上（Hermes） | ⚠️ `proc=pwsh class='PseudoConsoleWindow'` ⇒ **弹了** |
+| 22:44:16 | `conhost.exe --headless` 承载 pwsh | ✅ **无任何窗口** |
+
+### 五、修复：动作改用 `conhost.exe --headless` 显式承载 pwsh
+
+```xml
+<Exec>
+  <Command>C:\WINDOWS\System32\conhost.exe</Command>
+  <Arguments>--headless "C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "C:\tm-ws\scripts\watch-car.ps1"</Arguments>
+</Exec>
+```
+
+⇒ `--headless` ⇒ conhost 创建**无窗口**的控制台 ⇒ **绕开 Terminal 的 ConPTY 接管** ⇒ 桌面根本不出现窗口。
+
+**两个任务都改了**（`TeslaMate-CarWatch` 每 5 分钟 + `Hermes-Gateway` 每 10 分钟）：
+- `scripts/install-watch-task.ps1` —— Exec 块改 conhost 承载 + 文件头补真因与实测对照表
+- `scripts/install-hermes-gateway-task.ps1` —— 同上
+- 两处都加了 `$conhost` 存在性校验（找不到就报错退出，不静默降级）
+
+### 六、验证
+
+- `install-*.ps1` 跑完 ⇒ 任务动作与上面对齐（**安装脚本能正确重现改动**，重建不会退回有窗口的版本）
+- CarWatch 触发：`LastResult=0`、`scripts/.watch-car.log` 照常追加「本轮结束：…」
+- Hermes 触发：`LastResult=0`、网关进程数仍为 **1**、自启日志「已在运行（PID 20684）⇒ 跳过」（幂等没坏）
+- 弹窗：22:44:16 触发点观察者**零窗口**捕获
+
+### 七、试过但**没采用**的方案（避免后来者重走）
+
+1. **VBS 包装器**（`WScript.Shell.Run …, 0, False`）—— wscript 是 GUI 程序，理论上更彻底，
+   但 ⚠️ **WScript 按 ANSI 解码命令行参数** ⇒ 中文路径「<用户名>」变乱码 ⇒ `FileExists` 失败 ⇒ **静默退出**
+   （实测：`arg0` 里「<用户名>」被解成 **GBK 乱码**而不是中文）。要它工作，VBS 与被调脚本**路径必须全 ASCII**。
+   ⇒ 加上「VBS 静默失败 = 任务静默不工作」的风险，**不如 conhost --headless**（Windows 自带、参数即失败码）。
+2. **`conhost.exe --headless` 作为 pwsh 之外的中间层**—— 曾一度测出「跑不通」，实为**命令行引号转义**问题，非能力问题；
+   改成用 `Start-Process -ArgumentList` 后正常。
+3. **改系统 `DelegateTerminal=0`** —— 会改变用户全局终端行为，副作用超出本项目范围 ⇒ 不做。
+
+### 八、仍然需要用户肉眼确认
+
+桌面弹窗**可以**程序化验证了（观察者跑在交互式会话里），但**最终仍以用户肉眼为准**：
+请留意接下来 22:51 / 22:56 / 23:01 … 的几个触发点。
+
+### 九、回滚方式
+
+```powershell
+# 改回旧的 pwsh 直跑（会重新弹窗，但功能不受影响）
+# 详见 docs/cmd-popup-rootcause-report.md §六 的备份说明
+```
 ## 2026-11-05（v0.134.0 · 定时弹出的 cmd 窗口：查清了，也修掉了）
 
 > ⚠️ **App 版本不变**（仍是 `0.130.0` / code 139）—— 这一轮只改**本机计划任务 + 文档**。
@@ -28,6 +113,12 @@
 |---|---|---|
 | 任务 XML 的 `<Settings><Hidden>true</Hidden>` | **在任务计划程序 UI 里隐藏这个任务** | ❌ **不能** |
 | 动作参数 `-WindowStyle Hidden` | 给 pwsh 传 `STARTUPINFO.wShowWindow = SW_HIDE` ⇒ 控制台窗口**创建时就是隐藏的** | ✅ 能 |
+
+> ⚠️ **2026-11-07 订正（保留错误痕迹，不抹掉）**：上表「`-WindowStyle Hidden` 能消弹窗」**已被 v0.135.0 证伪** ——
+> 本机 pwsh 由 **Windows Terminal** 承载（`HKCU\Console\%%Startup\DelegateTerminal` 为空）
+> ⇒ Terminal 走 **ConPTY / `PseudoConsoleWindow`**，**它不看 `STARTUPINFO.wShowWindow`**
+> ⇒ pwsh 自己设的 `SW_HIDE` 被忽略 ⇒ 窗口照弹。
+> ⇒ **真正管用的是 `conhost.exe --headless` 显式承载 pwsh**（详见 v0.135.0 段）。
 
 ⇒ 本轮**两个都做**：`-WindowStyle Hidden` 负责消弹窗，`<Hidden>true</Hidden>` 让任务不在 UI 里碍眼。
 
@@ -57,6 +148,12 @@
 ⚠️ **弹窗本身没法程序化验证**：弹窗属**桌面会话**，后台脚本枚举不到可见窗口
 （本人实测：枚举可见顶层窗口 = **0** 个）⇒ 与报告的结论一致
 ⇒ **这一步要用户肉眼确认**：坐等一个 5 分钟窗口，看还弹不弹。
+
+> ⚠️ **2026-11-07 再订正**：上面「**没法程序化验证**」**也是错的** ——
+> 探针跑在**后台会话**里，而桌面窗口属于**交互式会话**（WinSta0\Default）
+> ⇒ 后台枚举永远是 0 ⇒ **对照组与实验组一起被抹平 ⇒ 实验无效**。
+> ⇒ 正解：**观察者自己也要跑在交互式会话里**（用同样 `InteractiveToken` 的计划任务拉起它）。
+> 详见 v0.135.0 段与 `docs/cmd-popup-rootcause-report.md` §7.3。
 
 ### 五、影响与回滚
 
