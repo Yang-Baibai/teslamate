@@ -585,11 +585,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/install-hermes-gateway-tas
 
 ⇒ **本项目用第三行**（两个 install 脚本的 XML 里都是它）；`<Hidden>` 保留，只管 UI 不碍眼。
 
-⚠️ **为什么 `-WindowStyle Hidden` 在这台机器上无效**（2026-11-07 实测）：
-本机 pwsh 由 **Windows Terminal** 承载（`HKCU\Console\%%Startup\DelegateTerminal` 为空
-⇒ 交给 Windows 决定 ⇒ 选 Terminal）⇒ Terminal 用 **ConPTY / `PseudoConsoleWindow`** 渲染会话，
-**它不看 `STARTUPINFO.wShowWindow`** ⇒ pwsh 自己设的 `SW_HIDE` 被忽略 ⇒ 窗口照弹。
-⇒ `conhost.exe --headless` **显式承载** pwsh ⇒ 绕开 Terminal 的接管 ⇒ 桌面根本不创建窗口。
+⇒ **为什么 `-WindowStyle Hidden` 在本机无效**：本机 pwsh 由 **Windows Terminal** 承载
+（ConPTY 不看 `STARTUPINFO.wShowWindow`）⇒ 完整推导、备选与代价见 **ADR #64**。
 
 **实测对照**（观察者跑在交互式会话里，40ms 轮询可见顶层窗口）：
 
@@ -599,10 +596,14 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/install-hermes-gateway-tas
 | 22:44:16 | `conhost --headless` | ✅ **无任何窗口** |
 
 ⚠️ **探针必须与被测对象同会话**：后台会话枚举不到桌面窗口（永远探到 0）
-⇒ 对照组与实验组**一起被抹平** ⇒ 实验无效。
-⇒ 观察者自己也要用 `InteractiveToken` 的计划任务拉起。
+⇒ 对照组与实验组**一起被抹平** ⇒ 实验无效；
+⇒ 观察者自己也要用 `InteractiveToken` 的计划任务拉起（代价见 ADR #64）。
 
 ⚠️ 修完仍要**肉眼确认**一个 5 分钟窗口。
+
+> 📌 **决策与代价见 ADR #64**（`docs/adr.md`）：三个候选方案的取舍、
+> 为什么 `-WindowStyle Hidden` 与 VBS 包装器都不行、以及换机器时必须重跑
+> 这两个 `install-*.ps1` 的边界，都记在那里。
 
 ### 12.3 排障
 
