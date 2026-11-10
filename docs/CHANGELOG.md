@@ -24,20 +24,20 @@
   电量 24%、续航「现在能开 86 公里」、空调「关闭」⇒ 与线上接口一致。
 - ⇒ **v0.137.0 段已补记这次复核**（真机复核的记录写在该版本自己的段里）。
 
-### 二、模拟器专项：实测把「VBS ⇒ WHPX 拿不到加速器」这个归因**削弱**了
+### 二、模拟器专项：guest 内核从未启动 ⇒ 卡点在宿主侧 hypervisor（⚠️ 本段末尾有一处**就地订正**）
 
 | 实验 | 启动参数 | 结果 |
 |---|---|---|
-| ① 默认图形 | `-avd tm_pixel` | 崩：退出码 `3221225477`（0xC0000005 访问冲突）；崩前 `Critical: Failed to load opengl32sw` |
+| ① 默认图形 | `-avd tm_pixel` | 崩：退出码 `3221225477`（0xC0000005 访问冲突）；崩前日志有 `Critical: Failed to load opengl32sw`（⚠️ **这行不是崩溃原因**，见本段末尾订正） |
 | ② 换渲染后端 | `-gpu swiftshader_indirect` | 不崩，**卡死**（qemu CPU 0.6 秒、adb 永远 `offline`） |
 | ③ 无快照 + 内核输出 | `-no-snapshot-load -show-kernel` | **零内核输出** ⇒ guest 内核**从未开始执行** |
 | ④ 纯软件（无 hypervisor） | `-accel off` | 同样卡死 ⇒ **与加速器无关** |
 | ⑤ 换另一个 AVD | `-avd tm_emu`（android-35） | **同样崩在同一处** ⇒ **与 AVD / 镜像无关** |
 
 ⇒ 每一轮日志最后一行都是 `WHPX on Windows 10.0.26200 detected.` + `Windows Hypervisor Platform accelerator is operational`
-⇒ **加速器在运行时是就绪的**（不只是 `-accel-check` 的静态检查）⇒
-「VBS/Hyper-V 占着 hypervisor ⇒ WHPX 拿不到加速器 ⇒ 要关 VBS + 管理员 + 重启」这个**归因站不住**（至少不是全部）。
-⇒ 崩溃/卡死点锁定在「**WHPX 建虚拟机 → guest 启动**」这一段，且**只在宿主侧**（与模拟器参数、AVD、镜像都无关）。
+⇒ ⚠️ **这两行只证明「WHPX 组件在」，不证明「guest 能拿到 hypervisor」** —— 见本段末尾的**就地订正**。
+⇒ 五组实验**真正**证明的是：崩溃/卡死点锁定在「**WHPX 建虚拟机 → guest 启动**」这一段，
+   且**只在宿主侧**（与模拟器参数、加速器模式、AVD、镜像都无关）。
 ⇒ 要继续往下查必须能读 **Windows 侧的虚拟化功能状态** ⇒ **需要管理员权限** ⇒ 已按用户指示**单独立专项**并去要资源支持。
 
 ### 三、顺带查清的两个操作坑（都写进 docs/28）
@@ -45,16 +45,41 @@
 - **同一 AVD 不能并行开第二个实例**：第二次启动报 `FATAL | Running multiple emulators with the same AVD is an experimental feature.`
   ⇒ 每次实验前**必须**先杀掉残留的 `qemu-system-x86_64*` / `emulator` 进程（无头实例进程名带 `-headless`，
   `taskkill /IM qemu-system-x86_64.exe` **杀不掉它**）—— 这也是「看起来卡住」的另一个来源。
-- **本机 SDK 缺 `emulator/lib64/opengl32sw.dll`** ⇒ 默认图形路径必崩；但 AVD 里 `hw.gpu.enabled=no` 已经设好
-  （走 `lib64/gles_swiftshader` 的 gfxstream 路径，不需要那个文件）⇒ **别传 `-gpu`**，让 AVD 自己的设置生效。
+- **本机 SDK 缺 `emulator/lib64/opengl32sw.dll`** ⇒ 但它**只影响 `-gpu swiftshader` 那条老路径**；
+  **默认图形路径走的是 `lib64\gles_angle`（ANGLE/DirectX）** ⇒ 「缺它 ⇒ 默认路径必崩」**这条因果链不成立**（⚠️ 我当时写错了，见末尾订正）。
+  ⇒ 装完整包**仍然值得做**（补齐文件、去掉一个变量），但**不是根因**。
+  ⇒ AVD 里 `hw.gpu.enabled=no` 已经设好 ⇒ **别传 `-gpu`**，让 AVD 自己的设置生效。
 
 ### 四、本轮交付
 
 - ✅ **真机复核结清**（v0.137.0 段已补记）—— 连续七轮之后的第一次。
 - ✅ **模拟器专项已开跑**：新建**专项对话**（**v0.141.0 归它**），带着上面这张实验表、清理流程与排查顺序；
   同时向**项目负责人对话**申请**管理员权限 / 一次重启窗口 / SDK 修复**三项资源。
-- ✅ **docs/28 就地订正**：被削弱的归因**保留错误痕迹**，旁边写清新的结论与新的排查顺序（AGENTS.md 第 4 条）。
+- ✅ **docs/28 就地订正**：旧归因**保留错误痕迹**；旁边写清**注册表证据**与新的排查顺序（AGENTS.md 第 4 条）。
 - ⚠️ **仍未解决**：模拟器**还没起来** ⇒ 版面复核暂时**继续在真机上做**（真机与 AVD 参数完全相同 ⇒ 版面结论等价）。
+
+### 五、⚠️ 就地订正（本段写错了一处，保留错误痕迹）
+
+**❌ 我在本段原本写的**：「实测把『VBS ⇒ WHPX 拿不到加速器』这个归因**削弱**了」——
+理由是启动日志打出 `Windows Hypervisor Platform accelerator is operational`，我据此以为「加速器是就绪的」。
+
+**✅ 正确结论**：**旧归因仍然成立**，而且有一份**不需要管理员就能读**的直接证据：
+
+| 注册表键 | 值 | 含义 |
+|---|---|---|
+| `HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard` → `EnableVirtualizationBasedSecurity` | `1` | **VBS 开着** |
+| 同上 → `HyperVVirtualizationBasedSecurityOptout` | `0` | **没有退出 VBS** |
+| `…\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity` → `Enabled` | `0` | 内存完整性（HVCI）已关 ✔ |
+
+⇒ **WHPX 能启动 ≠ guest 能拿到 hypervisor** ⇒ VBS 在跑时 hypervisor 被它占着 ⇒ guest 起不来。
+⇒ ⚠️ **我的教训**：那行日志只是「**组件在**」的信号，不是「guest 能用」的证据 ——
+拿**代理信号**当**产物证据**，正是 AGENTS.md 第 4 条要防的那类错。
+⇒ 连带订正第二条因果链：`opengl32sw.dll` 确实缺，但**只影响 `-gpu swiftshader` 老路径**；默认路径走 `lib64\gles_angle`
+⇒ 「缺它 ⇒ 默认路径必崩」**不成立**（本段第三节已改）。
+⇒ **排查方向不变**：先只读探测（`HKLM\…\DeviceGuard` **不需要管理员**）→ 再用一次 UAC 提权补上 `HypervisorPlatform` /
+  `VirtualMachinePlatform` / `Microsoft-Hyper-V-All` 的功能 State 与 `bcdedit /enum {current}`
+  → **最后**才谈改启动项 + 重启（**必须先取得用户明确同意**：Docker Desktop / WSL2 / 5 个 compose 容器都跑在虚拟化上）。
+
 ## 2026-11-10（v0.139.0 · 「交接位一律用会话全名」从一句「记得写」变成源码级闸门）
 
 > 本轮手术点：**跨会话交接位的指代**（把一句靠自觉的规矩，变成机器会报红的判据）。
