@@ -412,6 +412,32 @@ def visible_long_blocks(src):
             i = j + 1
             continue
         i += 1
+    # ⚠️ **v0.138.0**：`val` 里**被渲染**的长句也要算进来 ——
+    #
+    # 原来这条闸门只扫 `Text(` 块 ⇒ 「`val x = "…长句…"` + 后面 `Text(x)`」
+    # 这种写法**完全看不见** ⇒ 啰嗦棘轮的预算被低估（这类长句是裸奔的）。
+    #
+    # 判据：**只有真的被 `Text(` 引用**的 val 才算 —— 否则会误报一堆非界面字符串。
+    # ⚠️ 注释行不参与（否则注释里提一句 `Text(x)` 就会误判）。
+    rendered = set()
+    for ln in lines:
+        if is_comment(ln):
+            continue
+        rendered.update(re.findall(r'Text\(\s*([A-Za-z_][A-Za-z0-9_]*)', ln))
+    if rendered:
+        for ln in lines:
+            if is_comment(ln):
+                continue
+            m = re.match(r'[ \t]*(?:private |internal |public )?val ([A-Za-z_][A-Za-z0-9_]*)[^=\n]*=[ \t]*("(?:[^"\\]|\\.)*")', ln)
+            if not m:
+                continue
+            name, lit = m.group(1), m.group(2)
+            if name not in rendered:
+                continue
+            plain = ''.join(LIT.findall(TPL.sub('x' * 5, lit)))
+            if vwidth(plain) >= 44:
+                shown = plain.replace('x' * 5, '…')
+                out.append((lines.index(ln) + 1, shown, shown[:50]))
     return out
 
 
