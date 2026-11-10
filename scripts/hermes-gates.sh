@@ -1438,6 +1438,145 @@ if [ $? -eq 0 ]; then ok "遥测「最后一条」的新鲜度口径只在服务
 rm -f "$TMP"
 
 
+# ── 闸门 18：座舱温度读数的「新鲜度」只在服务端一份 ───────────────────
+#
+# ⚠️ **v0.137.0**（2026-11-10 线上实测打出来的）：
+# positions.inside_temp 是**车醒着时才更新**的稀疏列（实测非空率仅 3.5%）
+# ⇒ 车睡着后它停在**停车那一刻**的值。
+# 而服务端对「这个读数是不是现在的」有**两套口径**：
+#   座舱闷热用 `s.DataStale`（**24 小时**门槛）
+#   空调那一侧用 `pollSnapshotStale`（**车醒着才算当前**）
+# ⇒ 同一个 handler 里、同一份 positions 数据，两个口径可能给出**相反**的答案。
+# 实测：车停了 22 小时，App 仍显示停车时的「车内 25.8℃」⇒ **假新鲜度 / 假安全**
+#（车实际在外面暴晒一整天时，界面反而说「不闷热」）。
+#
+# 这道闸门钉六件事：
+#   ① 服务端必须给**当前读数**，并**保留上次读数 + 它的时刻**（信息不许丢）；
+#   ② 座舱的陈旧判据必须走**车醒着没有**那条（cabinReadingCurrent）且**真的被调用**；
+#   ③ MCP 必须**透传**（不许自己解释、不许自己判陈旧）；
+#   ④ **阈值与判据函数不许漏到客户端**（标识符形态唯一 ⇒ 全盖写法）；
+#   ⑤ `DataStale` 只许**算一次**（不许被复用成第二个判据 ⇒ 两个口径会相反）；
+#   ⑥ 契约自检**必须真的在跑**（定义了函数 ≠ 生效 —— 闸门 10 的教训）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+API = ROOT / 'api'
+MCP = ROOT / 'mcp' / 'teslamate_mcp.py'
+CHK = ROOT / 'mcp' / 'check_tool_fields.py'
+GATE = ROOT / 'scripts' / 'hermes-gates.sh'
+
+problems = []
+
+for p in [API, MCP, CHK, GATE]:
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace')
+
+
+def strip_comments(src, kinds):
+    """粗剥离注释 —— 只为「标识符计数 / 存在性」用（ADR #47 的先例）。"""
+    if 'block' in kinds:
+        src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    if 'line' in kinds:
+        src = re.sub(r'//[^\n]*', '', src)
+    if 'hash' in kinds:
+        src = re.sub(r'#[^\n]*', '', src)
+    return src
+
+
+go_files = [f for f in sorted(API.glob('*.go')) if not f.name.endswith('_test.go')]
+api_src = '\n'.join(read(f) for f in sorted(API.glob('*.go')))
+api_code = '\n'.join(strip_comments(read(f), ('block', 'line')) for f in go_files)
+mcp_src = read(MCP)
+mcp_code = strip_comments(mcp_src, ('hash',))
+chk_src = read(CHK)
+handlers_code = strip_comments(read(API / 'handlers.go'), ('block', 'line'))
+
+# ① 服务端必须给当前读数、并保留上次读数 + 它的时刻
+for key in ('inside_temp_last', 'inside_temp_at'):
+    if key not in api_code:
+        problems.append('服务端没有 %s ⇒ 读数不是当前的时候，「上次读到多少、什么时候」整段丢了' % key)
+if not re.search(r'InsideTemp\s*=\s*nil', handlers_code):
+    problems.append('api/handlers.go 里没有把 InsideTemp 置空 ⇒ 读数不是当前时，'
+                    'App 仍会把停车那一刻的旧值当「现在的车内温度」显示（假新鲜度）')
+
+# ② 座舱的陈旧判据必须走「车醒着没有」那条，且真的被调用
+if 'func cabinReadingCurrent(' not in api_code:
+    problems.append('api/ 里没有 cabinReadingCurrent ⇒ 座舱读数的陈旧判据没有唯一出处')
+if not any('cabinReadingCurrent(' in ln and not ln.lstrip().startswith('func ')
+           for ln in api_code.split('\n')):
+    problems.append('cabinReadingCurrent 没有被调用 ⇒ 定义了函数 ≠ 生效（闸门 10 的教训）')
+
+# ③ MCP 必须透传
+for key in ('inside_temp_last', 'inside_temp_at'):
+    if key not in mcp_code:
+        problems.append('MCP 没透传 %s ⇒ 飞书里说不清这个读数有多旧' % key)
+
+# ④ 阈值与判据函数不许漏到客户端
+#    ⚠️ **标识符归一化后再匹配**（去掉非字母数字 + 转小写）⇒
+#    `DataStaleHours` / `DATA_STALE_HOURS` / `dataStaleHours` **全都归到同一个**
+#    ⇒ 不依赖写法形态（AGENTS.md：别把判据写成「某一种写法形态」）。
+#    ⚠️ 客户端**代码**里不许有；**注释**里有没关系（App 的 Api.kt 注释里
+#    提过 `DataStaleHours=24` 作为历史说明 ⇒ 那是给人看的，不是判定）。
+def norm(s):
+    return re.sub(r'[^0-9a-z]', '', s.lower())
+
+
+CLIENT_TOKENS = ('datastalehours', 'datawarnhours', 'pollsnapshotstale', 'cabinreadingcurrent')
+clients = [(MCP, mcp_code)]
+for kt in sorted((ROOT / 'app-android').rglob('*.kt')):
+    clients.append((kt, strip_comments(read(kt), ('block', 'line'))))
+for sh in sorted((ROOT / 'scripts').glob('*.sh')):
+    clients.append((sh, strip_comments(read(sh), ('hash',))))
+for ps in sorted((ROOT / 'scripts').glob('*.ps1')):
+    clients.append((ps, strip_comments(read(ps), ('hash',))))
+for p, src in clients:
+    if p.resolve() == GATE.resolve():
+        continue  # 这道闸门自己要说这些名字，不算违规
+    n_src = norm(src)
+    for tok in CLIENT_TOKENS:
+        if tok in n_src:
+            problems.append('%s 里出现了 %s（标识符归一化后）⇒ 陈旧判据漏到客户端（ADR #38）'
+                            % (p.name, tok))
+
+# ⑤ DataStale 只许「算一次」（不许被复用成第二个判据 ⇒ 两个口径会相反）
+n = len(re.findall(r'\bDataStale\b', handlers_code))
+if n != 1:
+    problems.append('api/handlers.go 里 DataStale 出现 %d 次（剥注释后）⇒ '
+                    '它被复用成了第二个陈旧判据（实测踩过：座舱闷热用的就是它，'
+                    '而空调那一侧用的是 pollSnapshotStale ⇒ 两个口径会相反）' % n)
+for ln in handlers_code.split('\n'):
+    if 'cabinHeat(' in ln and 'DataStale' in ln:
+        problems.append('api/handlers.go 里 cabinHeat 的陈旧判据用的是 DataStale（24 小时门槛）'
+                        '⇒ 车睡着 22 小时也会给「闷热」结论（假新鲜度）')
+        break
+
+# ⑥ 契约自检必须真的在跑
+fn = 'check_cabin_temp_freshness_contract'
+if ('def %s(' % fn) not in chk_src:
+    problems.append('契约自检 %s 没定义 ⇒ 那条契约等于没写' % fn)
+elif not any((fn + '(') in ln and not ln.lstrip().startswith('def ')
+             for ln in chk_src.split('\n')):
+    problems.append('契约自检 %s 没被调用 ⇒ 定义了函数 ≠ 生效（闸门 10 的教训）' % fn)
+
+if problems:
+    print('座舱温度读数的「新鲜度」没有收敛到服务端 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 读数是不是「当前的」只能服务端判（ADR #38）；客户端只透传')
+    print('      停车那一刻的旧读数不许冒充「现在的车内温度」（假新鲜度 / 假安全）')
+    sys.exit(1)
+print('座舱温度新鲜度：判据与保留信息只在服务端一份 ✔（MCP 只透传）')
+PYEOF
+if [ $? -eq 0 ]; then ok "座舱温度读数的「新鲜度」只在服务端一份"; else fail "座舱温度的新鲜度口径跑到了客户端"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

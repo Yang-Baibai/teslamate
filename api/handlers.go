@@ -138,7 +138,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.ServerTimezone = getenv("TZ_NAME", "Asia/Shanghai")
 	err = db.QueryRow(context.Background(), sqlStatus, id).Scan(
 		&s.UpdatedAt, &s.BatteryLevel, &s.UsableLevel, &s.IdealRangeKm, &s.EstRangeKm, &s.RatedRangeKm,
-		&s.Odometer, &s.Speed, &s.Power, &s.OutsideTemp, &s.InsideTemp, &s.IsClimateOn, &s.Elevation,
+		&s.Odometer, &s.Speed, &s.Power, &s.OutsideTemp, &s.InsideTemp, &s.InsideTempAt, &s.IsClimateOn, &s.Elevation,
 		&s.Lat, &s.Lng, &s.MapLat, &s.MapLng,
 		&s.TpmsFL, &s.TpmsFR, &s.TpmsRL, &s.TpmsRR,
 		&s.LocationName,
@@ -310,11 +310,39 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.OdometerVehicleAt = odo.At
 	s.OdometerNote = renderOdometerNote(odo, serverLocation(), time.Now())
 
+	// ⚠️ `s.State` 是 **指针**（可能没有）⇒ 先摊成字符串再判。
+	//
+	// ⚠️ **v0.137.0**：这里**提前算** —— 下面「座舱温度」的陈旧判据要用它。
+	//   （同一份 positions 数据，「是不是当前的」只能有一个答案。）
+	pollState := ""
+	if s.State != nil {
+		pollState = *s.State
+	}
+
 	// ⚠️ **v0.129.0**：座舱闷热（暴晒后车内能到 60℃）。
 	//
 	// 阈值与文案都在服务端（[cabinHeat]）⇒ App 的座舱卡与飞书说同一句话。
 	// ⚠️ 数据陈旧 ⇒ 不给结论（宁可说不知道，不可编）。
-	s.CabinHeat = cabinHeat(s.InsideTemp, s.OutsideTemp, &s.UpdatedAt, s.DataStale)
+	//
+	// ⚠️ **v0.137.0**：陈旧判据从「超过 24 小时」（DataStale）改成
+	// 「**车醒着没有**」（[cabinReadingCurrent]）：
+	// positions.inside_temp 是**车醒着时才更新**的稀疏列 ⇒ 车睡着后它停在
+	// **停车那一刻**的值 ⇒ 「停多久」与「读数是不是现在的」是两件事。
+	// 原来用 24 小时门槛 ⇒ 实测车停了 22 小时仍给出「车内 25.8℃」的结论
+	// ⇒ 那是**停车那一刻**（夜里 25.8℃）的温度，而车实际在外面暴晒了一整天
+	// ⇒ **假安全**（界面说「不闷热」，实际可能 50℃+）。
+	readingStale := !cabinReadingCurrent(pollState)
+	s.CabinHeat = cabinHeat(s.InsideTemp, s.OutsideTemp, s.InsideTempAt, readingStale)
+
+	// ⚠️ **v0.137.0**：顶层 `inside_temp` 收窄为「**当前**读到的车内温度」。
+	// 读数不是当前的 ⇒ 置 null ⇒ App 的「车内温度」格显示「—」（既有 `?:` 兜底，
+	// **App 零改动**）；「上次读到多少、什么时候」另给 inside_temp_last / inside_temp_at。
+	//
+	// ⚠️ `outside_temp` **不动** —— 续航模型（RangeModel）要用它做温度修正。
+	s.InsideTempLast = s.InsideTemp
+	if readingStale {
+		s.InsideTemp = nil
+	}
 
 	// 锁车状态来自 Tesla Fleet API 的后台轮询缓存（api/tesla.go）。
 	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。
@@ -418,11 +446,6 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	//	⇒ **顶层 `is_climate_on` 也跟着换成合并值** ——
 	//	  App 读的还是同一个字段，却自动拿到更准、更新的那份；
 	//	  App 端**零改动**，界面上也不必多显示任何一行字。
-	// ⚠️ `s.State` 是 **指针**（可能没有）⇒ 先摊成字符串再判。
-	pollState := ""
-	if s.State != nil {
-		pollState = *s.State
-	}
 	s.Cabin, s.IsClimateOn = applyCabinClimate(telSafety.Cabin, s.IsClimateOn, &s.UpdatedAt, pollSnapshotStale(pollState))
 
 	// ⚠️ **v0.84.0：固件版本 + 有没有可装的固件**。

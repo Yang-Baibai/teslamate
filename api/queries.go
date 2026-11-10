@@ -46,6 +46,11 @@ WITH lp AS (
     (array_agg(tpms_pressure_rr ORDER BY date DESC) FILTER (WHERE tpms_pressure_rr IS NOT NULL))[1] AS tpms_rr,
     (array_agg(outside_temp ORDER BY date DESC) FILTER (WHERE outside_temp IS NOT NULL))[1] AS outside_temp,
     (array_agg(inside_temp ORDER BY date DESC) FILTER (WHERE inside_temp IS NOT NULL))[1] AS inside_temp,
+    -- ⚠️ **v0.137.0**：车内温度**读数的时刻**（不是「最后一条 position」的时刻）。
+    --   inside_temp 是稀疏列（实测非空率仅 3.5%）⇒
+    --   「最后一条 position」与「最后一次有车内温度的行」常常**不是同一行**
+    --   ⇒ 拿 updated_at 当读数时刻 = 把旧读数说成新的（假新鲜度）。
+    (array_agg(date ORDER BY date DESC) FILTER (WHERE inside_temp IS NOT NULL))[1] AS inside_temp_at,
     (array_agg(elevation ORDER BY date DESC) FILTER (WHERE elevation IS NOT NULL))[1] AS elevation
   FROM (
     SELECT * FROM positions WHERE car_id = $1 ORDER BY date DESC LIMIT 500
@@ -125,6 +130,8 @@ SELECT lp.date, lp.battery_level, lp.usable_battery_level,
        lp.odometer, lp.speed, lp.power,
        COALESCE(lp.outside_temp, rx.outside_temp) AS outside_temp,
        COALESCE(lp.inside_temp, rx.inside_temp) AS inside_temp,
+       -- ⚠️ **v0.137.0**：那个车内温度**是哪一行读到的**。
+       CASE WHEN lp.inside_temp IS NOT NULL THEN lp.date ELSE rx.inside_temp_at END AS inside_temp_at,
        lp.is_climate_on,
        COALESCE(lp.elevation, rx.elevation) AS elevation,
        lp.lat, lp.lng, lp.map_lat, lp.map_lng,
