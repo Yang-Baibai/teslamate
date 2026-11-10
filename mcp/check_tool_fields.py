@@ -632,6 +632,7 @@ def check_telemetry_stream_freshness_contract() -> list:
     bad = []
     try:
         al = T._get("/api/v1/cars/%s/alerts" % T.CAR_ID)
+        st = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
         tool = T.teslamate_alerts()
     except Exception as e:
         return ["调用异常 %r" % (e,)]
@@ -645,6 +646,17 @@ def check_telemetry_stream_freshness_contract() -> list:
             bad.append("`/alerts` 的 stream 缺键 %s ⇒ 飞书只能拿假时刻回答「遥测多久没更新」" % k)
     if bool(stream.get("last_message_stale")) and not stream.get("last_message_at"):
         bad.append("`/alerts` 说「最后一条是旧的」却没有给时刻 ⇒ 等于「不知道」却装成知道")
+
+    # ⚠️ **两个入口必须给同一份事实**（v0.136.0 实测踩到过）：
+    #   /status 里的遥测块与 /alerts 的 stream 如果各走各的 ⇒ 一个说「19:40 · 是旧的」，
+    #   另一个把那个时刻整个丢掉、还把 stale 说成 false ⇒ 同一个事实两套话。
+    if isinstance(st, dict) and "error" not in st:
+        st_stream = ((st.get("telemetry") or {}).get("stream") or {})
+        if isinstance(st_stream, dict) and st_stream:
+            for k in ("last_message_at", "last_message_stale"):
+                if st_stream.get(k) != stream.get(k):
+                    bad.append("/status 的遥测流 %s = %r，与 /alerts 的 %r 不一致 ⇒ 两个入口不是同一份事实"
+                               % (k, st_stream.get(k), stream.get(k)))
     if isinstance(tool, dict) and "错误" not in tool:
         flow = tool.get("遥测流") or {}
         if not isinstance(flow, dict):

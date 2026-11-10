@@ -246,6 +246,12 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 			if terr != nil {
 				block.Error = terr.Error()
 			} else {
+				// ⚠️ **v0.136.0**：**流状态也要用同一份**。
+				//   原来这里没接 `tel.Stream` ⇒ /status 用的是**原始快照**，
+				//   而 /alerts 用的是算过新鲜度的那份 ⇒ 两个入口给的不是一个事实
+				//   （实测：/alerts 说「最后一条 19:40 · 是旧的」，
+				//     /status 却把那个时刻整个丢掉、还把 stale 说成 false）。
+				block.Stream = tel.Stream
 				block.Connected = tel.Connectivity == "CONNECTED"
 				block.EverConnected = tel.EverConnected
 				block.Alerts = tel.Alerts
