@@ -3536,6 +3536,112 @@ PYEOF
 if [ $? -eq 0 ]; then ok "充电列表页「只列最近 N 条」用「·」不用括号"; else fail "充电列表页那一行又括号降级 / 现拼了"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 34：跨会话交接位不许用相对称呼 ──────────────────────────
+#
+# 事故背景：AGENTS.md 有通则「交接位一律用会话全名」（2026-11-04 补）——
+#   交接位里写「你/我」「本会话」「并行会话」时，两个会话会各指各的
+#   （读到的人不知道说的是哪一方）⇒ 那天真的因此错过一次版本交接。
+#   可那句话只是一句「记得写」⇒ 记不住 ⇒ 所以本轮把它变成源码级判据。
+#
+# 判据（不依赖写法形态：判的是「有没有出现这批相对称呼的字面量」，
+#       不是「某一行是不是某个人写的」⇒ 换写法、换位置、换人都照样咬得住）：
+#   ① docs/CHANGELOG.md 的**最新段**（第一个 `## ` 标题到第二个之间）
+#      —— 那正是「以后的人第一眼看到的位置」；
+#   ② AGENTS.md 全文 —— 那正是通则里点名的第二类交接位（实况记录 + 规矩行）；
+#      **规则定义处除外**（那几行本来就得写出被禁的词才讲得清）。
+#
+# ⚠️ **代价（兜底非全覆盖，详见 CHANGELOG v0.139.0 段）**：
+#   ① CHANGELOG 只管**最新段** ⇒ 历史版本段里的旧写法保留（按规矩不改）；
+#   ② 单人代词「你/我」**不在判据内**（散文里太常见 ⇒ 误报率高）⇒ 仍靠 AGENTS.md 通则管；
+#   ③ 被禁字面量的**清单写在这份脚本里** ⇒ **不许抄进 CHANGELOG 最新段**
+#      （抄进去就会被自己这条闸门报红 —— 规则不许出现在被搜文本里）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+ROOT = pathlib.Path('.')
+CH = ROOT / 'docs/CHANGELOG.md'
+AG = ROOT / 'AGENTS.md'
+
+# 相对称呼（指代不明的那种叫法）：交接位里一律不许出现
+BANNED = [
+    '本会话',
+    '并行会话',
+    '该会话',
+    '另一会话',
+    '另一个会话',
+    '那个会话',
+    '这个会话',
+    'UI 会话',
+    'UI会话',
+    '对面会话',
+]
+
+# 规则定义处的标记：那几行本来就得写出被禁的词（否则讲不清「不许写什么」）
+DEF_MARKERS = [
+    '不许写',
+    '相对称呼',
+    '会话全名',
+]
+
+problems = []
+
+
+def read_lines(p):
+    if not p.exists():
+        return None
+    raw = p.read_bytes()
+    text = raw.decode('utf-8-sig', errors='replace')
+    return text.split('\n')
+
+
+def hits(line):
+    """这一行里出现的被禁字面量（去重，且不因子串重叠而重复报）"""
+    out = []
+    rest = line
+    for b in BANNED:
+        if b in rest:
+            out.append(b)
+            rest = rest.replace(b, '')
+    return out
+
+
+# ① CHANGELOG 的最新段
+ch = read_lines(CH)
+if ch is None:
+    problems.append('docs/CHANGELOG.md 不存在')
+else:
+    idx = [i for i, l in enumerate(ch) if l.startswith('## ')]
+    if len(idx) < 2:
+        problems.append('docs/CHANGELOG.md 里找不到两个二级标题（新段头没被插好）')
+    else:
+        for off, line in enumerate(ch[idx[0]:idx[1]]):
+            for b in hits(line):
+                problems.append('docs/CHANGELOG.md 第 %d 行（最新段）：%s' % (idx[0] + off + 1, b))
+
+# ② AGENTS.md 全文（规则定义处除外）
+ag = read_lines(AG)
+if ag is None:
+    print('说明：AGENTS.md 不在这个副本里（隔离副本没带）⇒ 这一半张漏过')
+else:
+    for i, line in enumerate(ag):
+        if any(m in line for m in DEF_MARKERS):
+            continue
+        for b in hits(line):
+            problems.append('AGENTS.md 第 %d 行：%s' % (i + 1, b))
+
+if problems:
+    print('交接位里还有相对称呼 %d 处 ——' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 交接位里只能出现会话全名（「综合持续迭代」/「UI交互迭代」）')
+    sys.exit(1)
+
+print('交接位（CHANGELOG 最新段 + AGENTS.md）里没有相对称呼')
+PYEOF
+if [ $? -eq 0 ]; then ok "跨会话交接位只用会话全名（不许相对称呼）"; else fail "交接位里出现了相对称呼（读到的人会不知道说的是哪一方）"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

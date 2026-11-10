@@ -27,7 +27,14 @@ mkdir -p "$PROBE/app-android/app"
 cp -r "$ROOT/api" "$ROOT/docs" "$ROOT/scripts" "$ROOT/mcp" "$PROBE/"
 cp -r "$ROOT/app-android/app/src" "$PROBE/app-android/app/src"
 cp "$ROOT/app-android/app/build.gradle.kts" "$PROBE/app-android/app/"
-[ -f "$ROOT/.env" ] && cp "$ROOT/.env" "$PROBE/"
+[ -f "$ROOT/.env" ] && [ -f "$ROOT/.env" ] && cp "$ROOT/.env" "$PROBE/"
+# AGENTS.md 也要带进去（有些闸门会扫它，比如闸门 34 的交接位判据）
+[ -f "$ROOT/AGENTS.md" ] && cp "$ROOT/AGENTS.md" "$PROBE/"
+
+# 探针脚本路径先转成绝对（后面会 cd 进副本，相对路径就失效了）
+if [ -n "$PROBE_SCRIPT" ]; then
+  PROBE_SCRIPT="$(cd "$(dirname "$PROBE_SCRIPT")" && pwd)/$(basename "$PROBE_SCRIPT")"
+fi
 
 cd "$PROBE" || exit 1
 if [ ! -f "scripts/$GATE" ]; then
