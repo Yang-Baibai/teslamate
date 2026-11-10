@@ -535,6 +535,16 @@ hermes send --to weixin "xxx"
 Start-ScheduledTask -TaskName 'Hermes-Gateway'
 ```
 
+⚠️ **改了 `mcp/teslamate_mcp.py` ⇒ 必须重启网关**（2026-11-10 实测踩到）：
+
+MCP 服务是**网关的子进程**（`python …/mcp/teslamate_mcp.py`，由 `hermes gateway run` 拉起）
+⇒ 改完文件它**不会**自己重载 ⇒ 不重启 ⇒ **飞书跑的还是旧代码**。
+⇒ 迷惑之处：**契约自检会全绿**（它 `import` 的是磁盘上的新文件、打的也是线上接口）
+⇒ 但网关里跑的那份仍是旧模块 ⇒ **新字段根本到不了飞书**。
+⇒ 重启办法（同上）：杀掉网关进程树 ⇒ `Start-ScheduledTask -TaskName 'Hermes-Gateway'`
+⇒ 起来后**看日志确认**：`…\logs\gateway.log` 出现 `✓ feishu connected`，
+且 `gateway-autostart.log` 那行是「已拉起网关 PID …」（不是「已在运行 ⇒ 跳过」）。
+
 ### 11.5 微信通道：已于 2026-11-05 关闭（只用飞书）
 
 用户决定：**以后只用飞书**。微信通道**整个关掉**，不再接收任何推送。

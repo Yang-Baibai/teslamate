@@ -72,6 +72,12 @@
 "cabin_heat": null                                ← 车睡着 ⇒ 不给闷热结论
 ```
 
+⚠️ **MCP 服务是网关的子进程**（`python …/mcp/teslamate_mcp.py`，由 `hermes gateway run` 拉起）
+⇒ 改了 `mcp/teslamate_mcp.py` **不会**自己重载 ⇒ **必须重启网关**，否则飞书跑的还是旧代码
+⇒ 本轮按 `docs/operations.md` §11.4 的办法重启（杀网关进程树 ⇒ `Start-ScheduledTask -TaskName 'Hermes-Gateway'`）
+⇒ 实测：新网关 PID 10080 · 新 MCP PID 15720 · **✓ feishu connected**（18:16:04）
+⇒ 飞书侧实测：`车内温℃ = None` · `车内温度上次读到℃ = 25.8` · `车内温度采集于 = 2026-11-09T11:37:40.315Z` · `座舱闷热 = None` · `车外温℃ = 22.5`（未动）。
+
 ### 五、闸门与自检
 
 - **新增 Hermes 闸门 18**「座舱温度读数的『新鲜度』只在服务端一份」（六条判据）：
