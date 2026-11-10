@@ -226,41 +226,103 @@ func ensureTelemetryTables(ctx context.Context) {
 //
 // 这两件事差一个字就是**假安全**，必须分开。
 type telemetryStreamState struct {
-	mu            sync.RWMutex
-	broker        bool // 与 mosquitto 是否连着
-	lastMessageAt time.Time
-	messages      int64
-	alerts        int64
-	errors        int64
-	fields        int64  // V（车辆数据字段）条数 —— 只计数，本轮不落库
-	lastSample    string // 最后一条 V 字段样例（证明管道通了）
+	mu     sync.RWMutex
+	broker bool // 与 mosquitto 是否连着
+	// carStatusAt / carStatusKnown：车端最近一次连接状态事件的时刻与是否已知。
+	//
+	// ⚠️ broker 重发 retained 时会把**旧**事件也重发 ⇒ 只认更新的事件。
+	carStatusAt    *time.Time
+	carStatusKnown bool
+	carOnline      bool // 车端在线（最后事件是 CONNECTED）？
+	messages       int64
+	carMessages    int64 // 其中**车端新发**的条数
+	replayed       int64 // 其中 broker 重放（retained）的条数
+	alerts         int64
+	errors         int64
+	fields         int64  // V（车辆数据字段）条数 —— 只计数，本轮不落库
+	lastSample     string // 最后一条 V 字段样例（证明管道通了）
+}
+
+// noteCarStatusEvent 记一次车端连接状态事件，并回答「这是车端新消息还是重放」。
+//
+// ⚠️ 只认**更新**的事件（broker 会重发旧的 retained）⇒ 详见 telemetry_stream.go。
+func (s *telemetryStreamState) noteCarStatusEvent(ev carStatusEvent) telemetryOrigin {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, known, origin := noteCarStatus(s.carStatusAt, s.carStatusKnown, ev)
+	s.carStatusAt = at
+	s.carStatusKnown = known
+	if known {
+		s.carOnline = carStatusOnline(ev.Status)
+	}
+	return origin
+}
+
+// noteCarMessage 记一条**普通**消息（车端数据 / 告警 / 错误），
+// 并按「车端在线吗」把它归类为车端新消息还是 broker 重放。
+func (s *telemetryStreamState) noteCarMessage() telemetryOrigin {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	origin := classifyTelemetryOrigin(s.carStatusKnown, s.carOnline)
+	if origin == telemetryOriginCar {
+		s.carMessages++
+	} else {
+		s.replayed++
+	}
+	return origin
 }
 
 var telemetryState telemetryStreamState
 
 // telemetryStreamView 对外的遥测流状态。
 type telemetryStreamView struct {
-	Broker        bool      `json:"broker_connected"`
-	LastMessageAt time.Time `json:"last_message_at,omitempty"`
-	Messages      int64     `json:"messages"`
-	Alerts        int64     `json:"alerts"`
-	Errors        int64     `json:"errors"`
-	Fields        int64     `json:"fields"`
-	LastSample    string    `json:"last_sample,omitempty"`
+	Broker bool `json:"broker_connected"`
+	// LastMessageAt 车端**最后一条真实数据**的时刻（不是「我们收到它的时刻」）。
+	//
+	// ⚠️ **v0.136.0 改过语义**：原来这里放的是「收到最后一条消息的时刻」
+	// ⇒ broker 重发 retained 时它会被刷新成假的（2026-11-09 实测：
+	// 车端 19:40 就断连，流级却显示 23:01 —— 那是容器重启补落的时刻）。
+	// ⇒ 现在由**字段级的诚实时刻**推出（见 telemetry_stream.go）。
+	// nil = **不知道**（一个字段都没收到过）。
+	LastMessageAt *time.Time `json:"last_message_at,omitempty"`
+	// LastMessageStale 这个时刻是不是「车断线前的最后已知值」。
+	//
+	// ⚠️ true ⇒ 报给用户时**必须**说明它有多旧，别当成「车端刚刚还在报」。
+	LastMessageStale bool `json:"last_message_stale"`
+	// Messages 收到的 MQTT 消息**总数**（含 broker 重放）。
+	Messages int64 `json:"messages"`
+	// CarMessages 其中**车端新发**的条数。
+	CarMessages int64 `json:"car_messages"`
+	// ReplayedMessages 其中 broker **重放**（retained）的条数。
+	ReplayedMessages int64 `json:"replayed_messages"`
+	// CarOnline 车端此刻在线吗（最后一条连接状态事件是 CONNECTED）。
+	CarOnline bool `json:"car_online"`
+	// CarStatusKnown 我们知不知道车端的连接状态。
+	//
+	// ⚠️ false ⇒ 后面那些消息只能保守当成重放（宁可少说，不冒充新鲜）。
+	CarStatusKnown bool   `json:"car_status_known"`
+	Alerts         int64  `json:"alerts"`
+	Errors         int64  `json:"errors"`
+	Fields         int64  `json:"fields"`
+	LastSample     string `json:"last_sample,omitempty"`
 }
 
 func (s *telemetryStreamState) snapshot() telemetryStreamView {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return telemetryStreamView{
-		Broker:        s.broker,
-		LastMessageAt: s.lastMessageAt,
-		Messages:      s.messages,
-		Alerts:        s.alerts,
-		Errors:        s.errors,
-		Fields:        s.fields,
-		LastSample:    s.lastSample,
+	view := telemetryStreamView{
+		Broker:           s.broker,
+		Messages:         s.messages,
+		CarMessages:      s.carMessages,
+		ReplayedMessages: s.replayed,
+		CarOnline:        s.carOnline,
+		CarStatusKnown:   s.carStatusKnown,
+		Alerts:           s.alerts,
+		Errors:           s.errors,
+		Fields:           s.fields,
+		LastSample:       s.lastSample,
 	}
+	return view
 }
 
 // telemetryTopics 要订阅的主题。
@@ -417,7 +479,6 @@ func telemetryClassify(base, topic string) (telemetryKind, string, string, bool)
 func telemetryHandleMessage(base, topic string, payload []byte) {
 	telemetryState.mu.Lock()
 	telemetryState.messages++
-	telemetryState.lastMessageAt = time.Now()
 	telemetryState.mu.Unlock()
 
 	kind, vin, name, ok := telemetryClassify(base, topic)
@@ -434,6 +495,7 @@ func telemetryHandleMessage(base, topic string, payload []byte) {
 		telemetryState.mu.Lock()
 		telemetryState.alerts++
 		telemetryState.mu.Unlock()
+		telemetryState.noteCarMessage()
 		telemetryStoreAlert(vin, name, a)
 	case telemetryKindAlertsHistory:
 		var arr []mqttAlert
@@ -453,6 +515,7 @@ func telemetryHandleMessage(base, topic string, payload []byte) {
 		telemetryState.mu.Lock()
 		telemetryState.errors++
 		telemetryState.mu.Unlock()
+		telemetryState.noteCarMessage()
 		telemetryStoreError(vin, name, e)
 	case telemetryKindConnectivity:
 		var cv mqttConnectivity
@@ -460,6 +523,12 @@ func telemetryHandleMessage(base, topic string, payload []byte) {
 			log.Printf("⚠️  连接状态载荷解析失败 %s：%v", topic, err)
 			return
 		}
+		// ⚠️ **连接状态事件只认更新的那个**（broker 会重发旧的 retained）
+		// ⇒ 见 noteCarStatusEvent。
+		telemetryState.noteCarStatusEvent(carStatusEvent{
+			Status: cv.Status,
+			At:     parseRFC3339(cv.CreatedAt),
+		})
 		telemetryStoreConnectivity(vin, cv)
 	case telemetryKindFields:
 		// ⚠️ **v0.80.0**：V 字段**落库**了（以前只计数）。
@@ -472,6 +541,7 @@ func telemetryHandleMessage(base, topic string, payload []byte) {
 			telemetryState.lastSample = fmt.Sprintf("%s/%s = %s", vin, name, string(payload))
 		}
 		telemetryState.mu.Unlock()
+		telemetryState.noteCarMessage()
 		telemetryStoreField(vin, name, payload)
 	}
 }
@@ -653,6 +723,25 @@ func loadTelemetryAlerts(ctx context.Context, vin string) (*telemetryAlertsRespo
 		Stream: telemetryState.snapshot(),
 		Alerts: []telemetryAlertView{},
 		Errors: []telemetryErrorView{},
+	}
+
+	// ⚠️ **v0.136.0**：流级的「最后一条」必须说真话。
+	//
+	// 内存快照里的那个时刻是「**我们收到**最后一条消息的时刻」
+	// ⇒ broker 重发 retained 时它会被刷新成假的（2026-11-09 实测：
+	// 车端 19:40 就断连，流级却显示 23:01 —— 那是容器重启补落的时刻）
+	// ⇒ 改用**字段级的诚实时刻**推出流级时刻（车离线 ⇒ 真实时刻 = 车断线的时刻）。
+	//
+	// ⚠️ 这段在**两个入口**都会跑（/alerts 与 /status 里的 telemetry 块）
+	// ⇒ 两边给的是同一份事实，不会一个说 23:01、另一个说 19:40。
+	if fields, ferr := loadTelemetryFields(ctx, vin); ferr == nil {
+		at, stale := telemetryStreamFreshness(fields)
+		out.Stream.LastMessageAt = at
+		out.Stream.LastMessageStale = stale
+	} else {
+		// 读不到字段 ⇒ **不知道**它有多新 ⇒ 不给时刻、不冒充新鲜。
+		out.Stream.LastMessageAt = nil
+		out.Stream.LastMessageStale = true
 	}
 
 	rows, err := db.Query(ctx, `

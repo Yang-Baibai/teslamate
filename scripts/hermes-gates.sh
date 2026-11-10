@@ -1354,6 +1354,90 @@ if [ $? -eq 0 ]; then ok "座舱闷热的阈值与文案只在服务端一份"; 
 rm -f "$TMP"
 
 
+# ── 闸门 17：遥测「最后一条」的新鲜度口径只在服务端一份 ─────────────────
+#
+# ⚠️ **v0.136.0**（2026-11-09 实测打出来的）：
+# broker 会把留着的旧消息在订阅者上线时**重发**（retained），
+# 而 MQTT 载荷**不带车端采集时刻** ⇒ 「我们收到它的时刻」**不能**当
+# 「车端上报的时刻」⇒ API 容器一重启，流级「最后一条」就被刷新成假的
+# （实测：车端 19:40 就断连，流级却显示 23:01 —— 那是容器重启补落的时刻）。
+#
+# 这道闸门钉四件事：
+#   ① 服务端必须给**结论**（last_message_stale）与**拆分**（车端新消息 / broker 重放）；
+#   ② MCP 必须**透传**（不许自己解释、不许自己判陈旧）；
+#   ③ 客户端（MCP / 推送脚本）**不许自己拿落地时刻当采集时刻**
+#      ⇒ 判据写成「**标识符形态唯一**」：`received_at` 这个键名
+#         只许出现在 api/ 里（服务端自己用它落库），客户端里出现就是错
+#         ⇒ 所有写法形态（.received_at / ["received_at"] / 拼字符串）都盖住；
+#   ④ 契约自检**必须真的在跑**（定义了函数 ≠ 生效 —— 闸门 10 的教训）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+SERVER = [pathlib.Path('api/telemetry.go'), pathlib.Path('api/telemetry_stream.go')]
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+CHK = pathlib.Path('mcp/check_tool_fields.py')
+SCRIPTDIR = pathlib.Path('scripts')
+
+problems = []
+
+for p in SERVER + [MCP, CHK]:
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+server_src = '\n'.join(p.read_text(encoding='utf-8', errors='replace') for p in SERVER)
+mcp_src = MCP.read_text(encoding='utf-8', errors='replace')
+chk_src = CHK.read_text(encoding='utf-8', errors='replace')
+
+# ① 服务端必须给结论与拆分
+for key in ('last_message_stale', 'car_messages', 'replayed_messages'):
+    if key not in server_src:
+        problems.append('服务端没给 %s ⇒ 飞书只能拿「我们收到它的时刻」冒充「车端上报的时刻」' % key)
+
+# ② MCP 必须透传
+for key in ('last_message_stale', 'car_messages', 'replayed_messages'):
+    if key not in mcp_src:
+        problems.append('MCP 没透传 %s ⇒ 飞书里看不到遥测数据到底有多旧' % key)
+if 'data_stale' not in mcp_src:
+    problems.append('MCP 没透传 data_stale ⇒ 陈旧阈值被漏到客户端（模型会自己拿小时数比阈值）')
+
+# ③ 客户端不许自己拿落地时刻当采集时刻（标识符形态唯一 ⇒ 全盖）
+clients = [MCP] + sorted(SCRIPTDIR.glob('*.ps1')) + sorted(SCRIPTDIR.glob('*.sh'))
+for p in clients:
+    if p.resolve() == pathlib.Path('scripts/hermes-gates.sh').resolve():
+        continue  # 这道闸门自己要说这个名字，不算违规
+    src = p.read_text(encoding='utf-8', errors='replace')
+    for m in re.finditer(r'received_at', src):
+        line = src[:m.start()].count('\n') + 1
+        problems.append('%s:%d 里出现了 received_at（那是「我们收到它的时刻」，不是车端采集时刻）' % (p.name, line))
+
+# ④ 契约自检必须真的在跑
+for fn in ('check_telemetry_stream_freshness_contract', 'check_status_staleness_contract'):
+    if ('def %s(' % fn) not in chk_src:
+        problems.append('契约自检 %s 没定义 ⇒ 那条契约等于没写' % fn)
+    # ⚠️ **别写成「源码里出现过这个名字」** —— `def xxx()` 那行本身就含它
+    #    ⇒ 那种写法**假绿**（删掉调用也照样通过）。
+    #    ⚠️ 也**别**只认「独立成行的调用」—— 真实写法是 `x = check_xxx()`
+    #    ⇒ 那样会**误报**（本轮实测踩到）。
+    #    ⇒ 这里认「**含调用、且不是 def 行**」的任何一行。
+    elif not any((fn + '(') in line and not line.lstrip().startswith('def ')
+                 for line in chk_src.split(chr(10))):
+        problems.append('契约自检 %s 没被调用 ⇒ 定义了函数 ≠ 生效（闸门 10 的教训）' % fn)
+
+if problems:
+    print('遥测「最后一条」的新鲜度口径没有收敛到服务端 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 新鲜度的判定只能服务端做（ADR #38），客户端只透传')
+    print('      落地时刻（received_at）不是采集时刻，客户端不许自己拿它当新鲜度')
+    sys.exit(1)
+print('遥测新鲜度：判定与拆分只在服务端一份 ✔（MCP 只透传）')
+PYEOF
+if [ $? -eq 0 ]; then ok "遥测「最后一条」的新鲜度口径只在服务端一份"; else fail "遥测的新鲜度口径跑到了客户端"; cat "$TMP"; fi
+rm -f "$TMP"
+
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

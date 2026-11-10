@@ -349,6 +349,10 @@ def teslamate_status() -> dict:
         #    v0.87.0 让人能「设」，这一轮补上「读回」。
         "座舱": _cabin_cn(s.get("cabin")),
         "数据滞后小时": s.get("data_age_hours"),
+        # ⚠️ **v0.136.0**：陈旧阈值**只在服务端**（ADR #38）⇒ 这里给**结论**，
+        #    不给模型一个「小时数」让它自己跟某个阈值比。
+        #    true ⇒ 这一整份读数是**过去**的，报给用户时要说清有多旧。
+        "车况数据是旧的": bool(s.get("data_stale")),
         "最后采集于": s.get("updated_at"),
     }
 
@@ -1297,6 +1301,18 @@ def teslamate_alerts() -> dict:
     它是 false ⇒ 我们**根本没在收数据**（不是「车没故障」）；
     这时要老实说「拿不到故障码」，**别报「一切正常」**。
 
+    ⚠️ **v0.136.0：「最后一条」不是「我们收到它的时刻」** ——
+    broker 会把留着的旧消息在订阅者上线时**重发**（retained），
+    而 MQTT 载荷**不带车端采集时刻** ⇒ 「收到时刻」不能当「采集时刻」。
+    现在服务端给的是**车端最后一条真实数据**的时刻：
+
+    - `最后一条` = 车端最后一次真实上报的时刻；
+      车已离线时 = **车断线的那个时刻**（值是断线前的最后已知值）；
+    - `最后一条是旧的` = true ⇒ **报给用户时必须带上「最后一条」这个时间**，
+      别当成「车端刚刚还在报」；
+    - `车端新消息条数` / `broker重放条数` 把两者分开 ——
+      「收到条数」是**总数（含重放）**，别拿它当「车端报了多少」。
+
     ⚠️ 分工：电量 / 续航 → `teslamate_status`；电池衰减与健康度 → `teslamate_battery`；
     充电结局 → `teslamate_charge_outcome`；胎压 → `teslamate_status`。
     """
@@ -1328,9 +1344,22 @@ def teslamate_alerts() -> dict:
         "遥测流": {
             "broker已连接": bool(stream.get("broker_connected")),
             "收到条数": stream.get("messages"),
+            # ⚠️ **v0.136.0**：「收到条数」里**混着 broker 重发的 retained**
+            #    （broker 会把留着的旧消息在订阅者上线时重发 ⇒ API 一重启就收到一批）。
+            #    ⇒ 拆成「车端新发的」与「重放的」两个数，别把它们混着说。
+            "车端新消息条数": stream.get("car_messages"),
+            "broker重放条数": stream.get("replayed_messages"),
             "告警条数": stream.get("alerts"),
             "错误条数": stream.get("errors"),
+            # ⚠️ **v0.136.0**：「最后一条」现在是**车端最后一条真实数据**的时刻，
+            #    **不是**「我们收到它的时刻」—— broker 重发 retained 会把后者刷新成假的
+            #    （2026-11-09 实测：车端 19:40 断连，流级却显示 23:01，
+            #      那是 API 容器重启补落的时刻）。
             "最后一条": stream.get("last_message_at"),
+            # ⚠️ true ⇒ 那是**车断线前的最后已知值**，不是「车端刚刚还在报」
+            #    ⇒ 报给用户时**必须**带上「最后一条」这个时间。
+            "最后一条是旧的": bool(stream.get("last_message_stale")),
+            "车端此刻在线": bool(stream.get("car_online")),
         },
         "故障码": [
             {

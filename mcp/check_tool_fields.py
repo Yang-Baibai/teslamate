@@ -610,6 +610,82 @@ def check_cabin_heat_contract() -> list:
     return bad
 
 
+def check_telemetry_stream_freshness_contract() -> list:
+    """遥测「最后一条」的**新鲜度口径**必须与服务端是**同一份**。
+
+    ⚠️ 为什么要有这道（2026-11-09 实测打出来的）：
+    broker 会把留着的旧消息在订阅者上线时**重发**（retained），
+    而 MQTT 载荷**不带车端采集时刻** ⇒ 「我们收到它的时刻」**不能**当
+    「车端上报的时刻」⇒ API 容器一重启，流级「最后一条」就被刷新成假的
+    （实测：车端 19:40 断连，流级显示 23:01 —— 那是容器重启补落的时刻）。
+
+    ⇒ 新鲜度的判定**只能在服务端**做（ADR #38），MCP 只透传。
+
+    ⇒ 这里断言：
+      ① `/alerts` 的 stream 必须给出 last_message_at / last_message_stale /
+         car_messages / replayed_messages（没有它们，模型只能拿假时刻去回答）；
+      ② last_message_stale = true ⇒ last_message_at 必须在
+         （不能空着却说「这是旧的」——那等于不知道）；
+      ③ MCP 的「最后一条」「最后一条是旧的」与服务端**一字不差**（只透传）；
+      ④ MCP 必须把「车端新消息条数」与「broker重放条数」**分开**给出。
+    """
+    bad = []
+    try:
+        al = T._get("/api/v1/cars/%s/alerts" % T.CAR_ID)
+        tool = T.teslamate_alerts()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(al, dict) or "error" in al:
+        return ["告警取不到：%r" % (al,)]
+    stream = al.get("stream") or {}
+    if not isinstance(stream, dict):
+        return ["`/alerts` 的 stream 不是对象：%r" % (stream,)]
+    for k in ("last_message_at", "last_message_stale", "car_messages", "replayed_messages"):
+        if k not in stream:
+            bad.append("`/alerts` 的 stream 缺键 %s ⇒ 飞书只能拿假时刻回答「遥测多久没更新」" % k)
+    if bool(stream.get("last_message_stale")) and not stream.get("last_message_at"):
+        bad.append("`/alerts` 说「最后一条是旧的」却没有给时刻 ⇒ 等于「不知道」却装成知道")
+    if isinstance(tool, dict) and "错误" not in tool:
+        flow = tool.get("遥测流") or {}
+        if not isinstance(flow, dict):
+            bad.append("MCP 的「遥测流」不是对象：%r" % (flow,))
+        else:
+            if flow.get("最后一条") != stream.get("last_message_at"):
+                bad.append("MCP 的「最后一条」= %r，与服务端 %r 不一致 ⇒ 两边各说各话"
+                           % (flow.get("最后一条"), stream.get("last_message_at")))
+            if bool(flow.get("最后一条是旧的")) != bool(stream.get("last_message_stale")):
+                bad.append("MCP 的「最后一条是旧的」与服务端不一致 ⇒ 陈旧标记被客户端改写了")
+            for k in ("车端新消息条数", "broker重放条数"):
+                if k not in flow:
+                    bad.append("MCP 的「遥测流」缺 %s ⇒ 分不清「车端报的」与「broker 重放的」" % k)
+    return bad
+
+
+def check_status_staleness_contract() -> list:
+    """车况读数的「是不是旧的」必须由**服务端给结论**（ADR #38）。
+
+    ⚠️ 阈值（几小时算陈旧）**只在服务端一份** ⇒ 不能让模型拿着
+    「数据滞后小时」自己跟某个阈值比（两端各判一次 ⇒ 迟早漂）。
+
+    ⇒ 这里断言：`/status` 给出 data_stale 布尔，MCP 原样透传成「车况数据是旧的」。
+    """
+    bad = []
+    try:
+        st = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
+        tool = T.teslamate_status()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(st, dict) or "error" in st:
+        return ["车况取不到：%r" % (st,)]
+    if "data_stale" not in st:
+        bad.append("`/status` 没有 data_stale ⇒ 陈旧阈值被漏到客户端了（ADR #38）")
+    if isinstance(tool, dict) and "错误" not in tool:
+        if "车况数据是旧的" not in tool:
+            bad.append("MCP 的车况工具没有「车况数据是旧的」⇒ 模型只能自己跟阈值比")
+        elif "data_stale" in st and bool(tool.get("车况数据是旧的")) != bool(st.get("data_stale")):
+            bad.append("MCP 的「车况数据是旧的」与服务端 data_stale 不一致")
+    return bad
+
 def check_feedback_items() -> list:
     """反馈**每一条**都必须带上「id / 时间 / 内容 / 状态」。
 
@@ -1109,6 +1185,22 @@ def main() -> int:
         print("  ✓ %-26s %-24s 座舱闷热的判定与文案和服务端是**同一份**"
               % ("teslamate_status", "座舱闷热契约"))
     bad.extend(cab_bad)
+
+    tel_bad = check_telemetry_stream_freshness_contract()
+    for b in tel_bad:
+        print("  ✗ %s" % b)
+    if not tel_bad:
+        print("  ✓ %-26s %-24s 遥测「最后一条」是**车端真实时刻**，不是收到时刻"
+              % ("teslamate_alerts", "遥测新鲜度契约"))
+    bad.extend(tel_bad)
+
+    stale_bad = check_status_staleness_contract()
+    for b in stale_bad:
+        print("  ✗ %s" % b)
+    if not stale_bad:
+        print("  ✓ %-26s %-24s 车况「是不是旧的」由服务端给结论（阈值不外泄）"
+              % ("teslamate_status", "陈旧结论契约"))
+    bad.extend(stale_bad)
 
     fb_bad = check_feedback_items()
     for b in fb_bad:
