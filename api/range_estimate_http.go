@@ -176,19 +176,11 @@ func computeRangeEstimate(carID int) (*RangeEstimate, error) {
 	// ⚠️ **v0.142.0**：读数陈旧 ⇒ 补一句「为什么没按气温修正」。
 	// ⚠️ 文案只有服务端一份（ADR #41）⇒ App 与 Hermes 看到的是同一句。
 	if est.OutsideTempStale {
-		note := "车外温度读数不是当前的（车睡着，positions 里的读数停在停车那一刻）⇒ 未按气温修正"
-		if est.OutsideTempLast != nil {
-			note += fmt.Sprintf("；上次读到 %.1f℃", *est.OutsideTempLast)
-		}
-		if est.OutsideTempAt != nil {
-			note += fmt.Sprintf(" · %s", est.OutsideTempAt.Format("2006-01-02"))
-		}
-		note += "（不做热修正 ⇒ 可能偏乐观）"
-		if est.TempCaveat != "" {
-			est.TempCaveat += "；" + note
-		} else {
-			est.TempCaveat = note
-		}
+		// ⚠️ **v0.144.0**：这句**常驻**印在 App 续航卡上（独立的 Text(...)）
+		// ⇒ 受 [appCopyWidthLimit] 约束 ⇒ 原来那句 78 宽度会把那一行撑成一堵字墙。
+		// ⇒ 现在只留三件事实（读不到 / 没按气温修正 / 可能偏乐观）；
+		//   「上次读到多少、什么时候」在 outside_temp_last / outside_temp_at 与飞书里。
+		est.TempCaveat = staleOutsideTempCaveat
 	}
 	est.TempMinC = model.TempMinC
 	est.TempMaxC = model.TempMaxC

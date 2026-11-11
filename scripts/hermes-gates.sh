@@ -1755,6 +1755,118 @@ PYEOF
 if [ $? -eq 0 ]; then ok "车外温度读数的「新鲜度」只在服务端一份"; else fail "车外温度的新鲜度口径跑到了客户端"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 26：服务端「常驻界面文案」也要过啰嗦棘轮（长度口径补到服务端）──
+#
+# ⚠️ **v0.144.0**：啰嗦棘轮的**长度**判据只咬客户端 .kt
+#   （v0.90.0 只把「星号粗体漏到界面」那条补到了服务端 .go，**长度那条没有**）
+#   ⇒ ADR #41 把文案搬到服务端之后 ⇒ **服务端文案的长度没人管**。
+#   实证：v0.142.0 自己造的那条车外温度 caveat 视觉宽度 **78**
+#   ⇒ App 常驻印成一整行琥珀字 ⇒ 用户看到一堵字墙，而闸门全绿。
+#
+# 判据（形态无关）：
+#   ① **宽度上限只有一处真相**：api/app_copy.go 的 appCopyWidthLimit
+#      必须 **等于客户端棘轮的阈值**（跨文件比对 ⇒ 谁放宽都要同时改两处）。
+#   ② **api/app_copy.go 里的中文文案不许超宽**（它 = 服务端常驻界面文案的定义处）。
+#   ③ **护栏不许是空壳**：api/app_copy_test.go 必须在 ＋ 断言了上限
+#      ＋ app_copy.go 里每个带中文的常量都被单测引用。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+COPY = ROOT / 'api' / 'app_copy.go'
+TEST = ROOT / 'api' / 'app_copy_test.go'
+CLI = ROOT / 'scripts' / 'client-gates.sh'
+problems = []
+
+
+def vwidth(s):
+    w = 0
+    for ch in s:
+        if ch.isspace():
+            continue
+        o = ord(ch)
+        w += 2 if (0x2e80 <= o <= 0x9fff or 0xff00 <= o <= 0xffef) else 1
+    return w
+
+
+def has_cjk(s):
+    return any(0x4e00 <= ord(c) <= 0x9fff for c in s)
+
+
+def strip_go_comments(src):
+    out = []
+    for ln in src.splitlines():
+        st = ln.strip()
+        if st.startswith('//') or st.startswith('*') or st.startswith('/*'):
+            continue
+        out.append(ln)
+    return chr(10).join(out)
+
+
+if not COPY.exists():
+    print('找不到 api/app_copy.go —— 服务端文案的宽度口径不见了？')
+    sys.exit(1)
+
+src = COPY.read_text(encoding='utf-8', errors='replace')
+code = strip_go_comments(src)
+
+m = re.search('appCopyWidthLimit *= *([0-9]+)', code)
+if not m:
+    problems.append('api/app_copy.go 里找不到 appCopyWidthLimit 的数值')
+    limit = 44
+else:
+    limit = int(m.group(1))
+
+# ① 上限只有一处真相，且 == 客户端棘轮的阈值
+if not CLI.exists():
+    problems.append('找不到 scripts/client-gates.sh —— 客户端棘轮的阈值读不到')
+else:
+    gsrc = CLI.read_text(encoding='utf-8', errors='replace')
+    i = gsrc.find('vwidth(plain) >=')
+    if i < 0:
+        problems.append('scripts/client-gates.sh 里找不到客户端棘轮的阈值（vwidth(plain) >= N）')
+    else:
+        dm = re.search('[0-9]+', gsrc[i:i + 40])
+        cli = int(dm.group(0)) if dm else -1
+        if cli != limit:
+            problems.append('服务端文案上限 %d 不等于客户端棘轮阈值 %d ⇒ 两边不是一个数（谁放宽都要同时改两处）'
+                            % (limit, cli))
+        else:
+            print('宽度上限 = %d（服务端与客户端棘轮同一个数）' % limit)
+
+# ② app_copy.go 里的中文文案不许超宽
+for lit in re.findall('"([^"]*)"', code):
+    if not has_cjk(lit):
+        continue
+    w = vwidth(lit)
+    if w > limit:
+        problems.append('api/app_copy.go 里有一条文案宽度 %d 超过 %d：%s' % (w, limit, lit[:60]))
+
+# ③ 护栏不许是空壳
+if not TEST.exists():
+    problems.append('找不到 api/app_copy_test.go —— 宽度护栏的单测不见了？')
+else:
+    tsrc = TEST.read_text(encoding='utf-8', errors='replace')
+    if 'appCopyWidthLimit' not in tsrc:
+        problems.append('api/app_copy_test.go 没有断言 appCopyWidthLimit ⇒ 护栏是空壳')
+    for name, lit in re.findall('const +([A-Za-z_][A-Za-z0-9_]*) *= *"([^"]*)"', code):
+        if not has_cjk(lit):
+            continue
+        if name not in tsrc:
+            problems.append('api/app_copy.go 里的文案常量 %s 没有出现在单测里（定义了但不测 ⇒ 空壳）' % name)
+
+if problems:
+    print('服务端「常驻界面文案」的长度没被管住 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 常驻文案宽度上限只有一个真相（api/app_copy.go），且必须等于客户端棘轮的阈值')
+    sys.exit(1)
+
+print('服务端常驻界面文案：上限唯一且与客户端棘轮一致、超宽 0 条、每条都被单测覆盖')
+PYEOF
+if [ $? -eq 0 ]; then ok "服务端常驻界面文案也过啰嗦棘轮（上限唯一 + 不超宽 + 有单测）"; else fail "服务端常驻界面文案的长度没被管住（或护栏是空壳）"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

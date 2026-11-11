@@ -71,9 +71,9 @@ bash scripts/feedback-triage.sh    # 只读清单：待评估 / 要处理 / 已�
 ```bash
 cd /c/tm-ws
 bash scripts/server-gates.sh     # Go 语法 / 密钥扫描 / 仓库卫生
-bash scripts/client-gates.sh     # 客户端 33 道闸门（啰嗦棘轮等）
+bash scripts/client-gates.sh     # 客户端 34 道闸门（啰嗦棘轮等）
 bash scripts/smoke.sh            # 冒烟（49 项）
-bash scripts/hermes-gates.sh    # Hermes 链路闸门（服务端↔MCP↔推送脚本）
+bash scripts/hermes-gates.sh    # Hermes 链路闸门（服务端↔MCP↔推送脚本，19 道）
 python mcp/check_tool_fields.py  # MCP 字段映射自检
 bash scripts/probe-run.sh hermes-gates.sh /path/to/probe.py  # 负向探针：在**隔离副本**里改坏 ⇒ 闸门必须精确报红
 ```
@@ -198,6 +198,13 @@ bash scripts/server-gates.sh && bash scripts/client-gates.sh && bash scripts/smo
    `docker compose build api` → `up -d --force-recreate api` → **立刻回读线上接口**；
 ② 回读看的是**接口返回的真实值**，不是「接口 200」；
 ③ 顶层与续航这类**两个出口**要**一起回读**（它们可能各走一段 SQL）。
+
+⚠️ **改了服务端给 App 的中文文案 ⇒ 宽度受 `api/app_copy.go` 的 `appCopyWidthLimit`（44）约束**（2026-11-12 补）：
+啰嗦棘轮的**长度**判据只咬客户端 `.kt` ⇒ ADR #41 把文案搬到服务端之后，服务端文案的长度**没人管**
+⇒ v0.142.0 自己造的那条车外温度 caveat **78 宽度**溜了过去（App 常驻印成一堵字墙，而闸门全绿）。
+⇒ 规矩：① **常驻界面文案**（App 用独立 `Text(...)` 直接印的）定义在 `api/app_copy.go`
+（上限 44，**与客户端棘轮同一个数**，Hermes 闸门 26 跨文件比对）；
+② 改完跑 `go test ./...`（`api/app_copy_test.go` 断言宽度 ＋「不许丢关键事实」）。
 
 ⚠️ **纯服务端发布（App 零改动 ⇒ versionCode 不动）的版本说明，用户永远看不到**：
 App 的更新提示按 **versionCode** 比较 ⇒ 手机上停在 120 时，下一个动 App 的版本（121）
