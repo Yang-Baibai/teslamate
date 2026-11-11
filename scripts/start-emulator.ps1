@@ -229,7 +229,7 @@ if ($boot -ne '1') {
 if ($AppTunnel) {
   $rb = Invoke-Adb @('-s','emulator-5554','reverse','tcp:8090','tcp:8090')
   if ($rb -match '8090') {
-    Say '   隧道: adb reverse tcp:8090 tcp:8090（App 服务器地址用 http://127.0.0.1:8090）'
+    Say '   备用隧道: adb reverse tcp:8090 tcp:8090（App 地址优先用 http://10.0.2.2:8090）'
   } else {
     Say '   ⚠️ adb reverse 没建成功 ⇒ App 会显示「连不上服务器」'
   }
