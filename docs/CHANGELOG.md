@@ -152,6 +152,17 @@
    ⇒ 改成 **cmd 自己把输出重定向到文件 + ShellExecute 启动**（子进程不继承调用方句柄）。
 2. **adb 的 stdout 不能接进 PowerShell 管道**（`| Out-String`）：adb 守护进程继承管道写端 ⇒ 等不到 EOF
    ⇒ 一律**让 adb 写文件再读**。
+
+### 六、收尾：模拟器**连 App 带真实数据**都通了（版面复核不用再等真机）
+
+- App 已装进模拟器（`com.teslamate.app`，0.130.0 / code 139），**服务器地址 `http://127.0.0.1:8090` + 令牌** 都配好了；
+  「保存并测试」⇒ **「连接成功，发现 1 台车」** ⇒「车况」页拿到的是**真实数据**
+  （87 公里 / 里程表 102,349 公里 / 车外温度那条新口径也生效）⇒ **版面复核不用再等真机回插**。
+- ⚠️ **`adb reverse` 不跨重启存活**（adb server / 设备重启都会清掉）⇒ 隧道断了 App 就显示「连不上服务器」
+  ⇒ `bash scripts/start-emulator.sh` 现在**默认会铺** `adb reverse tcp:8090 tcp:8090`（`-AppTunnel:$false` 可关）。
+- ⚠️ 顺带记一个**差点走错的路**：想直接手写 DataStore 的 protobuf 注入配置 ⇒ **App 启动即崩**
+  （datastore-preferences 用的**不是标准 protobuf 格式**，是它自己的线格式）⇒ **老老实实走 UI 输入**
+  （令牌是 48 位纯 hex ⇒ `adb shell input text` 能一字不差地敲进去）。
 ## 2026-11-10（v0.140.0 · 真机复核结清 + 模拟器专项开跑 —— WHPX「就绪」不等于 guest 能跑）
 
 > 本轮是**真机复核 + 模拟器专项启动**，App 与服务端**一字未动** ⇒ **不占 App 号**。

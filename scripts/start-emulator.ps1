@@ -44,6 +44,7 @@ param(
   [switch]$WipeData,      # 洗 userdata（只影响这个 AVD）
   [switch]$Stop,          # 只停不停
   [switch]$ShowKernel,    # 打印 guest 内核输出（排查用）
+  [bool]$AppTunnel = $true,   # 给 App 铺 `adb reverse`（设备 localhost:8090 -> 主机 8090）
   [string]$AsciiSdkRoot = 'C:\tm-sdk',
   [string]$RealSdkRoot = ''
 )
@@ -222,7 +223,19 @@ if ($boot -ne '1') {
   exit 1
 }
 
-# ── 6. 打印产物证据 ───────────────────────────────────────────────────────
+# ── 6. 给 App 铺隧道（`adb reverse`）────────────────────────────────────────
+#    ⚠️ **这条不跨重启存活**（adb server / 设备重启都会清掉）⇒ 每次起完模拟器都要重铺，
+#    否则 App 会显示「连不上服务器」。App 的服务器地址填 `http://127.0.0.1:8090` 即可。
+if ($AppTunnel) {
+  $rb = Invoke-Adb @('-s','emulator-5554','reverse','tcp:8090','tcp:8090')
+  if ($rb -match '8090') {
+    Say '   隧道: adb reverse tcp:8090 tcp:8090（App 服务器地址用 http://127.0.0.1:8090）'
+  } else {
+    Say '   ⚠️ adb reverse 没建成功 ⇒ App 会显示「连不上服务器」'
+  }
+}
+
+# ── 7. 打印产物证据 ───────────────────────────────────────────────────────
 $shot = Join-Path $logDir ('emulator-' + $stamp + '.png')
 & $adb -s emulator-5554 exec-out screencap -p > $shot 2>$null
 $size = (Invoke-Adb @('-s','emulator-5554','shell','wm','size')).Trim()
