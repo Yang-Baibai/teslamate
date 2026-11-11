@@ -660,6 +660,70 @@ def check_cabin_temp_freshness_contract() -> list:
     return bad
 
 
+def check_outside_temp_freshness_contract() -> list:
+    """车外温度读数的**新鲜度**必须由服务端说了算（ADR #38）。
+
+    ⚠️ 为什么要有这道：positions.outside_temp 与 positions.inside_temp 是
+    **同一批稀疏行**（实测非空数完全相同：61709 行，非空率同为 3.32%，
+    最后一条读数的时刻也相同）⇒ 车睡着后它停在**停车那一刻**的气温。
+    原来服务端把它当「现在的车外温度」直接下发 ⇒ App 车况页显示成一个裸数字
+    （实测 2026-11-10：车停了 28 小时，界面仍写「车外 22.5℃」）
+    ⇒ 与同一屏的「车内温度 —」**自相矛盾**。
+
+    ⇒ 这里断言：
+      ① /status 有 outside_temp / outside_temp_last / outside_temp_at 三个键；
+      ② **车不在线时 outside_temp 必须是 null**（不许把旧值当现在的读数）；
+      ③ 车不在线时 outside_temp_last / outside_temp_at **仍要给出**（信息不丢）；
+      ④ MCP 的「车外温℃」与服务端的 outside_temp **一字不差**（只透传）；
+      ⑤ ⚠ **跨端点一致性**：/status 的 outside_temp 与 /range_estimate 的
+         outside_temp_c 必须**同时为空或同时有值**
+         ⇒ 同一份 positions 数据，两个出口不许各说各话。
+    """
+    bad = []
+    try:
+        st = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
+        est = T._get("/api/v1/cars/%s/range_estimate" % T.CAR_ID)
+        tool = T.teslamate_status()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(st, dict) or "error" in st:
+        return ["车况取不到：%r" % (st,)]
+
+    for k in ("outside_temp", "outside_temp_last", "outside_temp_at"):
+        if k not in st:
+            bad.append("/status 缺键 %s ⇒ 车外温度的新鲜度说不清" % k)
+
+    online = str(st.get("state") or "").strip().lower() == "online"
+    if not online:
+        if st.get("outside_temp") is not None:
+            bad.append("车不在线（state=%r）时 outside_temp 仍是 %r ⇒ "
+                       "把停车那一刻的旧读数当成现在的车外温度（假新鲜度）"
+                       % (st.get("state"), st.get("outside_temp")))
+        if st.get("outside_temp_last") is None and st.get("outside_temp_at") is None:
+            bad.append("车不在线时 outside_temp_last / outside_temp_at **都没有** ⇒ "
+                       "「上次读到多少、什么时候」这条信息被整段丢掉了")
+
+    if isinstance(tool, dict) and "错误" not in tool:
+        got = tool.get("车外温℃")
+        want = st.get("outside_temp")
+        if (got if got is not None else None) != (want if want is not None else None):
+            bad.append("MCP 的「车外温℃」= %r，与服务端的 %r 不一致 ⇒ 两边各说各话"
+                       % (got, want))
+        for k in ("车外温度上次读到℃", "车外温度采集于"):
+            if k not in tool:
+                bad.append("MCP 缺字段「%s」⇒ 报给用户时说不清这个读数有多旧" % k)
+
+    # ⚠ ⑤ 跨端点一致性：同一份 positions 数据 ⇒ 「现在的车外温度」只能一个答案。
+    if isinstance(est, dict) and "error" not in est:
+        a = st.get("outside_temp")
+        b = est.get("outside_temp_c")
+        if (a is None) != (b is None):
+            bad.append("顶层 outside_temp=%r 而续航那一路 outside_temp_c=%r ⇒ "
+                       "两个出口对「现在的车外温度」说法不一致（同一份数据 ⇒ 只能一个答案）"
+                       % (a, b))
+    return bad
+
+
 def check_telemetry_stream_freshness_contract() -> list:
     """遥测「最后一条」的**新鲜度口径**必须与服务端是**同一份**。
 
@@ -1061,7 +1125,11 @@ def check_range_estimate_contract() -> list:
         rated = st.get("rated_range_km")
         if rated is None:
             rated = st.get("ideal_range_km")
-        temp = st.get("outside_temp")
+        # ⚠️ **v0.142.0**：温度输入用**续航这一路自己的**字段。
+        #   原来借 /status 的 outside_temp ⇒ 两个端点被绑在一起：
+        #   顶层一旦把陈旧读数收起来（置 null），这里的复算就会与服务端对不上
+        #   （服务端用 22.5℃ 修正，复算却按「没修正」算）⇒ 自检假红。
+        temp = est.get("outside_temp_c")
         batt = st.get("battery_level")
         if rated and b is not None:
             tf = 1.0 + min(0.10, 0.006 * max(0.0, temp - 22.0)) if temp is not None else 1.0
@@ -1255,6 +1323,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 车内温度**只给当前读数**，旧读数不冒充现在"
               % ("teslamate_status", "座舱温度新鲜度契约"))
     bad.extend(ct_bad)
+
+    ot_bad = check_outside_temp_freshness_contract()
+    for b in ot_bad:
+        print("  ✗ %s" % b)
+    if not ot_bad:
+        print("  ✓ %-26s %-24s 车外温度**只给当前读数**，旧读数不冒充现在"
+              % ("teslamate_status", "车外温度新鲜度契约"))
+    bad.extend(ot_bad)
 
     tel_bad = check_telemetry_stream_freshness_contract()
     for b in tel_bad:

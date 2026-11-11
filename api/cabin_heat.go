@@ -65,8 +65,41 @@ type CabinHeat struct {
 //	  门槛太短 ⇒ 车刚停 10 分钟就说「读不到」。
 //
 // ⚠️ 未知（states 里没有状态 / 状态不认识）⇒ 当陈旧（宁可说不知道，不可编）。
+//
+// ⚠️ **v0.142.0**：它现在**同时**管**车内与车外**两个温度 ——
+//
+//	两者在 positions 表里是**同一批行**（实测非空数完全相同：61709 行，
+//	最后一条读数的时刻也相同）⇒ 同一个判据、同一份新鲜度。
+//	⇒ 顶层 inside_temp 与 outside_temp 的新鲜度**必然一致**，
+//	  不会出现「车内说读不到、车外却报 22.5℃」这种自相矛盾。
 func cabinReadingCurrent(pollState string) bool {
 	return !pollSnapshotStale(pollState)
+}
+
+// rangeOutsideTemp 车外温度读数 → 「**当前**读到的车外温度」（纯函数，可单测）。
+//
+// ⚠️ **v0.142.0**：判据与顶层 /status **同一个**（[cabinReadingCurrent]）——
+//
+//	「同一份 positions 数据是不是当前的」只能有一个答案（ADR #38）。
+//
+//	⇒ **顶层 /status 与续航 /range_estimate 都调这一个函数**
+//	  ⇒ 两个出口的「车外温度」必然**同时为空或同时有值**
+//	    （契约自检逐条比对；同一个事实不许有两个出口各说各话）。
+//
+// ⚠️ 读数陈旧（车睡着 ⇒ positions.outside_temp 停在停车那一刻）⇒
+//
+//	**当前读数给 nil** ⇒ 续航模型**不拿旧气温做温度修正**
+//	（宁可不做，不可编 —— 28 小时前的 22.5℃ 不是今天的气温）。
+//
+// ⚠️ 但**信息不丢**：上次读到的值与它的时刻照样给（last / readAt）。
+func rangeOutsideTemp(v *float64, at *time.Time, state string) (cur *float64, last *float64, readAt *time.Time, stale bool) {
+	stale = !cabinReadingCurrent(state)
+	last = v
+	readAt = at
+	if !stale {
+		cur = v
+	}
+	return
 }
 
 // cabinHeat 判「座舱闷热」并出文案（纯函数，可单测）。

@@ -23,7 +23,7 @@ import (
 // ⇒ 两个渠道算出来的数不会对不上。
 const sqlRangeInputs = `
 WITH lp AS (
-  SELECT battery_level,
+  SELECT date, battery_level,
          rated_battery_range_km::float8 AS rated_range_km,
          ideal_battery_range_km::float8 AS ideal_range_km,
          outside_temp::float8 AS outside_temp,
@@ -33,15 +33,24 @@ WITH lp AS (
   SELECT
     (array_agg(rated_battery_range_km ORDER BY date DESC) FILTER (WHERE rated_battery_range_km IS NOT NULL))[1] AS rated_range_km,
     (array_agg(ideal_battery_range_km ORDER BY date DESC) FILTER (WHERE ideal_battery_range_km IS NOT NULL))[1] AS ideal_range_km,
-    (array_agg(outside_temp ORDER BY date DESC) FILTER (WHERE outside_temp IS NOT NULL))[1] AS outside_temp
+    (array_agg(outside_temp ORDER BY date DESC) FILTER (WHERE outside_temp IS NOT NULL))[1] AS outside_temp,
+    -- ⚠️ **v0.142.0**：那个温度**是哪一行读到的**（不是「最后一条 position」的时刻）。
+    (array_agg(date ORDER BY date DESC) FILTER (WHERE outside_temp IS NOT NULL))[1] AS outside_temp_at
   FROM (SELECT * FROM positions WHERE car_id = $1 ORDER BY date DESC LIMIT 500) recent
+), ls AS (
+  -- ⚠️ **v0.142.0**：车况状态 —— 用来判「这个温度读数是不是当前的」。
+  -- ⚠️ 与 /status 的 ls CTE **同一个来源、同一个口径**（states 表最后一条）。
+  SELECT state FROM states WHERE car_id = $1 ORDER BY start_date DESC LIMIT 1
 )
 SELECT lp.battery_level AS battery_level,
        COALESCE(lp.rated_range_km, rx.rated_range_km) AS rated_range_km,
        COALESCE(lp.ideal_range_km, rx.ideal_range_km) AS ideal_range_km,
        COALESCE(lp.outside_temp, rx.outside_temp) AS outside_temp,
-       lp.speed AS speed
-FROM lp, rx`
+       CASE WHEN lp.outside_temp IS NOT NULL THEN lp.date ELSE rx.outside_temp_at END AS outside_temp_at,
+       lp.speed AS speed,
+       -- ⚠️ states.status 是**枚举**类型 states_status ⇒ 必须先转 text 才能兜底成空串
+       COALESCE(ls.state::text, '') AS state
+FROM lp, rx, ls`
 
 // fetchRangeDrives 取**与客户端同一批**行程（同一条 SQL + 同一个 limit=500）。
 func fetchRangeDrives(carID int) ([]*Drive, error) {
@@ -102,10 +111,12 @@ func computeRangeEstimate(carID int) (*RangeEstimate, error) {
 		rated        *float64
 		ideal        *float64
 		outsideTemp  *float64
+		outsideAt    *time.Time
 		speed        *int
+		state        string
 	)
 	err := db.QueryRow(context.Background(), sqlRangeInputs, carID).Scan(
-		&batteryLevel, &rated, &ideal, &outsideTemp, &speed)
+		&batteryLevel, &rated, &ideal, &outsideTemp, &outsideAt, &speed, &state)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
@@ -113,8 +124,16 @@ func computeRangeEstimate(carID int) (*RangeEstimate, error) {
 	est := &RangeEstimate{
 		ReserveFactor: rangeDefaultReserve,
 		BatteryLevel:  batteryLevel,
-		OutsideTempC:  outsideTemp,
 	}
+	// ⚠️ **v0.142.0**：车外温度**读数**与「是不是当前的」分开存。
+	//
+	// 读数陈旧（车睡着 ⇒ positions.outside_temp 停在停车那一刻）⇒
+	// **不拿它做温度修正**（宁可不做，不可编 —— 28 小时前的 22.5℃ 不是今天的气温）。
+	//
+	// ⚠️ **与顶层 /status 同一个判据**（[cabinReadingCurrent]）⇒
+	//   两个出口的「车外温度」必然同时为空或同时有值（契约自检逐条比对）。
+	est.OutsideTempC, est.OutsideTempLast, est.OutsideTempAt, est.OutsideTempStale =
+		rangeOutsideTemp(outsideTemp, outsideAt, state)
 	// 标定续航：rated 优先，回退 ideal（与客户端 st.rated_range_km ?: st.ideal_range_km 一致）
 	ratedRange := rated
 	if ratedRange == nil {
@@ -152,8 +171,25 @@ func computeRangeEstimate(carID int) (*RangeEstimate, error) {
 	est.BucketSamples = bucket.Samples
 	est.BucketExact = exact
 
-	est.TempFactor = model.tempFactor(outsideTemp)
-	est.TempCaveat = model.tempCaveat(outsideTemp)
+	est.TempFactor = model.tempFactor(est.OutsideTempC)
+	est.TempCaveat = model.tempCaveat(est.OutsideTempC)
+	// ⚠️ **v0.142.0**：读数陈旧 ⇒ 补一句「为什么没按气温修正」。
+	// ⚠️ 文案只有服务端一份（ADR #41）⇒ App 与 Hermes 看到的是同一句。
+	if est.OutsideTempStale {
+		note := "车外温度读数不是当前的（车睡着，positions 里的读数停在停车那一刻）⇒ 未按气温修正"
+		if est.OutsideTempLast != nil {
+			note += fmt.Sprintf("；上次读到 %.1f℃", *est.OutsideTempLast)
+		}
+		if est.OutsideTempAt != nil {
+			note += fmt.Sprintf(" · %s", est.OutsideTempAt.Format("2006-01-02"))
+		}
+		note += "（不做热修正 ⇒ 可能偏乐观）"
+		if est.TempCaveat != "" {
+			est.TempCaveat += "；" + note
+		} else {
+			est.TempCaveat = note
+		}
+	}
 	est.TempMinC = model.TempMinC
 	est.TempMaxC = model.TempMaxC
 	est.LowTempSamples = model.LowTempSamples
@@ -163,15 +199,15 @@ func computeRangeEstimate(carID int) (*RangeEstimate, error) {
 	est.FirstDrivenAt = model.FirstDrivenAt
 	est.LastDrivenAt = model.LastDrivenAt
 
-	est.TrueRangeKm = model.TrueRangeKm(ratedRange, refSpeed, outsideTemp, rangeDefaultReserve)
-	est.TrueRangeBandKm = model.TrueRangeBandKm(ratedRange, refSpeed, outsideTemp, rangeDefaultReserve)
+	est.TrueRangeKm = model.TrueRangeKm(ratedRange, refSpeed, est.OutsideTempC, rangeDefaultReserve)
+	est.TrueRangeBandKm = model.TrueRangeBandKm(ratedRange, refSpeed, est.OutsideTempC, rangeDefaultReserve)
 
 	// 「留 20% 保底还能开多少」：可用比例 = (当前电量 − 20%) ÷ 当前电量（与客户端同一口径）。
 	if batteryLevel != nil && *batteryLevel > int(rangeFloorReservePct) {
 		rf := float64(*batteryLevel-rangeFloorReservePct) / float64(*batteryLevel)
 		est.FloorReserveFactor = &rf
-		est.FloorRangeKm = model.TrueRangeKm(ratedRange, refSpeed, outsideTemp, rf)
-		est.FloorRangeBandKm = model.TrueRangeBandKm(ratedRange, refSpeed, outsideTemp, rf)
+		est.FloorRangeKm = model.TrueRangeKm(ratedRange, refSpeed, est.OutsideTempC, rf)
+		est.FloorRangeBandKm = model.TrueRangeBandKm(ratedRange, refSpeed, est.OutsideTempC, rf)
 	}
 
 	renderRangeText(est)
@@ -208,7 +244,14 @@ func renderRangeText(est *RangeEstimate) {
 	} else {
 		fmt.Fprintf(&b, "实测 %.1f Wh/km（%s 档）", *est.WhPerKm, est.BucketLabel)
 	}
-	fmt.Fprintf(&b, " × 温度修正 %.2f × 保底 %.2f", est.TempFactor, est.ReserveFactor)
+	// ⚠️ **v0.142.0**：温度读数陈旧 ⇒ **没做**温度修正。
+	// ⇒ 写「× 温度修正 1.00」是**假精确**（看着像按气温修过了，其实没修）。
+	if est.OutsideTempStale {
+		fmt.Fprintf(&b, " × 未按气温修正")
+	} else {
+		fmt.Fprintf(&b, " × 温度修正 %.2f", est.TempFactor)
+	}
+	fmt.Fprintf(&b, " × 保底 %.2f", est.ReserveFactor)
 	fmt.Fprintf(&b, "；模型样本 %d 条行程", est.SampleCount)
 	if est.FirstDrivenAt != nil && est.LastDrivenAt != nil {
 		fmt.Fprintf(&b, "（%s ~ %s）",

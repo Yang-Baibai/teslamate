@@ -45,6 +45,8 @@ WITH lp AS (
     (array_agg(tpms_pressure_rl ORDER BY date DESC) FILTER (WHERE tpms_pressure_rl IS NOT NULL))[1] AS tpms_rl,
     (array_agg(tpms_pressure_rr ORDER BY date DESC) FILTER (WHERE tpms_pressure_rr IS NOT NULL))[1] AS tpms_rr,
     (array_agg(outside_temp ORDER BY date DESC) FILTER (WHERE outside_temp IS NOT NULL))[1] AS outside_temp,
+    -- ⚠️ **v0.142.0**：车外温度**读数的时刻**（同 inside_temp：不是「最后一条 position」的时刻）。
+    (array_agg(date ORDER BY date DESC) FILTER (WHERE outside_temp IS NOT NULL))[1] AS outside_temp_at,
     (array_agg(inside_temp ORDER BY date DESC) FILTER (WHERE inside_temp IS NOT NULL))[1] AS inside_temp,
     -- ⚠️ **v0.137.0**：车内温度**读数的时刻**（不是「最后一条 position」的时刻）。
     --   inside_temp 是稀疏列（实测非空率仅 3.5%）⇒
@@ -129,6 +131,8 @@ SELECT lp.date, lp.battery_level, lp.usable_battery_level,
        COALESCE(lp.rated_range_km, rx.rated_range_km) AS rated_range_km,
        lp.odometer, lp.speed, lp.power,
        COALESCE(lp.outside_temp, rx.outside_temp) AS outside_temp,
+       -- ⚠️ **v0.142.0**：那个车外温度**是哪一行读到的**。
+       CASE WHEN lp.outside_temp IS NOT NULL THEN lp.date ELSE rx.outside_temp_at END AS outside_temp_at,
        COALESCE(lp.inside_temp, rx.inside_temp) AS inside_temp,
        -- ⚠️ **v0.137.0**：那个车内温度**是哪一行读到的**。
        CASE WHEN lp.inside_temp IS NOT NULL THEN lp.date ELSE rx.inside_temp_at END AS inside_temp_at,

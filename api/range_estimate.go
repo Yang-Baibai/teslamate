@@ -125,8 +125,16 @@ type RangeEstimate struct {
 	LastDrivenAt  *time.Time `json:"last_driven_at,omitempty"`
 
 	// 输入（可核对）
-	RatedRangeKm       *float64 `json:"rated_range_km"`
-	OutsideTempC       *float64 `json:"outside_temp_c"`
+	RatedRangeKm *float64 `json:"rated_range_km"`
+	// ⚠️ **v0.142.0**：OutsideTempC 是「**当前**读到的车外温度。
+	// 读数陈旧（车睡着 ⇒ positions.outside_temp 停在停车那一刻）⇒ 给 null
+	// ⇒ **不拿旧气温做温度修正**（宁可不做，不可编 —— 28 小时前的 22.5℃ 不是今天的气温）。
+	OutsideTempC *float64 `json:"outside_temp_c"`
+	// ⚠️ **v0.142.0**：上次读到的车外温度（℃）与它的采集时刻（信息不丢）。
+	OutsideTempLast *float64   `json:"outside_temp_last"`
+	OutsideTempAt   *time.Time `json:"outside_temp_at,omitempty"`
+	// ⚠️ **v0.142.0**：这个温度读数是不是陈旧的（车睡着 ⇒ 是）。
+	OutsideTempStale   bool     `json:"outside_temp_stale"`
 	BatteryLevel       *int     `json:"battery_level"`
 	ReserveFactor      float64  `json:"reserve_factor"`
 	FloorReserveFactor *float64 `json:"floor_reserve_factor,omitempty"`

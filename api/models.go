@@ -30,7 +30,20 @@ type CarStatus struct {
 	Odometer     *float64   `json:"odometer"`
 	Speed        *int       `json:"speed"`
 	Power        *int       `json:"power"`
-	OutsideTemp  *float64   `json:"outside_temp"`
+	// ⚠️ **v0.142.0**：OutsideTemp 收窄为「**当前**读到的车外温度」。
+	//
+	// positions.outside_temp 与 inside_temp 是**同一批稀疏行**（实测非空率同为 3.32%，
+	// 最后一条读数的时刻也相同）⇒ 车睡着后它停在**停车那一刻**的气温。
+	// 原来这里直接把它当「现在的车外温度」下发 ⇒ App 车况页显示成一个**裸数字**
+	//（实测：车停了 28 小时，界面仍写「车外 22.5℃」）⇒ **假新鲜度**。
+	//
+	// ⇒ 现在：读数**不是当前的** ⇒ 这里给 null（App 显示「—」，零 App 改动）；
+	//   「上次读到多少、什么时候」另给 outside_temp_last / outside_temp_at（信息不丢）。
+	OutsideTemp *float64 `json:"outside_temp"`
+	// OutsideTempLast 最后一次读到的车外温度（℃）（无论新旧都有）。
+	OutsideTempLast *float64 `json:"outside_temp_last"`
+	// OutsideTempAt 上面那个读数的**车端采集时刻**（不是落地时刻）。
+	OutsideTempAt *time.Time `json:"outside_temp_at"`
 	// ⚠️ **v0.137.0**：InsideTemp 收窄为「**当前**读到的车内温度」。
 	//
 	// positions.inside_temp 是**车醒着时才更新**的稀疏列（实测非空率仅 3.5%）

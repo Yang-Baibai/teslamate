@@ -1577,6 +1577,184 @@ PYEOF
 if [ $? -eq 0 ]; then ok "座舱温度读数的「新鲜度」只在服务端一份"; else fail "座舱温度的新鲜度口径跑到了客户端"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 19：车外温度读数的「新鲜度」只在服务端一份 ───────────────────
+#
+# ⚠️ **v0.142.0**（2026-11-10 线上实测打出来的）：
+# positions.outside_temp 与 positions.inside_temp 是**同一批稀疏行**
+# （实测非空数完全相同：61709 行，非空率同为 3.32%，最后一条读数时刻也相同）
+# ⇒ 它们是**同一个读数问题的两个字段**。
+# v0.137.0 只收口了车内温度 ⇒ 线上出现「车内温度 —」+「车外温度 22.5℃」
+# **同屏自相矛盾**（实测车停了 28 小时，22.5℃ 是**停车那一刻**的气温）。
+#
+# 这道闸门钉九件事：
+#   ① 服务端必须给**当前读数**，并**保留上次读数 + 它的时刻**（信息不许丢）；
+#   ② 车外温度的新鲜度必须由**一个函数**产出（顶层与续航共用）；
+#   ③ 那个函数必须用**车醒着没有**那条判据（与车内温度同一个）；
+#   ④ 陈旧 ⇒ 当前值必须不给（不许拿旧气温冒充今天）；
+#   ⑤ 顶层与续航**都**得调它（两个出口同源 ⇒ 不会各说各话）；
+#   ⑥ MCP 必须**透传**（不许自己解释、不许自己判陈旧）；
+#   ⑦ **判据与阈值不许漏到客户端**（标识符归一化 ⇒ 全盖写法形态）；
+#   ⑧ 客户端不许自己按「数据年龄」判车外温度（同一行同现即报红）；
+#   ⑨ 契约自检**必须真的在跑**（定义了函数 ≠ 生效 —— 闸门 10 的教训）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('.')
+API = ROOT / 'api'
+MCP = ROOT / 'mcp' / 'teslamate_mcp.py'
+CHK = ROOT / 'mcp' / 'check_tool_fields.py'
+GATE = ROOT / 'scripts' / 'hermes-gates.sh'
+
+problems = []
+
+for p in [API, MCP, CHK, GATE]:
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace')
+
+
+def strip_comments(src, kinds):
+    if 'block' in kinds:
+        src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    if 'line' in kinds:
+        src = re.sub(r'//[^\n]*', '', src)
+    if 'hash' in kinds:
+        src = re.sub(r'#[^\n]*', '', src)
+    return src
+
+
+def norm(s):
+    return re.sub(r'[^0-9a-z]', '', s.lower())
+
+
+go_files = [f for f in sorted(API.glob('*.go')) if not f.name.endswith('_test.go')]
+api_src = '\n'.join(read(f) for f in sorted(API.glob('*.go')))
+api_code = '\n'.join(strip_comments(read(f), ('block', 'line')) for f in go_files)
+mcp_code = strip_comments(read(MCP), ('hash',))
+chk_src = read(CHK)
+
+# ① 服务端必须给当前读数、并保留上次读数 + 它的时刻
+#    ⚠️ **按 CarStatus 结构体分段**判，不能在「整个 api 目录」里搜字符串
+#    （RangeEstimate 里也有 outside_temp_last ⇒ 搜全目录会**假绿**）。
+#    ⚠️ 这是探针 o5 实测抓出来的：先写完闸门以为能抓，跑探针才发现抓不到。
+models_src = read(API / 'models.go')
+m_cs = re.search(r'type\s+CarStatus\s+struct\s*\{([\s\S]*?)\n\}', models_src)
+cs_body = m_cs.group(1) if m_cs else ''
+if not cs_body:
+    problems.append('api/models.go 里找不到 CarStatus 结构体 ⇒ 没法核对车外温度的字段')
+else:
+    for key in ('outside_temp_last', 'outside_temp_at'):
+        if ('json:"%s"' % key) not in cs_body:
+            problems.append('CarStatus 里没有 %s ⇒ 读数不是当前的时候，「上次读到多少、什么时候」整段丢了' % key)
+
+# ② 车外温度的新鲜度必须由**一个函数**产出
+if 'func rangeOutsideTemp(' not in api_code:
+    problems.append('api/ 里没有 rangeOutsideTemp ⇒ 车外温度的新鲜度没有唯一出处')
+else:
+    m = re.search(r'func rangeOutsideTemp\([\s\S]*?\n\}', api_code)
+    body = m.group(0) if m else ''
+    # ③ 它内部必须用**同一个**判据（车醒着没有）⇒ 两个出口不会分裂
+    if 'cabinReadingCurrent(' not in body:
+        problems.append('rangeOutsideTemp 没有用 cabinReadingCurrent ⇒ 顶层 /status 与续航 '
+                        '/range_estimate 对「现在的车外温度」可能给出相反的答案')
+    # ④ 陈旧 ⇒ 当前值必须不给（写法形态：按 stale 分支）
+    if not re.search(r'if\s+[^\n{]*stale[^\n{]*\{', body):
+        problems.append('rangeOutsideTemp 里没有「按 stale 分支」的写法 ⇒ 陈旧读数仍可能被'
+                        '当成「当前气温」（假新鲜度）')
+    # ⑤ 顶层与续航**都**得调它（各一次 ⇒ 两个出口同源）
+    calls = [ln for ln in api_code.split('\n')
+             if 'rangeOutsideTemp(' in ln and not ln.lstrip().startswith('func ')]
+    if len(calls) < 2:
+        problems.append('rangeOutsideTemp 只被调用 %d 次（至少要两次：顶层 /status 与续航 '
+                        '/range_estimate）⇒ 两个出口可能各算各的' % len(calls))
+
+# ⑥ MCP 必须透传
+#    ⚠️ **按工具分段**判，不能在「整个 MCP 文件」里搜字段名
+#    （续航工具里也有 outside_temp_last ⇒ 搜全文件会**假绿** —— 探针 o2 实测抓到）。
+def tool_body(src, name):
+    m = re.search(r'def\s+%s\s*\(' % re.escape(name), src)
+    if not m:
+        return None
+    rest = src[m.end():]
+    nxt = re.search(r'\n@?mcp\.tool\(\)', rest)
+    return rest[:nxt.start()] if nxt else rest
+
+for fn_name in ('teslamate_status', 'teslamate_range_estimate'):
+    body = tool_body(mcp_code, fn_name)
+    if body is None:
+        problems.append('MCP 里找不到工具 %s ⇒ 没法核对车外温度的年龄信息' % fn_name)
+        continue
+    for key in ('outside_temp_last', 'outside_temp_at'):
+        if key not in body:
+            problems.append('MCP 的 %s 没透传 %s ⇒ 飞书里说不清这个读数有多旧' % (fn_name, key))
+
+# ⑦ 阈值与判据函数不许漏到客户端
+#    ⚠️ **标识符归一化后再匹配**（去掉非字母数字 + 转小写）⇒
+#    DataStaleHours / DATA_STALE_HOURS / dataStaleHours **全都归到同一个**
+#    ⇒ 不依赖写法形态（AGENTS.md：别把判据写成「某一种写法形态」）。
+CLIENT_TOKENS = ('datastalehours', 'datawarnhours', 'pollsnapshotstale',
+                 'cabinreadingcurrent', 'rangeoutsidetemp')
+clients = [(MCP, mcp_code)]
+for kt in sorted((ROOT / 'app-android').rglob('*.kt')):
+    clients.append((kt, strip_comments(read(kt), ('block', 'line'))))
+for sh in sorted((ROOT / 'scripts').glob('*.sh')):
+    clients.append((sh, strip_comments(read(sh), ('hash',))))
+for ps in sorted((ROOT / 'scripts').glob('*.ps1')):
+    clients.append((ps, strip_comments(read(ps), ('hash',))))
+for p, src in clients:
+    if p.resolve() == GATE.resolve():
+        continue  # 这道闸门自己要说这些名字，不算违规
+    n_src = norm(src)
+    for tok in CLIENT_TOKENS:
+        if tok in n_src:
+            problems.append('%s 里出现了 %s（标识符归一化后）⇒ 陈旧判据漏到客户端（ADR #38）'
+                            % (p.name, tok))
+
+# ⑧ 客户端不许自己按「数据年龄」判车外温度
+#    ⚠️ 写法形态：同一行里同时出现「车外温度」与「年龄类」标识即报红
+#    （写成 > 24、> 3600、isStale、hoursAgo …… 全都盖住）。
+AGE_TOKENS = ('agehours', 'dataage', 'staletemp', 'isstale', 'hoursago', 'minutesago')
+for kt in sorted((ROOT / 'app-android').rglob('*.kt')):
+    code = strip_comments(read(kt), ('block', 'line'))
+    for ln in code.split('\n'):
+        n = norm(ln)
+        if 'outsidetemp' in n:
+            for tok in AGE_TOKENS:
+                if tok in n:
+                    problems.append('客户端 %s 里自己判车外温度的年龄（%s）⇒ 判定只能服务端做'
+                                    % (kt.name, ln.strip()[:80]))
+                    break
+
+# ⑨ 契约自检必须真的在跑
+fn = 'check_outside_temp_freshness_contract'
+if ('def %s(' % fn) not in chk_src:
+    problems.append('契约自检里没有 %s' % fn)
+else:
+    called = False
+    for ln in chk_src.split('\n'):
+        if fn + '(' in ln and 'def ' not in ln:
+            called = True
+            break
+    if not called:
+        problems.append('契约自检 %s 没被调用 ⇒ 定义了函数 ≠ 生效（闸门 10 的教训）' % fn)
+
+if problems:
+    print('车外温度读数的「新鲜度」没有收敛到服务端 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 读数是不是「当前的」只能服务端判（ADR #38）；客户端只透传')
+    print('      停车那一刻的旧读数不许冒充「现在的车外温度」（假新鲜度）')
+    sys.exit(1)
+print('车外温度新鲜度：判据与保留信息只在服务端一份 ✔（MCP 只透传）')
+PYEOF
+if [ $? -eq 0 ]; then ok "车外温度读数的「新鲜度」只在服务端一份"; else fail "车外温度的新鲜度口径跑到了客户端"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

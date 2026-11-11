@@ -174,6 +174,15 @@ bash scripts/server-gates.sh && bash scripts/client-gates.sh && bash scripts/smo
 ④ 改了 `mcp/*.py` ⇒ 按 `docs/operations.md` §11.4 重启网关
    （杀网关进程树 ⇒ `Start-ScheduledTask -TaskName 'Hermes-Gateway'`）。
 
+⚠️ **改了 SQL ⇒ 必须回读线上接口**（2026-11-11 补）：
+**编译期、单测、闸门全都发现不了 SQL 写错** —— 只有**部署后打线上接口**才暴露。
+（2026-11-11 实测连踩两次：CTE 里漏了 `date` ⇒ `/range_estimate` 直接 500；
+`states.status` 是**枚举** ⇒ `COALESCE(ls.state, '')` 类型不匹配 ⇒ 报枚举错 ⇒ 都是回读才发现。）
+⇒ 规矩：① 改了 `api/` 里的 **SQL**（CTE / SELECT / JOIN / 类型转换）⇒
+   `docker compose build api` → `up -d --force-recreate api` → **立刻回读线上接口**；
+② 回读看的是**接口返回的真实值**，不是「接口 200」；
+③ 顶层与续航这类**两个出口**要**一起回读**（它们可能各走一段 SQL）。
+
 ⚠️ **纯服务端发布（App 零改动 ⇒ versionCode 不动）的版本说明，用户永远看不到**：
 App 的更新提示按 **versionCode** 比较 ⇒ 手机上停在 120 时，下一个动 App 的版本（121）
 会**直接跳过** 0.111.0 那条说明 ⇒ **纯服务端新增的功能，要在下一次动 App 时把说明补一句**，

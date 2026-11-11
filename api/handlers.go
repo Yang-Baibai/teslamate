@@ -138,7 +138,8 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.ServerTimezone = getenv("TZ_NAME", "Asia/Shanghai")
 	err = db.QueryRow(context.Background(), sqlStatus, id).Scan(
 		&s.UpdatedAt, &s.BatteryLevel, &s.UsableLevel, &s.IdealRangeKm, &s.EstRangeKm, &s.RatedRangeKm,
-		&s.Odometer, &s.Speed, &s.Power, &s.OutsideTemp, &s.InsideTemp, &s.InsideTempAt, &s.IsClimateOn, &s.Elevation,
+		&s.Odometer, &s.Speed, &s.Power,
+		&s.OutsideTemp, &s.OutsideTempAt, &s.InsideTemp, &s.InsideTempAt, &s.IsClimateOn, &s.Elevation,
 		&s.Lat, &s.Lng, &s.MapLat, &s.MapLng,
 		&s.TpmsFL, &s.TpmsFR, &s.TpmsRL, &s.TpmsRR,
 		&s.LocationName,
@@ -338,11 +339,26 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	// 读数不是当前的 ⇒ 置 null ⇒ App 的「车内温度」格显示「—」（既有 `?:` 兜底，
 	// **App 零改动**）；「上次读到多少、什么时候」另给 inside_temp_last / inside_temp_at。
 	//
-	// ⚠️ `outside_temp` **不动** —— 续航模型（RangeModel）要用它做温度修正。
+	// ⚠️ **v0.142.0**：outside_temp 现在**也**收窄为「当前读到的车外温度」。
+	//
+	// 它与 `inside_temp` 是**同一批 positions 行**（实测非空数完全相同：61709 行，
+	// 最后一条读数的时刻也相同）⇒ **必须同一个判据、同一份新鲜度**，
+	// 否则同屏会出现「车内温度 —」+「车外温度 22.5℃」这种自相矛盾。
+	//
+	// ⚠️ **续航模型那一路怎么办**：它有**自己的 SQL**（sqlRangeInputs）⇒
+	//   那一路在 v0.142.0 一并收口（读数陈旧 ⇒ 不拿它做温度修正），
+	//   两边口径一致 ⇒ App 的本地兜底（用 st.outside_temp）也自动一致。
 	s.InsideTempLast = s.InsideTemp
 	if readingStale {
 		s.InsideTemp = nil
 	}
+	// ⚠️ **v0.142.0**：车外温度**也**走 [rangeOutsideTemp] —— 与续航那一路**同一个函数**
+	//   ⇒ 顶层 /status 与 /range_estimate 的「现在的车外温度」**必然一致**
+	//     （同一个事实不许有两个出口各说各话，ADR #38）。
+	// ⚠️ 顺序：座舱闷热（cabinHeat）必须在**收窄之前**算完
+	//   —— 它要拿原始读数做「车内 vs 车外」的对比。
+	s.OutsideTemp, s.OutsideTempLast, s.OutsideTempAt, _ =
+		rangeOutsideTemp(s.OutsideTemp, s.OutsideTempAt, pollState)
 
 	// 锁车状态来自 Tesla Fleet API 的后台轮询缓存（api/tesla.go）。
 	// 没配凭据或拉取失败时是 nil/nil = 未知，JSON 里输出 null。

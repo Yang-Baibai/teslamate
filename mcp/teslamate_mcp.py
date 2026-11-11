@@ -280,6 +280,11 @@ def teslamate_status() -> dict:
       旧值会让人以为「不闷热」（实测：车停了 22 小时，界面仍写 25.8℃）。
       ⇒ 报给用户时要说「现在读不到车内温度（最后一次是 X℃，采集于 Y）」，
       **不要**说成 0℃ /「没有温度数据」。
+    - ⚠️ **v0.142.0**：`车外温℃` 为 **None** ⇒ **现在读不到车外温度**
+      （车睡着时 positions 里的读数停在**停车那一刻**，服务端把它收起来了）。
+      ⚠️ 它与 `车内温℃` 是**同一批**读数 ⇒ 要么两个都有、要么两个都没有。
+      ⇒ 报给用户时要说「现在读不到车外温度（最后一次是 X℃，采集于 Y）」，
+      **不要**说成 0℃ /「没有温度数据」。
     """
     s = _get(f"/api/v1/cars/{CAR_ID}/status")
     if not isinstance(s, dict) or "error" in s:
@@ -307,7 +312,15 @@ def teslamate_status() -> dict:
         "锁车数据来源": _source_cn(s.get("locked_source")),
         "锁车状态是旧的": bool(s.get("locked_stale")),
         "位置": s.get("location_name"),
+        # ⚠️ **v0.142.0**：车外温度**只在读数是当前时**才有值。
+        #   positions.outside_temp 与 inside_temp 是**同一批稀疏行**
+        #   （实测非空数完全相同：61709 行，非空率同为 3.32%）⇒ 车睡着后
+        #   它停在**停车那一刻**的气温 ⇒ 服务端把它收起来了（置 null）。
+        #   ⇒ 这里**只透传**（ADR #38 / #41），不自己算「旧不旧」。
         "车外温℃": s.get("outside_temp"),
+        # ⚠️ **v0.142.0**：信息不许丢 —— 上次读到多少、什么时候读到的。
+        "车外温度上次读到℃": s.get("outside_temp_last"),
+        "车外温度采集于": s.get("outside_temp_at"),
         # ⚠️ **v0.137.0**：车内温度**只在读数是当前时**才有值。
         #   positions.inside_temp 是**车醒着时才更新**的稀疏列 ⇒ 车睡着后
         #   它停在**停车那一刻**的值 ⇒ 服务端把它收起来了（置 null）。
@@ -464,6 +477,13 @@ def teslamate_range_estimate(to_km: float = 0) -> dict:
         "该档样本数": d.get("bucket_samples"),
         "参考车速(km/h)": d.get("reference_speed_kph"),
         "温度修正": d.get("temp_factor"),
+        # ⚠️ **v0.142.0**：车外温度**只在读数是当前时**才有值。
+        #   读数陈旧 ⇒ 服务端**不拿它做温度修正**（宁可不做，不可编），
+        #   ⇒ 「温度修正」= 1.0 时要看一眼「车外温度读数是旧的」是不是 true。
+        "车外温℃": d.get("outside_temp_c"),
+        "车外温上次读到℃": d.get("outside_temp_last"),
+        "车外温采集于": d.get("outside_temp_at"),
+        "车外温度读数是旧的": bool(d.get("outside_temp_stale")),
         "标定续航(km)": d.get("rated_range_km"),
         "当前电量(%)": d.get("battery_level"),
         "模型样本条数": d.get("sample_count"),
