@@ -106,6 +106,21 @@ cd /c/tm-ws && export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.1
 （2026-11-02 实测：212 个测试全绿）。⇒ App 侧改动**必须**能跑单测，
 把「没跑成单测」写进 CHANGELOG 是不合格的。
 
+**起 Android 模拟器**（版面复核用）：
+
+```bash
+bash scripts/start-emulator.sh      # 起 tm_pixel 并等它 boot 完（实测 16~47 秒）
+bash scripts/start-emulator.sh -Avd tm_emu
+bash scripts/start-emulator.sh -Stop
+```
+
+⚠️ **emulator 必须在纯 ASCII 路径下启动**：本机 SDK 根 `C:\Users\<用户名>\...` **含中文** ⇒
+无论换什么参数都起不来（崩 / 永久 offline / 静默退出）⇒ **与虚拟化、图形 DLL、换包都无关**。
+脚本会把 emulator 放到纯 ASCII 的 `C:\tm-sdk` 下启动（其余目录用**联接**指回真实 SDK），
+**不需要管理员、不需要重启、不用改宿主虚拟化配置**。
+⚠️ **别把启动方式改回 `Start-Process -RedirectStandardOutput`**（那是**管道** ⇒ 常驻的 emulator 会把调用方吊住）。
+细节与实测记录见 `docs/28-真机复核清单.md` 与 CHANGELOG v0.141.0 段。
+
 ⚠️ **写/删文件（`Copy-Item` / `rm`）必须用「解析后的真实路径」，而且必须是「单条顶层命令」**
 —— `C:\tm-ws`（ASCII 联接）会被本机安全策略判成「工作区外」⇒ 写/删一律用
 `C:\Users\<你>\OneDrive\文档\teslamate\...`；
