@@ -41,6 +41,21 @@ const appCopyWidthLimit = 44
 //	  与飞书里（App 侧还没显示 ⇒ 记进已知未收口，下一个 App 版本补）。
 const staleOutsideTempCaveat = "车外温度读不到 ⇒ 未按气温修正 · 可能偏乐观"
 
+// tempCaveatLowUntrustedTmpl 低温（≤10°C）且样本不足时那句（%d = 该温度档的样本条数）。
+//
+// ⚠️ **v0.146.0**：这两条原先在 range_estimate.go 里拼 ⇒ 违反「服务端文案一律进 app_copy.go」
+// （AGENTS.md 的通则 + ADR #41）⇒ 本轮搬进来，让「服务端文案的唯一定义处」名副其实。
+//
+// ⚠️ **客户端有一份逐字副本**（app-android/.../TempCaveatCopy.kt）—— 那是**本地兜底**：
+// 服务端挂掉时 App 要自己把口径说出来，不能哑着。
+// ⚠️ **v0.146.0 修掉的缺陷**：本地兜底原来在「车外温度读不到」时**返回 null**
+// ⇒ 界面一句口径提示都没有 ⇒ 用户以为那个续航数是按气温修正过的 ⇒ **假安全**。
+// 两份不许漂 ⇒ **客户端闸门 35 跨文件逐字比对**。
+const tempCaveatLowUntrustedTmpl = "低温未修正：≤10°C 只有 %d 条样本，这个数不可信"
+
+// tempCaveatNoLowCorrectionTmpl 低温区间（10~22°C）不做低温修正时那句（%d = 样本条数）。
+const tempCaveatNoLowCorrectionTmpl = "未做低温修正（≤10°C 样本 %d 条）"
+
 // copyVisualWidth 视觉宽度（与客户端 vwidth 同一口径：汉字/全角=2，半角=1，空格不计）。
 func copyVisualWidth(s string) int {
 	w := 0

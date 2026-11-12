@@ -152,12 +152,20 @@ class ConsumptionModel(
      * - 温度 ≤10°C 且低温样本 < 5 → **这个数不可信**，界面必须说清楚
      */
     fun tempCaveat(outsideTempC: Double?): String? {
-        val t = outsideTempC ?: return null
+        val t = outsideTempC
+        // ⚠️ **v0.146.0：读不到温度时也不许返回 null。**
+        // 本地兜底那条路（服务端挂掉 / 还没取到）原来在这里直接 return null
+        // ⇒ 界面**一句口径提示都没有** ⇒ 用户以为那个数是按气温修正过的 ⇒ **假安全**
+        // （服务端那条路一直会说「未按气温修正 · 可能偏乐观」）。
+        // ⇒ 现在与服务端**同一句**（逐字副本，见 TempCaveatCopy）。
+        if (t == null) {
+            return TempCaveatCopy.OUTSIDE_TEMP_UNAVAILABLE
+        }
         return when {
             t <= 10.0 && !lowTempTrustworthy ->
-                "低温未修正：≤10°C 只有 $lowTempSamples 条样本，这个数不可信"
+                TempCaveatCopy.lowTempUntrustworthy(lowTempSamples)
             t <= 22.0 ->
-                "未做低温修正（≤10°C 样本 $lowTempSamples 条）"
+                TempCaveatCopy.noLowTempCorrection(lowTempSamples)
             else -> null
         }
     }

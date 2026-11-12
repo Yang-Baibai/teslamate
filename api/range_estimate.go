@@ -381,10 +381,10 @@ func (m *rangeModel) tempCaveat(outsideTempC *float64) string {
 		return ""
 	}
 	if *outsideTempC <= rangeTempLowC && m.LowTempSamples < rangeLowTempMinSamples {
-		return fmt.Sprintf("低温未修正：≤%.0f°C 只有 %d 条样本，这个数不可信", rangeTempLowC, m.LowTempSamples)
+		return fmt.Sprintf(tempCaveatLowUntrustedTmpl, m.LowTempSamples)
 	}
 	if *outsideTempC <= rangeTempHotC {
-		return fmt.Sprintf("未做低温修正（≤%.0f°C 样本 %d 条）", rangeTempLowC, m.LowTempSamples)
+		return fmt.Sprintf(tempCaveatNoLowCorrectionTmpl, m.LowTempSamples)
 	}
 	return ""
 }

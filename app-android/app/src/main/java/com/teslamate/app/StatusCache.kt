@@ -64,6 +64,11 @@ class StatusCache(context: Context) {
      * 宁可没有，也不要半截数据。
      */
     fun load(carId: Int): CachedStatus? {
+        // ⚠️ **v0.146.0：结构版本对不上 ⇒ 整份作废。**
+        // 本轮给 CarStatus 补了 outside_temp_last / outside_temp_at
+        // ⇒ 旧缓存里**没有**这两个字段 ⇒ 界面会拿到一份「缺字段的半截数据」
+        // ⇒ 与本文件开头那条「宁可没有，也不要半截数据」相悖 ⇒ 宁可显示空状态。
+        if (prefs.getInt(schemaKey, 0) != cacheSchema) return null
         val raw = prefs.getString(statusKey(carId), null) ?: return null
         val savedAt = runCatching { Instant.parse(prefs.getString(savedAtKey(carId), null) ?: return null) }
             .getOrNull() ?: return null
@@ -84,6 +89,7 @@ class StatusCache(context: Context) {
         val carId = status.car_id
         runCatching {
             prefs.edit()
+                .putInt(schemaKey, cacheSchema)
                 .putString(statusKey(carId), json.encodeToString(CarStatus.serializer(), status))
                 .putString(savedAtKey(carId), Instant.now().toString())
                 .apply()
@@ -129,6 +135,14 @@ class StatusCache(context: Context) {
 
     private companion object {
         const val PREFS = "tm_status_cache"
+        /**
+         * ⚠️ **v0.146.0：缓存的结构版本**（model 变了就 +1 ⇒ 旧缓存整份作废）。
+         *
+         * 比「App 升级就清一次」更准：只有**缓存结构真的变了**才作废，
+         * 平常升级不丢用户那份「上次已知」。
+         */
+        const val cacheSchema = 2
+        const val schemaKey = "cache_schema"
         // ⚠️ v0.22.0：键名带 carId —— 缓存**按车分区**（见 load 的说明）。
         fun statusKey(carId: Int) = "last_status_car_$carId"
         fun savedAtKey(carId: Int) = "last_saved_at_car_$carId"

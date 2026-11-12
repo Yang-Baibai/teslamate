@@ -410,6 +410,16 @@ data class CarStatus(
     val speed: Int? = null,
     val power: Int? = null,
     val outside_temp: Double? = null,
+    /**
+     * ⚠️ **v0.146.0**：车外温度的**上次**读数与它的时刻。
+     *
+     * outside_temp 只给「**当前**读到的」（车睡着时为空 —— v0.142.0 的口径）。
+     * ⇒ 「上次读到多少、什么时候」在这里 ⇒ 界面能说清「读不到」到底读不到什么
+     * （v0.145.0 真机复核的发现三：App 侧一直没显示它）。
+     */
+    val outside_temp_last: Double? = null,
+    /** 车外温度上次读到的时刻（null = 没有上次读数）。 */
+    @Serializable(with = InstantSer::class) val outside_temp_at: Instant? = null,
     val inside_temp: Double? = null,
     val is_climate_on: Boolean? = null,
     val elevation: Int? = null,

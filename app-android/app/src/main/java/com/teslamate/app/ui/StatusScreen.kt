@@ -87,6 +87,7 @@ import com.teslamate.app.TelemetryAlert
 import com.teslamate.app.TelemetryStatus
 import com.teslamate.app.districtCity
 import com.teslamate.app.fmt
+import com.teslamate.app.fmtDate
 import com.teslamate.app.fmtKwh100
 import com.teslamate.app.fmtShort
 import com.teslamate.app.fmtThousands
@@ -865,6 +866,19 @@ fun StatusScreen(
                             outdoorTiles += "功率" to infoTileKwValue(st.power)
                         }
                         InfoTileRow(outdoorTiles)
+                        // ⚠️ **v0.146.0**：当前读不到车外温度时，把「上次读到多少、什么时候」说出来。
+                        // 服务端只给「当前」读数（车睡着时为空）⇒ 不补这一句，
+                        // 界面上就是一个孤零零的「—」，用户分不清是「没读到」还是「真的没有」。
+                        if (st.outside_temp == null && st.outside_temp_last != null) {
+                            val last = st.outside_temp_last.fmt(1, "°C")
+                            val at = st.outside_temp_at?.fmtDate()
+                            val note = "车外温度上次读到 $last" + (at?.let { " · $it" } ?: "")
+                            Text(
+                                note,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         // ⚠️ v0.8.5（效率车主复核）删掉「海拔 | 可用电量」两块：
                         //  · 海拔一年用一次，且 data-dictionary 自己写着「深圳平原常为 null」
                         //  · 「可用电量」和电量环是同一个数的两半（battery_level vs

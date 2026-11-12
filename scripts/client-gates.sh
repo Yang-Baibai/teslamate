@@ -3642,6 +3642,139 @@ PYEOF
 if [ $? -eq 0 ]; then ok "跨会话交接位只用会话全名（不许相对称呼）"; else fail "交接位里出现了相对称呼（读到的人会不知道说的是哪一方）"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 35：服务端与客户端的温度口径文案必须逐字一致（本地兜底不许哑着）──
+#
+# ⚠️ **v0.146.0**：本地兜底那条路（服务端挂掉 / 还没取到）原来在「车外温度读不到」时
+#   **直接返回 null** ⇒ 界面一句口径提示都没有 ⇒ 用户以为那个续航数是按气温修正过的
+#   ⇒ **假安全**（服务端那条路一直会说「未按气温修正 · 可能偏乐观」）。
+# ⇒ 修法：客户端有一份**逐字副本**（TempCaveatCopy.kt），服务端那份在 api/app_copy.go。
+#
+# ⚠️ 判据按「**两边的文案集合必须相等**」写 —— 两个方向都盖住：
+#   · 客户端多了一句 ⇒ 服务端没有 ⇒ 离线兜底会讲一句飞书不会讲的话；
+#   · 服务端多了一句 ⇒ 客户端没有 ⇒ 离线兜底**漏掉**这句（回到假安全）。
+#   ⚠️ 判据必须先剥注释 —— 否则注释里提一句旧文案就误报。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+ROOT = pathlib.Path('.')
+CLIENT = ROOT / 'app-android/app/src/main/java/com/teslamate/app/TempCaveatCopy.kt'
+SERVER = ROOT / 'api/app_copy.go'
+MODEL = ROOT / 'app-android/app/src/main/java/com/teslamate/app/ConsumptionModel.kt'
+
+BS = chr(92)
+NL = chr(10)
+problems = []
+
+
+def strip_comments(src):
+    # 剥掉注释，但不动字符串里的内容（含 // 的字符串不能被当注释）。
+    out = []
+    i = 0
+    n = len(src)
+    while i < n:
+        c = src[i]
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if src[j] == BS:
+                    j += 2
+                    continue
+                if src[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            out.append(src[i:j])
+            i = j
+            continue
+        if src.startswith('//', i):
+            j = src.find(NL, i)
+            i = n if j < 0 else j
+            continue
+        if src.startswith('/*', i):
+            j = src.find('*/', i)
+            i = n if j < 0 else j + 2
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
+def cjk_literals(path):
+    src = strip_comments(path.read_text(encoding='utf-8', errors='replace'))
+    out = []
+    i = 0
+    n = len(src)
+    while i < n:
+        if src[i] != '"':
+            i += 1
+            continue
+        j = i + 1
+        buf = []
+        while j < n:
+            ch = src[j]
+            if ch == BS:
+                j += 2
+                continue
+            if ch == '"':
+                break
+            buf.append(ch)
+            j += 1
+        lit = ''.join(buf)
+        if any(chr(0x4e00) <= c <= chr(0x9fff) for c in lit):
+            out.append(lit)
+        i = j + 1
+    return out
+
+
+if not CLIENT.exists():
+    print('找不到 %s —— 客户端的温度口径副本不见了？' % CLIENT)
+    sys.exit(1)
+if not SERVER.exists():
+    print('找不到 %s —— 服务端文案的唯一定义处不见了？' % SERVER)
+    sys.exit(1)
+
+cli = cjk_literals(CLIENT)
+srv = cjk_literals(SERVER)
+
+if not cli:
+    problems.append('%s 里一条中文文案都没有 ⇒ 客户端那份是空壳' % CLIENT.name)
+if not srv:
+    problems.append('%s 里一条中文文案都没有 ⇒ 服务端那份是空壳' % SERVER.name)
+
+# ① 两边的文案集合必须相等（两个方向都盖住）
+for x in [x for x in cli if x not in srv]:
+    problems.append('客户端有、服务端没有的温度口径文案：%s' % x)
+for x in [x for x in srv if x not in cli]:
+    problems.append('服务端有、客户端没有的温度口径文案：%s ⇒ 离线兜底会漏掉这句' % x)
+
+# ② 客户端那份必须真被用上（不许是死文件）
+model_src = MODEL.read_text(encoding='utf-8', errors='replace') if MODEL.exists() else ''
+if 'TempCaveatCopy' not in model_src:
+    problems.append('ConsumptionModel.kt 里没有引用 TempCaveatCopy ⇒ 客户端那份文案没被用上（死文件）')
+
+# ③ tempCaveat 必须引用「读不到」那句（不许再返回 null）
+idx = model_src.find('fun tempCaveat(')
+if idx < 0:
+    problems.append('ConsumptionModel.kt 里找不到 tempCaveat 的定义')
+else:
+    rest = model_src[idx:]
+    end = rest.find(NL + '    }')
+    body = rest[:end] if end > 0 else rest
+    if 'OUTSIDE_TEMP_UNAVAILABLE' not in body:
+        problems.append('tempCaveat 没有引用 OUTSIDE_TEMP_UNAVAILABLE ⇒「读不到温度」时又会没有口径提示（假安全）')
+
+if problems:
+    print('温度口径文案两端对不上 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 服务端与客户端的温度口径文案必须逐字一致（本地兜底不许哑着）')
+    sys.exit(1)
+
+print('温度口径文案：客户端 %d 条 / 服务端 %d 条，逐字一致' % (len(cli), len(srv)))
+PYEOF
+if [ $? -eq 0 ]; then ok "温度口径文案两端逐字一致（本地兜底不会漏掉安全口径）"; else fail "温度口径文案两端漂了（本地兜底会漏掉安全口径）"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

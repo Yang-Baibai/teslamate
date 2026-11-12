@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -62,6 +63,39 @@ func TestStaleCaveatKeepsKeyFacts(t *testing.T) {
 	for _, must := range []string{"读不到", "气温修正", "偏乐观"} {
 		if !strings.Contains(staleOutsideTempCaveat, must) {
 			t.Fatalf("收窄后丢了关键事实 %q：%q", must, staleOutsideTempCaveat)
+		}
+	}
+}
+
+// TestTempCaveatTemplatesMatchThresholds 模板里写死的阈值不许与判据漂移。
+//
+// ⚠️ v0.146.0：模板搬进 app_copy.go 后，里面的「≤10°C」是**写死的**
+// （要能跨文件逐字比对，就不能是 fmt 出来的）⇒ 得钉住它与 rangeTempLowC 一致。
+func TestTempCaveatTemplatesMatchThresholds(t *testing.T) {
+	want := fmt.Sprintf("≤%.0f°C", rangeTempLowC)
+	for _, tmpl := range []string{tempCaveatLowUntrustedTmpl, tempCaveatNoLowCorrectionTmpl} {
+		if !strings.Contains(tmpl, want) {
+			t.Fatalf("温度口径模板里的阈值与判据不一致（模板写死 %q、判据 %v）：%q", want, rangeTempLowC, tmpl)
+		}
+		if w := copyVisualWidth(tmpl); w > appCopyWidthLimit {
+			t.Fatalf("温度口径模板宽度 %d > %d：%q", w, appCopyWidthLimit, tmpl)
+		}
+	}
+}
+
+// TestTempCaveatRenderedWithinWidth 渲染出来（含样本条数）也不许超宽。
+//
+// ⚠️ 模板宽度是「样本条数按 %d 算」的 ⇒ 真填上数字可能更宽
+// ⇒ 这里按真实的条数渲染一遍再量（低温条数实测只有个位数，128 是留给未来的余量）。
+func TestTempCaveatRenderedWithinWidth(t *testing.T) {
+	for _, n := range []int{1, 3, 128} {
+		s := fmt.Sprintf(tempCaveatLowUntrustedTmpl, n)
+		if w := copyVisualWidth(s); w > appCopyWidthLimit {
+			t.Fatalf("低温口径（%d 条样本）宽度 %d > %d：%q", n, w, appCopyWidthLimit, s)
+		}
+		s2 := fmt.Sprintf(tempCaveatNoLowCorrectionTmpl, n)
+		if w := copyVisualWidth(s2); w > appCopyWidthLimit {
+			t.Fatalf("未做低温修正口径（%d 条样本）宽度 %d > %d：%q", n, w, appCopyWidthLimit, s2)
 		}
 	}
 }
