@@ -22,6 +22,9 @@ TeslaMate（开源采集）→ PostgreSQL → 自写 Go API → 自写 Android A
 - **判定口径只有服务端一处** —— App 与 Hermes/MCP 都只读服务端结果，
   绝不在客户端各算一套阈值（详见 §6）。
 - 这不是给多租户用的产品：**一个车主、一台车、一套局域网 + Tailscale**。
+- ⚠️ **本项目明确不做适老化 / 无障碍**（2026-11-13 起，用户明确指示）⇒
+  不新增任何以无障碍为目标的改动；已有的适配**保留但不投入**；**200% 字号不再算「系统级项」**。
+  详见 AGENTS.md 的「明确不做的事」那一节与 ADR #76。
 
 ---
 
@@ -33,7 +36,7 @@ TeslaMate（开源采集）→ PostgreSQL → 自写 Go API → 自写 Android A
 | `app-android/` | **Android App**（Compose，Kotlin） | `Api.kt`（所有 HTTP 与数据类）· `ui/AppRoot.kt`（导航与 App 级状态）· `ui/StatusScreen.kt`（车况页）· `ui/RecordsScreen.kt` · `ui/ChargesScreen.kt` · `ui/StatsScreen.kt`（用量页）· `ui/SettingsScreen.kt`（设置 + 所有二级页）· `ui/Theme.kt`（颜色/字阶令牌）· `ui/Motion.kt`（动效令牌）· `ui/Widgets.kt`（共用组件） |
 | `mcp/` | **MCP 服务**（给 Hermes/agent 用的工具集） | `teslamate_mcp.py`（全部工具）· `check_tool_fields.py`（**字段映射自检**）· `selftest_mcp.py` |
 | `scripts/` | **运维与发版脚本** | `watch-car.ps1`（主动通知引擎）· `watch-car-selftest.ps1`（它的自测）· `release.sh`（一键发版）· `release-feedback-gate.sh`（**发版前的用户反馈闸门**）· `smoke.sh`（冒烟）· `client-gates.sh` / `server-gates.sh`（门禁）· `hermes-gates.sh`（**Hermes 链路**门禁：服务端↔MCP↔推送脚本）· `probe-run.sh`（**负向探针**助手：在隔离副本里改坏源码 ⇒ 闸门必须报红）· `unit-tests.sh`（JVM 单测）· `backup-db.sh` / `backup-weekly.sh` · `tesla-authorize.ps1` / `tesla-partner.ps1`（Tesla 授权与车控签名） |
-| `docs/` | **文档**（先读 `INDEX.md` 再读别的） | `CHANGELOG.md`（**改动史与决策记录**）· `api-spec.md`（接口）· `architecture.md` · `data-dictionary.md` · `operations.md`（运维手册）· `adr.md`（架构决策）· `手机客户端使用说明.md`（给车主看的）· `真机复核清单.md` |
+| `docs/` | **文档**（先读 `INDEX.md` 再读别的） | `CHANGELOG.md`（**改动史与决策记录**）· `api-spec.md`（接口）· `architecture.md` · `data-dictionary.md` · `operations.md`（运维手册）· `adr.md`（架构决策）· `手机客户端使用说明.md`（给车主看的）· `真机复核清单.md` · `开源发布清单.md`（**公开到 GitHub 之前**逐项过的清单）
 | `apk/` | 发版产物（APK，由 API 静态分发） | — |
 | `database/` `grafana/` `mosquitto/` `fleet-telemetry/` | 运行数据与配套服务 | — |
 | `compose.yaml` `.env` | 编排与配置（**`.env` 不进版本库**） | — |
@@ -164,6 +167,7 @@ docker logs -f teslamate-api-1
 | 6 | **界面文案不许出现 Markdown `**`** | Compose 不解析 ⇒ 会原样印出星号（客户端闸门 1 会拦） |
 | 7 | **常驻长说明块要么短，要么折进 ⓘ** | 「啰嗦棘轮」：新增的长说明必须登记进基线并写明理由 |
 | 8 | **密钥不进版本库** | `.env` 与证书**不在** OneDrive 同步目录里 |
+| 9 | **明确不做：适老化 / 无障碍** | 用户 2026-11-13 明确指示：这是**个人自用**的一台车，不面向公众 ⇒ 无障碍投入没有受益人；已有的适配**保留但不新增**（ADR #76） |
 
 ---
 
@@ -175,3 +179,5 @@ docker logs -f teslamate-api-1
 - 架构决策 → `docs/adr.md`
 - 给车主看的用法 → `docs/手机客户端使用说明.md`
 - 改动史 → `docs/CHANGELOG.md`
+- 开源发布 → `docs/开源发布清单.md`（公开到 GitHub 之前逐项过）
+- 开源发布 → `docs/开源发布清单.md`（公开到 GitHub 之前逐项过）
