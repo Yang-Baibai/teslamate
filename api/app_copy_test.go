@@ -99,3 +99,34 @@ func TestTempCaveatRenderedWithinWidth(t *testing.T) {
 		}
 	}
 }
+
+// TestDecayNoteLinesWithinWidth 服务端下发的 ⓘ 文案：一行一个事实、每行不许超宽。
+//
+// ⚠️ v0.147.0 实测：caveat 整段 **750** 宽（12 个话题用「；」挤成一段）⇒ 展开是一堵字墙；
+//
+//	而客户端的 ⓘ 预算只扫客户端调用点的字面量 ⇒ 服务端这一半没人管 ⇒ 这道单测补上。
+func TestDecayNoteLinesWithinWidth(t *testing.T) {
+	d := &BatteryDecay{
+		HasStep: true, StepSignificant: true,
+		StepDate: "2026-09-28", StepKm: 96791.5, StepKwh: -0.7,
+		StepCiLo: -1.078, StepCiHi: -0.323,
+		NaiveOverstate: 5.446, NaivePer1000Km: -0.104, UnderlyingPer1000Km: -0.019,
+		TempN: 18, AdjustedPer1000Km: -0.023, AdjustedCiLo: -0.083, AdjustedCiHi: 0.037,
+		TempPerC:       0.011,
+		LeaveOneOutMin: -0.037, LeaveOneOutMax: -0.004, LeaveOneOutTotal: 18,
+		TempR2: 0.151, DroppedEmpty: 1, SpanKm: 10104.457, SpanDays: 90,
+	}
+	if w := copyVisualWidth(decayMethodTmpl); w > noteLineWidthLimit {
+		t.Fatalf("方法说明宽度 %d > %d：%q", w, noteLineWidthLimit, decayMethodTmpl)
+	}
+	cav := decayCaveat(d)
+	for _, c := range strings.Split(cav, "；") {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		if w := copyVisualWidth(c); w > noteLineWidthLimit {
+			t.Fatalf("caveat 分句宽度 %d > %d：%q", w, noteLineWidthLimit, c)
+		}
+	}
+}

@@ -161,15 +161,22 @@ object BatteryDecayText {
      */
     fun detailLines(d: BatteryDecay): List<String> {
         val out = mutableListOf<String>()
-        if (d.caveat.isNotBlank()) out += d.caveat
+        // ⚠️ **v0.147.0：服务端下发的 caveat 是**整段** ⇒ 这里按「；」拆成一行一个事实。
+        //
+        // 实测（2026-11-12）：那整段视觉宽度 **750**（12 个话题挤在一起）⇒ 展开是一堵字墙；
+        // 而 ⓘ 预算（160）只扫客户端字面量 ⇒ 服务端这一半一个判据都没有。
+        // ⇒ 拆行：**信息一条没丢**，只是从「段落」变成「清单」；
+        //   每行的宽度由 [NOTE_LINE_LIMIT] 钉住（客户端 JVM 单测 + 服务端 Go 单测各钉一半）。
+        d.caveat.split("；").map { it.trim() }.filter { it.isNotEmpty() }.forEach { out += it }
         if (d.method.isNotBlank()) out += "算法：" + d.method
-        // ⚠️ v0.41.0：稳健性检查的三个数**也要给出来** ——
+        // ⚠ v0.41.0：稳健性检查的三个数**也要给出来** ——
         // 用户要判断「这个结论靠不靠谱」，就得能看到它有多脆。
+        // ⚠️ **v0.147.0**：原来这三件挤成一行（实测 159 宽）⇒ 拆成两行（一行一个话题）。
         if (d.temp_n >= 5) {
-            out += "稳健性：加充电时气温后是 " + d.adjusted_per_1000km.fmt(3) +
+            out += "气温模型：加充电时气温后是 " + d.adjusted_per_1000km.fmt(3) +
                 " 度/1000 公里（区间 " + d.adjusted_ci_lo.fmt(3) + " ~ " + d.adjusted_ci_hi.fmt(3) +
-                "）；气温系数 " + d.temp_per_c.fmt(5) + " 度/°C；" +
-                "留一法（去掉任意一个点重算）落在 " + d.leave_one_out_min.fmt(3) +
+                "）；气温系数 " + d.temp_per_c.fmt(5) + " 度/°C"
+            out += "留一法：去掉任意一个点重算，速率落在 " + d.leave_one_out_min.fmt(3) +
                 " ~ " + d.leave_one_out_max.fmt(3) +
                 "，" + d.leave_one_out_significant + "/" + d.leave_one_out_total + " 次仍然显著"
         }

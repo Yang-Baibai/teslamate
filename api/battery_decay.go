@@ -81,6 +81,21 @@ import (
 // 所以结论只在这段里程内有效。
 
 // decayPoint 一个满充测量点。
+// decayMethodTmpl 电池衰减的「怎么算的」方法说明（App 的 ⓘ 与飞书共用这一句）。
+//
+// ⚠️ **v0.147.0**：原句 **232** 宽，里面还夹着**开发者话**
+//
+//	（拟合公式「y = a + b·km + c·D」、「结论强度见 conclusion 字段」这种字段名、
+//	以及版本号备注「⚠ v0.41.0：…」—— 用户看到版本号只会困惑）。
+//	⇒ 去掉它们（**事实一条没丢**：气温模型与留一法在 caveat 与客户端的「稳健性」两行里都有），
+//	收窄成一句人话 ⇒ 78 宽 ≤ [noteLineWidthLimit]（上限在 api/app_copy.go）。
+//
+// ⚠️ **为什么它不在 api/app_copy.go**：那里放的是**常驻界面文案**与**宽度口径**；
+//
+//	这句是电池衰减模块自己的 ⓘ 文案 ⇒ 放模块里，但宽度上限仍取 app_copy.go 的那个数
+//	（客户端闸门 36 跨文件比对两端的上限）。
+const decayMethodTmpl = "严格档（充到 100%）按里程拟合；先剔除落差再给连续速率；显著性用 t 检验。"
+
 type decayPoint struct {
 	date  string
 	km    float64
@@ -327,9 +342,7 @@ func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int, droppe
 		ExcludedN:    excluded,
 		DroppedEmpty: droppedEmpty,
 		SpanDays:     spanDays,
-		Method: "严格档（充到 100%）按里程做最小二乘；先检验是否存在一次性落差（y = a + b·km + c·D），" +
-			"再给出扣掉落差后的连续速率；显著性用 t 检验（95% 置信区间）。" +
-			"⚠️ v0.41.0：额外做了加充电时气温的模型与留一法稳健性检查，结论强度见 conclusion 字段。",
+		Method:       decayMethodTmpl,
 	}
 	if len(strict) >= 2 {
 		out.SpanKm = strict[len(strict)-1].km - strict[0].km

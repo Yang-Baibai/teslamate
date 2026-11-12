@@ -3775,6 +3775,55 @@ print('温度口径文案：客户端 %d 条 / 服务端 %d 条，逐字一致' 
 PYEOF
 if [ $? -eq 0 ]; then ok "温度口径文案两端逐字一致（本地兜底不会漏掉安全口径）"; else fail "温度口径文案两端漂了（本地兜底会漏掉安全口径）"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 36：ⓘ 行宽上限：服务端与客户端必须是同一个数 ──────────────────
+#
+# ⚠️ **v0.147.0**：服务端下发的 ⓘ 文案（电池衰减的 caveat / method）也进界面，
+#   而客户端的 ⓘ 预算（160）**只扫客户端调用点的字面量** ⇒ 两边的行宽上限
+#   必须**是同一个数**，否则一边放宽、另一边还按老数 ⇒ 迟早漂。
+#   ⚠️ 判据是**数字比对**（形态无关）：两个常量都在，且相等。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+CLI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/NoteBudget.kt')
+SRV = pathlib.Path('api/app_copy.go')
+problems = []
+cli = None
+srv = None
+
+if not CLI.exists():
+    problems.append('找不到 ui/NoteBudget.kt（客户端 ⓘ 上限的定义处）')
+if not SRV.exists():
+    problems.append('找不到 api/app_copy.go（服务端文案的唯一定义处）')
+
+if CLI.exists():
+    m = re.search(r'const val NOTE_LINE_LIMIT\s*=\s*([0-9]+)', CLI.read_text(encoding='utf-8', errors='replace'))
+    if not m:
+        problems.append('ui/NoteBudget.kt 里找不到 NOTE_LINE_LIMIT')
+    else:
+        cli = int(m.group(1))
+
+if SRV.exists():
+    m = re.search(r'noteLineWidthLimit\s*=\s*([0-9]+)', SRV.read_text(encoding='utf-8', errors='replace'))
+    if not m:
+        problems.append('api/app_copy.go 里找不到 noteLineWidthLimit')
+    else:
+        srv = int(m.group(1))
+
+if cli is not None and srv is not None and cli != srv:
+    problems.append('客户端 ⓘ 行宽上限 %d ≠ 服务端 %d ⇒ 两边不是同一个数（谁放宽都要同时改两处）' % (cli, srv))
+
+if problems:
+    print('ⓘ 行宽上限两端对不上 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 服务端与客户端的 ⓘ 行宽上限必须是同一个数')
+    sys.exit(1)
+
+print('ⓘ 行宽上限：服务端 %d == 客户端 %d' % (srv, cli))
+PYEOF
+if [ $? -eq 0 ]; then ok "ⓘ 行宽上限：服务端与客户端是同一个数"; else fail "ⓘ 行宽上限两端漂了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
