@@ -3823,6 +3823,59 @@ if problems:
 print('ⓘ 行宽上限：服务端 %d == 客户端 %d' % (srv, cli))
 PYEOF
 if [ $? -eq 0 ]; then ok "ⓘ 行宽上限：服务端与客户端是同一个数"; else fail "ⓘ 行宽上限两端漂了"; cat "$TMP"; fi
+# ── 闸门 37：说明入口必须能折，不许平铺 ───────────────────────
+#
+# ⚠️ **v0.152.0**：电池衰减卡的「怎么算的」原来是一行**平铺**的标题 ＋ 15 行方法学
+# ⇒ 展开「更多明细」后是 **16 行**小字 ⇒ 而**同一份推导**在续航卡里是**折叠区**
+# ⇒ 这块推导**连折叠入口都没有**：用户只能展开「更多明细」再一路滚过去。
+#
+# ⚠️ **别把它说成「同一句话两种形态」**：App 里「怎么算的」本来就是**两种**形态，
+# 且**有意为之** —— `CollapsibleSection`（⌄）是**块级**方法学，
+# `InfoNote(label = ...)`（ⓘ）是**行级**小角标（`DriveScoreCard.kt:295-296` 写明了这条分工）。
+# ⇒ 真正的缺陷不是「两种形态」，而是**第三种**：**平铺**（连折叠入口都没有）。
+#
+# ⇒ 这道闸门钉住：**「怎么算的」必须挂在可折叠入口上**
+# （`CollapsibleSection(...)` 或 `InfoNote(label = ...)`），不许用 `Text(...)` 平铺。
+# ⚠️ 判据要**形态无关**：不认「写法」，只认「这句话是不是挂在可折叠入口上」。
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+TITLE = "怎么算的"
+ROOT = pathlib.Path("app-android/app/src/main/java")
+problems = []
+
+if not ROOT.exists():
+    problems.append("找不到 app-android/app/src/main/java（客户端源码目录）")
+else:
+    for p in sorted(ROOT.rglob("*.kt")):
+        raw = p.read_text(encoding="utf-8", errors="replace")
+        # 注释不算（文档/注释里提到这句话是正常的）
+        stripped = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
+        stripped = re.sub(r"//[^\n]*", "", stripped)
+        lines = stripped.split("\n")
+        for i, line in enumerate(lines):
+            if TITLE not in line:
+                continue
+            if "CollapsibleSection(" in line or "label =" in line:
+                continue
+            prev = lines[i - 1] if i > 0 else ""
+            if "CollapsibleSection(" in prev:
+                continue
+            problems.append(
+                "%s:%d 「%s」被平铺了（Text(...)）⇒ 它必须能折："
+                "CollapsibleSection(...) 或 InfoNote(label = ...)" % (p, i + 1, TITLE)
+            )
+
+if problems:
+    print("「%s」这个入口被平铺了 ——" % TITLE)
+    for pr in problems:
+        print("   ", pr)
+    print("   ⇒ 说明入口必须能折（ⓘ 或 ⌄），不许平铺")
+    sys.exit(1)
+
+print("「%s」全部挂在可折叠入口上" % TITLE)
+PYEOF
+if [ $? -eq 0 ]; then ok "说明入口「怎么算的」都是能折的（不许平铺）"; else fail "「怎么算的」被平铺了（说明入口必须能折）"; cat "$TMP"; fi
 rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"

@@ -1236,18 +1236,42 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                         }
                                     }
                                     if (decayDetail.isNotEmpty()) {
-                                        Spacer(Modifier.height(10.dp))
-                                        Text(
-                                            "怎么算的",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                        decayDetail.forEach { line ->
-                                            Text(
-                                                line,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
+                                        // ⚠️ **v0.152.0**：这里原来是一行**平铺**的「怎么算的」标题
+                                        // ＋ 15 行方法学 ⇒ 展开「更多明细」后是 **16 行**小字
+                                        // （实测线上这辆车：caveat 12 段 ＋ 算法 1 行 ＋ 气温模型 1 行
+                                        // ＋ 留一法 1 行 ＝ **15 行**）⇒ 而**同一份推导**在续航卡里
+                                        // 是**折叠区** ⇒ 这块推导**连折叠入口都没有**：
+                                        // 用户只能展开「更多明细」，再一路滚过那 15 行。
+                                        //
+                                        // ⚠️ **v0.90.0 当初为什么把它摊平**（那个决策是对的，别推翻）：
+                                        // 当时「更多明细」与「怎么算的」是**两个并列**的折叠入口
+                                        // ⇒ 收起态有两个入口、中间还留着一段**说不清的空白**
+                                        // ⇒ 本仓库的规矩是「默认态只留一个折叠入口」⇒ **合成一个**。
+                                        //
+                                        // ⇒ 本轮用**嵌套**同时满足两边：
+                                        // ① 收起态**仍然只有「更多明细」一个入口**
+                                        //    （v0.90.0 的验收原话「收起态一个主角 + 一个折叠入口」不破）；
+                                        // ② 「怎么算的」在**展开之后**才以**折叠区**出现 ⇒ 它终于有入口了；
+                                        // ③ 展开「更多明细」后从 **16 行**变成 **4 行 ＋ 1 个入口**；
+                                        // ④ 那 15 行方法学**一点没丢**（点开就在）；
+                                        // ⑤ 形态与续航卡的「怎么算的」**一致**（同一个 `CollapsibleSection`）。
+                                        //
+                                        // ⚠️ 行距跟续航卡对齐（`Spacer(4.dp)` ＋ `CollapsibleSection`）。
+                                        Spacer(Modifier.height(4.dp))
+                                        CollapsibleSection("怎么算的") {
+                                            // ⚠️ **v0.152.0（补）**：这里**必须有 Column** ——
+                                            // `CollapsibleSection` 的内容槽是**单个槽位**，
+                                            // 直接放若干个 Text 而不给容器 → 它们全部**叠在一起**（实测：展开后一块模糊）。
+                                            // 原说法不需要 Column，因为它在**外层** Column 里。
+                                            Column {
+                                                decayDetail.forEach { line ->
+                                                    Text(
+                                                        line,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
