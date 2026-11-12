@@ -29,8 +29,8 @@ android {
         //    ⇒ 仍然**没有跳号**。
         // ⚠️ **v0.130.0**：接着 138 之后是 **139**（充电列表页「共 N 次」改「· 平行并列」）
         //    ⇒ 仍然**没有跳号**。
-        versionCode = 142
-        versionName = "0.133.0"
+        versionCode = 143
+        versionName = "0.134.0"
     }
 
     buildTypes {

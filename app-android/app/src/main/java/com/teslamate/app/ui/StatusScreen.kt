@@ -834,6 +834,23 @@ fun StatusScreen(
                                 "车内温度" to (st.inside_temp?.fmt(1, "°C") ?: "—"),
                             ),
                         )
+                        // ⚠️ **v0.149.0（本轮手术点）**：车内温度也要说得出「上次读到多少、什么时候」。
+                        // 服务端早就给了 `inside_temp_last` / `inside_temp_at`（ADR #68：
+                        // 车外/车内是**同一个读数问题的两个字段**）⇒ 之前 App 没声明这两个字段，
+                        // 车里睡着时界面上只剩一个「—」⇒ 与 v0.146.0 车外温度那次**同型的缺口**。
+                        // ⚠️ 这一行**紧跟**它限定的那一格（ADR #72：口径不许被隔开）。
+                        lastReadNote(
+                            label = "车内温度",
+                            current = st.inside_temp,
+                            last = st.inside_temp_last,
+                            atText = st.inside_temp_at?.fmtDate(),
+                        )?.let { note ->
+                            Text(
+                                note,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
 
                         // ⚠️ **v0.129.0**：座舱闷热（暴晒后车内能到 60℃）。
                         //
@@ -888,12 +905,14 @@ fun StatusScreen(
                         }
                         InfoTileRow(outdoorTiles)
                         // ⚠️ **v0.146.0**：当前读不到车外温度时，把「上次读到多少、什么时候」说出来。
-                        // 服务端只给「当前」读数（车睡着时为空）⇒ 不补这一句，
-                        // 界面上就是一个孤零零的「—」，用户分不清是「没读到」还是「真的没有」。
-                        if (st.outside_temp == null && st.outside_temp_last != null) {
-                            val last = st.outside_temp_last.fmt(1, "°C")
-                            val at = st.outside_temp_at?.fmtDate()
-                            val note = "车外温度上次读到 $last" + (at?.let { " · $it" } ?: "")
+                        // ⚠️ **v0.149.0**：这行与下面「车内温度」那行是**同一件事**
+                        // ⇒ 走**同一个函数**（`ui/LastReadNote.kt`）⇒ 两处不许漂。
+                        lastReadNote(
+                            label = "车外温度",
+                            current = st.outside_temp,
+                            last = st.outside_temp_last,
+                            atText = st.outside_temp_at?.fmtDate(),
+                        )?.let { note ->
                             Text(
                                 note,
                                 style = MaterialTheme.typography.labelSmall,

@@ -421,6 +421,17 @@ data class CarStatus(
     /** 车外温度上次读到的时刻（null = 没有上次读数）。 */
     @Serializable(with = InstantSer::class) val outside_temp_at: Instant? = null,
     val inside_temp: Double? = null,
+    /**
+     * ⚠️ **v0.149.0**：车内温度的**上次**读数与它的时刻。
+     *
+     * ⚠️ 服务端**早就**给了这两个字段（ADR #68：车外/车内是同一个读数问题的两个字段），
+     * 但 App 的模型一直只声明 `inside_temp` ⇒ 车里睡着时界面上只剩一个孤零零的「—」，
+     * 用户分不清是「没读到」还是「真的没有」
+     * （与 v0.146.0 车外温度那次**完全同型**：那边补了、这边漏了）。
+     */
+    val inside_temp_last: Double? = null,
+    /** 车内温度上次读到的时刻（null = 没有上次读数）。 */
+    @Serializable(with = InstantSer::class) val inside_temp_at: Instant? = null,
     val is_climate_on: Boolean? = null,
     val elevation: Int? = null,
     val lat: Double? = null,
