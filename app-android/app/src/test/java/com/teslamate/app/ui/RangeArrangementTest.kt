@@ -198,4 +198,30 @@ class RangeArrangementTest {
         // 读不到数 ⇒ 「—」（不是「0」）
         assertEquals("—", rangeHeroValue(model.copy(trueRange = null, ratedRange = null)))
     }
+
+    /**
+     * ⚠️ **v0.148.0（本轮手术点）**：竖排时**电量环必须排在结论区之前**。
+     *
+     * ## 为什么钉它
+     *
+     * 竖排（200% 字号）时结论区有 4~5 行小字，在 200% 下自己就吃掉 200dp+
+     * ⇒ 环若排在结论区**后面**，就整个掉出首屏（2026-11-12 模拟器实测：
+     * 200% 首屏里连「电量」节点都没有）⇒ 破了 v0.8.1 的首屏承诺。
+     *
+     * ⚠️ 这个顺序来自**纯函数**（[heroBlockOrder]），而界面**按它渲染**
+     * ⇒ 改渲染不改它 ⇒ 顺序就会漂 ⇒ 所以这条断言是真的在拦。
+     */
+    @Test
+    fun `竖排时电量环排在续航结论区之前`() {
+        val order = heroBlockOrder()
+        assertEquals(
+            "首屏顺序必须是 环 → 主角 → 结论区",
+            listOf(HeroBlock.RING, HeroBlock.HERO, HeroBlock.CONCLUSIONS),
+            order,
+        )
+        assertTrue(
+            "电量环必须排在续航结论区之前（200% 下否则掉出首屏）",
+            order.indexOf(HeroBlock.RING) < order.indexOf(HeroBlock.CONCLUSIONS),
+        )
+    }
 }

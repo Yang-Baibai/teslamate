@@ -722,16 +722,37 @@ fun StatusScreen(
                                         .padding(vertical = 8.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                 ) {
-                                    RangeHero(rangeModel, Modifier.fillMaxWidth())
-                                    RangeConclusions(rangeModel)
-                                    Spacer(Modifier.height(14.dp))
-                                    // ⚠️ v0.30.0：两种布局用**同一个**环尺寸，
-                                    // 否则切布局时环会「跳」一下。
-                                    SocRing(
-                                        st.battery_level,
-                                        charging = st.active_charge != null,
-                                        baseSizeDp = SOC_RING_MIN_DP,
-                                    )
+                                    // ⚠️ **v0.148.0（本轮手术点）**：按 [heroBlockOrder] 渲染
+                                    // ⇒ **电量环排在结论区之前**。
+                                    //
+                                    // 原来这里是「主角 → 结论区 → 环」⇒ 200% 字号下
+                                    // 结论区自己就吃掉 200dp+ ⇒ **电量环整个掉出首屏**
+                                    // （v0.145.0 真机发现一；2026-11-12 模拟器复现：
+                                    // 200% 首屏里连「电量」节点都没有）⇒ 破了 v0.8.1 的首屏承诺。
+                                    //
+                                    // 顺序来自**纯函数**（`ui/RangeArrangement.kt`）
+                                    // ⇒ 单测钉得住：想改顺序就必须改那个函数 ⇒ 顺序不会漂。
+                                    heroBlockOrder().forEach { block ->
+                                        when (block) {
+                                            HeroBlock.RING -> {
+                                                // ⚠️ v0.30.0：两种布局用**同一个**环尺寸，
+                                                // 否则切布局时环会「跳」一下。
+                                                SocRing(
+                                                    st.battery_level,
+                                                    charging = st.active_charge != null,
+                                                    baseSizeDp = SOC_RING_MIN_DP,
+                                                )
+                                                Spacer(Modifier.height(14.dp))
+                                            }
+                                            HeroBlock.HERO -> RangeHero(rangeModel, Modifier.fillMaxWidth())
+                                            HeroBlock.CONCLUSIONS -> RangeConclusions(
+                                                rangeModel,
+                                                // ⚠️ v0.148.0：口径警告要**紧跟主角数字**
+                                                // ⇒ 竖排时提到结论区最前（见 [RangeConclusions]）。
+                                                leadWithCaveat = true,
+                                            )
+                                        }
+                                    }
                                 }
                                 HeroArrangement.SIDE_BY_SIDE -> Column(
                                     Modifier
@@ -1023,9 +1044,23 @@ private fun RangeHero(model: RangeModel, modifier: Modifier = Modifier) {
  * ⚠️ 这个函数**故意不接 modifier** —— 结构上就不可能再把结论区塞回窄栏。
  */
 @Composable
-private fun RangeConclusions(model: RangeModel) {
-    val accents = LocalAccentColors.current
+private fun RangeConclusions(
+    model: RangeModel,
+    /**
+     * ⚠️ **v0.148.0**：口径警告是否**提到结论区最前**（紧跟主角数字）。
+     *
+     * - 竖排（大字号）时**必须** true：数字在首屏而口径掉到折线以下
+     *   ⇒ 用户看到的是**没有口径的数字**（假安全）；
+     * - 并排（正常字号）时保持 false ⇒ **100% 版面一个字不动**。
+     */
+    leadWithCaveat: Boolean = false,
+) {
     Column(Modifier.fillMaxWidth()) {
+        // ⚠️ **v0.148.0**：大字号（竖排）时**口径先说** —— 它限定的是上面那个数字；
+        // 掉到折线以下 ⇒ 等于「给了一个没有口径的数字」（假安全）。
+        if (leadWithCaveat) {
+            RangeTempCaveat(model)
+        }
         // ⚠️ **v0.86.0（真机复核 · 第二次迭代）**：**恢复 v0.43.0 的「区间紧跟主角」**。
         //
         // 第一版把「保底结论」提到区间前面（想强调「我能到哪」），
@@ -1112,12 +1147,10 @@ private fun RangeConclusions(model: RangeModel) {
                 )
             }
         }
-        model.tempCaveat?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.labelSmall,
-                color = accents.warnAmberText,
-            )
+        // ⚠️ v0.148.0：并排（正常字号）时口径留在**末尾**（100% 版面一个字不动）；
+        // 竖排时它已经在结论区**最前**了（见函数头的 `leadWithCaveat`）。
+        if (!leadWithCaveat) {
+            RangeTempCaveat(model)
         }
         Spacer(Modifier.height(4.dp))
         CollapsibleSection("怎么算的") {
@@ -1127,6 +1160,27 @@ private fun RangeConclusions(model: RangeModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+/**
+ * 续航的**口径警告**（琥珀色一行，如「未按气温修正 · 可能偏乐观」）。
+ *
+ * ⚠️ **v0.148.0（本轮手术点）**：它原来只在结论区**末尾**内联渲染
+ * ⇒ 竖排（200% 字号）时，主角数字还在首屏、**这条口径却掉到折线以下**
+ * ⇒ 用户看到的是**没有口径的数字**（假安全）。
+ *
+ * ⇒ 抽成独立节点：两个分支各调一次，**文案仍然只有一处**。
+ */
+@Composable
+private fun RangeTempCaveat(model: RangeModel) {
+    val accents = LocalAccentColors.current
+    model.tempCaveat?.let {
+        Text(
+            it,
+            style = MaterialTheme.typography.labelSmall,
+            color = accents.warnAmberText,
+        )
     }
 }
 
