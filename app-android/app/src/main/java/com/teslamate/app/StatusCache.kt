@@ -72,7 +72,7 @@ class StatusCache(context: Context) {
         val raw = prefs.getString(statusKey(carId), null) ?: return null
         val savedAt = runCatching { Instant.parse(prefs.getString(savedAtKey(carId), null) ?: return null) }
             .getOrNull() ?: return null
-        val status = runCatching { json.decodeFromString(CarStatus.serializer(), raw) }.getOrNull() ?: return null
+        val status = StatusCacheCodec.parse(raw) ?: return null
         // 兜底：缓存里的车必须是这台车。
         if (status.car_id != carId) return null
         return CachedStatus(status, savedAt)
@@ -83,14 +83,28 @@ class StatusCache(context: Context) {
      *
      * 按 `status.car_id` 分区 —— 调用方不用管分区，是数据自己说的。
      *
+     * ⚠️ **v0.158.0**：存**服务端给的原始 JSON**（[raw]），不是把模型重新序列化一遍。
+     *
+     * ## 为什么
+     *
+     * 模型只认**自己声明过的字段** ⇒ 序列化回去时，服务端给了而客户端还没声明的字段
+     * **在写盘那一刻就丢了**（2026-11-14 实测：服务端 /status 给 **75** 个键，
+     * App 声明 **72** 个 ⇒ 丢 **5** 个）⇒ 缓存**不完整**：
+     * 服务器挂掉时，App 交出的「上次已知」比服务器当时给的**少**。
+     *
+     * ⇒ 存原文 ⇒ 缓存与服务端给的东西**一样多**；
+     * 将来 App 声明了那些字段，**离线也读得到**（不用等下一次成功请求）。
+     *
+     * [raw] 为 null（取数层没带上原文）时**退回模型序列化** ⇒ 行为与从前一致。
+     *
      * 失败**静默** —— 缓存写不进去不该影响主流程（用户还是能正常看实时数据）。
      */
-    fun save(status: CarStatus) {
+    fun save(status: CarStatus, raw: String? = null) {
         val carId = status.car_id
         runCatching {
             prefs.edit()
                 .putInt(schemaKey, cacheSchema)
-                .putString(statusKey(carId), json.encodeToString(CarStatus.serializer(), status))
+                .putString(statusKey(carId), StatusCacheCodec.payload(status, raw))
                 .putString(savedAtKey(carId), Instant.now().toString())
                 .apply()
         }
@@ -162,6 +176,38 @@ class StatusCache(context: Context) {
         fun savedAtKey(carId: Int) = "last_saved_at_car_$carId"
         fun rangeKey(carId: Int) = "last_range_ctx_car_$carId"
     }
+}
+
+/**
+ * 落盘缓存的**编解码**（纯函数 ⇒ JVM 单测钉得住）。
+ *
+ * ⚠️ **v0.158.0**：为什么抽出来 —— [StatusCache] 本身要 Android 的 Context，
+ * JVM 单测里用不了 ⇒ 真正的规则（「缓存存**原始 JSON**」）只能落在**纯函数**里，
+ * 才钉得住。
+ */
+object StatusCacheCodec {
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+
+    /**
+     * 缓存里存什么：**服务端给的原始 JSON**；没有原文才退回模型序列化。
+     *
+     * ⚠️ 这是「缓存存原始 JSON」这条规矩的**唯一实现点**。
+     */
+    fun payload(status: CarStatus, raw: String?): String =
+        raw?.takeIf { it.isNotBlank() }
+            ?: json.encodeToString(CarStatus.serializer(), status)
+
+    /**
+     * 把落盘内容解回模型。
+     *
+     * 解不出来（JSON 坏了 / 字段类型变了）⇒ 返回 null ——
+     * **宁可没有，也不要半截数据**（本文件开头那条原则）。
+     */
+    fun parse(raw: String): CarStatus? =
+        runCatching { json.decodeFromString(CarStatus.serializer(), raw) }.getOrNull()
 }
 
 /**

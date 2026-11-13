@@ -395,6 +395,22 @@ data class CabinHeat(
     val text: String = "",
 )
 
+/**
+ * 一次响应：**解析出来的对象** ＋ **服务端给的原始 JSON 文本**。
+ *
+ * ⚠️ **v0.158.0**：落盘缓存要存**原文**（见 [StatusCache]）⇒ 取数层必须把原文带上来。
+ *
+ * ## 为什么不能只留模型
+ *
+ * 模型只认**自己声明过的字段** ⇒ 序列化回去时，服务端给了而客户端还没声明的字段
+ * **在写盘那一刻就丢了**（2026-11-14 实测：服务端 /status 给 **75** 个键，
+ * App 的 CarStatus 声明 **72** 个 ⇒ 丢 **5** 个：`cabin` / `locked_source` /
+ * `locked_stale` / `sentry_at` / `tpms_source`）。
+ *
+ * ⇒ 缓存里留着原文 ⇒ 将来 App 声明了那些字段，**服务器挂掉时也能读到**。
+ */
+data class RawJson<T>(val value: T, val raw: String)
+
 @Serializable
 data class CarStatus(
     val car_id: Int,
@@ -1587,7 +1603,26 @@ class Api private constructor(private val base: String, private val token: Strin
         }
     }
 
-    private inline fun <reified T> get(path: String): T {
+    /**
+     * GET 一个 JSON 端点。
+     *
+     * ⚠️ **v0.158.0**：拆成 `get` / `getRaw` 两层 ——
+     * [getRaw] **多带一份原始 JSON 文本**（落盘缓存要它，见 [StatusCache]）。
+     */
+    // ⚠️ 显式传类型参数：reified 的类型实参只能在这层原样传下去。
+    private inline fun <reified T> get(path: String): T = getRaw<T>(path).value
+
+    /**
+     * GET 并**同时**返回原始 JSON 文本。
+     *
+     * ⚠️ **v0.158.0**：为什么需要原文 ——
+     * 模型只认自己声明过的字段 ⇒ 序列化回去时，服务端给了而客户端还没声明的字段
+     * **在写盘那一刻就丢了** ⇒ 缓存**不完整** ⇒ 将来 App 声明了那些字段，
+     * 离线也只能显示「—」。
+     *
+     * ⇒ 存原文（[RawJson.raw]）⇒ 缓存与服务端给的东西**一样多**。
+     */
+    private inline fun <reified T> getRaw(path: String): RawJson<T> {
         val req = Request.Builder()
             .url(base + path)
             .header("Authorization", "Bearer $token")
@@ -1638,7 +1673,8 @@ class Api private constructor(private val base: String, private val token: Strin
                         kind,
                     )
                 }
-                return json.decodeFromString(body)
+                // ⚠️ 显式指定类型参数：这里没有「期望类型」可推（原 `get` 靠返回值推）。
+                return RawJson(json.decodeFromString<T>(body), body)
             }
         } catch (e: UserFacingException) {
             throw e // 已经是中文文案，原样上抛
@@ -1799,7 +1835,18 @@ class Api private constructor(private val base: String, private val token: Strin
     }
 
     fun cars(): List<Car> = get("/api/v1/cars")
-    fun status(carId: Int): CarStatus = get("/api/v1/cars/$carId/status")
+
+    /**
+     * 车况 ＋ **原始 JSON**。
+     *
+     * ⚠️ **v0.158.0**：落盘缓存存原文（见 [StatusCache]）⇒ 取数时就要把它带上来。
+     *
+     * ⚠️ **为什么没有「只返回模型」的那个版本**：它会是个**陷阱** ——
+     * 谁调用它谁就会把「完整的原文」换成「模型序列化版」⇒ 缓存又变回不完整
+     * ⇒ 修复**静默失效**。⇒ 取车况**只有这一条路**。
+     */
+    fun statusWithRaw(carId: Int): RawJson<CarStatus> =
+        getRaw("/api/v1/cars/$carId/status")
 
     /**
      * 行程列表。

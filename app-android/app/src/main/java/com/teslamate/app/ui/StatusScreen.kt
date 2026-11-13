@@ -210,8 +210,10 @@ fun StatusScreen(
             )
             return
         }
-        runCatching { withContext(Dispatchers.IO) { api.status(settings.carId) } }
-            .onSuccess { store.update(it) }
+        // ⚠️ **v0.158.0**：用 `statusWithRaw` ⇒ **原始 JSON** 一路带到落盘
+        //（否则服务端给了、客户端还没声明的字段在写盘时就丢了）。
+        runCatching { withContext(Dispatchers.IO) { api.statusWithRaw(settings.carId) } }
+            .onSuccess { store.update(it.value, it.raw) }
             .onFailure { e ->
                 // ⚠️ v0.9.0：保留**分级**，界面才能给出不同的反应
                 // （令牌问题 → 跳设置；网络问题 → 重试）。

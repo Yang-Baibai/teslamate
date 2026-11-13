@@ -224,7 +224,13 @@ class StatusStore(private val cache: StatusCache? = null) {
         cache?.clearAll()
     }
 
-    internal fun update(s: CarStatus) {
+    /**
+     * 记下一次成功取到的车况。
+     *
+     * ⚠️ **v0.158.0**：[raw] 是**服务端给的原始 JSON**（落盘缓存要存原文）。
+     * 没有它就退回模型序列化（行为与从前一致）。
+     */
+    internal fun update(s: CarStatus, raw: String? = null) {
         status = s
         cachedAt = null
         error = null
@@ -234,7 +240,7 @@ class StatusStore(private val cache: StatusCache? = null) {
         // 跨时区时同一件事在时间轴属于 10-06、在图表里却落到 10-07。
         // 现在统一以服务端为准（`Fmt.ServerZone`）。
         com.teslamate.app.ServerZone.set(s.server_timezone)
-        cache?.save(s)
+        cache?.save(s, raw)
     }
 
     /**

@@ -111,8 +111,11 @@ fun ControlScreen(
             )
             return
         }
-        runCatching { withContext(Dispatchers.IO) { api.status(settings.carId) } }
-            .onSuccess { store.update(it) }
+        // ⚠️ **v0.158.0**：这里**也**必须带原始 JSON ——
+        // 车控页与车况页写的是**同一个缓存** ⇒ 只在这一页带原文，
+        // 另一页就会把「完整的原文」覆盖成「模型序列化版」⇒ 缓存又变回不完整。
+        runCatching { withContext(Dispatchers.IO) { api.statusWithRaw(settings.carId) } }
+            .onSuccess { store.update(it.value, it.raw) }
             .onFailure { e ->
                 // ⚠️ v0.9.0：**不清空**已有车况 —— 服务器挂掉时用户至少还看得到上次已知。
                 store.fail(
