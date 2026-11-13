@@ -3957,6 +3957,73 @@ print("车辆控制住在自己的页里（一级入口，紧跟在「车况」�
 PYEOF
 if [ $? -eq 0 ]; then ok "车控独立成页（不许回车况页）"; else fail "车控没住在自己的页里"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 39：能耗的口径说明必须**两端逐字一致** ──────────────────────
+#
+# ⚠ **v0.159.0**：飞书简报里的能耗数字以前**一个字的口径说明都没有** ⇒
+#   ① 用户看到「用电 63.7 度」与同段的「充入 30.4 度」并排，会以为数据自相矛盾；
+#   ② App 的用量页 ⓘ 讲得清楚、**飞书端却没有** ⇒ 同一个数两端解释不一致（ADR #41）。
+#
+# ⇒ 口径说明的**唯一定义处**在服务端 api/energy_caveat.go；
+#   客户端 ui/EnergyNote.kt 是它的**逐字副本** ⇒ 两边漂了就报红。
+#
+# ⚠ 判据是**包含关系**（不是集合相等）：客户端那份 ⓘ 还要讲「驾驶画像那个数」，
+#   两边文案**不是同一句** ⇒ 钉的是「服务端那句必须逐字出现在客户端里」。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+SRV = pathlib.Path('api/energy_caveat.go')
+CLI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/EnergyNote.kt')
+BRIEF = pathlib.Path('api/charge_brief.go')
+STATS = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/StatsScreen.kt')
+TEST = pathlib.Path('api/energy_caveat_test.go')
+problems = []
+
+for p in (SRV, CLI, BRIEF, STATS, TEST):
+    if not p.exists():
+        problems.append('找不到 %s —— 这道闸门要跟着改' % p)
+
+phrase = None
+if SRV.exists():
+    src = SRV.read_text(encoding='utf-8', errors='replace')
+    m = re.search(r'EnergyCaveatPhrase\s*=\s*"([^"]+)"', src)
+    if not m:
+        problems.append('api/energy_caveat.go 里找不到 EnergyCaveatPhrase 的定义')
+    else:
+        phrase = m.group(1)
+        if not phrase.strip():
+            problems.append('EnergyCaveatPhrase 是空的 ⇒ 简报会挂一个空括号')
+
+if phrase:
+    # ① 客户端那份 ⓘ 必须逐字带着这句
+    if CLI.exists():
+        cli = CLI.read_text(encoding='utf-8', errors='replace')
+        if phrase not in cli:
+            problems.append('客户端 ui/EnergyNote.kt 里没有逐字出现「%s」⇒ 两端口径说明漂了' % phrase)
+    # ② 客户端那份不许是死文件（真的被界面用上）
+    if STATS.exists():
+        if 'noteAvgEnergy()' not in STATS.read_text(encoding='utf-8', errors='replace'):
+            problems.append('StatsScreen.kt 没有调用 noteAvgEnergy() ⇒ 客户端那份是死文件')
+    # ③ 简报必须**引用**那个常量（不许自己写死一份）
+    if BRIEF.exists():
+        if 'EnergyCaveatPhrase' not in BRIEF.read_text(encoding='utf-8', errors='replace'):
+            problems.append('api/charge_brief.go 没有引用 EnergyCaveatPhrase ⇒ 简报里写死了另一份文案')
+    # ④ 服务端那份必须被单测钉住（不许是空壳）
+    if TEST.exists():
+        if 'EnergyCaveatPhrase' not in TEST.read_text(encoding='utf-8', errors='replace'):
+            problems.append('api/energy_caveat_test.go 没有断言 EnergyCaveatPhrase ⇒ 护栏是空壳')
+
+if problems:
+    print('能耗的口径说明两端对不上 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 唯一定义处是 api/energy_caveat.go，客户端 ui/EnergyNote.kt 是它的逐字副本')
+    sys.exit(1)
+
+print('能耗口径说明：服务端唯一定义 + 客户端逐字副本 + 简报引用常量 + 单测护栏')
+PYEOF
+if [ $? -eq 0 ]; then ok "能耗的口径说明两端逐字一致（简报与 App 同一句）"; else fail "能耗的口径说明两端漂了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

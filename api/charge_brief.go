@@ -145,6 +145,15 @@ func renderChargeBrief(loc *time.Location, tz string, carName string, r *ChargeS
 			// 与 App 的 Fmt.kt.fmtKwh100 同口径（Wh/km ÷ 10）。
 			line += fmt.Sprintf(" · 平均 %.1f kWh/100km", *energy.KwhPer100Km)
 		}
+		// ⚠️ **v0.159.0**：这个能耗数是**推算值**（按车机报的续航变化反推），
+		//   不是电池实测耗电、也不是电网送来的电量 ⇒ 简报里**必须**带口径说明：
+		//   ① 不带 ⇒ 用户看到「用电 63.7 度」与同段的「充入 30.4 度」并排，
+		//      会以为数据自相矛盾；
+		//   ② 不带 ⇒ App 的用量页 ⓘ 讲得清楚、**飞书端一个字都没有**
+		//      ⇒ 同一个数两端的解释不一致（ADR #41）。
+		//   ⇒ 用 [EnergyCaveatPhrase]（服务端唯一一份；客户端 ⓘ 是它的逐字副本，
+		//      客户端闸门 39 逐字比对两端）。
+		line += "（" + EnergyCaveatPhrase + "）"
 		lines = append(lines, line)
 	} else if energyNote != "" {
 		// ⚠️ 只说**一句话**（用户真读的东西）；理由在代码注释里。
