@@ -116,7 +116,7 @@ services:
       # 遥测服务器证书链（**公开证书**，不含私钥）——
       # 下发 fleet_telemetry_config 时要把 CA 串塞进 JWT 交给车端。
       # ⚠️ 这个目录在 OneDrive **外面**（证书不该被同步）。
-      - $CERTS_DIR$:/telemetry_certs:ro
+      - ${CERTS_DIR}:/telemetry_certs:ro
 
   # ⚠️ v0.66.0：Tesla 车控代理（官方 tesla/vehicle-command sidecar）。
   #
@@ -180,7 +180,7 @@ services:
       #    TLS 端到端，不在 Tailscale 那边终止）⇒ 自签会被 Tesla 拒。
       # ⚠️ 这个目录在 OneDrive **外面**（证书不该被同步），由
       #    scripts/renew-telemetry-cert.ps1 每周续期后重启本容器。
-      - $CERTS_DIR$:/certs:ro
+      - ${CERTS_DIR}:/certs:ro
     ports:
       # ⚠️ 只绑回环：明文 WS 不许暴露到局域网。
       - "127.0.0.1:4443:4443"
