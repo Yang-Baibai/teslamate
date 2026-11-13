@@ -40,7 +40,7 @@
 | 项 | 结论 |
 |---|---|
 | 跟踪文件 | **253** 个；`*.jpg` / `*.png` / `*.sql` / `*.apk` 命中 **0** ⇒ 媒体、数据库、APK 都没入库 |
-| 密钥 | ⚠️ **只有 3 个口令**进过历史（`POSTGRES_PASSWORD` / `TESLAMATE_DB_PASSWORD` / `GF_SECURITY_ADMIN_PASSWORD`），位置是 `docs/operations.md`，进历史于首个提交 `1ebbb42`；**其余 8 个**（`API_TOKEN` / `ENCRYPTION_KEY` / `AMAP_KEY` / Tesla 三件套 / 代理 CA）**从未入库** |
+| 密钥 | ⚠️ **只有 2 个口令字面值**进过历史（`ChangeMe_*` 弱默认口令家族的两个具体值），位置是 `docs/operations.md`，进历史于首个提交 `1ebbb42` ⇒ ⚠️ **2026-11-13 就地订正**：原写「**3 个口令**」（把 `GF_SECURITY_ADMIN_PASSWORD` 也算进去了）—— **实测证伪**：全量扫 **2672 个历史 blob** 后确认，那三个变量名**后面从未跟过第三个真值**（Grafana 那个只以**变量名**出现，没带值）⇒ 真正进过历史的只有 **2 个**字面值（各 20 处命中）。**其余 8 个**（`API_TOKEN` / `ENCRYPTION_KEY` / `AMAP_KEY` / Tesla 三件套 / 代理 CA）**从未入库** |
 | 远端 | ⚠️ `origin` 指向的是**上游开源项目** `teslamate-org/teslamate`（TeslaMate 本体，AGPL-3.0）⇒ 本仓库的 333 个提交**从未推过去**（`master` 无远端跟踪分支）⇒ **第一件事是换掉 remote**，否则一次 `git push` 就是在往别人的公开仓库里推 |
 | 账号 | `gh` 登录 **Yang-Baibai**（本人账号，权限 `repo` / `workflow`）⇒ 具备建仓与推送能力 |
 | 许可证 | 仓库**现在没有 LICENSE**；⚠️ **2026-11-13 就地订正**：原写「`grafana/dashboards/*.json`（23 个）来自 **MIT** 的 `teslamate-chinese-dashboards`」—— **这条被实测证伪了**：那个项目的 LICENSE 实际是 **AGPL-3.0**（不是 MIT），且那 23 个文件是 **TeslaMate 官方的英文仪表盘**（不是中文版）⇒ 按 AGPL-3.0 原样再分发、**明确排除在 MIT 之外**（附 AGPL 全文 `grafana/LICENSE-AGPL-3.0.txt`）；TeslaMate 是 **AGPL-3.0**，但本项目**只部署不改** ⇒ 不构成衍生作品 |
@@ -48,7 +48,7 @@
 | README | 顶部写着「App v0.8.4（versionCode 19）」⇒ **已过时 126 个版本**；且路径是本机绝对路径 ⇒ 公开版必须重写 |
 
 ⇒ 产出 `docs/开源发布清单.md`：逐项可执行的清单 ＋ 需要车主拍板的 4 个决策 ＋ 执行顺序 ＋ 验收标准。
-⇒ ⚠️ **本轮没有推送任何东西**：公开仓库是**不可逆**动作，而那 3 个口令怎么处理、仓库归到哪个账号、
+⇒ ⚠️ **本轮没有推送任何东西**：公开仓库是**不可逆**动作，而那 2 个口令字面值怎么处理、仓库归到哪个账号、
 用哪种 LICENSE、个人数据脱敏到哪一层 —— 都要车主拍板。
 ## 2026-11-13（v0.152.0 · 电池衰减卡的「怎么算的」终于能折了 —— App 145 / 0.136.0 已发版）
 
