@@ -64,4 +64,45 @@ class BatteryDecayNoteTest {
         // 服务端那段 12 个话题 ⇒ 拆开后至少 10 行（原来只有 1 行 ⇒ 宽 750）。
         assertTrue("ⓘ 只拆出 ${lines.size} 行：$lines", lines.size >= 10)
     }
+
+    /**
+     * ⚠️ **v0.155.0**：客户端**不许自己造事实行** —— 每一行都必须逐字来自服务端 caveat。
+     *
+     * ## 为什么要有这条
+     *
+     * 客户端原来在 caveat 之外**自己再补两行**（「气温模型」「留一法」），
+     * 说的与服务端那两段**完全同义** ⇒ 展开后同一件事连着说两遍（15 行里 2 行是重复），
+     * 而且客户端把服务端的数**又排了一遍** ⇒ 两边口径会漂移（ADR #41）。
+     *
+     * ⇒ 判据写成**形态无关**：不比字面量，只要求「每一行都能在服务端的集合里找到」
+     *   ⇒ 客户端把那句话换个说法照样会被抓出来。
+     */
+    @Test
+    fun `客户端不许自己造事实行_每一行都必须逐字来自服务端`() {
+        val d = serverShaped()
+        val serverLines = d.caveat.split("；").map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        val lines = BatteryDecayText.detailLines(d)
+        for (l in lines) {
+            // 「算法：」是服务端 method 的固定前缀（不是 caveat 里的事实行）⇒ 放行。
+            if (l.startsWith("算法：")) continue
+            assertTrue(
+                "客户端自己造了一行事实（服务端 caveat 里没有）：$l",
+                l in serverLines,
+            )
+        }
+    }
+
+    /**
+     * ⚠️ **v0.155.0**：删掉客户端那两行之后，**服务端那两段必须还在** ——
+     * 删的是重复，不是事实。
+     */
+    @Test
+    fun `服务端那两段必须还在_信息一条没丢`() {
+        val lines = BatteryDecayText.detailLines(serverShaped())
+        assertTrue("留一法那段丢了：$lines", lines.any { it.startsWith("留一法（") })
+        assertTrue(
+            "气温模型那段丢了：$lines",
+            lines.any { it.startsWith("把充电时气温放进模型后：") },
+        )
+    }
 }

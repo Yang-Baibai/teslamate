@@ -169,17 +169,24 @@ object BatteryDecayText {
         //   每行的宽度由 [NOTE_LINE_LIMIT] 钉住（客户端 JVM 单测 + 服务端 Go 单测各钉一半）。
         d.caveat.split("；").map { it.trim() }.filter { it.isNotEmpty() }.forEach { out += it }
         if (d.method.isNotBlank()) out += "算法：" + d.method
-        // ⚠ v0.41.0：稳健性检查的三个数**也要给出来** ——
-        // 用户要判断「这个结论靠不靠谱」，就得能看到它有多脆。
-        // ⚠️ **v0.147.0**：原来这三件挤成一行（实测 159 宽）⇒ 拆成两行（一行一个话题）。
-        if (d.temp_n >= 5) {
-            out += "气温模型：加充电时气温后是 " + d.adjusted_per_1000km.fmt(3) +
-                " 度/1000 公里（区间 " + d.adjusted_ci_lo.fmt(3) + " ~ " + d.adjusted_ci_hi.fmt(3) +
-                "）；气温系数 " + d.temp_per_c.fmt(5) + " 度/°C"
-            out += "留一法：去掉任意一个点重算，速率落在 " + d.leave_one_out_min.fmt(3) +
-                " ~ " + d.leave_one_out_max.fmt(3) +
-                "，" + d.leave_one_out_significant + "/" + d.leave_one_out_total + " 次仍然显著"
-        }
+        // ⚠️ **v0.155.0：这里曾经自己再补两行（「气温模型」「留一法」）—— 删掉了。**
+        //
+        // **为什么删**：这两行说的**就是服务端 caveat 里那两段**，数字完全相同：
+        //   adjusted_per_1000km / adjusted_ci_lo / adjusted_ci_hi / temp_per_c
+        //     ⇔ 「把充电时气温放进模型后：…」＋「气温系数 …」；
+        //   leave_one_out_min / leave_one_out_max / leave_one_out_significant / leave_one_out_total
+        //     ⇔ 「留一法（去掉任意一个点重算）：…」
+        // ⇒ 同一件事在**展开的折叠区里连着说了两遍**（原来 15 行里有 2 行是重复），
+        //   而且**客户端自己把服务端的数又排了一遍** ⇒ 两边口径漂移的风险（ADR #41）。
+        //
+        // ⚠️ **信息一条没丢**：服务端那两段**比这里更全** ——
+        //   ① 气温那两段还带「⇒ 检不出 / ⇒ 仍然显著」的**结论**，以及
+        //      「20°C 的温差就值 X 度，与那个落差同量级」的**量级对照**；
+        //   ② 留一法那段本来就是同一句。
+        // ⇒ 删掉的是**重复**，不是事实。
+        //
+        // ⚠️ **保留痕迹**：v0.41.0 加这两行的初衷（稳健性的数要给用户看）**没错**，
+        //   现在由**服务端那一份**承担 ⇒ 更符合「文案与数值只有服务端一份」。
         return out
     }
 
