@@ -90,8 +90,10 @@
 | 远端 | `origin` ⇒ **Yang-Baibai/teslamate**（**PUBLIC**）⇒ https://github.com/Yang-Baibai/teslamate |
 | 防误推 | `upstream` 仍指 TeslaMate 本体，但 **push URL 被设成 `DISABLED`** ⇒ 任何 `git push upstream` 都不可能 |
 | 历史 | `git filter-repo` 重写：**337 个提交**全量扫过（每遍 10~13 秒） |
-| 提交者身份 | 原先是 `<用户名> <<本地占位邮箱>>` ⇒ 统一归一成 `Yang-Baibai <102783148+Yang-Baibai@users.noreply.github.com>`（GitHub 的 noreply 形式 ⇒ 提交会正确归属到账号） |
+| 提交者身份 | 原先是本地占位身份 ⇒ 统一归一成 `Yang-Baibai <102783148+Yang-Baibai@users.noreply.github.com>`（GitHub 的 noreply 形式 ⇒ 提交会正确归属到账号） |
 | 备份 | 重写前的全量历史打成 **bundle**（3.35 MB）留着 ⇒ 万一要回滚还能恢复 |
+
+> ⚠️ **v0.155.0 就地订正**：上面「统一归一」**只覆盖了重写当时的 337 个提交** ⇒ **重写之后新增的 2 个提交仍带旧身份**（占位邮箱字符串当时还在仓库的提交元数据里）⇒ 本轮补做 `mailmap` 重写，已全部归一（详见 v0.155.0 段第八节）。
 
 ### 二、脱敏：环境标识全清，行车数据按拍板**保留**
 
@@ -142,6 +144,29 @@
 - **零私密文件编译**：从克隆品 `go build ./... && go vet ./...` ⇒ **通过**（不需要 `.env`）。
 - **闸门**：server 6/0 · client 37/0 · hermes 19/0 · smoke 49/0（JVM 单测 ＋ Go 编译都跑过）。
 - ⚠️ **未做**：克隆品**没有** Gradle wrapper（`gradlew` / `gradle-wrapper.jar` 未入库 —— 仓库卫生闸门**禁止 `.jar` 进库**）⇒ 构建 App 需本机装 Gradle 8.10.2；想用 `./gradlew` 请自行 `gradle wrapper` 生成。
+
+### 八、顺手补上：提交者身份归一（**历史重写了 3 个提交**）
+
+⚠️ **v0.154.0 那条「提交者身份统一归一成 `Yang-Baibai <…noreply>`」** —— **实测只覆盖了一半**：
+`git filter-repo` 的重写只作用于**当时已有的 337 个提交**；
+**重写之后新增的 2 个提交**（v0.154.0 的收尾提交 ＋ 其后那条 AGENTS.md 规矩提交）
+仍然带旧身份 ⇒ 那个占位邮箱字符串**当时还在公开仓库的提交元数据里**。
+
+⇒ 本轮补做（**只改身份元数据，一个文件的内容都没动**）：
+
+| 项 | 结果 |
+|---|---|
+| 工具 | `git filter-repo --mailmap .git/authors.mailmap --force` |
+| 改动范围 | **3 个提交**（2 个旧身份 ＋ 它们的 1 个后代），其余 **337 个哈希不变** |
+| 内容 | HEAD 的 **tree 哈希与重写前完全一致**（`65bce173…`）⇒ 文件内容一个字没动 |
+| 身份 | 全历史 **340 个提交**只剩一种身份 ⇒ 旧身份 **0 命中** |
+| 备份 | 重写前打了 bundle（24.2 MB）⇒ 可回滚 |
+| 推送 | 哈希变了 ⇒ `origin` 需要 **force**；`upstream` 的 push URL 仍是 `DISABLED` |
+
+⚠️ **踩到的坑**（记下来，下一个人别再踩）：`filter-repo` 写的 `commit-map` 里 **old 列是「上一轮重写前」的哈希**（映射文件跨轮合并了），
+**不是本轮重写前的哈希** ⇒ 直接拿它当差集，会以为「340 个提交全变了」。
+**正解**：重写前先 `git bundle create` 打包 ⇒ 重写后把那个 bundle `git fetch` 到临时 ref ⇒
+用 `git rev-list` 做**集合差** ⇒ 实测真差集是 **3 个**。
 ## 2026-11-13（v0.153.0 · 明确不做适老化 / 无障碍 ＋ 开源发布清单 —— 纯文档，不占 App 号）
 
 > 本轮**没动 App** ⇒ **versionCode 不动**（线上仍是 **145 / 0.136.0**）⇒ **不占 App 号**。
