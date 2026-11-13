@@ -150,6 +150,19 @@ bash scripts/start-emulator.sh -Stop
 
 ⚠️ 改了 `.env` 之后 `docker compose restart` **不算数**（容器持有创建时的快照），
 必须 `docker compose up -d --force-recreate api`。
+⚠️ **轮换口令 ⇒ 必须同步所有消费方**（2026-11-13 实测踩到，崩了两个容器）：
+本项目有**两份** env 文件 —— `.env`（compose 的 `${VAR}` 引用源）与
+`teslamate.env`（teslamate 容器的 `env_file`）—— 两者**互不同步**
+⇒ 只改 `.env` 里的 `POSTGRES_PASSWORD` 之后，`teslamate` 容器仍拿旧口令连库
+⇒ **崩溃循环**（`DBConnection.ConnectionError`）⇒ **数据采集停摆**（表面看只有采集在停，其余都正常）。
+⇒ 轮换完**逐个容器回读**：`docker compose ps` 看状态 ＋ `logs <svc>` 看日志。
+
+⚠️ **改 compose 的挂载 ⇒ 必须回读 `docker inspect` 的实际挂载源**（2026-11-13 实测踩到）：
+把绝对路径换成 `${CERTS_DIR}` 时若写成 **`$CERTS_DIR`**（占位符漏了花括号），
+Docker 会把它当**字面量目录名** ⇒ 挂载到空目录 ⇒ `fleet-telemetry` 启动时
+panic `open /certs/server.crt: no such file or directory` ⇒ **崩溃循环**。
+⚠️ **静态闸门全绿抓不到**（compose 没语法错、容器起得来、静态检查无感）
+⇒ 只有**回读活进程**（看实际挂载源 ＋ 看容器日志）才暴露。
 
 ⚠️ **改了 `api/` 里的 Go 代码 ⇒ 必须先 `docker compose build api`** ——
 `docker compose up` **默认不重建镜像**（镜像还是上一次构建的那份）⇒ 容器跑的是**旧二进制**，
