@@ -6,7 +6,7 @@
 
 | 用途 | 位置 |
 |---|---|
-| 项目根（Compose 工作区） | `C:\Users\<用户名>\OneDrive\文档\teslamate`（下称 `ROOT`） |
+| 项目根（Compose 工作区） | `<仓库路径>`（下称 `ROOT`） |
 | App 构建目录（暂存） | `C:\tm-app\teslamate-app`（ASCII 路径，见下方"为什么不是 ROOT"） |
 | Gradle 用户目录 | `C:\gradle\gradle-home` |
 | Gradle 发行版 | `C:\gradle\gradle-8.10.2\bin\gradle.bat` |

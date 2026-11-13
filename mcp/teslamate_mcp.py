@@ -22,7 +22,7 @@ Hermes 的 `config.yaml` 里有 `mcp_servers:` 段（stdio 形如 `command` + `a
 mcp_servers:
   teslamate:
     command: python
-    args: ["C:/Users/<用户名>/OneDrive/文档/teslamate/mcp/teslamate_mcp.py"]
+    args: ["<仓库路径>/mcp/teslamate_mcp.py"]
 ```
 
 ⚠️ **令牌不用写进 Hermes 的配置** —— 本服务会自己去**同目录的 `.env`** 找

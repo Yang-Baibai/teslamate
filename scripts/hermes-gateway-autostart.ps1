@@ -22,7 +22,7 @@ $ErrorActionPreference = 'Continue'
 
 # ⚠️ 变量名**不能**叫 `$hroot` —— 那是 PowerShell 的**只读自动变量**
 #    （用户主目录）⇒ 赋值会直接报错：「无法覆盖变量 HOME」。
-$hroot = 'C:\Users\<用户名>\AppData\Local\hermes'
+$hroot = Join-Path $env:LOCALAPPDATA 'hermes'
 $py   = Join-Path $hroot 'tools\python-3.14.7+20260901-win32-x64\python.exe'
 $log  = Join-Path $hroot 'logs'
 $trace = Join-Path $log 'gateway-autostart.log'

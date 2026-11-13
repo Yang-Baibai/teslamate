@@ -1,6 +1,6 @@
 # 运维手册（Operations）
 
-> 面向日常使用与应急处理。所有命令在项目根目录 `C:\Users\<用户名>\OneDrive\文档\teslamate` 下执行（Git Bash）。
+> 面向日常使用与应急处理。所有命令在项目根目录 `<仓库路径>` 下执行（Git Bash）。
 
 ## 1. 日常操作
 
@@ -81,7 +81,7 @@ docker compose build api && docker compose up -d api
 bash scripts/sync-app-build-dir.sh
 cd /c/tm-app/teslamate-app
 export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot' \
-       ANDROID_HOME='C:\Users\<用户名>\AppData\Local\Android\Sdk' \
+       ANDROID_HOME='<用户名>\AppData\Local\Android\Sdk' \
        GRADLE_USER_HOME='C:\gradle\gradle-home'
 cmd //c "C:\gradle\gradle-8.10.2\bin\gradle.bat assembleDebug"
 # 产物: app/build/outputs/apk/debug/app-debug.apk
@@ -100,7 +100,7 @@ cd /c/tm-app/teslamate-app && cmd //c "C:\gradle\gradle-8.10.2\bin\gradle.bat as
 
 # 2. 部署到固定路径（API 通过 FileServer 暴露 ./apk/teslamate-app.apk）
 cp /c/tm-app/teslamate-app/app/build/outputs/apk/debug/app-debug.apk \
-   "C:/Users/<用户名>/OneDrive/文档/teslamate/apk/teslamate-app.apk"
+   "<仓库路径>/apk/teslamate-app.apk"
 
 # 3. ~~同步源码回工作区镜像~~ —— **v0.131.0 起取消这一步**
 #    ⚠️ 它把**构建目录（副本）拷回仓库** ⇒ 副本一旧（实测差 17 个版本），
@@ -209,7 +209,7 @@ docker compose up -d        # 让 teslamate/grafana/api 拿到新密码
  **应对**：在 `C:\tm-ws` 建一个 Windows 目录 junction（零数据迁移）指向项目根：
 
  ```cmd
- mklink /J C:\tm-ws "C:\Users\<用户名>\OneDrive\文档\teslamate"
+ mklink /J C:\tm-ws "<仓库路径>"
  ```
 
  之后所有脚本一律走 `C:\tm-ws`，例如：

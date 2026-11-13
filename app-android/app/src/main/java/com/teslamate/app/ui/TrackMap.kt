@@ -56,7 +56,7 @@ fun TrackMap(
     // 主机名是稳定的（.env 的 APP_APK_URL 也已统一改成主机名）。
     val ctx = LocalContext.current
     val baseUrl = settings?.serverUrl?.takeIf { it.isNotBlank() }
-        ?: "http://<主机名>:8090"
+        ?: "http://your-host:8090"
     val token = settings?.token.orEmpty()
 
     // 路线在 App 端先降采到 ≤ 100 点（服务端限 200，留余量）。1500 个原坐标

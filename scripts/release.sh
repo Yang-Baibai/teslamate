@@ -22,7 +22,7 @@ echo "══ 1/6 构建 App ══"
 bash scripts/sync-app-build-dir.sh
 cd "$APP_DIR"
 export JAVA_HOME='C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot' \
-       ANDROID_HOME='C:\Users\<用户名>\AppData\Local\Android\Sdk' \
+       ANDROID_HOME="${ANDROID_HOME:-/c/Users/$USER/AppData/Local/Android/Sdk}" \
        GRADLE_USER_HOME='C:\gradle\gradle-home'
 cmd //c "C:\gradle\gradle-8.10.2\bin\gradle.bat assembleDebug --console=plain" | tail -2
 
@@ -31,7 +31,7 @@ NEW_NAME=$(grep versionName app/build.gradle.kts | grep -oE '"[^"]+"' | tr -d '"
 echo "   构建产物：v$NEW_NAME (code $NEW_CODE)"
 
 echo "══ 2/6 部署 APK（先放包再改元数据，顺序不能反）══"
-ROOT="C:/Users/<用户名>/OneDrive/文档/teslamate"
+ROOT="${TESLAMATE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 cp app/build/outputs/apk/debug/app-debug.apk "$ROOT/apk/teslamate-app.apk"
 echo "   APK 已就位 $(stat -c%s "$ROOT/apk/teslamate-app.apk") bytes"
 

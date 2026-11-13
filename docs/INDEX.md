@@ -145,8 +145,8 @@ bash scripts/sync-app-build-dir.sh   # 仓库 → 构建目录（方向唯一）
 # ⚠️ 写/删文件（拷 APK、删临时文件）必须用**真实路径** + **单条顶层命令**：
 #    C:\tm-ws 会被判成「工作区外」，`cd ... && cp ...` 复合命令也会被拦。
 #    （只读与构建走 ASCII 路径没问题。）
-Copy-Item 'C:\Users\<你>\OneDrive\文档\teslamate\app-android\app\build\outputs\apk\debug\app-debug.apk' `
-          'C:\Users\<你>\OneDrive\文档\teslamate\apk\teslamate-app.apk' -Force
+Copy-Item 'C:\Users\<用户名>\OneDrive\文档\teslamate\app-android\app\build\outputs\apk\debug\app-debug.apk' `
+          'C:\Users\<用户名>\OneDrive\文档\teslamate\apk\teslamate-app.apk' -Force
 
 # 服务端
 docker compose build api && docker compose up -d --force-recreate api

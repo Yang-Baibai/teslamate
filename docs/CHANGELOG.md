@@ -43,7 +43,7 @@
 | 密钥 | ⚠️ **只有 3 个口令**进过历史（`POSTGRES_PASSWORD` / `TESLAMATE_DB_PASSWORD` / `GF_SECURITY_ADMIN_PASSWORD`），位置是 `docs/operations.md`，进历史于首个提交 `1ebbb42`；**其余 8 个**（`API_TOKEN` / `ENCRYPTION_KEY` / `AMAP_KEY` / Tesla 三件套 / 代理 CA）**从未入库** |
 | 远端 | ⚠️ `origin` 指向的是**上游开源项目** `teslamate-org/teslamate`（TeslaMate 本体，AGPL-3.0）⇒ 本仓库的 333 个提交**从未推过去**（`master` 无远端跟踪分支）⇒ **第一件事是换掉 remote**，否则一次 `git push` 就是在往别人的公开仓库里推 |
 | 账号 | `gh` 登录 **Yang-Baibai**（本人账号，权限 `repo` / `workflow`）⇒ 具备建仓与推送能力 |
-| 许可证 | 仓库**现在没有 LICENSE**；`grafana/dashboards/*.json`（23 个）来自 **MIT** 的 `teslamate-chinese-dashboards` ⇒ **必须署名**；TeslaMate 是 **AGPL-3.0**，但本项目**只部署不改** ⇒ 不构成衍生作品 |
+| 许可证 | 仓库**现在没有 LICENSE**；⚠️ **2026-11-13 就地订正**：原写「`grafana/dashboards/*.json`（23 个）来自 **MIT** 的 `teslamate-chinese-dashboards`」—— **这条被实测证伪了**：那个项目的 LICENSE 实际是 **AGPL-3.0**（不是 MIT），且那 23 个文件是 **TeslaMate 官方的英文仪表盘**（不是中文版）⇒ 按 AGPL-3.0 原样再分发、**明确排除在 MIT 之外**（附 AGPL 全文 `grafana/LICENSE-AGPL-3.0.txt`）；TeslaMate 是 **AGPL-3.0**，但本项目**只部署不改** ⇒ 不构成衍生作品 |
 | 个人标识 | 「爱车」22 处、「<用户名>」17 处、`OneDrive` 路径 15 处、主机名 13 处（**含 `api/*.go` 硬编码**）、真机序列号 5 处（**含 `api/feedback.go`**） |
 | README | 顶部写着「App v0.8.4（versionCode 19）」⇒ **已过时 126 个版本**；且路径是本机绝对路径 ⇒ 公开版必须重写 |
 
@@ -999,16 +999,16 @@ prefs.edit().putString(statusKey(carId), json.encodeToString(CarStatus.serialize
 
 ### 二、真因：**emulator 所在的 SDK 根路径含非 ASCII 字符**
 
-本机用户名是「<用户名>」⇒ 默认 SDK 根 `C:\Users\<用户名>\AppData\Local\Android\Sdk` **含中文**；
+本机用户名是「<用户名>」⇒ 默认 SDK 根 `<用户名>\AppData\Local\Android\Sdk` **含中文**；
 在这个路径下启动 emulator，**无论换什么参数都起不来**（崩 / 永久 offline / 进程静默退出，三种形态）。
 把 emulator 放到**纯 ASCII** 的 `C:\tm-sdk` 下启动 ⇒ **一次就成**。
 
 | # | emulator 所在路径 | 包版本 | 快照 | 环境变量 | 结果 |
 |---|---|---|---|---|---|
-| ① | `C:\Users\<用户名>\...` | 37.2.12 | 开 | 无 | 崩：0xC0000005 访问冲突 |
-| ② | `C:\Users\<用户名>\...` | 37.2.12 | 关 | 无 | 永久 `offline`（qemu CPU 0.6 秒 = 阻塞） |
-| ③ | `C:\Users\<用户名>\...` | **37.2.13** | 关 | 无 | 永久 `offline` ⇒ **换包不是解药** |
-| ④ | `C:\Users\<用户名>\...` | 37.2.13 | 关 | **有**（`ANDROID_SDK_ROOT` 等） | 进程死、设备消失 ⇒ **加环境变量也没用** |
+| ① | `<用户名>\...` | 37.2.12 | 开 | 无 | 崩：0xC0000005 访问冲突 |
+| ② | `<用户名>\...` | 37.2.12 | 关 | 无 | 永久 `offline`（qemu CPU 0.6 秒 = 阻塞） |
+| ③ | `<用户名>\...` | **37.2.13** | 关 | 无 | 永久 `offline` ⇒ **换包不是解药** |
+| ④ | `<用户名>\...` | 37.2.13 | 关 | **有**（`ANDROID_SDK_ROOT` 等） | 进程死、设备消失 ⇒ **加环境变量也没用** |
 | ⑤ | **`C:\tm-sdk`（纯 ASCII）** | 37.2.12 | 关 | 有 | ✅ **46.8 秒启动成功** |
 
 => **唯一决定性变量 = 路径是不是纯 ASCII**（包版本 / 快照 / 环境变量 / 加速模式 / AVD / 镜像，逐个排除）。
@@ -1140,7 +1140,7 @@ prefs.edit().putString(statusKey(carId), json.encodeToString(CarStatus.serialize
 ⇒ 连「**必须先重启才能用**」这个前提也**不成立**（成功启动发生在重启之前）。
 ⇒ ⚠️ **不知道**：2026-11-10 23:28 那条 DISM 当时是否**已经**生效（未等重启）——
 日志证明不了「改动何时生效」⇒ **不编**。
-⇒ **真因是 SDK 根路径含非 ASCII 字符**（本机用户名「<用户名>」）⇒ 换到纯 ASCII 路径即成。
+⇒ **真因是 SDK 根路径含非 ASCII 字符**（本机用户名含非 ASCII 字符）⇒ 换到纯 ASCII 路径即成。
 
 ⇒ **连带订正本节的「排查方向」**：读功能 State / 改启动项 / 重启这一路，对本问题**无效**；
 正确的一步是**先查路径里有没有非 ASCII 字符**（原生工具会静默中毒）。
@@ -10047,7 +10047,7 @@ teslamate(Go API) ──①access_token──▶ Tesla token 端点
 mcp_servers:
   teslamate:
     command: python
-    args: ["C:/Users/<用户名>/OneDrive/文档/teslamate/mcp/teslamate_mcp.py"]
+    args: ["<仓库路径>/mcp/teslamate_mcp.py"]
     timeout: 120
 ```
 
@@ -17274,7 +17274,7 @@ qemu 占 220MB 内存但 CPU 恒为 0.2~0.7s，Windows 事件日志无任何崩�
 - `gradle assembleDebug`（App 端约 9 秒，缓存命中）。
 - APK：18.23 MB，已放 `C:\tm-app\teslamate-app-0.1.2.apk`，并通过 `python -m http.server 9090`（cwd=`C:\tm-app`）暴露在 Tailscale 内网 `http://<tailscale IP>:9090/teslamate-app-0.1.2.apk`，用户可直接在手机浏览器打开下载。
 - 回归：charges/drives/stats 三个端点用真实数据冒烟通过，stats dc_kwh 仍=charge_kwh（围栏"supercharger" ILIKE 命中，符合预期）。
-- 工作区镜像同步：`robocopy C:\tm-app\teslamate-app\app\src\main C:\Users\<用户名>\OneDrive\文档\teslamate\app-android\app\src\main /E /XD build .gradle .kotlin` 验证 4 个改动的文件 size 一致。
+- 工作区镜像同步：`robocopy C:\tm-app\teslamate-app\app\src\main <仓库路径>\app-android\app\src\main /E /XD build .gradle .kotlin` 验证 4 个改动的文件 size 一致。
 
 ---
 

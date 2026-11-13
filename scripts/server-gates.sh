@@ -66,10 +66,10 @@ fi
 #    —— ⚠️ 原来只扫 diff，**历史提交里的密钥永远扫不到**；
 # ② **diff** 扫描 `.env` 里的**全部**真实值（任何新值都不能进仓库）。
 #
-# ⚠️ 已知豁免：`.env` 里的 `POSTGRES_PASSWORD` / `TESLAMATE_DB_PASSWORD` /
-# `GF_SECURITY_ADMIN_PASSWORD` 是**弱默认密码**（`ChangeMe_*`），
-# `docs/operations.md` **有意记录**了它们（2026-10-16 决定维持现状，局域网自用）——
-# 那条是**决策记录**，不是泄露，故不拦。
+# ⚠️ **2026-11-13 订正**：原先这里写着「三个弱默认口令（`ChangeMe_*`）**豁免**」——
+#    那条豁免的前提是「它们是弱默认、且是**私有仓库**里的刻意记录」；
+#    **公开到 GitHub 前这条前提没了** ⇒ 口令已轮换成随机值、字面值从仓库与历史里抹除、
+#    并且这三个键**已加进**上面的 `FORBIDDEN_KEYS`（全量扫描保护）。
 SEC=$(python - <<'PY' 2>/dev/null
 import io, os, re, subprocess, sys
 # ⚠️ stdout 必须转 UTF-8：Windows 控制台默认 GBK，
@@ -81,7 +81,12 @@ except Exception:
     pass
 root = os.getcwd()
 FORBIDDEN_KEYS = ("API_TOKEN", "AMAP_KEY", "ta-secret",
-                  "TESLA_REFRESH_TOKEN", "TESLA_CLIENT_SECRET")
+                  "TESLA_REFRESH_TOKEN", "TESLA_CLIENT_SECRET",
+                  # ⚠️ **2026-11-13（开源前）**：这三个口令**已轮换成随机值**
+                  # （不再是 `ChangeMe_*` 弱默认）⇒ 它们**必须**和上面几个一样
+                  # 受**全量 tracked 树**扫描保护（谁把它们写进文件，闸门当场报红）。
+                  "POSTGRES_PASSWORD", "TESLAMATE_DB_PASSWORD",
+                  "GF_SECURITY_ADMIN_PASSWORD")
 env = os.path.join(root, ".env")
 if not os.path.exists(env):
     print("SKIP"); sys.exit(0)
@@ -118,8 +123,13 @@ for rel in tracked:
 
 # ② diff：任何 .env 真实值都不能进
 diff = (git("diff", "HEAD") + git("diff", "--cached")).decode("utf-8", "replace")
+# ⚠️ **2026-11-13（开源前）**：只扫**新增行**（+）——
+# 被删掉的行里出现 .env 的真实值，是**正在把它从仓库里拿掉**（安全动作）；
+# 旧写法把整份 diff（含 - 行与上下文行）一起扫 ⇒ **删掉一个密钥也会报红**
+# ⇒ 闸门反而挡住了正确的脱敏动作（本轮就撞上了：删掉主机名字面值被拦）。
+added = "\n".join(l[1:] for l in diff.split("\n") if l.startswith("+") and not l.startswith("+++"))
 for k, v in secrets:
-    if v and v in diff:
+    if v and v in added:
         hits.append("改动里命中真实值 %s" % k)
 for pat, label in [
     (r"API_TOKEN\s*=\s*[\"']?[A-Za-z0-9_\-\.]{16,}", "API_TOKEN 赋值"),
@@ -128,7 +138,7 @@ for pat, label in [
     (r"TESLA_REFRESH_TOKEN\s*=\s*[\"']?[A-Za-z0-9_\-\.]{12,}", "TESLA_REFRESH_TOKEN 赋值"),
     (r"TESLA_CLIENT_SECRET\s*=\s*[\"']?[A-Za-z0-9_\-\.]{12,}", "TESLA_CLIENT_SECRET 赋值"),
 ]:
-    if re.search(pat, diff):
+    if re.search(pat, added):
         hits.append("改动里命中赋值模式 %s" % label)
 
 print("HITS:" + "; ".join(hits) if hits else "CLEAN")

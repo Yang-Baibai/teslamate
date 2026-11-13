@@ -42,7 +42,7 @@ Funnel 允许的公网端口只有 `443` / `8443` / `10000`，所以 8443 是唯
 
 ### 证书
 
-- 接收端用 **Tailscale 签的 Let's Encrypt 证书**（`${CERTS_DIR}\server.crt`）。
+- 接收端用 **Tailscale 签的 Let's Encrypt 证书**（`<用户名>\tailscale-certs\server.crt`）。
   ⚠️ 必须公开可信 —— raw TCP 模式下 Tesla 直接看到这张证书，自签会被拒。
 - ⚠️ **90 天过期** ⇒ `scripts/renew-telemetry-cert.ps1` 每周续期 + 重启容器
   （bind mount 挂的是文件，`tailscale cert` 写新文件后容器还握着旧 inode）。
@@ -57,7 +57,7 @@ Funnel 允许的公网端口只有 `443` / `8443` / `10000`，所以 8443 是唯
 | command-proxy | ✅ `tesla/vehicle-command:latest` 在跑（4443），车控已验证走通 |
 | mosquitto | ✅ 本机已有（1883），遥测数据有现成落点 |
 | fleet-telemetry 镜像 | ✅ `tesla/fleet-telemetry:latest`（**Go 写的**，与本项目同栈） |
-| Funnel 443（HTTPS） | ✅ `/.well-known` 指向 `C:\Users\<用户名>\tesla-key` |
+| Funnel 443（HTTPS） | ✅ `/.well-known` 指向 `<用户名>\tesla-key` |
 | Funnel 8443（raw TCP） | ✅ `tcp://…ts.net:8443 → tcp://127.0.0.1:4443` |
 | 服务端证书 | ✅ 公网可信（`Verify return code: 0 (ok)`，Let's Encrypt YE2） |
 
@@ -436,7 +436,7 @@ Funnel 配置存在 tailscaled 里，重启会自动恢复。若真丢了：
 
 ```powershell
 # 443：应用公钥托管（**必须免鉴权**）
-tailscale funnel --bg --https=443 --set-path=/.well-known/appspecific "C:\Users\<用户名>\tesla-key"
+tailscale funnel --bg --https=443 --set-path=/.well-known/appspecific "<用户名>\tesla-key"
 
 # 8443：遥测入口（raw TCP 透传，**需要 Windows 管理员**）
 tailscale funnel --bg --tcp=8443 tcp://127.0.0.1:4443

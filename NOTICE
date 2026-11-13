@@ -1,0 +1,86 @@
+NOTICE
+======
+
+This project redistributes and/or depends on third-party works. This NOTICE
+records who owns what and under which license.
+
+
+1. Original work - MIT
+-----------------------
+Everything in this repository that is not listed below is original work by the
+project author, licensed under the MIT License (see LICENSE):
+
+  api/            Go API service (read-only car-data API for the mobile client)
+  app-android/    Android client (Kotlin / Jetpack Compose)
+  mcp/            MCP server used by the Hermes gateway for the Feishu channel
+  scripts/        operational, release and gate scripts
+  docs/           documentation and decision records
+  compose.yaml    service orchestration
+
+
+2. TeslaMate - AGPL-3.0 (runtime dependency, unmodified)
+-------------------------------------------------------
+  Upstream:    https://github.com/teslamate-org/teslamate
+  License:     GNU Affero General Public License v3.0
+  License text: https://github.com/teslamate-org/teslamate/blob/main/LICENSE
+  Use:         container image teslamate/teslamate:latest, unmodified.
+
+TeslaMate is the data-collection service this project reads from. No TeslaMate
+source code is vendored into this repository and no TeslaMate source is
+modified, so this project is not a derivative work of TeslaMate and is not
+bound by the AGPL network-use clause. The AGPL requires that recipients of
+the TeslaMate container image can obtain its corresponding source; that
+obligation is met by the upstream project itself.
+
+  Copyright (C) 2020-2026 Adrian Kumpf and the TeslaMate contributors
+
+
+3. TeslaMate dashboards - AGPL-3.0 (files redistributed here)
+-------------------------------------------------------------
+  Upstream:    https://github.com/teslamate-org/teslamate/tree/main/grafana/dashboards
+  License:     GNU Affero General Public License v3.0
+  License text: grafana/LICENSE-AGPL-3.0.txt (in this repository)
+
+The files under grafana/dashboards/ are archived copies of TeslaMate's own
+Grafana dashboards (the English originals), kept for reference. They are
+licensed under AGPL-3.0 and are explicitly EXCLUDED from this repository's MIT
+license. They are not mounted into the running Grafana container: the Chinese
+dashboard image supplies the dashboards that are actually served.
+
+  Copyright (C) 2020-2026 Adrian Kumpf and the TeslaMate contributors
+
+
+4. teslamate-chinese-dashboards - AGPL-3.0 (runtime image)
+-----------------------------------------------------------
+  Upstream:    https://github.com/wjsall/teslamate-chinese-dashboards
+  License:     GNU Affero General Public License v3.0
+  Use:         container image ghcr.io/wjsall/teslamate-chinese-dashboards:latest
+
+The Chinese Grafana dashboards are consumed as a prebuilt container image. No
+source from that project is redistributed in this repository.
+
+  Copyright (C) 2026 TeslaMate Chinese Dashboard Contributors
+
+
+5. Tesla official sidecars - runtime dependencies
+---------------------------------------------------
+  tesla/vehicle-command:latest   https://github.com/teslamotors/vehicle-command
+  tesla/fleet-telemetry:latest   https://github.com/teslamotors/fleet-telemetry
+
+Both are used as unmodified container images to speak Tesla's signed command
+protocol and its telemetry stream. Their licenses apply to those images.
+
+
+6. Other container images (runtime only, not redistributed here)
+-----------------------------------------------------------------
+  postgres:18-alpine              PostgreSQL License
+  eclipse-mosquitto:2             EPL-2.0 / EDL-1.0
+  golang:1.23-alpine, alpine:3.20  BSD-3-Clause / MIT (build and base images)
+
+
+7. External services referenced by this project
+-------------------------------------------------
+  Tesla Fleet API, Tesla Fleet Telemetry, Tesla Vehicle Command SDK, the
+  Tesla service documentation, and the AMap (Gaode) Web Service API. They are
+  accessed as external services under their own terms. No Tesla or AMap source
+  code is included in this repository.

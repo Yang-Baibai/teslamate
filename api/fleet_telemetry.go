@@ -43,7 +43,7 @@ const (
 	// ⚠️ 443 与 8443 是**同一个域名的两个入口**：
 	//    443 给 Tesla 云拉应用公钥（普通 HTTPS），
 	//    8443 给车端推遥测（raw TCP 透传，端到端 mTLS）。
-	telemetryDefaultHost = "<主机名>.<tailnet域>.ts.net"
+	telemetryDefaultHost = "your-host.<tailnet域>.ts.net"
 	telemetryDefaultPort = 8443
 
 	// telemetryConfigTTL 配置 JWT 的有效期。

@@ -25,7 +25,7 @@
     且它自己得有有效 TLS 证书（后台表单会当场校验）。
 
 .PARAMETER Domain
-    要注册 / 要查询的**公网域名**（如 `<主机名>.<tailnet域>.ts.net`）。
+    要注册 / 要查询的**公网域名**（如 `your-host.<tailnet域>.ts.net`）。
 
 .PARAMETER Action
     `status`（默认，查注册状态）或 `register`（注册 / 换域名）。
@@ -38,7 +38,7 @@
     临时域名隧道一停就失效，把车控永久绑死在会死的地址上没意义）。
 
 .EXAMPLE
-    pwsh -File scripts/tesla-partner.ps1 -Domain <主机名>.<tailnet域>.ts.net
+    pwsh -File scripts/tesla-partner.ps1 -Domain your-host.<tailnet域>.ts.net
 
 .EXAMPLE
     pwsh -File scripts/tesla-partner.ps1 -Action register -Domain new-host.<tailnet域>.ts.net

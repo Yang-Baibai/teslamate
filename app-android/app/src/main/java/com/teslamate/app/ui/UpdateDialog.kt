@@ -96,7 +96,7 @@ fun Context.downloadAndInstall(apkUrl: String): Boolean {
     val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
     val request = DownloadManager.Request(Uri.parse(apkUrl))
         .setMimeType("application/vnd.android.package-archive")
-        .setTitle("爱车车况 v${com.teslamate.app.BuildConfig.VERSION_NAME} 准备就绪")
+        .setTitle("车况 v${com.teslamate.app.BuildConfig.VERSION_NAME} 准备就绪")
         .setDescription("下载完成后点击安装")
         .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
         .setAllowedOverMetered(true)

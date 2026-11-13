@@ -10,7 +10,7 @@ TeslaMate（开源采集）+ 自写 Go API + 自写 Android App 的**自托管�
 
 ## 接手先读（按顺序）
 
-1. [`docs/INDEX.md`](docs/INDEX.md) —— **目录地图 / 数据流 / 工作流 / 常用命令 / 八条红线**
+1. [`docs/INDEX.md`](docs/INDEX.md) —— **目录地图 / 数据流 / 工作流 / 常用命令 / 九条红线**
 2. [`docs/CHANGELOG.md`](docs/CHANGELOG.md) 顶部 3 条 —— 最近改了什么、为什么
 3. `api/main.go` 的路由表 —— 服务端能干什么
 4. `app-android/app/src/main/java/com/teslamate/app/Api.kt` —— App 能取什么
@@ -131,7 +131,7 @@ bash scripts/start-emulator.sh -Avd tm_emu
 bash scripts/start-emulator.sh -Stop
 ```
 
-⚠️ **emulator 必须在纯 ASCII 路径下启动**：本机 SDK 根 `C:\Users\<用户名>\...` **含中文** ⇒
+⚠️ **emulator 必须在纯 ASCII 路径下启动**：本机 SDK 根 `<用户名>\...` **含中文** ⇒
 无论换什么参数都起不来（崩 / 永久 offline / 静默退出）⇒ **与虚拟化、图形 DLL、换包都无关**。
 脚本会把 emulator 放到纯 ASCII 的 `C:\tm-sdk` 下启动（其余目录用**联接**指回真实 SDK），
 **不需要管理员、不需要重启、不用改宿主虚拟化配置**。
@@ -141,7 +141,7 @@ bash scripts/start-emulator.sh -Stop
 
 ⚠️ **写/删文件（`Copy-Item` / `rm`）必须用「解析后的真实路径」，而且必须是「单条顶层命令」**
 —— `C:\tm-ws`（ASCII 联接）会被本机安全策略判成「工作区外」⇒ 写/删一律用
-`C:\Users\<你>\OneDrive\文档\teslamate\...`；
+`C:\Users\<用户名>\OneDrive\文档\teslamate\...`；
 `cd ... && cp ...` 这种**复合命令**也会被拦（理由：「切换工作目录后无法核对写/删目标」）
 ⇒ **一条命令只干一件事**（拷 APK 就一条 `Copy-Item`，别串 `&&`）；
 删目录用 `rm -rf -- '<真实路径>'`（运行时会路由到可恢复删除）。

@@ -16,8 +16,8 @@
 
 $ErrorActionPreference = 'Stop'
 
-$Domain = '<主机名>.<tailnet域>.ts.net'
-$CertDir = '${CERTS_DIR}'
+$Domain = $env:TELEMETRY_HOST
+$CertDir = if ($env:CERTS_DIR) { $env:CERTS_DIR } else { Join-Path $env:USERPROFILE 'tailscale-certs' }
 $Container = 'teslamate-fleet-telemetry'
 
 # ── 重下发遥测配置用（v0.79.0）──────────────────────────────────

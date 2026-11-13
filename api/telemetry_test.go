@@ -387,7 +387,7 @@ func TestTelemetryAlertsSummary(t *testing.T) {
 //
 // ⚠️ 这份样本是**实测原文**的形状（config 是对象、ca 是多段 PEM 串）。
 func TestSummarizeTelemetryConfig(t *testing.T) {
-	raw := `{"response":{"synced":true,"config":{"hostname":"<主机名>.<tailnet域>.ts.net",` +
+	raw := `{"response":{"synced":true,"config":{"hostname":"example-host.<tailnet域>.ts.net",` +
 		`"ca":"-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n` +
 		`-----BEGIN CERTIFICATE-----\nBBBB\n-----END CERTIFICATE-----\n",` +
 		`"exp":1824308392,"port":8443,` +
@@ -398,7 +398,7 @@ func TestSummarizeTelemetryConfig(t *testing.T) {
 	if s == nil {
 		t.Fatal("实测形状的 config 必须能解析出摘要")
 	}
-	if s.Hostname != "<主机名>.<tailnet域>.ts.net" {
+	if s.Hostname != "example-host.<tailnet域>.ts.net" {
 		t.Errorf("hostname 解析错了，实际 %q", s.Hostname)
 	}
 	if s.Port != 8443 {
