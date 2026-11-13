@@ -89,9 +89,22 @@ import kotlinx.coroutines.withContext
  * - **动作清单由服务端下发**（`GET /api/v1/cars/{id}/commands`），
  *   客户端**不新增动作**、也不自己判断高危 —— 那是安全策略，只该有一处；
  * - **车在休眠时先说清楚**：命令发不出去（Tesla 回 408），这不是失败，是「车没醒」。
+ *
+ * ⚠ **v0.156.0（用户反馈 #153）：车控独立成页** ——
+ *
+ * 原来这块是**车况页里的一张卡**。用户原话（2026-11-13）：
+ * 「能否将车辆控制的相关部分独立出来，类似特斯拉APP的首页。
+ * 现在集成在车况页面中，会显得车况页面特别啰嗦冗长。」
+ *
+ * ⇒ 整块搬去**「车控」页**（自己的 Tab），车况页因此短了一截。
+ * ⇒ 这里**不再套卡片外框**：页面标题已经叫「车控」，
+ *   再套一张写着「车辆控制」的卡 ⇒ **同一件事两个名字**
+ *   （这正是 v0.8.5 那轮 IA 复核批过的毛病：同一份东西被抓两次、被叫两个名字）。
+ * ⇒ ⚠ **文件名保持 `VehicleControlCard.kt`**：客户端闸门 18 / 22 按**文件名**
+ *   钉住这两处判据 ⇒ 改名要同步改闸门 ＋ 重跑负向探针；等闸门改成按符号找再改名。
  */
 @Composable
-fun VehicleControlCard(
+fun VehicleControlPanel(
     api: Api?,
     carId: Int,
     /** 锁车状态；null = 未知（车没醒或没连实时状态源） */
@@ -234,7 +247,8 @@ fun VehicleControlCard(
         if (commandNeedsConfirm(cmd)) pending = cmd else execute(cmd, emptyMap())
     }
 
-    SectionCard(title = "车辆控制", modifier = modifier) {
+    // ⚠️ **v0.156.0**：不再套卡片外框 —— 这一块现在住在**自己的页面**上（见文件头说明）。
+    Column(modifier) {
         val c = catalog
         when {
             c == null && loadFailed != null -> {

@@ -125,15 +125,8 @@ fun StatusScreen(
     cars: List<com.teslamate.app.Car> = emptyList(),
     /** ⚠️ v0.16.0：切换当前车辆。 */
     onCarChange: (Int) -> Unit = {},
-    /**
-     * ⚠️ **v0.76.0**：全局反馈用的 Snackbar 宿主。
-     *
-     * 车控命令的**结果提示必须落在屏幕底部**，而不是卡片的最下面 ——
-     * 卡片很长，用户点「闪灯」时卡片底部在**屏幕外**，
-     * 结果提示跟着一起看不见 = 「点了没反应」，
-     * 用户会以为车没听指挥，**然后再点一次**。
-     */
-    snackbarHostState: SnackbarHostState? = null,
+    // ⚠️ **v0.156.0**：原来这个页面带一个 `snackbarHostState`（v0.76.0：车控命令的结果
+    // 要落在屏幕底部）—— 车控独立成页后，那个宿主跟着车控走（见 ControlScreen.kt）。
 ) {
     val api = remember(settings) { settings.api() }
     val scope = rememberCoroutineScope()
@@ -147,11 +140,8 @@ fun StatusScreen(
     val error = store.error
     var refreshing by remember { mutableStateOf(false) }
     var showMap by remember { mutableStateOf(false) }
-    // ⚠️ **v0.74.0**：车控清单的刷新信号。
-    // 只有**用户主动**刷新（↻ / 下拉刷新）才 +1；
-    // 15 秒自动刷新走的是 load()，不碰它 —— 动作清单不会自己变，
-    // 每 15 秒重读一次纯属浪费。
-    var controlRefresh by remember { mutableStateOf(0) }
+    // ⚠️ **v0.156.0**：原来这里有个 `controlRefresh`（车控清单的刷新信号，v0.74.0 加的）——
+    // 车控搬去自己的页之后，清单的刷新归「车控」页管（见 ControlScreen.kt）⇒ 这里删掉。
 
     LaunchedEffect(api, settings.carId) {
         if (api != null) {
@@ -288,10 +278,8 @@ fun StatusScreen(
             refreshing = true
             load()
             refreshing = false
-            // ⚠️ v0.74.0：车况页的刷新必须刷新**屏幕上的一切**。
-            // 车控清单原来只在首次组合时读一次 ⇒ 清单读失败后，
-            // 用户点 ↻ 也换不来任何变化，错误状态一直赖着。
-            controlRefresh++
+            // ⚠️ **v0.156.0**：原来这里还有 `controlRefresh++`（v0.74.0：车况页刷新要刷新
+            // 屏幕上的一切，包括车控清单）—— 车控独立成页后，那件事归「车控」页管了。
         }
     }
 
@@ -926,30 +914,15 @@ fun StatusScreen(
                         // 省下 74dp，胎压卡就能完整露出首屏（现在要滑 170dp 才看得到四个胎压值）。
                         TpmsCard(st)
 
-                        // ⚠️ **v0.66.0（第 33 轮）：车辆控制**（车控下沉到本项目）。
+                        // ⚠️ **v0.156.0（用户反馈 #153）：车辆控制搬去「车控」页了。**
                         //
-                        // 位置：胎压之后 —— 胎压与车控都是「**当下**这辆车的状态与动作」，
-                        // 而保养/最近 30 天是「提醒与回顾」。
-                        //
-                        // ⚠️ 锁车状态**未知**时（车休眠或没连实时状态源）传 null ——
-                        // 卡上会写「锁车状态未知」，不会假装车没锁。
-                        VehicleControlCard(
-                            api = api,
-                            carId = settings.carId,
-                            locked = st.locked,
-                            carAsleep = st.fleet_state == "asleep",
-                            refreshSignal = controlRefresh,
-                            // ⚠️ **v0.76.0**：命令之后立刻把车况读回来。
-                            //
-                            // 服务端在命令后已经回读过一次车况（缓存是新的），
-                            // 这里再读一次 —— 锁车磁贴/空调状态会**当场**变，
-                            // 而不是让用户对着「空调已开启」和「空调关闭」互相打脸两分钟。
-                            //
-                            // ⚠️ 走 `load()` 而不是 `refresh()`：后者会亮起整页的刷新指示器，
-                            // 那是在说「页面在加载」，而这里只是背景里更新一次。
-                            onCommandFinished = { scope.launch { load() } },
-                            snackbarHostState = snackbarHostState,
-                        )
+                        // 原来车控是**车况页里的一张卡**（位置：胎压之后 —— 胎压与车控都是
+                        // 「当下」这辆车的状态与动作）。用户原话：
+                        // 「现在集成在车况页面中，会显得车况页面特别啰嗦冗长。」
+                        // ⇒ 整块搬去**独立的「车控」Tab**（见 ControlScreen.kt），
+                        //   车况页不再有它 ⇒ 这一页短了一截。
+                        // ⚠️ 保留痕迹：「位置：胎压之后」那条排布理由（v0.66.0）现在
+                        //   属于「车控」页，不再属于车况页。
 
                         // 保养 / 轮胎卡片（配过基准才出现）
                         if (reminders.isNotEmpty()) {

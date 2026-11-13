@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.QueryStats
 import androidx.compose.material.icons.filled.Route
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -96,6 +97,18 @@ import kotlinx.coroutines.withContext
  */
 enum class Tab(val label: String, val icon: ImageVector) {
     STATUS("车况", Icons.Filled.DirectionsCar),
+    // ⚠️ **v0.156.0（用户反馈 #153）：车辆控制独立成页**（排在「车况」之后）。
+    //
+    // 用户原话：「能否将车辆控制的相关部分独立出来，类似特斯拉APP的首页。
+    // 现在集成在车况页面中，会显得车况页面特别啰嗦冗长。」
+    //
+    // ⇒ 底栏第 2 位：车况（仪表盘）· **车控（动作）** · 记录 · 用量 · 设置。
+    //
+    // ⚠️ **「5 → 4」那条旧结论（v0.8.5）在这里不适用**：
+    // 当年把「充电 + 行程 → 记录」合并掉，理由是它们**本来就是同一种东西**
+    // （按月分组的历史事件列表）；
+    // 而**车控与车况不是同一种东西**（动作 vs 状态）⇒ 不构成语义重复 ⇒ 不该合并。
+    CONTROL("车控", Icons.Filled.Tune),
     RECORDS("记录", Icons.Filled.History),
     USAGE("用量", Icons.Filled.QueryStats),
     SETTINGS("设置", Icons.Filled.Settings),
@@ -504,7 +517,6 @@ private fun MainScaffold(
                         settings = settings,
                         modifier = Modifier.fillMaxSize(),
                         store = statusStore,
-                        snackbarHostState = snackbarHostState,
                         // 令牌失效时给用户一个直达设置的出口（见 ApiErrorKind.AUTH）
                         // ⚠️ v0.20.0：直接落到「服务器」二级页 —— 401 的原因就是地址/令牌，
                         // 落点与原因一致，不用让用户自己找。
@@ -514,6 +526,22 @@ private fun MainScaffold(
                         // ⚠️ v0.16.0：顶栏车切换芯片
                         cars = cars,
                         onCarChange = onCarChange,
+                    )
+                    // ⚠️ **v0.156.0（用户反馈 #153）：车辆控制独立成页。**
+                    //
+                    // 底栏直达 ⇒ 不用先滚一遍车况页才能开空调；
+                    // 车况页也短了一截（用户原话：「显得车况页面特别啰嗦冗长」）。
+                    // ⇒ 与车况页**共用同一个 statusStore** ⇒ 两页看到的是**同一个数**，
+                    //   不会出现「车况页说已上锁、车控页说未锁」。
+                    Tab.CONTROL -> ControlScreen(
+                        settings = settings,
+                        modifier = Modifier.fillMaxSize(),
+                        store = statusStore,
+                        snackbarHostState = snackbarHostState,
+                        cars = cars,
+                        onCarChange = onCarChange,
+                        // ⚠️ 令牌失效时给「前往设置」的出口（不许对着红条干瞪眼）。
+                        onOpenSettings = { openSettingsRoute(SettingsRoute.Server) },
                     )
                     Tab.RECORDS -> RecordsScreen(
                         settings = settings,

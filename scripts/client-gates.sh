@@ -3877,6 +3877,86 @@ print("「%s」全部挂在可折叠入口上" % TITLE)
 PYEOF
 if [ $? -eq 0 ]; then ok "说明入口「怎么算的」都是能折的（不许平铺）"; else fail "「怎么算的」被平铺了（说明入口必须能折）"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 38：车辆控制必须住在**自己的页**里，不许回车况页 ────────────────
+#
+# ⚠ **v0.156.0（用户反馈 #153）**
+#
+# 用户原话（2026-11-13）：
+# 「能否将车辆控制的相关部分独立出来，类似特斯拉APP的首页。
+# 现在集成在车况页面中，会显得车况页面特别啰嗦冗长。」
+#
+# ⇒ 车控从「车况页里的一张卡」搬成了**自己的 Tab**（排在「车况」之后）。
+# ⇒ 这道闸门钉住两件事：
+#   ① **位置**：车控面板由「车控页」渲染，且**不在**车况页里；
+#   ② **入口**：Tab 里必须有「车控」，且**紧跟在「车况」后面**（底栏直达 ⇒ 找它不绕路）。
+#
+# ⚠ 判据按**文件归属**写（不是按某一种写法形态）⇒ 换写法、改排版都不影响；
+# ⚠ 判据**剥掉注释**再看 ⇒ 文档里提到「车控面板」不算数（否则维护者写一句注释就报红）。
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui')
+CONTROL = UI / 'ControlScreen.kt'
+STATUS = UI / 'StatusScreen.kt'
+APPROOT = UI / 'AppRoot.kt'
+
+
+def code_only(raw):
+    """剥掉块注释与行注释 ⇒ 只看代码（文档里提到不算数）。"""
+    s = re.sub(r"/\*.*?\*/", "", raw, flags=re.S)
+    s = re.sub(r"//[^\n]*", "", s)
+    return s
+
+
+problems = []
+
+for p in (CONTROL, STATUS, APPROOT):
+    if not p.exists():
+        problems.append("找不到 %s —— 这道闸门要跟着改" % p)
+
+if not problems:
+    control = code_only(CONTROL.read_text(encoding="utf-8", errors="replace"))
+    status = code_only(STATUS.read_text(encoding="utf-8", errors="replace"))
+    approot = APPROOT.read_text(encoding="utf-8", errors="replace")
+
+    # ① 车控面板必须住在自己的页里
+    if "VehicleControlPanel" not in control:
+        problems.append(
+            "ControlScreen.kt 里没有车控面板（VehicleControlPanel）⇒ "
+            "车控没住在自己的页里（用户反馈 #153）"
+        )
+    # ② 不许回车况页
+    if "VehicleControlPanel" in status:
+        problems.append(
+            "StatusScreen.kt 里又出现车控面板 ⇒ 车控被塞回车况页 ⇒ "
+            "车况页又会变回「特别啰嗦冗长」（用户反馈 #153）"
+        )
+    # ③ 一级入口：Tab 里必须有「车控」，且紧跟在「车况」后面
+    m = re.search(r"enum class Tab\s*\([^)]*\)\s*\{(.*?)\n\}", approot, re.S)
+    if not m:
+        problems.append("AppRoot.kt 里找不到 enum class Tab —— 这道闸门要跟着改")
+    else:
+        names = re.findall(r'^\s*[A-Z_]+\s*\(\s*"([^"]+)"', m.group(1), re.M)
+        if "车控" not in names:
+            problems.append("Tab 里没有「车控」这个一级入口（%s）⇒ 车控又被塞回别的页了" % (names,))
+        elif "车况" not in names:
+            problems.append("Tab 里没有「车况」这个一级入口（%s）" % (names,))
+        elif names.index("车控") != names.index("车况") + 1:
+            problems.append(
+                "「车控」没紧跟在「车况」后面（%s）⇒ 底栏直达没了 ⇒ 找车控要绕路" % (names,)
+            )
+
+if problems:
+    print("车辆控制没住在自己的页里 —— %d 处：" % len(problems))
+    for pr in problems:
+        print("   ", pr)
+    print("   ⇒ 车控是自己的 Tab（紧跟在「车况」之后），不许回车况页（用户反馈 #153）")
+    sys.exit(1)
+
+print("车辆控制住在自己的页里（一级入口，紧跟在「车况」之后）")
+PYEOF
+if [ $? -eq 0 ]; then ok "车控独立成页（不许回车况页）"; else fail "车控没住在自己的页里"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
