@@ -1,6 +1,7 @@
 package com.teslamate.app.ui
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -53,5 +54,24 @@ class AppTabTest {
     @Test
     fun `第一个一级入口仍然是车况_启动落点不变`() {
         assertEquals("车况", Tab.entries.first().label)
+    }
+
+    /**
+     * ⚠️ **v0.157.0**：设置**不在底栏** —— 它在顶栏的齿轮里。
+     *
+     * 用户原话（看了 147 之后）：
+     * 「下面5个栏目感觉有点拥挤，把设置做成图标放在右上角呢？和刷新并排。」
+     *
+     * ⇒ 底栏只剩**内容页**；设置是**另一个维度**（改配置），
+     *   混在内容页里本来就是混层级。
+     *
+     * ⚠️ 为什么**不钉底栏的项数**：将来再加一个内容页是正常演进，
+     * 那时这条不该报红 ⇒ 只钉「设置不在底栏」这个**决定**。
+     */
+    @Test
+    fun `设置不在底栏_它在顶栏的齿轮里`() {
+        assertFalse("「设置」还在底栏里", Tab.SETTINGS.inBottomBar)
+        val bar = Tab.entries.filter { it.inBottomBar }.map { it.label }
+        assertFalse("底栏里还有「设置」：$bar", bar.contains("设置"))
     }
 }

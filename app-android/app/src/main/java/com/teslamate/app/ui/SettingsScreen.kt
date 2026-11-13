@@ -187,6 +187,15 @@ fun SettingsScreen(
      * 那正是这套东西要消除的成本 ⇒ 由 App 自动带上。
      */
     originScreen: String = "",
+    /**
+     * ⚠️ **v0.157.0**：退出设置（回到进设置前的那一页）。
+     *
+     * 设置从底栏搬到了**顶栏齿轮** ⇒ 它现在是**推入的一层**，不是第五个 Tab
+     * ⇒ 必须有返回：系统返回键 ＋ 顶栏的「‹ 车况」都走这条。
+     */
+    onClose: () -> Unit = {},
+    /** ⚠️ v0.157.0：返回项上的字（来源页的名字，如「车况」）。 */
+    backLabel: String = "返回",
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -425,11 +434,18 @@ fun SettingsScreen(
         label = "settingsRoute",
     ) { r ->
         when (r) {
-            null -> SettingsRootPage(
-                settings = settings,
-                cars = cars,
-                onOpen = { onRouteChange(it) },
-            )
+            null -> {
+                // ⚠️ v0.157.0：系统返回键**退出设置**（不是退出 App）——
+                // 设置是推入的一层，退一步就该回来源页。
+                BackHandler { onClose() }
+                SettingsRootPage(
+                    settings = settings,
+                    cars = cars,
+                    onOpen = { onRouteChange(it) },
+                    onBack = onClose,
+                    backLabel = backLabel,
+                )
+            }
             SettingsRoute.Server -> {
                 BackHandler { onRouteChange(null) }
                 SettingsServerPage(
@@ -541,10 +557,17 @@ private fun SettingsRootPage(
     settings: AppSettings,
     cars: List<Car>,
     onOpen: (SettingsRoute) -> Unit,
+    /** ⚠️ v0.157.0：退出设置（回来源页）。 */
+    onBack: () -> Unit = {},
+    /** ⚠️ v0.157.0：返回项上的字（来源页名字）。 */
+    backLabel: String = "返回",
     modifier: Modifier = Modifier,
 ) {
     Column(modifier) {
-        TopAppBar(title = { ScreenTitle("设置") })
+        // ⚠️ v0.157.0：设置页有了**上一层**（从顶栏齿轮推入）⇒ 要有返回。
+        // 用公共的 [SecondaryTitleBar]：返回项写「‹ 车况」那种 ⇒ 用户知道会回到哪
+        // （和二级页「‹ 设置」同一套语言）。
+        SecondaryTitleBar(title = "设置", backLabel = backLabel, onBack = onBack)
         LazyColumn(
             Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),

@@ -95,7 +95,23 @@ import kotlinx.coroutines.withContext
  * 「用量」改名（统计 → 用量）：它下面装的是里程/能耗/充入量这些**量**，
  * 而「记录」装的是**事件**。原来的「统计」和「记录」在语义上会打架。
  */
-enum class Tab(val label: String, val icon: ImageVector) {
+enum class Tab(
+    val label: String,
+    val icon: ImageVector,
+    /**
+     * ⚠️ **v0.157.0**：是否出现在**底栏**。
+     *
+     * 用户原话（2026-11-13，看了 147 之后）：
+     * 「下面5个栏目感觉有点拥挤，把设置做成图标放在右上角呢？和刷新并排。」
+     *
+     * ⇒ 「设置」移出底栏，改成**顶栏齿轮**（4 个内容页都有，和刷新并排）。
+     * ⇒ 理由不只是「挤」：
+     *   **设置是另一个维度**（改配置），车况/车控/记录/用量是**内容页** ——
+     *   把「另一个维度」和内容页并列在同一条底栏里，本来就是混层级。
+     * ⇒ 底栏回到 **4 项**（车况 · 车控 · 记录 · 用量）。
+     */
+    val inBottomBar: Boolean = true,
+) {
     STATUS("车况", Icons.Filled.DirectionsCar),
     // ⚠️ **v0.156.0（用户反馈 #153）：车辆控制独立成页**（排在「车况」之后）。
     //
@@ -111,7 +127,9 @@ enum class Tab(val label: String, val icon: ImageVector) {
     CONTROL("车控", Icons.Filled.Tune),
     RECORDS("记录", Icons.Filled.History),
     USAGE("用量", Icons.Filled.QueryStats),
-    SETTINGS("设置", Icons.Filled.Settings),
+    // ⚠️ v0.157.0：设置**不在底栏**（在顶栏的齿轮里）⇒ 但它仍是一个「页面」，
+    // 所以枚举里留着它（路由、二级页、返回目标都指着它）。
+    SETTINGS("设置", Icons.Filled.Settings, inBottomBar = false),
 }
 
 @Composable
@@ -239,6 +257,25 @@ fun TeslaMateApp() {
                         onSettingsRouteChange = { settingsRoute = it },
                         // ⚠️ v0.100.0：把「进设置前所在的页面」传下去（反馈的上下文）。
                         originScreen = lastContentTab?.label ?: "",
+                        // ⚠️ v0.157.0：设置是**当前内容页的下一层**（推入式）——
+                        // 进设置时**不覆盖** lastContentTab（它就是返回目标）；
+                        // 底栏在设置页上仍然高亮来源页 ⇒ 用户知道自己在哪一层。
+                        returnTab = lastContentTab,
+                        // ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（**根**）。
+                        // ⚠️ 顺带把二级页路由**清空** —— 否则上次停在「服务器」那一层时，
+                        // 再点齿轮会直接落回那个二级页（用户点「设置」却进了「服务器」）。
+                        onOpenSettingsRoot = {
+                            if (tab != Tab.SETTINGS) {
+                                Haptics.selection(ctx)
+                                settingsRoute = null
+                                tab = Tab.SETTINGS
+                            }
+                        },
+                        // ⚠️ v0.157.0：设置页的返回 ⇒ 回到进设置前的那一页。
+                        onCloseSettings = {
+                            Haptics.selection(ctx)
+                            tab = lastContentTab ?: Tab.STATUS
+                        },
                         onTabChange = { t ->
                             // ⚠️ v0.13.0（iOS 交互评审 P0-2）：**点当前已选中的 Tab = 回到根**。
                             //
@@ -255,6 +292,9 @@ fun TeslaMateApp() {
                                         recordSelection = null   // 反向 push 动画由 AnimatedContent 自动播
                                     }
                                     // ⚠️ v0.20.0：设置页的二级页同样要能「回根」。
+                                    // ⚠️ **v0.157.0**：设置已移出底栏 ⇒ 这条分支**当前够不着**
+                                    // （底栏里没有「设置」可点）⇒ 留着当安全网；
+                                    // 「回根」的能力**没丢** —— 二级页顶栏的「‹ 设置」就是它。
                                     tab == Tab.SETTINGS && settingsRoute != null -> {
                                         Haptics.selection(ctx)
                                         settingsRoute = null
@@ -296,6 +336,12 @@ private fun MainScaffold(
     onSettingsRouteChange: (String?) -> Unit = {},
     /** ⚠️ v0.100.0：进设置页之前所在的页面（反馈的上下文）。 */
     originScreen: String = "",
+    /** ⚠️ v0.157.0：设置页的**返回目标**（进设置前所在的内容页）。 */
+    returnTab: Tab? = null,
+    /** ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（根）。 */
+    onOpenSettingsRoot: () -> Unit = {},
+    /** ⚠️ v0.157.0：退出设置 ⇒ 回到来源页。 */
+    onCloseSettings: () -> Unit = {},
     onTabChange: (Tab) -> Unit,
 ) {
     val ctx = LocalContext.current
@@ -407,6 +453,8 @@ private fun MainScaffold(
                             .background(accents.cardStroke)
                     )
                     NavigationBar(
+                        // ⚠️ v0.157.0：设置页上，底栏**高亮的仍是来源页** ——
+                        // 设置是那一页的下一层，不是第五个内容页。
                         // ⚠️ v0.9.2（苹果视觉评审 P2-9）：**深色下 Tab Bar 需要「栏」的属性**。
                         // 原来两种模式都是 Color.Transparent（靠毛玻璃透出内容），
                         // 但深色页底是 #000000，玻璃叠上去还是 #000000 ——
@@ -419,9 +467,10 @@ private fun MainScaffold(
                             Color.Transparent
                         },
                     ) {
-                        Tab.entries.forEach { t ->
+                        // ⚠️ v0.157.0：只渲染**在底栏的**项（设置在顶栏，不占底栏）。
+                        Tab.entries.filter { it.inBottomBar }.forEach { t ->
                             NavigationBarItem(
-                                selected = tab == t,
+                                selected = (if (tab == Tab.SETTINGS) returnTab ?: Tab.STATUS else tab) == t,
                                 onClick = { onTabChange(t) },
                                 // ⚠️ v0.20.0（a11y 评审 P0-2）：**合并子节点语义 + 显式名称** ——
                                 // uiautomator dump 里 4 个底栏 Tab 全是
@@ -521,6 +570,8 @@ private fun MainScaffold(
                         // ⚠️ v0.20.0：直接落到「服务器」二级页 —— 401 的原因就是地址/令牌，
                         // 落点与原因一致，不用让用户自己找。
                         onOpenSettings = { openSettingsRoute(SettingsRoute.Server) },
+                        // ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（根）。
+                        onOpenSettingsRoot = onOpenSettingsRoot,
                         // ⚠️ v0.20.0：保养卡 → 保养二级页（原来两者共用同一个出口）。
                         onOpenMaintenance = { openSettingsRoute(SettingsRoute.Maintenance) },
                         // ⚠️ v0.16.0：顶栏车切换芯片
@@ -542,6 +593,8 @@ private fun MainScaffold(
                         onCarChange = onCarChange,
                         // ⚠️ 令牌失效时给「前往设置」的出口（不许对着红条干瞪眼）。
                         onOpenSettings = { openSettingsRoute(SettingsRoute.Server) },
+                        // ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（根）。
+                        onOpenSettingsRoot = onOpenSettingsRoot,
                     )
                     Tab.RECORDS -> RecordsScreen(
                         settings = settings,
@@ -551,6 +604,8 @@ private fun MainScaffold(
                         // ⚠️ v0.14.0：令牌失效时给「前往设置」的出口
                         // （原来只有车况页有，停在记录页会无限次点「重试」）。
                         onOpenSettings = { openSettingsRoute(SettingsRoute.Server) },
+                        // ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（根）。
+                        onOpenSettingsRoot = onOpenSettingsRoot,
                         // ⚠️ v0.16.0：顶栏车切换芯片
                         cars = cars,
                         onCarChange = onCarChange,
@@ -569,6 +624,8 @@ private fun MainScaffold(
                         settings,
                         Modifier.fillMaxSize(),
                         onOpenSettings = { openSettingsRoute(SettingsRoute.Server) },
+                        // ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（根）。
+                        onOpenSettingsRoot = onOpenSettingsRoot,
                         cars = cars,
                         onCarChange = onCarChange,
                     )
@@ -586,6 +643,10 @@ private fun MainScaffold(
                         api = settings.api(),
                         // ⚠️ v0.100.0：给「用户反馈」二级页用（自动附带问题出在哪个页面）。
                         originScreen = originScreen,
+                        // ⚠️ v0.157.0：设置现在是**推入的一层** ⇒ 要有返回；
+                        // 返回目标 = 进设置前的那一页（标签写「‹ 车况」那种）。
+                        onClose = onCloseSettings,
+                        backLabel = (returnTab ?: Tab.STATUS).label,
                     )
                 }
             }

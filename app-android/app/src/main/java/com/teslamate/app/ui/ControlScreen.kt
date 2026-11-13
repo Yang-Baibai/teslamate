@@ -87,6 +87,8 @@ fun ControlScreen(
     onCarChange: (Int) -> Unit = {},
     /** 令牌失效时给一个直达设置的出口。 */
     onOpenSettings: () -> Unit = {},
+    /** ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（根）。 */
+    onOpenSettingsRoot: () -> Unit = {},
 ) {
     val api = remember(settings) { settings.api() }
     val ctx = LocalContext.current
@@ -194,6 +196,8 @@ fun ControlScreen(
                         },
                     )
                 }
+                // ⚠️ v0.157.0：设置在**顶栏**（和刷新并排）⇒ 底栏只剩 4 项，不挤了。
+                SettingsIconButton(onClick = onOpenSettingsRoot)
             },
         )
         PullToRefreshBox(

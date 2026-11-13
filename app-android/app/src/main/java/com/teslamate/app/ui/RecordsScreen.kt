@@ -168,6 +168,8 @@ fun RecordsScreen(
     onSelectionChange: (RecordSelection?) -> Unit = {},
     /** ⚠️ v0.14.0：令牌失效时错误横幅的「前往设置」出口。 */
     onOpenSettings: () -> Unit = {},
+    /** ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（根）。 */
+    onOpenSettingsRoot: () -> Unit = {},
     /** ⚠️ v0.16.0：车辆列表（顶栏车切换芯片，仅多车时出现）。 */
     cars: List<com.teslamate.app.Car> = emptyList(),
     /** ⚠️ v0.16.0：切换当前车辆。 */
@@ -380,6 +382,8 @@ fun RecordsScreen(
                                     )
                                     .padding(horizontal = 8.dp, vertical = 6.dp),
                             )
+                            // ⚠️ v0.157.0：设置在**顶栏**（和刷新并排）⇒ 底栏只剩 4 项，不挤了。
+                            SettingsIconButton(onClick = onOpenSettingsRoot)
                         },
                     )
                     // ⚠️ v0.9.0：加下拉刷新（原来只有一次性加载，网络一断就再也不请求）

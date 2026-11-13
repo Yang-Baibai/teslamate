@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.PowerOff
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -1250,6 +1251,44 @@ fun SecondaryTitleBar(
             }
         },
     )
+}
+
+/**
+ * 顶栏右上角的「设置」入口（齿轮）。
+ *
+ * ⚠️ **v0.157.0**：设置从**底栏**搬到了**顶栏**。
+ *
+ * 用户原话（看了 147 之后）：
+ * 「下面5个栏目感觉有点拥挤，把设置做成图标放在右上角呢？和刷新并排。」
+ *
+ * ⇒ 底栏少一项 ⇒ 不挤了；
+ * ⇒ 而且**设置本来就是另一个维度**（改配置），
+ *   和「车况 / 车控 / 记录 / 用量」这些**内容页**并列在同一条底栏里是混层级。
+ *
+ * ⚠️ 4 个内容页都用这一个 ⇒ 抽成共用组件，**不复制四份**。
+ */
+@Composable
+fun SettingsIconButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val ctx = LocalContext.current
+    IconButton(
+        onClick = {
+            Haptics.selection(ctx)
+            onClick()
+        },
+        modifier = modifier.semantics(mergeDescendants = true) {
+            contentDescription = "设置"
+        },
+    ) {
+        // contentDescription = null：父节点已给出可访问名（WCAG 2.5.3，别念两遍）。
+        Icon(
+            Icons.Filled.Settings,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurface,
+        )
+    }
 }
 
 /**

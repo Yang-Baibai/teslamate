@@ -58,6 +58,8 @@ fun StatsScreen(
     modifier: Modifier,
     /** ⚠️ v0.14.0：令牌失效时错误横幅的「前往设置」出口。 */
     onOpenSettings: () -> Unit = {},
+    /** ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（根）。 */
+    onOpenSettingsRoot: () -> Unit = {},
     /** ⚠️ v0.16.0：车辆列表（顶栏车切换芯片，仅多车时出现）。 */
     cars: List<com.teslamate.app.Car> = emptyList(),
     /** ⚠️ v0.16.0：切换当前车辆。 */
@@ -268,6 +270,9 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                     currentId = settings.carId,
                     onSelect = onCarChange,
                 )
+                // ⚠️ v0.157.0：设置在**顶栏**（这一页没有刷新按钮，齿轮就放在最右）⇒
+                // 底栏只剩 4 项，不挤了。
+                SettingsIconButton(onClick = onOpenSettingsRoot)
             },
         )
         // ⚠️ v0.9.0（新手车主复核）：加一行副标题说清这一页装什么。

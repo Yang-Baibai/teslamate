@@ -113,6 +113,8 @@ fun StatusScreen(
      * 光在文案里写「请到「设置」页重新填写」等于没给路。
      */
     onOpenSettings: () -> Unit = {},
+    /** ⚠️ v0.157.0：顶栏齿轮 ⇒ 打开设置页（根）。 */
+    onOpenSettingsRoot: () -> Unit = {},
     /**
      * ⚠️ v0.20.0（iOS IA 评审 P1-3）：**保养卡的出口要落到具体二级页**。
      *
@@ -368,6 +370,8 @@ fun StatusScreen(
                         },
                     )
                 }
+                // ⚠️ v0.157.0：设置在**顶栏**（和刷新并排）⇒ 底栏只剩 4 项，不挤了。
+                SettingsIconButton(onClick = onOpenSettingsRoot)
             },
         )
         PullToRefreshBox(
