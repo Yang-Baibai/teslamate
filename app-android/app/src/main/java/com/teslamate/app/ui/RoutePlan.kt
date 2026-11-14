@@ -109,6 +109,10 @@ import kotlin.math.roundToInt
  * 「低于 20% 保底」提示、「留 20% 保底：到不了」提示）——
  * 改一处漏三处就会自相矛盾。
  *
+ * ⚠️ **v0.162.0 订正**：这一轮实测发现，上面那句「集中之后**行为完全不变**」**并不成立** ——
+ *   实际仍有**三处**硬写着 20（RoutePlan.kt 两处、RangeModel.kt 一处）⇒ 已全部改成 [RESERVE_SOC]。
+ *   （**保底电量**是「到站至少剩 20%」的**规划**口径，与「电量低了要提醒」是**两个概念** ⇒ 别混成一条。）
+ *
  * ⚠️ **本轮先集中，不做成设置项。**
  * 复审要求「保底电量可配置」—— 那需要一层设置持久化 + 一处全局状态，
  * 属于独立一轮的改动；而当前**四处硬编码的数是同一个**（都是 20），
@@ -1018,7 +1022,9 @@ data class RoutePlan(
      * ⚠️ v0.29.0：公里与电量必须来自**同一个点**（见 [lowestPoint] 的说明）。
      */
     val firstBelowFloor: Pair<Double, Int>? get() =
-        profile.firstOrNull { it.soc < 20 }?.let { it.km to it.soc }
+        // ⚠️ **v0.162.0**：这里原来还硬写着 20（v0.34.0 说「保底集中成一个常量」，
+        //   实际漏了这两处）⇒ 现在一律用 [RESERVE_SOC]，免得保底线与低电量阈值混淆。
+        profile.firstOrNull { it.soc < RESERVE_SOC }?.let { it.km to it.soc }
 
     /** 低于 20% 保底的公里数 */
     val belowFloorKm: Double? get() = firstBelowFloor?.first
@@ -1259,7 +1265,8 @@ data class RoutePlan(
             sb.append("）")
             // ⚠️ **v0.124.0**：低于 20% 保底要**明说** —— 这半句原来在卡末尾那一行里，
             // 而那一行已删（同一个事实印两遍）⇒ 并到这里，**信息一点没丢**。
-            if (soc < 20) sb.append(" · 低于 20% 保底")
+            // ⚠️ **v0.162.0**：同上面的漏网之处 ⇒ 改用 [RESERVE_SOC]。
+            if (soc < RESERVE_SOC) sb.append(" · 低于 ").append(RESERVE_SOC).append("% 保底")
         }
         return sb.toString()
     }

@@ -37,7 +37,58 @@ const (
 	// 而服务端 DataStaleHours=24 才是唯一事实源 —— 两边各写一份，改一边就打架。
 	// 现在两档都在服务端算，App 只读结果。
 	DataWarnHours = 6
+
+	// ⚠️ **v0.162.0**：「低电量」的阈值**只在服务端一份**（ADR #38 / #41）。
+	//
+	// 原来 App 自己在**客户端**按 soc < 20 / soc < 10 判（ui/Widgets.kt 三处）
+	// ⇒ 阈值写死在客户端 ⇒ 改一边就打架；
+	// 而且**飞书那边一条低电量提醒都没有**（App 角标有、飞书没有 ⇒ 两端不一样）。
+	LowBatterySoc = 20
+	// 严重偏低（胶囊文案从「低电量」变成「电量严重偏低」）。
+	LowBatterySevereSoc = 10
+	// 「停着不动还低电量」：车况数据已经多少小时没更新 ⇒ 判定为停着。
+	//
+	// ⚠️ 为什么用「数据年龄」而不是「里程没变」：
+	//   里程要额外查库，而数据年龄本来就在状态里（DataAgeHours）⇒ 一个数就够。
+	//   停着不动时车不会上报 ⇒ 数据年龄随时间涨 ⇒ ≥2 小时即视为停着。
+	LowBatteryParkedAgeHours = 2
 )
+
+// LowBatteryResult 「低电量」的判定结果（纯函数 ⇒ 单测钉得住）。
+//
+// ⚠️ **v0.162.0**：App 的角标与飞书的提醒**共用这一份判定**。
+type LowBatteryResult struct {
+	// 电量低（且此刻不在充电 —— 充电中显示「低电量」是噪音）。
+	Low bool
+	// 严重偏低。
+	Severe bool
+	// 低电量 ＋ **停着不动**（给飞书那条提醒用；App 角标不用它）。
+	Parked bool
+}
+
+// EvaluateLowBattery 判「电量低 / 严重偏低 / 停着不动还低电量」。
+//
+// ⚠️ **v0.162.0**：判定只在服务端做一次（ADR #38）。
+//
+//	App 只读结果（老服务端没有这些字段时才用客户端兜底）。
+//
+// 参数：
+//   - soc：当前电量百分比（nil = 没读到 ⇒ 一律判「不知道」＝不报低电量）；
+//   - charging：此刻是否在充电；
+//   - driving：此刻是否有一趟行程正在进行；
+//   - dataAgeHours：车况数据已经多少小时没更新（停着不动的代理指标）。
+func EvaluateLowBattery(soc *int, charging, driving bool, dataAgeHours int) LowBatteryResult {
+	if soc == nil {
+		return LowBatteryResult{}
+	}
+	r := LowBatteryResult{
+		Low:    !charging && *soc < LowBatterySoc,
+		Severe: !charging && *soc < LowBatterySevereSoc,
+	}
+	// ⚠️ 停着不动 = 没有正在跑的行程 ＋ 车况数据已经 ≥2 小时没更新。
+	r.Parked = r.Low && !driving && dataAgeHours >= LowBatteryParkedAgeHours
+	return r
+}
 
 // TpmsAlertResult 胎压判定结果。
 type TpmsAlertResult struct {

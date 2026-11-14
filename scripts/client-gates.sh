@@ -4061,6 +4061,149 @@ print('界面里没有「?」占位符（缺地址=未知地点，缺数值=—�
 PYEOF
 if [ $? -eq 0 ]; then ok "界面不许再出现「?」占位符"; else fail "界面里还有「?」占位符"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 41：「低电量」的判定与阈值**只以服务端为准** ───────────────────
+#
+# ⚠️ **v0.162.0**：低电量原来在**客户端**判（ui/Widgets.kt 三处：soc < 20 / soc < 10），
+#   而**飞书那边一条低电量提醒都没有** ⇒ 两端对「低电量」的定义**不一样**
+#   ⇒ 用户会看到互相矛盾的事实（这正是 ADR #38 要治的病）。
+#   现在判定只在服务端做一次（api/alerts.go 的 EvaluateLowBattery）。
+#
+# 判据（**不依赖写法**）：
+#   ① 客户端**唯一**允许出现低电量阈值的地方是 ui/LowBattery.kt（降级兜底）；
+#   ② 那个兜底的两个数与服务端的常量**逐值相等**（两端不许漂）；
+#   ③ 服务端必须有 EvaluateLowBattery ＋ 单测引用那三个常量（护栏不许是空壳）；
+#   ④ 服务端必须把三个结论装配进 /status；
+#   ⑤ 车况页必须读服务端的结论，电量环与能量条必须**接这个结论**；
+#   ⑥ 推送脚本必须读服务端的结论，且**不许自己比阈值**。
+#
+# ⚠️ 「保底电量」（RoutePlan 的 RESERVE_SOC）是**另一个概念**：
+#   那是「到站至少剩 20%」的规划口径，与「电量低了要提醒」无关 ⇒ 别把两者混成一条。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+WIDGETS = UI / 'ui/Widgets.kt'
+LOW = UI / 'ui/LowBattery.kt'
+STATUS = UI / 'ui/StatusScreen.kt'
+SRV = pathlib.Path('api/alerts.go')
+HANDLERS = pathlib.Path('api/handlers.go')
+TEST = pathlib.Path('api/low_battery_test.go')
+SCRIPT = pathlib.Path('scripts/watch-car.ps1')
+
+problems = []
+
+for p in (WIDGETS, LOW, STATUS, SRV, HANDLERS, TEST, SCRIPT):
+    if not p.exists():
+        problems.append('找不到 %s —— 这道闸门要跟着改' % p)
+
+
+def code_only_ps(raw):
+    """剥掉 PowerShell 的行注释（# 到行尾；字符串里的 # 不算）⇒ 只看代码。"""
+    out = []
+    for line in raw.split('\n'):
+        q = None
+        cut = len(line)
+        for i, ch in enumerate(line):
+            if q:
+                if ch == q:
+                    q = None
+            elif ch in ("'", '\"'):
+                q = ch
+            elif ch == '#':
+                cut = i
+                break
+        out.append(line[:cut])
+    return '\n'.join(out)
+
+
+def code_only(raw):
+    """剥掉块注释与行注释 ⇒ 只看代码（文档里提到不算数）。"""
+    s = re.sub(r'/\*.*?\*/', '', raw, flags=re.S)
+    s = re.sub(r'//[^\n]*', '', s)
+    return s
+
+
+if not problems:
+    # ① 客户端：除 ui/LowBattery.kt 外，不许再拿「电量」与字面量 10 / 20 比较。
+    cmp_re = re.compile(r'\b(soc\w*|battery_level|usable_battery_level)\s*[<>=!]+\s*(10|20)\b|\b(10|20)\s*[<>=!]+\s*(soc\w*|battery_level|usable_battery_level)\b')
+    for p in sorted(UI.rglob('*.kt')):
+        if p.name == 'LowBattery.kt':
+            continue
+        code = code_only(p.read_text(encoding='utf-8', errors='replace'))
+        for i, line in enumerate(code.split('\n'), 1):
+            if cmp_re.search(line):
+                problems.append('%s:%d  电量与裸阈值比较 ⇒ 阈值只许在服务端（ui/LowBattery.kt 除外）：%s' % (p.name, i, line.strip()[:80]))
+
+    # ② 兜底常量与服务端常量**逐值相等**。
+    srv = SRV.read_text(encoding='utf-8', errors='replace')
+    low = LOW.read_text(encoding='utf-8', errors='replace')
+    m1 = re.search(r'LowBatterySoc\s*=\s*(\d+)', srv)
+    m2 = re.search(r'LowBatterySevereSoc\s*=\s*(\d+)', srv)
+    c1 = re.search(r'LOW_BATTERY_FALLBACK_SOC\s*=\s*(\d+)', low)
+    c2 = re.search(r'LOW_BATTERY_SEVERE_FALLBACK_SOC\s*=\s*(\d+)', low)
+    if not m1 or not m2:
+        problems.append('api/alerts.go 里找不到 LowBatterySoc / LowBatterySevereSoc 的定义')
+    if not c1 or not c2:
+        problems.append('ui/LowBattery.kt 里找不到两个兜底常量')
+    if m1 and c1 and int(m1.group(1)) != int(c1.group(1)):
+        problems.append('低电量阈值两端对不上：服务端 %s%% vs 客户端兜底 %s%%' % (m1.group(1), c1.group(1)))
+    if m2 and c2 and int(m2.group(1)) != int(c2.group(1)):
+        problems.append('严重偏低阈值两端对不上：服务端 %s%% vs 客户端兜底 %s%%' % (m2.group(1), c2.group(1)))
+
+    # ③ 服务端护栏不许是空壳。
+    if 'EvaluateLowBattery' not in srv:
+        problems.append('api/alerts.go 里没有 EvaluateLowBattery ⇒ 服务端没有那份判定')
+    if TEST.exists():
+        t = TEST.read_text(encoding='utf-8', errors='replace')
+        for name in ('LowBatterySoc', 'LowBatterySevereSoc', 'LowBatteryParkedAgeHours'):
+            if name not in t:
+                problems.append('api/low_battery_test.go 没有引用 %s ⇒ 阈值护栏是空壳' % name)
+
+    # ④ 服务端必须把三个结论装配进 /status。
+    h = HANDLERS.read_text(encoding='utf-8', errors='replace')
+    for field in ('LowBattery', 'LowBatterySevere', 'LowBatteryParked'):
+        if field not in h:
+            problems.append('api/handlers.go 里没有装配 %s ⇒ /status 不给这个结论' % field)
+
+    # ⑤ 车况页必须读服务端的结论；电量环与能量条必须**接这个结论**。
+    s = STATUS.read_text(encoding='utf-8', errors='replace')
+    if 'resolveLowBattery' not in s:
+        problems.append('StatusScreen.kt 没有调用 resolveLowBattery ⇒ 界面没走服务端那份判定')
+    if 'st.low_battery' not in s:
+        problems.append('StatusScreen.kt 没有读服务端的 low_battery 字段 ⇒ 界面拿不到服务端结论')
+    for w in (WIDGETS,):
+        wsrc = w.read_text(encoding='utf-8', errors='replace')
+        if 'LowBatteryUi' not in wsrc:
+            problems.append('%s 里没有 LowBatteryUi ⇒ 电量环/能量条没有接服务端结论' % w.name)
+
+    # ⑥ 推送脚本必须**从车况里读**服务端的结论，且不许自己比阈值。
+    #
+    # ⚠️ 两个坑（都是探针实测出来的）：
+    #   ① 必须**剥掉注释**再判：脚本里那段说明写着「/status 的 low_battery_parked 才是结论」
+    #      ⇒ 不剥注释的话，判据在**注释里**也能命中（探针 D 实测**假绿**）。
+    #   ② 不能只判「文件里出现过 low_battery_parked」—— **告警码**本身也用这个名字
+    #      （Update-Alert $alerted 'low_battery_parked' …）⇒ 脚本把读取那行删了也照样绿。
+    #      ⇒ 改成判「**从车况里读到了这个字段**」（Get-Prop $st 'x' 与 $st.x 两种写法都算）。
+    sc = code_only_ps(SCRIPT.read_text(encoding='utf-8', errors='replace'))
+    reads = set(re.findall(r"Get-Prop\s+\$\w+\s+'([^']+)'", sc))
+    reads |= set(re.findall(r'\$[A-Za-z_]\w*\.([A-Za-z_]\w*)', sc))
+    if 'low_battery_parked' not in reads:
+        problems.append('scripts/watch-car.ps1 没有从车况里读 low_battery_parked ⇒ 飞书那边的判定不是服务端的')
+    if re.search(r'\$?battery(_level)?\s*(?:-lt|-le|-gt|-ge|<=|>=|==|!=|<|>)\s*(10|20)\b', sc):
+        problems.append('scripts/watch-car.ps1 自己比了低电量阈值 ⇒ 判定不许在脚本里')
+
+if problems:
+    print('「低电量」的判定不在服务端 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 判定只许在 api/alerts.go 的 EvaluateLowBattery；客户端与脚本都只读结论')
+    sys.exit(1)
+
+print('「低电量」判定在服务端一份：客户端不裸比阈值 ＋ 兜底常量与服务端逐值相等 ＋ 脚本读同一结论')
+PYEOF
+if [ $? -eq 0 ]; then ok "「低电量」的判定与阈值只以服务端为准"; else fail "「低电量」的判定又漏到客户端/脚本里了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

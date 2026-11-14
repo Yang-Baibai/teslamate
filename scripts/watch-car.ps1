@@ -617,6 +617,25 @@ Update-Alert $alerted 'data_stale' $dataStale `
   "✅ $CarName 车况数据已恢复更新" `
   "车辆又开始上报数据了。"
 
+# ── 停着不动还低电量（v0.162.0）────────────────────────────────────────
+#
+# ⚠️ **判定在服务端**：/status 的 low_battery_parked 才是结论
+#   （api/alerts.go 的 EvaluateLowBattery：低电量 ＋ 不在充电 ＋ 没有正在跑的行程
+#     ＋ 车况数据 ≥2 小时没更新 ⇒ 车在停着）。
+#   ⇒ 这个脚本**不自己比阈值** ⇒ App 的角标与这条飞书提醒**同一个口径**（ADR #38）。
+#
+# ⚠️ 为什么值得单独推一条：App 的角标要用户自己打开才看得到，
+#   而「车停着不动 ＋ 电量只剩 10%」这种状态**放着不管会亏电**。
+$lowParked = [bool](Get-Prop $st 'low_battery_parked' $false)
+$lowSocLimit = Get-Prop $st 'low_battery_soc' 0
+$socText = if ($null -ne $battery) { "$battery%" } else { "电量未知" }
+$limitText = if ($lowSocLimit -gt 0) { "（低于 $lowSocLimit% 的警戒线）" } else { "" }
+Update-Alert $alerted 'low_battery_parked' $lowParked `
+  "🔋 $CarName 停着不动，$socText" `
+  "车已经 $ageH 小时没有上报数据，$socText$limitText。`n如果暂时不用车，找个地方插上充电桩，免得亏电。" `
+  "✅ $CarName 不再是「停着不动还低电量」" `
+  "车已经动起来，或电量已经补上来了。"
+
 # ── Fleet 授权失效 ──
 Update-Alert $alerted 'fleet_unauthorized' ($fleetState -eq 'unauthorized') `
   "🔑 $CarName Tesla 授权已失效 · 锁车状态已停更" `

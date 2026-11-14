@@ -1092,7 +1092,8 @@ fun SocStrip(
             val socLevels = withSoc.mapNotNull { it.soc }
             val socMin = socLevels.minOrNull() ?: 0
             val socMax = socLevels.maxOrNull() ?: 100
-            val useFullScale = socMin <= 20
+            // ⚠️ **v0.162.0**：同上面的漏网之处 ⇒ 改用 [RESERVE_SOC]。
+            val useFullScale = socMin <= RESERVE_SOC
             val axisLow: Float
             val axisHigh: Float
             if (useFullScale) {

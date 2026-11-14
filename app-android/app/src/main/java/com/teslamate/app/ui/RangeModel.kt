@@ -139,8 +139,10 @@ internal fun rangeFactsFromLocal(
     )
     // 「留 20% 保底」：能用掉的比例 = (当前电量 − 20%) ÷ 当前电量（绝对电量口径）。
     val socPct = st.battery_level
-    val reserveFactor = if (socPct != null && socPct > 20) {
-        (socPct - 20).toDouble() / socPct
+    // ⚠️ **v0.162.0**：这里原来还硬写着 20 ⇒ 改用 [RESERVE_SOC]（保底电量是**另一个概念**，
+    //   与「低电量告警」无关，别混在一起）。
+    val reserveFactor = if (socPct != null && socPct > RESERVE_SOC) {
+        (socPct - RESERVE_SOC).toDouble() / socPct
     } else {
         null
     }

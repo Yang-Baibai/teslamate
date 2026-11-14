@@ -1502,6 +1502,14 @@ fun SocRing(
     modifier: Modifier = Modifier,
     charging: Boolean = false,
     /**
+     * ⚠️ **v0.162.0**：「低电量」的**服务端结论**（ADR #38）。
+     *
+     * 原来这里是**客户端自己**按「soc < 20」/「soc < 10」判的 ⇒ 阈值写死在客户端，
+     * 而飞书那边一条低电量提醒都没有 ⇒ 两端口径不一样（用户会看到互相矛盾的事实）。
+     * 现在颜色分档与胶囊**只读服务端给的结论**。
+     */
+    lowBattery: LowBatteryUi = LowBatteryUi.NONE,
+    /**
      * 环的**最小**直径（dp）。
      *
      * ⚠️ **v0.30.0（第 19 轮 HIG 评审 P0-1）：语义变了 —— 从「基准直径」改成「最小直径」。**
@@ -1519,12 +1527,13 @@ fun SocRing(
     // 颜色语义（特斯拉设计语言）：
     //   正常 = 能量蓝（不是红！红色只留给 <20% 告警与品牌点缀）
     //   绿色 **只** 表示"正在充电"
+    // ⚠️ **v0.162.0**：颜色分档**只读服务端结论**（原来这里自己比 20 / 10）。
     val color = when {
         soc == null -> track
         charging -> a.chargeGreen
-        soc >= 20 -> a.energyBlue
-        soc >= 10 -> a.warnAmber
-        else -> a.danger
+        lowBattery.severe -> a.danger
+        lowBattery.low -> a.warnAmber
+        else -> a.energyBlue
     }
     val animated by animateFloatAsState(
         targetValue = (soc ?: 0).toFloat(),
@@ -1554,7 +1563,7 @@ fun SocRing(
     // ⚠️ v0.26.0（HIG P0-6）：**低电量不能只靠颜色** ——
     // 环的颜色会变（蓝 → 琥珀 → 红），但色觉障碍用户看不出差别。
     // 环下方补一个「图标 + 文字」的胶囊。
-    val lowBattery = soc != null && !charging && soc < 20
+    // ⚠️ **v0.162.0**：胶囊出不出、内容是什么 ⇒ **由服务端的结论决定**（不再是客户端自己比 20）。
     Box(
         modifier = modifier.size(ringSize)
             // ⚠️ v0.7.1：Canvas 画的环对屏幕阅读器完全不可达，
@@ -1690,9 +1699,9 @@ fun SocRing(
                 modifier = Modifier.semantics { invisibleToUser() },
             )
             // ⚠️ v0.26.0（HIG P0-6）：低电量 = **图标 + 文字**，不是只有颜色。
-            if (lowBattery) {
+            if (lowBattery.low) {
                 Spacer(Modifier.height(2.dp))
-                LowBatteryPill(soc = soc)
+                LowBatteryPill(severe = lowBattery.severe)
             }
         }
     }
@@ -1763,11 +1772,14 @@ fun socRingDiameterDp(minSizeDp: Int, fontScale: Float): Float {
  */
 @Composable
 fun LowBatteryPill(
-    soc: Int?,
+    /**
+     * ⚠️ **v0.162.0**：严不严重**由服务端说**（原来客户端自己比 10 ⇒ 阈值写在客户端）。
+     */
+    severe: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val a = LocalAccentColors.current
-    val text = if (soc != null && soc < 10) "电量严重偏低" else "低电量"
+    val text = if (severe) "电量严重偏低" else "低电量"
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = a.warnAmber.copy(alpha = 0.16f),
@@ -1824,16 +1836,21 @@ fun EnergyBar(
     soc: Int?,
     modifier: Modifier = Modifier,
     charging: Boolean = false,
+    /**
+     * ⚠️ **v0.162.0**：「低电量」的**服务端结论**（ADR #38）。
+     */
+    lowBattery: LowBatteryUi = LowBatteryUi.NONE,
     targetSoc: Int? = 80,
     height: Int = 14,
 ) {
     val a = LocalAccentColors.current
+    // ⚠️ **v0.162.0**：颜色分档**只读服务端结论**（原来这里自己比 20 / 10）。
     val fill = when {
         charging -> a.chargeGreen
         soc == null -> Color.Transparent
-        soc >= 20 -> a.energyBlue
-        soc >= 10 -> a.warnAmber
-        else -> a.danger
+        lowBattery.severe -> a.danger
+        lowBattery.low -> a.warnAmber
+        else -> a.energyBlue
     }
     val track = a.chartTrack
     val animated by animateFloatAsState(
@@ -1853,7 +1870,8 @@ fun EnergyBar(
     // ⚠️ **v0.26.0（HIG P0-6）：低电量条也要有「图标 + 文字」。**
     // 胶囊比「目标 80%」标签高，所以标签带高度取**两者较大值** ——
     // 否则胶囊会压到条上（200% 字号时尤其明显）。
-    val lowBar = soc != null && !charging && soc < 20
+    // ⚠️ **v0.162.0**：低电量条也**只读服务端结论**（原来这里自己比 20）。
+    val lowBar = lowBattery.low
     // ⚠️ **v0.28.0（复审 P1-6）：胶囊高度必须**实测**，不能拿 `11.sp.toDp()` 算。**
     //
     // `labelSmall` 的 **lineHeight = 16.sp** 不会被 `fontSize = 11.sp` 覆盖 ——
@@ -1966,7 +1984,7 @@ fun EnergyBar(
         // 标签在 fs=2.0 也要到 251.9 才起步，而胶囊在左端只占 0–98 —— 不重叠。
         if (lowBar) {
             LowBatteryPill(
-                soc = soc,
+                severe = lowBattery.severe,
                 modifier = Modifier.align(Alignment.TopStart),
             )
         }

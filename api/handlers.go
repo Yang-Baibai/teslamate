@@ -284,6 +284,20 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.DataStale = age.Stale
 	s.DataWarn = age.Warn
 
+	// ⚠️ **v0.162.0**：「低电量」的判定**只在服务端算一次**（ADR #38 / #41）——
+	// App 的角标与飞书的提醒共用这一份结果（原来角标是客户端自己算的，飞书则完全没有）。
+	s.LowBatterySoc = LowBatterySoc
+	s.LowBatterySevereSoc = LowBatterySevereSoc
+	lb := EvaluateLowBattery(
+		s.BatteryLevel,
+		s.ActiveCharge != nil,
+		s.ActiveDrive != nil,
+		age.Hours,
+	)
+	s.LowBattery = lb.Low
+	s.LowBatterySevere = lb.Severe
+	s.LowBatteryParked = lb.Parked
+
 	// ⚠️ v0.9.0：Fleet API 后台轮询的健康状态。
 	// 轮询失败时我们**保留**上次已知的锁车/胎压（见 tesla.go），
 	// 这里把失败原因与「最后一次成功」的时刻一并交给 App，

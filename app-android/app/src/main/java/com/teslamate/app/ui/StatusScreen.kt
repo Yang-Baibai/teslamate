@@ -695,6 +695,17 @@ fun StatusScreen(
                                 fallbackSpeedKph = fallbackSpeed,
                             )
                         )
+                        // ⚠️ **v0.162.0**：「低电量」的结论**读服务端**（ADR #38 / #41）。
+                        //
+                        // 原来 App 自己按「soc < 20」/「soc < 10」判（Widgets.kt 三处）
+                        // ⇒ 阈值写死在客户端，而飞书那边一条低电量提醒都没有 ⇒ 两端口径不一样。
+                        // 现在判定只在服务端做一次；老服务端 / 旧缓存才走本地兜底（ui/LowBattery.kt）。
+                        val lowBattery = resolveLowBattery(
+                            soc = st.battery_level,
+                            charging = st.active_charge != null,
+                            serverLow = st.low_battery,
+                            serverSevere = st.low_battery_severe,
+                        )
                         // ⚠️ **v0.120.0**：排布由**宽度预算**决定（不是拍一个字号阈值）。
                         //
                         // `maxWidth` 是**运行时量出来的** ⇒ 360dp 窄屏 / 393dp / 412dp /
@@ -734,6 +745,7 @@ fun StatusScreen(
                                                 SocRing(
                                                     st.battery_level,
                                                     charging = st.active_charge != null,
+                                                    lowBattery = lowBattery,
                                                     baseSizeDp = SOC_RING_MIN_DP,
                                                 )
                                                 Spacer(Modifier.height(14.dp))
@@ -760,6 +772,7 @@ fun StatusScreen(
                                         SocRing(
                                             st.battery_level,
                                             charging = st.active_charge != null,
+                                            lowBattery = lowBattery,
                                             baseSizeDp = SOC_RING_MIN_DP,
                                         )
                                         Spacer(Modifier.width(HERO_RING_GAP_DP.dp))
@@ -864,6 +877,7 @@ fun StatusScreen(
                         EnergyBar(
                             soc = st.battery_level,
                             charging = st.active_charge != null,
+                            lowBattery = lowBattery,
                             modifier = Modifier.padding(bottom = 4.dp),
                         )
 

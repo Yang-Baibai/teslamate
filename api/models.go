@@ -281,6 +281,19 @@ type CarStatus struct {
 	// 现在两档都在服务端算（DataWarnHours / DataStaleHours），App 只读结果。
 	DataWarn bool `json:"data_warn"` // 数据已超过「注意」阈值（未过期）
 
+	// ⚠️ **v0.162.0**：「低电量」的判定与阈值**只在服务端一份**（ADR #38 / #41）。
+	//
+	// 原来 App 自己在客户端按 soc < 20 / soc < 10 判（ui/Widgets.kt 三处）
+	// ⇒ 阈值写死在客户端 ⇒ 改一边就打架；而且**飞书那边一条低电量提醒都没有**。
+	//
+	// ⚠️ 阈值也一起下发：App 只读结果，老服务端没有这些字段时才用客户端兜底。
+	LowBatterySoc       int  `json:"low_battery_soc"`        // 低电量阈值（SOC %）
+	LowBatterySevereSoc int  `json:"low_battery_severe_soc"` // 严重偏低阈值（SOC %）
+	LowBattery          bool `json:"low_battery"`            // 电量低（此刻不在充电）
+	LowBatterySevere    bool `json:"low_battery_severe"`     // 电量严重偏低
+	// LowBatteryParked 低电量 ＋ **停着不动**（飞书那条提醒用；App 角标不用它）。
+	LowBatteryParked bool `json:"low_battery_parked"`
+
 	// ⚠️ v0.9.0：Fleet API 后台轮询的健康状态。
 	//   FleetError  非空 = 轮询失败原因（空 = 正常）
 	//   FleetLastOK 最近一次成功拉取的时刻

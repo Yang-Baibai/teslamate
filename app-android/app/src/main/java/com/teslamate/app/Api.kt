@@ -473,6 +473,19 @@ data class CarStatus(
     val tpms_min_bar: Double = 2.5,
     val tpms_max_bar: Double = 3.3,
     /**
+     * ⚠️ **v0.162.0**：「低电量」的**服务端结论**（ADR #38 / #41）。
+     *
+     * 原来 App 自己在 ui/Widgets.kt 里按「soc < 20」/「soc < 10」判（三处）
+     * ⇒ 阈值写死在客户端，而**飞书那边一条低电量提醒都没有** ⇒ 两端口径不一样。
+     * 现在判定只在服务端做一次（api/alerts.go 的 EvaluateLowBattery），App 只读结果。
+     *
+     * ⚠️ **null = 服务端没给**（老服务端 / 旧缓存）⇒ 此时界面用本地兜底按阈值算一次
+     * （兜底的两个数与服务端**逐值相等**，客户端闸门 41 钉住）。
+     */
+    val low_battery: Boolean? = null,
+    /** 电量严重偏低（服务端结论；null = 服务端没给）。 */
+    val low_battery_severe: Boolean? = null,
+    /**
      * 锁车状态三态（Tesla Fleet API 提供，TeslaMate 不采集）。
      *
      * - `true` = 已上锁
