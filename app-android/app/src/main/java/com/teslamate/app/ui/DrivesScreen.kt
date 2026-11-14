@@ -261,8 +261,11 @@ internal fun DriveItem(
             //   - fontScale 大时**距离另起一行**（右对齐），不再与标题抢同一行。
             val fontScale = LocalDensity.current.fontScale
             val stacked = fontScale >= 1.15f
-            val startName = d.start_place.firstSegment() ?: "?"
-            val endName = d.end_place.firstSegment() ?: "?"
+            // ⚠️ **v0.160.0**：不许再用 "?" 当占位符 ——
+            // 最新那趟（刚跑完、地址还没解析出来）在记录页会显示成「? > ?」。
+            // ⇒ 没有地址就说「未知地点」（App 别处都是这么写的）。
+            val startName = d.start_place.firstSegment() ?: "未知地点"
+            val endName = d.end_place.firstSegment() ?: "未知地点"
             Column(Modifier.fillMaxWidth()) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -530,8 +533,10 @@ internal fun DriveDetail(
                     points = track.map { GeoPt(it.map_lat ?: it.lat, it.map_lng ?: it.lng) },
                     drawLine = true,
                     settings = settings,
-                    startTitle = "起点：${drive.start_place?.take(20) ?: "?"}",
-                    endTitle = "终点：${drive.end_place?.take(20) ?: "?"}",
+                    // ⚠️ **v0.160.0**：没有地址就只写「起点」/「终点」，不许写「起点：?」。
+                    // ⚠️ 这两个标题还会进地图的无障碍名称（contentDescription）⇒ 读屏也会念出「?」。
+                    startTitle = drive.start_place?.take(20)?.let { "起点：$it" } ?: "起点",
+                    endTitle = drive.end_place?.take(20)?.let { "终点：$it" } ?: "终点",
                 )
                 // ⚠️ v0.13.0（iOS 交互评审 P1-4）：**「在地图里打开」出口**。
                 //

@@ -371,9 +371,18 @@ echo "$CH" | python -c "
 import json,sys
 d=json.load(sys.stdin)
 assert d, 'no charges'
+# ⚠️ **v0.160.0 就地订正**（原来那两行断言**对全新地点太死**）：
+#   原来无条件要求「每条充电都有 place_key 与 place」。
+#   实测（2026-11-14）：车刚开到**全新地点**（地址还没被 TeslaMate 解析出来）
+#   ⇒ 服务端**给不出**名字、也给不出归一后的 key ⇒ 两条都是 null ⇒ 断言报红。
+#   ⚠️ 这不是「归一坏了」：**没有名字就没有可归一的东西**（服务端不编名字 ✔）。
+#   ⇒ 真实的不变式是：**有名字的**充电必有 key，且**一个 key 只对应一个名字**；
+#     没有名字的那条，name 与 key **必须同时为空**（不能半截）。
 for c in d:
-    assert c.get('place_key'), 'missing place_key'
-    assert c.get('place') is not None, 'missing place'
+    if c.get('place') is None:
+        assert c.get('place_key') is None, 'place missing but place_key present: %s' % c.get('place_key')
+        continue
+    assert c.get('place_key'), 'missing place_key for a named charge'
 # 归一后同一个 key 只能对应一个显示名
 m = {}
 for c in d:

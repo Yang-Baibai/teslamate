@@ -4024,6 +4024,43 @@ print('能耗口径说明：服务端唯一定义 + 客户端逐字副本 + 简�
 PYEOF
 if [ $? -eq 0 ]; then ok "能耗的口径说明两端逐字一致（简报与 App 同一句）"; else fail "能耗的口径说明两端漂了"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 40：界面不许再出现「?」占位符 ────────────────────────────────
+#
+# ⚠ **v0.160.0**：刚跑完的那趟行程（地址还没解析出来）在记录页显示成 **「? > ?」** ——
+#   客户端的兜底写的是 `?: "?"` ⇒ 占位符**直接印在了界面上**
+#   （地图标题与地图的无障碍朗读里也是同一个问号）。
+#
+# ⚠ 项目自己的规矩**早就写着**（ui/RouteHistory.kt 的注释）：
+#   「两端都取不到时返回 null —— **不能**返回 "?"」⇒ 显示层也该守同一条。
+#
+# 判据：客户端 .kt 里（**剥掉注释后**）不许再出现 **"?"** 这个独立字面量。
+#   ⚠ 中文全角问号「？」不受影响（那是真的疑问句）；
+#   ⚠ URL 里的 ? 也不受影响（那不是 `"?"` 这个独立字面量）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('app-android/app/src/main/java')
+problems = []
+for p in sorted(ROOT.rglob('*.kt')):
+    src = p.read_text(encoding='utf-8', errors='replace')
+    code = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    code = re.sub(r'//[^\n]*', '', code)
+    for i, line in enumerate(code.split('\n'), 1):
+        if '"?"' in line:
+            problems.append('%s:%d  %s' % (p.name, i, line.strip()[:90]))
+
+if problems:
+    print('界面里还有「?」占位符 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 没有地址就写「未知地点」，没有数值就写「—」（App 其余地方都这么写）')
+    sys.exit(1)
+
+print('界面里没有「?」占位符（缺地址=未知地点，缺数值=—）')
+PYEOF
+if [ $? -eq 0 ]; then ok "界面不许再出现「?」占位符"; else fail "界面里还有「?」占位符"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

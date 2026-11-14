@@ -550,7 +550,9 @@ private fun placeKey(c: Charge): String {
     val name = c.poi_name?.takeIf { it.isNotBlank() }
         ?: c.geofence_name?.takeIf { it.isNotBlank() }
         ?: c.place?.firstSegment()
-        ?: "?"
+        // ⚠️ **v0.160.0**：占位符不许是 "?"（App 的规矩见 ui/RouteHistory.kt 的注释）。
+        // ⇒ 键里带坐标，不同的未知地点仍会被区分开。
+        ?: "未知地点"
     val lat = if (c.map_lat != null) Math.round(c.map_lat * 100.0) / 100.0 else "x"
     val lng = if (c.map_lng != null) Math.round(c.map_lng * 100.0) / 100.0 else "x"
     return "$name@$lat,$lng"

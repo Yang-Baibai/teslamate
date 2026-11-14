@@ -1509,10 +1509,6 @@ fun singleHopArrivalText(lowestSoc: Int): String = "能一次开到 · 上次到
  */
 fun startChipAccessibleName(label: String): String = label.replace(" · ", "，")
 
-/** 线路分组的键：起止各取「围栏名优先、否则地址第一段」。 */
-private fun endpointKey(geofence: String?, place: String?): String =
-    geofence?.takeIf { it.isNotBlank() } ?: place.firstSegment() ?: "?"
-
 /**
  * 从历史行程里挑出**历史长途 journey**。
  *
@@ -3050,7 +3046,8 @@ fun RoutePlanCard(
             ),
             referenceValue = 20f,
             referenceLabel = "20% 保底",
-            contentDescription = "余量剖面：从 ${plan.profile.firstOrNull()?.soc ?: "?"}% 到 ${plan.profile.lastOrNull()?.soc ?: "?"}%，" +
+            // ⚠️ **v0.160.0**：缺值不许写 "?"（读屏会念出一个问号）⇒ 跟界面其它地方一样写「未知」。
+            contentDescription = "余量剖面：从 ${plan.profile.firstOrNull()?.soc?.let { "$it%" } ?: "未知"} 到 ${plan.profile.lastOrNull()?.soc?.let { "$it%" } ?: "未知"}，" +
                 "沿途 ${plan.stops.count { !it.isStart }} 次充电，20% 保底线已标出",
         )
         Text(
