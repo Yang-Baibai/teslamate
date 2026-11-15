@@ -718,6 +718,22 @@ for r in rs:
 " 2>/dev/null \
   && ok "charge_stats 四个区间（键/顺序 + 滚动窗口单调 + 「全部」不截断 + 字段齐全）" || fail "charge_stats 四个区间"
 
+# 19. **MCP 契约自检必须全绿**（v0.163.0）
+#
+# ⚠️ 为什么加这条：契约自检（mcp/check_tool_fields.py）本来**没人跑** ——
+#   Hermes 闸门 10 只查「每个 check_* 函数有没有被调用」（**源码级**）
+#   ⇒ 自检**红了也没人知道**。实测 2026-11-15：它已经红了 2 项（假红），
+#   而闸门全绿 ⇒ 「MCP 字段自检 0 项不合规」这句话**本身可能是假绿**。
+#
+# ⇒ 现在它进冒烟：**每轮真跑一次，退出码非 0 就是冒烟失败**（禁止发版）。
+CTF=$(python mcp/check_tool_fields.py 2>&1); CTF_RC=$?
+if [ "$CTF_RC" -eq 0 ]; then
+  ok "MCP 契约自检全绿（mcp/check_tool_fields.py）"
+else
+  fail "MCP 契约自检有不合规项（mcp/check_tool_fields.py）"
+  echo "$CTF" | grep -E "✗|不合规" | head -10
+fi
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 冒烟通过" || echo "❌ 有失败项，禁止发版"
 exit "$FAIL"

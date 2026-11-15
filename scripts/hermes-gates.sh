@@ -1867,6 +1867,107 @@ print('服务端常驻界面文案：上限唯一且与客户端棘轮一致、�
 PYEOF
 if [ $? -eq 0 ]; then ok "服务端常驻界面文案也过啰嗦棘轮（上限唯一 + 不超宽 + 有单测）"; else fail "服务端常驻界面文案的长度没被管住（或护栏是空壳）"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 27：「低电量」的阈值与判定只在服务端一份（Hermes 这一头）──────
+#
+# ⚠️ **v0.163.0**：上一轮（v0.162.0）把低电量的判定收归服务端（ADR #78）
+#   ⇒ App 的角标与飞书那条「停着不动还低电量」提醒都读服务端的结论。
+#   **Hermes 这一头原来漏了** —— 状态工具只给一个电量百分比，
+#   飞书问「现在电量低吗」时模型只好自己跟阈值比
+#   ⇒ 那正是「判定写在两处」的老病（ADR #38）。
+#
+# 这道闸门钉四件事：
+#   ① 阈值与判定的事实源在服务端（api/alerts.go：三个常量 ＋ EvaluateLowBattery）；
+#   ② /status 必须给这五个字段（CarStatus 的 json 键）；
+#   ③ **MCP 只透传**（读这五个字段）且**不许自己算**（不许拿电量比阈值）；
+#   ④ 契约自检必须**断言**这五个字段（护栏不许是空壳）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ALERTS = pathlib.Path('api/alerts.go')
+MODELS = pathlib.Path('api/models.go')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+CHK = pathlib.Path('mcp/check_tool_fields.py')
+
+for p in (ALERTS, MODELS, MCP, CHK):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)#.*$', '', src)
+
+
+problems = []
+
+alerts = ALERTS.read_text(encoding='utf-8', errors='replace')
+models = strip_comments(MODELS.read_text(encoding='utf-8', errors='replace'))
+mcp = strip_comments(MCP.read_text(encoding='utf-8', errors='replace'))
+chk = CHK.read_text(encoding='utf-8', errors='replace')
+
+# ① 阈值与判定的事实源在服务端（值也要钉死）
+for name, want in (('LowBatterySoc', 20), ('LowBatterySevereSoc', 10), ('LowBatteryParkedAgeHours', 2)):
+    m = re.search(name + r'\s*=\s*(\d+)', alerts)
+    if not m:
+        problems.append('api/alerts.go 里没有 %s ⇒ 阈值没有事实源' % name)
+    elif int(m.group(1)) != want:
+        problems.append('api/alerts.go 的 %s = %s，不是 %d ⇒ 阈值被悄悄改了'
+                        % (name, m.group(1), want))
+if 'func EvaluateLowBattery' not in alerts:
+    problems.append('api/alerts.go 里没有 EvaluateLowBattery ⇒ 服务端没有那份判定')
+
+# ② /status 必须给这五个字段（按 CarStatus 结构体分段判，不搜全目录）
+m_cs = re.search(r'type\s+CarStatus\s+struct\s*\{([\s\S]*?)\n\}', models)
+cs_body = m_cs.group(1) if m_cs else ''
+if not cs_body:
+    problems.append('api/models.go 里找不到 CarStatus 结构体 ⇒ 没法核对低电量字段')
+else:
+    for key in ('low_battery', 'low_battery_severe', 'low_battery_parked',
+                'low_battery_soc', 'low_battery_severe_soc'):
+        if ('json:"%s"' % key) not in cs_body:
+            problems.append('CarStatus 里没有 %s ⇒ /status 不给这个结论' % key)
+
+# ③ MCP 只透传，且不许自己算
+for key in ('low_battery', 'low_battery_severe', 'low_battery_parked',
+            'low_battery_soc', 'low_battery_severe_soc'):
+    if ('s.get("%s")' % key) not in mcp:
+        problems.append('MCP 没有透传 %s ⇒ 飞书里问不出「现在电量低吗」' % key)
+# ⚠️ 自己算 = 第二份事实源：拿电量跟字面阈值比 ⇒ 报红。
+#   写法要**全盖**：`battery_level < 20` 与 `20 > battery_level` 都要抓到。
+for m in re.finditer(r'(battery_level|usable_battery_level)[^\n]{0,40}[<>]=?\s*(10|20)\b', mcp):
+    problems.append('MCP 自己拿电量跟阈值比（%s）⇒ 判定只许在服务端' % m.group(0).strip())
+for m in re.finditer(r'\b(10|20)\b[^\n]{0,40}[<>]=?\s*(battery_level|usable_battery_level)', mcp):
+    problems.append('MCP 自己拿阈值跟电量比（%s）⇒ 判定只许在服务端' % m.group(0).strip())
+
+# ④ 契约自检必须**在 SPEC 列表里**断言这五个字段（护栏不许是空壳）
+#
+# ⚠️ 判据要**精确**：只判「文件里出现过这个中文字符串」会被
+#   check_low_battery_contract() 里的同名键**误命中** ⇒ 探针实测假绿。
+#   ⇒ 这里判的是「**SPEC 列表里**有一条断言它的条目」（空白写法不限）。
+m_spec = re.search(r'SPEC\s*=\s*\[(.*?)\n\]', chk, re.S)
+spec_body = m_spec.group(1) if m_spec else ''
+if not spec_body:
+    problems.append('mcp/check_tool_fields.py 里找不到 SPEC 列表 ⇒ 没法核对断言')
+else:
+    for key in ('低电量', '电量严重偏低', '停着不动还低电量', '低电量阈值%', '严重偏低阈值%'):
+        if not re.search(r'\(\s*"teslamate_status"\s*,\s*\{\}\s*,\s*"%s"' % re.escape(key), spec_body):
+            problems.append('mcp/check_tool_fields.py 的 SPEC 里没有断言「%s」⇒ 护栏是空壳' % key)
+if 'check_low_battery_contract' not in chk:
+    problems.append('mcp/check_tool_fields.py 里没有 check_low_battery_contract ⇒ 没有「MCP 与服务端同一个结论」的核对')
+
+if problems:
+    print('「低电量」的判定没有收敛到服务端（Hermes 这一头）—— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 判定只许在 api/alerts.go；MCP 只透传，不许自己跟阈值比（ADR #38 / #78）')
+    sys.exit(1)
+
+print('「低电量」：阈值与判定只在服务端一份 ✔（MCP 只透传，自检有护栏）')
+PYEOF
+if [ $? -eq 0 ]; then ok "「低电量」的阈值与判定只在服务端一份（MCP 只透传）"; else fail "「低电量」的判定漏到 Hermes 这头了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

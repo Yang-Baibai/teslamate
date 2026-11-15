@@ -70,7 +70,11 @@ SPEC = [
     ("teslamate_battery", {}, "现在还能装(度)", "实测可用容量"),
     ("teslamate_battery", {}, "健康度%(相对出厂可用容量)", "电池健康度"),
     ("teslamate_battery", {}, "满电标定续航·出厂折算(km)", "出厂折算续航"),
-    ("teslamate_charges", {"limit": 3}, "最近[0].地点", "充电地点"),
+    # ⚠️ **v0.163.0 订正**：「最近[0].地点」原来在这里断言「值不为 null」⇒
+    #   **最新一条充电的地点还没解析出来**（新地点尚未进 TeslaMate 的 places 表）时**假红**，
+    #   而「真红」（字段名写错）也是同一个红 ⇒ 分不开。
+    #   ⇒ 改成真实的不变式（键存在 ＋ 有名字时与服务端逐字一致）：
+    #      见 check_place_name_contract()。
     ("teslamate_charges", {"limit": 3}, "最近[0].充入kWh", "充入电量"),
     ("teslamate_charges", {"limit": 3}, "最近[0].开始%", "起始电量"),
     ("teslamate_charges", {"limit": 3}, "最近[0].id", "充电 id（要能接 charge_curve）"),
@@ -117,7 +121,7 @@ SPEC = [
     ("teslamate_status", {}, "车门数据来源", "车门结论来自遥测还是轮询"),
     ("teslamate_status", {}, "哨兵数据来源", "哨兵结论来自遥测还是轮询"),
     ("teslamate_status", {}, "哨兵模式", "哨兵模式状态文案"),
-    ("teslamate_drives", {"limit": 3}, "最近[0].起点", "起点"),
+    # ⚠️ **v0.163.0 订正**：「最近[0].起点」同型 —— 最新一趟的起点没解析出来时同样假红。
     ("teslamate_drives", {"limit": 3}, "最近[0].终点", "终点"),
     ("teslamate_drives", {"limit": 3}, "最近[0].能耗kWh/100km", "能耗"),
     ("teslamate_drives", {"limit": 3}, "最近[0].到达电量%", "到达电量"),
@@ -186,6 +190,14 @@ SPEC = [
     ("teslamate_range_estimate", {}, "一句话", "真实可达续航的一句话结论"),
     ("teslamate_range_estimate", {}, "怎么算的", "真实可达续航的算法口径"),
     ("teslamate_range_estimate", {}, "模型样本条数", "模型用了多少条行程"),
+    # ⚠️ **v0.163.0**：「低电量」的结论 —— App 的角标、飞书那条提醒、Hermes **三处同一个口径**。
+    #    这三个布尔**恒在**（服务端每次都判）⇒ 可以断言；
+    #    两个阈值也恒在 ⇒ 断言它们能抓住「MCP 还按旧阈值说」。
+    ("teslamate_status", {}, "低电量", "低电量结论（服务端判的）"),
+    ("teslamate_status", {}, "电量严重偏低", "严重偏低结论（服务端判的）"),
+    ("teslamate_status", {}, "停着不动还低电量", "停着不动还低电量（服务端判的）"),
+    ("teslamate_status", {}, "低电量阈值%", "低电量阈值（服务端一份）"),
+    ("teslamate_status", {}, "严重偏低阈值%", "严重偏低阈值（服务端一份）"),
 ]
 
 
@@ -812,6 +824,107 @@ def check_status_staleness_contract() -> list:
             bad.append("MCP 的「车况数据是旧的」与服务端 data_stale 不一致")
     return bad
 
+def check_place_name_contract() -> list:
+    """「地点 / 起点」这类**名字**：键必须存在；有名字时与服务端一致，没名字时**不许编**。
+
+    ⚠️ **v0.163.0 订正**：这两条原来挂在 SPEC 里（断言「值不为 null」）
+    ⇒ 只要**最新一条记录的地点还没解析出来**（新地点尚未进 TeslaMate 的 places 表），
+    自检就**假红** —— 而「真红」（字段名写错）也是同一个红 ⇒ 分不开。
+    （2026-11-15 实测：11-14 那趟充电（59 度，9% → 99%）的 place 还是 null。）
+
+    ⇒ 拆成两个**真实的不变式**：
+      ① **键存在**（少了就报「没有这个键」⇒ 字段名写错仍会被抓住）；
+      ② **有名字时与服务端逐字一致、没名字时服务端也是空**（不许编）。
+    （与 v0.159.0 冒烟那条订正同型：「数据还没到」是合法状态，不是「字段名错了」。）
+    """
+    bad = []
+    try:
+        raw_c = T._get("/api/v1/cars/%s/charges" % T.CAR_ID)
+        tool_c = T.teslamate_charges(limit=3)
+        raw_d = T._get("/api/v1/cars/%s/drives" % T.CAR_ID)
+        tool_d = T.teslamate_drives(limit=3)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    pairs = (
+        (raw_c, tool_c, "最近", "地点", ("place", "poi_name", "place_label"), "充电地点"),
+        (raw_d, tool_d, "最近", "起点", ("start_place",), "行程起点"),
+    )
+    for raw, tool, list_key, field, raw_keys, label in pairs:
+        items = (raw.get("items") if isinstance(raw, dict) else raw) or []
+        rows = tool.get(list_key) if isinstance(tool, dict) else None
+        if not isinstance(rows, list) or not rows:
+            bad.append("MCP 的「%s」拿不到（%s）" % (list_key, label))
+            continue
+        for idx, row in enumerate(rows[:3]):
+            if field not in row:
+                bad.append("MCP 的「%s[%d]」没有「%s」这个键 ⇒ 字段名对不上" % (list_key, idx, field))
+                continue
+            src = items[idx] if idx < len(items) else {}
+            want = None
+            for k in raw_keys:
+                v = src.get(k)
+                if v:
+                    want = v
+                    break
+            got = row.get(field)
+            if want:
+                if not got:
+                    bad.append("MCP 的「%s[%d].%s」是空的，服务端有「%s」⇒ 两边不一致（取值写错了？）"
+                               % (list_key, idx, field, want))
+                elif got != want:
+                    bad.append("MCP 的「%s[%d].%s」= %r 与服务端的 %r 不一致"
+                               % (list_key, idx, field, got, want))
+            elif got:
+                bad.append("MCP 的「%s[%d].%s」= %r，而服务端这一条**没有地点名** ⇒ 不许编"
+                           % (list_key, idx, field, got))
+    return bad
+
+
+def check_low_battery_contract() -> list:
+    """「低电量」必须**与服务端同一份**，MCP 不许自己重算。
+
+    ⚠️ **v0.163.0**：上一轮把判定收归服务端（ADR #78）⇒ App 的角标与飞书那条
+    「停着不动还低电量」提醒都读服务端的结论。**Hermes 这一头原来漏了** ——
+    飞书问「现在电量低吗」时，MCP 只能给一个电量百分比，模型只好自己跟阈值比
+    ⇒ 那正是「判定写在两处」的老病（ADR #38）。
+
+    ⇒ 这里断言：**MCP 给的结论 == 服务端 /status 给的结论**（逐项）。
+    少一个键、或两边不一致 ⇒ 立刻红。
+    """
+    bad = []
+    try:
+        st = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
+        tool = T.teslamate_status()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(st, dict) or "error" in st:
+        return ["车况取不到：%r" % (st,)]
+    if not isinstance(tool, dict) or "错误" in tool:
+        return ["状态工具取不到：%r" % (tool,)]
+    for mine_key, srv_key in (
+        ("低电量", "low_battery"),
+        ("电量严重偏低", "low_battery_severe"),
+        ("停着不动还低电量", "low_battery_parked"),
+    ):
+        if mine_key not in tool:
+            bad.append("MCP 缺字段「%s」⇒ 飞书里问不出「现在电量低吗」" % mine_key)
+            continue
+        got, want = tool.get(mine_key), st.get(srv_key)
+        if bool(got) != bool(want):
+            bad.append("MCP 的「%s」=%r 与服务端的 %s=%r 不一致 ⇒ 两边各判各的"
+                       % (mine_key, got, srv_key, want))
+    for mine_key, srv_key in (
+        ("低电量阈值%", "low_battery_soc"),
+        ("严重偏低阈值%", "low_battery_severe_soc"),
+    ):
+        if mine_key not in tool:
+            bad.append("MCP 缺字段「%s」⇒ 飞书里说不出阈值是多少" % mine_key)
+        elif tool.get(mine_key) != st.get(srv_key):
+            bad.append("MCP 的「%s」=%r 与服务端的 %s=%r 不一致 ⇒ 两端阈值漂了"
+                       % (mine_key, tool.get(mine_key), srv_key, st.get(srv_key)))
+    return bad
+
+
 def check_feedback_items() -> list:
     """反馈**每一条**都必须带上「id / 时间 / 内容 / 状态」。
 
@@ -1354,6 +1467,22 @@ def main() -> int:
     if not fb_bad:
         print("  ✓ %-26s %-24s 每条反馈都带 id / 时间 / 内容 / 状态" % ("teslamate_feedback", "条目字段"))
     bad.extend(fb_bad)
+
+    low_bat_bad = check_low_battery_contract()
+    for b in low_bat_bad:
+        print("  ✗ %s" % b)
+    if not low_bat_bad:
+        print("  ✓ %-26s %-24s 低电量的判定与阈值和服务端是**同一份**"
+              % ("teslamate_status", "低电量契约"))
+    bad.extend(low_bat_bad)
+
+    place_bad = check_place_name_contract()
+    for b in place_bad:
+        print("  ✗ %s" % b)
+    if not place_bad:
+        print("  ✓ %-26s %-24s 地点/起点：有名字与服务端一致，没名字不编"
+              % ("teslamate_charges", "地点名契约"))
+    bad.extend(place_bad)
 
     print("\n  ⇒ %s（%d 项不合规）" % ("通过" if not bad else "有问题", len(bad)))
     return 0 if not bad else 1
