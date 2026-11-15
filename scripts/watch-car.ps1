@@ -636,6 +636,20 @@ Update-Alert $alerted 'low_battery_parked' $lowParked `
   "✅ $CarName 不再是「停着不动还低电量」" `
   "车已经动起来，或电量已经补上来了。"
 
+# ── 天气提醒（v0.164.0）─────────────────────────────────────────────────
+#
+# ⚠️ **判定在服务端**：/status 的 weather_risk 才是结论
+#   （api/weather.go：未来两天里有「值得打扰」的天气才给结论 —— 常态天气一律不推）。
+#   ⇒ 这个脚本**不自己比温度、不自己翻译天气词**
+#   ⇒ 与 App / Hermes 同一口径（ADR #38 / #41 / #79）。
+$wr = Get-Prop $st 'weather_risk' $null
+$weatherAlert = ($null -ne $wr) -and [bool](Get-Prop $wr 'alert' $false)
+Update-Alert $alerted 'weather_risk' $weatherAlert `
+  "🌧 $CarName $((Get-Prop $wr 'what' ''))" `
+  "$((Get-Prop $wr 'advice' ''))`n（$((Get-Prop $wr 'city' '')) · 未来两天预报）" `
+  "✅ $CarName 天气提醒已解除" `
+  "未来两天没有需要特别留意的天气了。"
+
 # ── Fleet 授权失效 ──
 Update-Alert $alerted 'fleet_unauthorized' ($fleetState -eq 'unauthorized') `
   "🔑 $CarName Tesla 授权已失效 · 锁车状态已停更" `

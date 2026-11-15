@@ -298,6 +298,12 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.LowBatterySevere = lb.Severe
 	s.LowBatteryParked = lb.Parked
 
+	// ⚠️ **v0.164.0**：天气的判定（**服务端一份**：ADR #38 / #41 / #79）。
+	//
+	// 判定的是「未来两天有没有**值得打扰用户**的天气」
+	// （极端天气 / 暴雨 / 结冰 / 极端高温 —— 常态天气一律不推）。
+	// 取不到 ⇒ nil（**不知道**），消费方不许把它说成「天气没问题」。
+	s.WeatherRisk = currentWeatherRisk(s.Lat, s.Lng)
 	// ⚠️ v0.9.0：Fleet API 后台轮询的健康状态。
 	// 轮询失败时我们**保留**上次已知的锁车/胎压（见 tesla.go），
 	// 这里把失败原因与「最后一次成功」的时刻一并交给 App，

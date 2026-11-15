@@ -880,6 +880,47 @@ def check_place_name_contract() -> list:
     return bad
 
 
+def check_weather_risk_contract() -> list:
+    """天气的结论必须**与服务端同一份**（取不到就说「不知道」，不许编）。
+
+    ⚠️ **v0.164.0**：服务端把「未来两天有没有**值得打扰**的天气」判好
+    （ADR #79），MCP 只透传 ⇒ 两边必须一个字不差。
+
+    ⇒ 断言：**服务端说「不知道」（weather_risk 为 null）时，MCP 也不许有结论**；
+    服务端给了 ⇒ 四个字段逐项相等。
+    """
+    bad = []
+    try:
+        st = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
+        tool = T.teslamate_status()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(st, dict) or "error" in st:
+        return ["车况取不到：%r" % (st,)]
+    if not isinstance(tool, dict) or "错误" in tool:
+        return ["状态工具取不到：%r" % (tool,)]
+    wr = st.get("weather_risk")
+    if wr is None:
+        # 服务端说「不知道」⇒ MCP 也不许有结论（不许编）。
+        for k in ("天气风险", "天气提示", "天气建议", "天气城市"):
+            if tool.get(k):
+                bad.append("服务端说「不知道」而 MCP 却有「%s」⇒ 两边不一致" % k)
+        return bad
+    if not isinstance(wr, dict):
+        return ["服务端的 weather_risk 不是对象：%r" % (wr,)]
+    for mine_key, srv_key in (
+        ("天气风险", "level"),
+        ("天气提示", "what"),
+        ("天气建议", "advice"),
+        ("天气城市", "city"),
+    ):
+        got, want = tool.get(mine_key), wr.get(srv_key)
+        if got != want:
+            bad.append("MCP 的「%s」=%r 与服务端的 %r 不一致 ⇒ 两边各说各话"
+                       % (mine_key, got, want))
+    return bad
+
+
 def check_low_battery_contract() -> list:
     """「低电量」必须**与服务端同一份**，MCP 不许自己重算。
 
@@ -1483,6 +1524,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 地点/起点：有名字与服务端一致，没名字不编"
               % ("teslamate_charges", "地点名契约"))
     bad.extend(place_bad)
+
+    weather_bad = check_weather_risk_contract()
+    for b in weather_bad:
+        print("  ✗ %s" % b)
+    if not weather_bad:
+        print("  ✓ %-26s %-24s 天气的结论与服务端是**同一份**（取不到就说不知道）"
+              % ("teslamate_status", "天气契约"))
+    bad.extend(weather_bad)
 
     print("\n  ⇒ %s（%d 项不合规）" % ("通过" if not bad else "有问题", len(bad)))
     return 0 if not bad else 1

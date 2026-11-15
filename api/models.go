@@ -164,6 +164,11 @@ type CarStatus struct {
 	// nil = 没读到 / 车况数据太旧 ⇒ **不知道**（不是「不闷热」）。
 	CabinHeat *CabinHeat `json:"cabin_heat"`
 
+	// ⚠️ **v0.164.0**：天气的判定（**服务端一份**：ADR #38 / #41 / #79）。
+	// nil = 没取到（没配 AMAP_KEY / API 失败 / 车没有位置）
+	// ⇒ **不知道**（**不是**「天气没问题」—— 宁可说不知道，不可编）。
+	WeatherRisk *WeatherRisk `json:"weather_risk"`
+
 	// ⚠️ v0.21.0：**是否配置了 Fleet API 凭据**。
 	//
 	// false = 这台服务器**没有实时状态源** → 锁车与实时胎压恒为「未知」。

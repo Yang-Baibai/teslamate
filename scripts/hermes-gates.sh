@@ -1968,6 +1968,96 @@ print('「低电量」：阈值与判定只在服务端一份 ✔（MCP 只透�
 PYEOF
 if [ $? -eq 0 ]; then ok "「低电量」的阈值与判定只在服务端一份（MCP 只透传）"; else fail "「低电量」的判定漏到 Hermes 这头了"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 28：天气的判定与阈值只在服务端一份 ────────────────────────────
+#
+# ⚠️ **v0.163.0 → v0.164.0**：mission §2.2 的「极寒/酷暑…主动备车提醒」一直缺着 ——
+#   ① 高德天气接口**完全没接**（AMAP_KEY 只被静态图用）；
+#   ② 「什么条件下才值得打扰」没人定 ⇒ 不敢推（推常态天气就是噪音）。
+#
+# 现在：判定（阈值 **40℃ / 0℃** ＋ 四档词表 ＋ 中文文案）**只在服务端**，
+# 推送脚本与 MCP **都只读结论**（ADR #38 / #41 / #79）。
+#
+# 判据：
+#   ① api/weather.go 必须有 EvaluateWeatherRisk（纯函数）与两个阈值（值钉死）；
+#   ② /status 必须给 weather_risk；
+#   ③ MCP 只透传（读它）且**不许自己出现天气词表**（自己判 = 第二份事实源）；
+#   ④ 推送脚本必须**从车况里读** weather_risk（不许自己比温度）；
+#   ⑤ 契约自检必须有天气的核对（护栏不许是空壳）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+WX = pathlib.Path('api/weather.go')
+MODELS = pathlib.Path('api/models.go')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+CHK = pathlib.Path('mcp/check_tool_fields.py')
+SCRIPT = pathlib.Path('scripts/watch-car.ps1')
+
+for p in (WX, MODELS, MCP, CHK, SCRIPT):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)#.*$', '', src)
+
+
+problems = []
+
+wx = strip_comments(WX.read_text(encoding='utf-8', errors='replace'))
+models = strip_comments(MODELS.read_text(encoding='utf-8', errors='replace'))
+mcp = strip_comments(MCP.read_text(encoding='utf-8', errors='replace'))
+chk = CHK.read_text(encoding='utf-8', errors='replace')
+script = strip_comments(SCRIPT.read_text(encoding='utf-8', errors='replace'))
+
+# ① 阈值与判定的事实源在服务端（值也要钉死）
+if 'func EvaluateWeatherRisk' not in wx:
+    problems.append('api/weather.go 里没有 EvaluateLowBattery…EvaluateWeatherRisk ⇒ 判定没有事实源')
+for name, want in (('WeatherHeatC', 40), ('WeatherIceC', 0)):
+    m = re.search(name + r'\s*=\s*(\d+)', wx)
+    if not m:
+        problems.append('api/weather.go 里没有 %s ⇒ 阈值没有事实源' % name)
+    elif int(m.group(1)) != want:
+        problems.append('api/weather.go 的 %s = %s，不是 %d ⇒ 阈值被悄悄改了' % (name, m.group(1), want))
+
+# ② /status 必须给 weather_risk
+if 'json:"weather_risk"' not in models:
+    problems.append('api/models.go 里 CarStatus 没有 weather_risk ⇒ /status 不给天气的结论')
+
+# ③ MCP 只透传，且不许自己判（自己判 = 第二份事实源）
+if 's.get("weather_risk")' not in mcp:
+    problems.append('MCP 没有透传 weather_risk ⇒ 飞书里问不出天气有没有要留意')
+for word in ('台风', '暴雨', '冰雹', '龙卷风'):
+    if word in mcp:
+        problems.append('MCP 里出现了天气词「%s」⇒ 天气词表只许在服务端一份' % word)
+
+# ④ 推送脚本必须从车况里读 weather_risk（不许自己比温度）
+reads = set(re.findall(r"Get-Prop\s+\$\w+\s+'([^']+)'", script))
+reads |= set(re.findall(r'\$[A-Za-z_]\w*\.([A-Za-z_]\w*)', script))
+if 'weather_risk' not in reads:
+    problems.append('scripts/watch-car.ps1 没有从车况里读 weather_risk ⇒ 飞书那条天气提醒不是服务端的结论')
+if re.search(r'\$?battery(_level)?\s*(?:-lt|-le|-gt|-ge|<=|>=|==|!=|<|>)\s*(10|20|40)\b', script):
+    problems.append('scripts/watch-car.ps1 自己比了温度阈值 ⇒ 判定不许在脚本里')
+
+# ⑤ 契约自检必须有天气的核对（护栏不许是空壳）
+if 'check_weather_risk_contract' not in chk:
+    problems.append('mcp/check_tool_fields.py 里没有 check_weather_risk_contract ⇒ 天气的口径没人核对')
+if 'weather_risk' not in chk:
+    problems.append('mcp/check_tool_fields.py 没有提到 weather_risk ⇒ 天气的护栏是空壳')
+
+if problems:
+    print('天气的判定没有收敛到服务端 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 判定与文案只在 api/weather.go；MCP 与推送脚本都只读结论（ADR #38 / #41 / #79）')
+    sys.exit(1)
+
+print('天气的判定与阈值只在服务端一份 ✔（MCP / 推送脚本只读结论，自检有护栏）')
+PYEOF
+if [ $? -eq 0 ]; then ok "天气的判定与阈值只在服务端一份（MCP / 脚本只读结论）"; else fail "天气的判定漏到 MCP / 脚本里了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"
