@@ -1,8 +1,73 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TeslaMate MCP 服务（stdio）—— 让电脑上的 Hermes 能查这台车的数据、也能控车。
+"""TeslaMate MCP 服务 —— 让**任何** MCP 客户端都能查这台车的数据、也能控车。
 
-⚠️ **v0.66.0（第 33 轮「车辆控制下沉」）**。
+⚠️ **v0.166.0（这一轮：把 MCP 服务做成「可插拔的通用件」）**。
+
+## 这一轮改了什么（以及为什么）
+
+之前的 MCP 服务**能用**，但离「无缝接入任意 agent」还差四样：
+
+1. **覆盖面**：服务端 39 个端点里 MCP 只直连了 24 个 ⇒
+   「车端实时快照」「车辆元信息」「遥测连没连过」这些**取不到**。
+   ⇒ 这一轮补了 6 个工具（车端原始数据 / 车端快照 / 车辆身份 /
+   遥测连接状态 / 遥测设施状态 / 服务端自检）。
+2. **规范注解**（协议 2025-06-18 server/tools）：tool 有 annotations 字段
+   （readOnlyHint / destructiveHint / idempotentHint / openWorldHint），
+   客户端**靠它决定要不要弹确认框** ⇒ 不标就等于让客户端瞎猜。
+   ⇒ 这一轮给**全部 31 个**工具都标了（29 只读 / 2 写 / 1 不可逆）。
+3. **server instructions + resources**（协议 lifecycle / server/resources）：
+   把本项目的三条红线**写进协议** ⇒ 换任何一个 agent 接入都带着同一份约束。
+4. **两种传输**（协议 basic/transports）：以前**只有 stdio** ⇒
+   客户端必须能在本机起一个 Python 子进程。
+   ⇒ 这一轮加了 **Streamable HTTP**（规范里的另一种标准传输）：
+   服务端独立跑一个 HTTP 端点，任意客户端拿 URL 就能连。
+
+⚠️ **判定只在服务端做**（项目红线第 1 条）：本文件**只透传**服务端的结论，
+   不自己算任何阈值。工具里的中文是「给人看的标签」，不是第二套判定。
+
+## 怎么接进去
+
+### 方式 A：stdio（本地客户端 —— Hermes 现在用的就是这个）
+
+客户端把本文件**当子进程拉起来**，通过 stdin/stdout 说 JSON-RPC：
+
+    mcp_servers:
+      teslamate:
+        command: python
+        args: ["<仓库路径>/mcp/teslamate_mcp.py"]
+
+⚠️ **令牌不用写进客户端配置** —— 本服务会自己去**同目录的 .env** 找
+    API_TOKEN（也在 TESLAMATE_API_TOKEN 环境变量里认）⇒ 少一处密钥副本。
+
+### 方式 B：Streamable HTTP（远程 / 别的机器 / 不想起子进程）
+
+    python mcp/teslamate_mcp.py --transport http --port 8765
+
+客户端配置：
+
+    {
+      "mcpServers": {
+        "teslamate": {
+          "type": "streamable-http",
+          "url": "http://127.0.0.1:8765/mcp",
+          "headers": { "Authorization": "Bearer <MCP_HTTP_TOKEN>" }
+        }
+      }
+    }
+
+⚠️ **HTTP 模式默认只绑 127.0.0.1**（规范：本地服务默认只绑回环）。
+   要让局域网/Tailscale 上的别的机器连 ⇒ 显式加 --host 0.0.0.0，
+   **并且必须同时设 MCP_HTTP_TOKEN**（否则拒绝启动 ⇒ fail closed）。
+
+## 车控的安全边界
+
+- 动作只有服务端 api/tesla_command.go 目录里那 **21 个**，这里不新增；
+- 参数由**服务端**再校验一遍（这里只是转发）；
+- **高危动作**（解锁 / 开合尾门 / 远程启动）标了 destructiveHint，
+  客户端应当先向用户确认再调用；
+- 车在休眠时命令发不出去（Tesla 回 408）—— 本服务会把它翻译成
+  「车在休眠或离线，先唤醒再试」。
 
 ## 为什么在 teslamate 里
 
@@ -11,45 +76,21 @@
 并且明确：「**Housekeeper 中的车辆控制解耦掉，正确的应该是车辆控制在此项目中。
 Housekeeper 调用这个项目。**」
 
-⇒ 车控能力归 **teslamate**（`api/tesla_command.go` + command-proxy sidecar），
-本 MCP 服务只是**它的一层壳** —— 查数据与控车都打同一个 API。
-
-## 怎么接进 Hermes
-
-Hermes 的 `config.yaml` 里有 `mcp_servers:` 段（stdio 形如 `command` + `args`）：
-
-```yaml
-mcp_servers:
-  teslamate:
-    command: python
-    args: ["<仓库路径>/mcp/teslamate_mcp.py"]
-```
-
-⚠️ **令牌不用写进 Hermes 的配置** —— 本服务会自己去**同目录的 `.env`** 找
-`API_TOKEN`（也在 `TESLAMATE_API_TOKEN` 环境变量里认）。
-少一处密钥副本。
-
-## 车控的安全边界
-
-- 动作只有服务端 `api/tesla_command.go` 目录里那 **16 个**，这里不新增；
-- 参数由**服务端**再校验一遍（这里只是转发）；
-- **高危动作**（解锁 / 开合尾门 / 远程启动）在工具描述里标了风险等级，
-  Hermes 应当先向用户确认再调用；
-- 车在休眠时命令发不出去（Tesla 回 408）—— 本服务会把它翻译成
-  「车在休眠或离线，先唤醒再试」。
+⇒ 车控能力归 **teslamate**，本 MCP 服务只是**它的一层壳** ——
+查数据与控车都打同一个 API。
 
 ## 运行
 
-```powershell
-python mcp/teslamate_mcp.py            # stdio（由 MCP 客户端拉起）
-```
+    python mcp/teslamate_mcp.py                       # stdio（由 MCP 客户端拉起）
+    python mcp/teslamate_mcp.py --transport http      # Streamable HTTP
 
-依赖：只有 `mcp` 这个 Python 包（`pip install mcp`），不碰数据库。
+依赖：只有 mcp 这个 Python 包（pip install mcp），不碰数据库。
 """
 
 from __future__ import annotations
 
 import datetime
+import hmac
 import json
 import os
 import urllib.error
@@ -64,6 +105,16 @@ try:  # SDK ≥ 2.0
 except ImportError:  # pragma: no cover - SDK 1.x
     from mcp.server.fastmcp import FastMCP as _MCP
 
+try:  # SDK ≥ 2.0 才有 transport_security
+    from mcp.server.transport_security import TransportSecuritySettings as _TransportSecuritySettings
+except ImportError:  # pragma: no cover - SDK 1.x
+    _TransportSecuritySettings = None  # type: ignore[assignment]
+
+try:  # tool 注解（两版 SDK 都有，类名/字段名要归一）
+    from mcp.types import ToolAnnotations as _ToolAnnotations
+except ImportError:  # pragma: no cover
+    _ToolAnnotations = None  # type: ignore[assignment]
+
 # --------------------------------------------------------------------------
 # 配置
 # --------------------------------------------------------------------------
@@ -74,6 +125,14 @@ _REPO = _HERE.parent
 API_URL = os.environ.get("TESLAMATE_API_URL", "http://localhost:8090").rstrip("/")
 CAR_ID = os.environ.get("TESLAMATE_CAR_ID", "1")
 TIMEOUT = float(os.environ.get("TESLAMATE_TIMEOUT", "60"))
+
+# ⚠️ **v0.166.0**：HTTP 传输的监听参数。
+#
+# 默认 **127.0.0.1**（规范：本地服务不许默认绑 0.0.0.0 ——
+# 否则同网段任何机器都能开车）。默认端口 8765（避开 API 的 8090）。
+HTTP_HOST = os.environ.get("MCP_HTTP_HOST", "127.0.0.1")
+HTTP_PORT = int(os.environ.get("MCP_HTTP_PORT", "8765"))
+HTTP_PATH = os.environ.get("MCP_HTTP_PATH", "/mcp")
 
 
 def _read_token() -> str:
@@ -93,7 +152,72 @@ def _read_token() -> str:
 
 TOKEN = _read_token()
 
-mcp = _MCP("teslamate")
+
+
+# --------------------------------------------------------------------------
+# v0.166.0：MCP 协议三件套（注解 / instructions / resources）
+# --------------------------------------------------------------------------
+#
+# ⚠️ **为什么加这些**（依据：MCP 协议 2025-06-18 官方规范）：
+#
+# ① **tool annotations**（规范 server/tools「Tool Definition」）——
+#    协议里 tool 有 annotations 字段（readOnlyHint / destructiveHint /
+#    idempotentHint / openWorldHint），客户端**靠它决定要不要弹确认框**。
+#    ⇒ 不标 = 让客户端自己猜 ⇒ 危险动作可能被静默执行。
+#
+# ② **server instructions**（规范 basic/lifecycle「initialize」响应含
+#    instructions 字段）—— 客户端把它当「这个服务该怎么用」的第一提示。
+#    ⇒ 正好把本项目的三条红线（判定只在服务端 / 宁可说不知道 / 车控不可逆）
+#    **写进协议** ⇒ 换任何一个 agent 接入都带着同一份约束。
+#
+# ③ **resources**（规范 server/resources）—— URI 寻址的只读上下文。
+#    ⇒ 客户端可以「读一份车况快照进上下文」，而不是先调工具再解析。
+#    ⚠️ 工具是**模型自己决定**调的（model-controlled），resource 是**宿主应用决定**
+#    要不要放进上下文的（application-driven）⇒ 两者互补（规范原文如此）。
+
+
+def _ann(read_only: bool, destructive: bool = False, idempotent: bool = True,
+         open_world: bool = False):
+    """造一份 tool 注解（老 SDK 没有就返回 None ⇒ 退回老行为）。
+
+    ⚠️ **注解是给客户端看的**（规范要求客户端把注解当**提示**：
+    不可信服务端的不采信；本项目是自用单用户，客户端即车主 ⇒ 可信）：
+      · readOnlyHint = true ⇒ 客户端可**免确认**直接调（只读）；
+      · destructiveHint = true ⇒ 客户端**应当**弹确认框（不可逆）；
+      · idempotentHint = true ⇒ 重复调没额外副作用（锁车是，开锁不是）。
+    """
+    if _ToolAnnotations is None:  # pragma: no cover - 极老 SDK
+        return None
+    return _ToolAnnotations(
+        read_only_hint=read_only,
+        destructive_hint=destructive,
+        idempotent_hint=idempotent,
+        open_world_hint=open_world,
+    )
+
+
+# ⚠️ 三组常用注解（写出来是为了让每个工具的取值一眼可审）
+RO = _ann(read_only=True)                                       # 只读
+WR = _ann(read_only=False, destructive=False, idempotent=True)   # 写但不破坏
+DE = _ann(read_only=False, destructive=True, idempotent=False)   # 不可逆
+
+
+# ⚠️ **server instructions**（规范 basic/lifecycle：initialize 响应的 instructions 字段）
+SERVER_INSTRUCTIONS = """这是车主**自己那台车**的 MCP 服务（teslamate，单车单用户）。
+
+三条规矩，务必遵守：
+
+1. **判定只在服务端**：凡是带「结论 / 阈值 / 是否正常」的字样，都是服务端算好的，
+   **照原文转述，不要自己重算**。你手上没有与服务端同源的数，
+   自己减一遍出来的差值一定对不上（同一个事实只能有一个说法）。
+2. **宁可说「不知道」，不可编**：读不到就是读不到（值是 null、或文案写着「不知道」）。
+   **不要**把「没读到」说成「正常」「关着」「没故障」—— 那是假安全。
+3. **车控不可逆**：下发命令前先看 teslamate_command_catalog（参数怎么填、风险等级），
+   高危动作（解锁 / 开合尾门 / 远程启动）**先向用户确认**；
+   下发后回读「车端结果」—— rejected 绝对不能报成成功。"""
+
+
+mcp = _MCP("teslamate", instructions=SERVER_INSTRUCTIONS)
 
 
 # --------------------------------------------------------------------------
@@ -232,12 +356,278 @@ def _cabin_cn(cabin: Any) -> dict:
     return out
 
 
+
+# --------------------------------------------------------------------------
+# resources（规范 server/resources）—— URI 寻址的只读上下文
+# --------------------------------------------------------------------------
+#
+# ⚠️ **为什么只放三份**：resource 是**宿主应用决定**要不要放进上下文的
+#    （application-driven，规范原文）⇒ 放进上下文的东西越少越好 ⇒
+#    只放「稳定 + 小 + 纯只读」的三份，其余仍走工具（模型自己决定调）。
+#
+# ⚠️ **口径仍只在服务端**：这三个 resource 读的就是下面那些工具，
+#    一样是服务端结论的透传（ADR #38）。
+
+
+@mcp.resource(
+    "teslamate://vehicle/info",
+    name="vehicle-info",
+    title="这台车是谁（车名 / 型号 / VIN）",
+    description="车的身份信息：不随时间变，一次问完就够。",
+    mime_type="application/json",
+)
+def vehicle_info_resource() -> str:
+    """车辆身份信息（供客户端直接放进上下文）。"""
+    return json.dumps(teslamate_car_info(), ensure_ascii=False, default=str)
+
+
+@mcp.resource(
+    "teslamate://vehicle/status",
+    name="vehicle-status",
+    title="当前车况快照（电量 / 续航 / 锁车 / 位置）",
+    description="车的当前状态快照（服务端口径，含新鲜度标记）。",
+    mime_type="application/json",
+)
+def vehicle_status_resource() -> str:
+    """当前车况快照（供客户端直接放进上下文）。"""
+    return json.dumps(teslamate_status(), ensure_ascii=False, default=str)
+
+
+@mcp.resource(
+    "teslamate://vehicle/maintenance",
+    name="vehicle-maintenance",
+    title="保养 / 轮胎提醒（还剩多少公里）",
+    description="保养与轮胎基准的服务端结论；没设基准时如实说没设。",
+    mime_type="application/json",
+)
+def vehicle_maintenance_resource() -> str:
+    """保养 / 轮胎结论（供客户端直接放进上下文）。"""
+    return json.dumps(teslamate_maintenance(), ensure_ascii=False, default=str)
+
+# --------------------------------------------------------------------------
+# v0.166.0：补齐「服务端有、MCP 没有」的 6 个端点
+# --------------------------------------------------------------------------
+#
+# ⚠️ **为什么补这些**：这一轮做「能力对账」时发现，服务端 39 个端点里
+#    MCP 只直连了 24 个 ⇒ 「车端实时快照」「车辆元信息」「遥测连没连过」
+#    这些**取不到** ⇒ 换任何一个 agent 接进来都一样缺。
+#
+# ⚠️ **口径仍只在服务端**（ADR #38）：下面每个工具**只透传**服务端给的
+#    结论与新鲜度标记，不自己算「旧不旧」「正常不正常」。
+
+
+@mcp.tool(annotations=RO)
+def teslamate_vehicle_data() -> dict:
+    """查**车端实时原始数据**（Tesla 官方 vehicle_data 那份，Tesla 原样转发）。
+
+    **什么时候用**：用户问「车现在到底什么状态」「Tesla 那边看到什么」
+    「把车端的原始数据给我」「我要看 charge_state / climate_state 原值」—— 都归它。
+
+    ⚠️ **这是「原始形态」**：字段名是 Tesla 官方那套（英文），
+    **不是**本项目的中文结论 ⇒ 读的时候要自己翻译。
+    想要**已经翻译好的结论**，用 teslamate_status / teslamate_telemetry。
+
+    ⚠️ **车睡着时这份数据会变旧**：Tesla 直接回 408，服务端只能给
+    **最近一次成功拉到**的那份 ⇒ **必须看 `数据是旧的` 与 `采集于`**：
+    · `数据是旧的` = true ⇒ 那是**车睡着前**的值，不是现在的；
+    · 报给用户时要说清「这是 X 分钟前的车端数据」。
+
+    ⚠️ `车在休眠，从未拿到过实时数据` ⇒ 那不是接口坏了，
+    是**车一直没醒**（开一次车或用官方 App 唤一下就会有）。
+    """
+    d = _get("/api/v1/cars/%s/vehicle_data" % CAR_ID)
+    if not isinstance(d, dict) or "error" in d:
+        return d if isinstance(d, dict) else {"error": "返回格式异常"}
+    resp = d.get("response") or {}
+    if not isinstance(resp, dict):
+        resp = {}
+    return {
+        "采集于": d.get("teslamate_fetched_at"),
+        "数据是旧的": bool(d.get("stale")),
+        "距今秒": d.get("age_sec"),
+        "充电状态": resp.get("charge_state"),
+        "空调状态": resp.get("climate_state"),
+        "行驶状态": resp.get("drive_state"),
+        "车辆状态": resp.get("vehicle_state"),
+        "说明": "字段名是 Tesla 官方原样（英文），不是本项目的中文结论",
+    }
+
+
+@mcp.tool(annotations=RO)
+def teslamate_vehicle_snapshot() -> dict:
+    """查**车端快照**（服务端归一化过的那份：充电 / 空调 / 行驶 / 车况 四块）。
+
+    **什么时候用**：用户问「车现在什么状态」「充电到什么程度了」「空调开着吗」
+    「车锁了吗（Tesla 那边看到的）」「给我一份车端快照」—— 都归它。
+
+    ⚠️ **与 teslamate_status 的分工**：
+    · teslamate_status = 本项目**聚合后的中文结论**（电量 / 续航 / 位置 / 锁车）；
+    · teslamate_vehicle_snapshot = **车端原始四块状态**（Tesla 官方字段，英文键）。
+    ⇒ 想知道「车现在锁没锁」这类**官方口径**，用这个；
+    ⇒ 想知道「现在多少电、还能开多远」，用 teslamate_status。
+
+    ⚠️ 同样**车睡着就旧** ⇒ 看 `采集于`，别当成此刻。
+    """
+    d = _get("/api/v1/cars/%s/vehicle_snapshot" % CAR_ID)
+    if not isinstance(d, dict) or "error" in d:
+        return d if isinstance(d, dict) else {"error": "返回格式异常"}
+    meta = d.get("meta") or {}
+    return {
+        "采集于": d.get("teslamate_fetched_at"),
+        "车名": meta.get("display_name"),
+        "车端状态": meta.get("state"),
+        "VIN": meta.get("vin"),
+        "车辆状态": d.get("vehicle_state"),
+        "充电状态": d.get("charge_state"),
+        "空调状态": d.get("climate_state"),
+        "行驶状态": d.get("drive_state"),
+    }
+
+
+@mcp.tool(annotations=RO)
+def teslamate_car_info() -> dict:
+    """查这台车**本身是谁**：车名、型号、配置、VIN、轮毂颜色。
+
+    **什么时候用**：用户问「我这车是什么型号」「VIN 是多少」「这车叫什么」
+    「我买的是 P74D 还是别的」—— 都归它。
+
+    ⚠️ **这是整车身份信息，不随时间变** ⇒ 一次问完就够，
+    不必每次查车况都带一遍。
+    """
+    cars = _get("/api/v1/cars")
+    if isinstance(cars, dict):
+        cars = [cars]
+    if not isinstance(cars, list) or not cars:
+        return {"error": "取不到车辆信息", "原始": str(cars)[:200]}
+    mine = None
+    for c in cars:
+        if isinstance(c, dict) and str(c.get("id")) == str(CAR_ID):
+            mine = c
+            break
+    c = mine or (cars[0] if isinstance(cars[0], dict) else {})
+    meta = _get("/api/v1/cars/%s/vehicles" % CAR_ID)
+    m0 = None
+    if isinstance(meta, dict):
+        arr = meta.get("response") or []
+        if isinstance(arr, list) and arr and isinstance(arr[0], dict):
+            m0 = arr[0]
+    m0 = m0 or {}
+    return {
+        "车号": c.get("id"),
+        "车名": m0.get("display_name") or c.get("name"),
+        "车机状态": m0.get("state"),
+        "型号": c.get("model"),
+        "配置": c.get("trim_badging"),
+        "市场名": c.get("marketing_name"),
+        "VIN": m0.get("vin") or c.get("vin"),
+        "车色": c.get("exterior_color"),
+        "轮毂": c.get("wheel_type"),
+        "电耗系数": c.get("efficiency"),
+    }
+
+
+@mcp.tool(annotations=RO)
+def teslamate_telemetry_state() -> dict:
+    """查**遥测接得上吗**（车主动推的实时数据那条链路通没通）。
+
+    **什么时候用**：用户问「遥测接上了吗」「为什么车况数据那么旧」
+    「故障码能收到吗」「车一直在推数据吗」—— 都归它。
+
+    ⚠️ **分清三件事**（这是本项目反复踩的坑）：
+    · `遥测已接入` = **从来没接过** ⇒ 车/证书/服务端任一没配好；
+    · `车端此刻在线` = 现在连着 ⇒ 数据是新的；
+    · `数据是旧的` = 断线前的最后已知值 ⇒ **不是现在的样子**。
+
+    ⚠️ **「遥测没接上」不等于「车没故障」** —— 没接上就**拿不到故障码**，
+    而「拿不到」≠「没有」⇒ 报告时要说「遥测没接上，**故障码拿不到**」，
+    **不能说**「车没故障」（红线第 2 条：宁可说不知道，不可编）。
+    """
+    d = _get("/api/v1/cars/%s/telemetry_state" % CAR_ID)
+    if not isinstance(d, dict) or "error" in d:
+        return d if isinstance(d, dict) else {"error": "返回格式异常"}
+    fields = d.get("fields") or []
+    return {
+        "车端此刻在线": bool(d.get("connected")),
+        "遥测已接入": bool(d.get("ever_connected")),
+        "最后连上": d.get("last_connected_at"),
+        "最后断开": d.get("last_disconnected_at"),
+        "遥测字段数": len(fields),
+        "遥测字段": [
+            {
+                "字段": f.get("label") or f.get("field"),
+                "值": f.get("text"),
+                "采集于": f.get("at"),
+                "是旧的": bool(f.get("stale")),
+            }
+            for f in fields
+            if isinstance(f, dict)
+        ],
+    }
+
+
+@mcp.tool(annotations=RO)
+def teslamate_fleet_telemetry() -> dict:
+    """查**Fleet Telemetry（车主动推）这套设施**本身的状态：装没装、配没配对。
+
+    **什么时候用**：用户问「遥测部署了吗」「证书配好了吗」
+    「车端固件版本是多少」「为什么收不到故障码」—— 都归它。
+
+    ⚠️ 这是**设施层**的信息（不是车况）⇒ 平时用不上，
+    只在排查「遥测为什么不通」时用。
+
+    ⚠️ `可部署` = false 时，先看 `原因`，别自己猜。
+    """
+    d = _get("/api/v1/cars/%s/fleet_telemetry" % CAR_ID)
+    if not isinstance(d, dict) or "error" in d:
+        return d if isinstance(d, dict) else {"error": "返回格式异常"}
+    return {
+        "已配置": bool(d.get("configured")),
+        "可部署": bool(d.get("can_deploy")),
+        "已部署": bool(d.get("deployable")),
+        "密钥已配对": bool(d.get("key_paired")),
+        "车端固件版本": d.get("firmware_version"),
+        "遥测版本": d.get("fleet_telemetry_version"),
+        "VIN": d.get("vin"),
+        "已同步": bool(d.get("synced")),
+        "达上限": bool(d.get("limit_reached")),
+        "密钥总数": d.get("total_number_of_keys"),
+        "配置摘要": d.get("config_summary"),
+        "原因": d.get("reason") or d.get("error"),
+    }
+
+
+@mcp.tool(annotations=RO)
+def teslamate_server_health() -> dict:
+    """查**服务端自己**的状态（数据库通不通、车端 API 通不通、服务器时间）。
+
+    **什么时候用**：用户问「服务还活着吗」「数据是不是最新的」
+    「为什么查不到数据」「接口是不是挂了」—— 都归它。
+
+    ⚠️ **这是自检工具**：查不到车况时**先用它**排除「服务端坏了」，
+    再去怀疑车或网络。
+
+    ⚠️ `数据库正常` = false ⇒ 整个系统读不到数据（**所有**工具都会失败）。
+    """
+    d = _get("/api/v1/health")
+    if not isinstance(d, dict) or "error" in d:
+        return d if isinstance(d, dict) else {"error": "返回格式异常"}
+    tm = d.get("teslamate") or {}
+    fl = d.get("fleet") or {}
+    return {
+        "数据库正常": bool(d.get("db_ok")),
+        "数据库延迟ms": d.get("db_latency_ms"),
+        "采集正常": bool(tm.get("ok") if isinstance(tm, dict) else tm),
+        "车端API正常": bool(fl.get("ok") if isinstance(fl, dict) else fl),
+        "服务器时间": d.get("server_time"),
+        "服务器时区": d.get("server_timezone"),
+        "说明": "服务端自检：读不到车况时先排除这里",
+    }
 # --------------------------------------------------------------------------
 # 查数据
 # --------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_status() -> dict:
     """查这台车**现在**的状态：电量、续航、锁没锁、位置、内外温、实时胎压、车醒没醒、车窗车门哨兵。
 
@@ -413,7 +803,7 @@ def teslamate_status() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_battery() -> dict:
     """查**电池健康度**：现在还能装多少度、相对出厂的健康度百分比、出厂折算的满电续航、衰减趋势。
 
@@ -462,7 +852,7 @@ def teslamate_battery() -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_range_estimate(to_km: float = 0) -> dict:
     """查「**真实可达续航**」：按**你自己跑出来的实测能耗**折算的里程、区间与依据。
 
@@ -540,7 +930,7 @@ def teslamate_range_estimate(to_km: float = 0) -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_charges(limit: int = 10) -> dict:
     """查**最近的充电记录**：时间、地点、充入多少度、起止电量、费用、峰值/平均功率。
 
@@ -623,7 +1013,7 @@ def _fmt_tz(ts: Any, tz: str) -> str:
         return str(ts)
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_charge_stats(period: str = "7d") -> dict:
     """查**充电统计**：按区间给出充了多少度、几次、直交流拆分、平均时长、上次充满。
 
@@ -680,7 +1070,7 @@ def teslamate_charge_stats(period: str = "7d") -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_charge_brief(period: str = "7d") -> dict:
     """查**充电简报**：一段可以直接发给用户的短报告（标题 + 正文）+ 底下的结构化数字。
 
@@ -804,7 +1194,7 @@ def teslamate_charge_brief(period: str = "7d") -> dict:
 # 配上一句服务端给的中文结论，模型要答什么都有足够的依据。
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_charge_outcome() -> dict:
     """查**最近一次充电的结局**：充满了吗、充到多少、充了多少度、用了多久、为什么没充满。
 
@@ -853,7 +1243,7 @@ def teslamate_charge_outcome() -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_drives(limit: int = 10) -> dict:
     """查**最近的行程记录**：时间、起终点、里程、时长、能耗、到达电量。
 
@@ -890,7 +1280,7 @@ def teslamate_drives(limit: int = 10) -> dict:
     return {"共": len(items), "最近": rows}
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_stats(period: str = "week") -> dict:
     """查**一段时间的用量汇总**：里程、行驶耗电、充入电量、行程数、充电次数。
 
@@ -926,7 +1316,7 @@ def teslamate_stats(period: str = "week") -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_driving_profile() -> dict:
     """查**驾驶画像**：平顺分，以及急刹 / 急加 / 能耗 / 夜驾 / 速度档各扣了多少分。
 
@@ -959,7 +1349,7 @@ def teslamate_driving_profile() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_stay_points(limit: int = 10) -> dict:
     """查**常驻点**：停得最多、最久的地方（家 / 公司 / 常去的商场）。
 
@@ -1002,7 +1392,7 @@ def teslamate_stay_points(limit: int = 10) -> dict:
 #   而是**把车主会说的话都变成能答**。
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_cost(period: str = "week") -> dict:
     """查**充电成本构成**：充了多少度、直流 / 交流 / 家充各占多少、行驶里程。
 
@@ -1033,7 +1423,7 @@ def teslamate_cost(period: str = "week") -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_energy_profile() -> dict:
     # ⚠️ **v0.103.0（第 11 轮 CDO Polish）：这份工具说明原来把两个口径说反了。**
     #
@@ -1086,7 +1476,7 @@ def teslamate_energy_profile() -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_route_profile(drive_ids: str, step_km: int = 0) -> dict:
     """查**一趟（或几趟连续行程）的电量剖面**：每走多少公里，电量掉到多少。
 
@@ -1120,7 +1510,7 @@ def teslamate_route_profile(drive_ids: str, step_km: int = 0) -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_charge_curve(charge_id: int) -> dict:
     """查**某一场充电的功率曲线**：随时间变化的功率、SOC、电压、电流。
 
@@ -1191,7 +1581,7 @@ def _param_howto(specs):
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_command_catalog() -> dict:
     """列出这台车**支持哪些车控动作**，每个动作的风险等级与参数该怎么填。
 
@@ -1224,7 +1614,7 @@ def teslamate_command_catalog() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=DE)
 def teslamate_vehicle_command(action: str, params: dict | None = None) -> dict:
     """给这台车**下发一条命令**：锁车 / 解锁 / 空调 / 座椅加热 / 方向盘加热 /
     车窗通风 / 充电上限 / 闪灯 / 鸣笛 / 尾门 / 前备箱 / 远程启动 / 唤醒…
@@ -1277,7 +1667,7 @@ def teslamate_vehicle_command(action: str, params: dict | None = None) -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_telemetry() -> dict:
     """查这台车的**车况实况**（车主动推的实时数据）：胎压、车窗、门、哨兵、温度、充电上限。
 
@@ -1349,7 +1739,7 @@ def teslamate_telemetry() -> dict:
     }
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_alerts() -> dict:
     """查这台车的**故障码**（BMS_ / DI_ / VCFRONT_ / CP_ …）与遥测接入状态。
 
@@ -1455,7 +1845,7 @@ def teslamate_alerts() -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_feedback(limit: int = 20, status: str = "") -> dict:
     """读**用户反馈**（用户自己在 App「设置 → 用户反馈」里记下来的问题与建议）。
 
@@ -1523,7 +1913,7 @@ def _feedback_image_path(image_path: Any) -> str:
     return str(_REPO / "media" / "feedback" / Path(p).name)
 
 
-@mcp.tool()
+@mcp.tool(annotations=WR)
 def teslamate_feedback_decision(feedback_id: int, decision: str, note: str = "") -> dict:
     """给一条用户反馈**写评估结论**（发版前的必做动作）。
 
@@ -1552,20 +1942,21 @@ def teslamate_feedback_decision(feedback_id: int, decision: str, note: str = "")
     }
 
 
-# --------------------------------------------------------------------------
-# 入口
-# --------------------------------------------------------------------------
+# ⚠️ **v0.166.0 修掉的严重 bug**：这个「入口」块原来在**文件中部**。
+#
+# ⇒ 后果：`mcp.run()` 在 stdio 模式下**阻塞** ⇒ 后面定义的 4 个工具
+#   （teslamate_drive_energy_profile / teslamate_climb_model /
+#   teslamate_maintenance / teslamate_set_maintenance_baseline）
+#   **从来没被注册进服务** ⇒ 飞书里根本调不到它们。
+# ⇒ 而 `mcp/check_tool_fields.py` 是 `import teslamate_mcp` 直接调函数
+#   （**走模块导入路径，不是 stdio 启动路径**）⇒ 那里全绿 ⇒ **假绿**。
+#
+# ⚠️ 教训（与 v0.163.0「定义了自检函数 ≠ 它真跑了」同型）：
+#   **「源码里有」不等于「活进程里有」** ⇒ 必须打活进程验（tools/list）。
+# ⇒ 现在入口块移到**文件最末**，并新增闸门 30 钉住这件事。
 
-if __name__ == "__main__":
-    # ⚠️ stdio 传输：stdout 是协议通道，**任何 print 都会破坏它** ⇒ 日志只走 stderr。
-    import sys
 
-    print(f"[teslamate-mcp] API={API_URL} car={CAR_ID} token={'有' if TOKEN else '缺'!s}",
-          file=sys.stderr)
-    mcp.run()
-
-
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_drive_energy_profile(drive_id: int = 0, step_km: int = 5) -> dict:
     """查**某一趟行程的逐公里电量剖面**（这趟的电是怎么掉的）。
 
@@ -1603,7 +1994,7 @@ def teslamate_drive_energy_profile(drive_id: int = 0, step_km: int = 5) -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_climb_model(min_km: float = 20.0) -> dict:
     """查**本车的爬升能耗标定**（上坡每米多耗多少电 / 下坡每米能回多少）。
 
@@ -1657,7 +2048,7 @@ def merge_maintenance_baseline(current: dict, given: dict) -> dict:
     return out
 
 
-@mcp.tool()
+@mcp.tool(annotations=WR)
 def teslamate_set_maintenance_baseline(
     service_odo_km: float | None = None,
     service_interval_km: int | None = None,
@@ -1721,7 +2112,7 @@ def teslamate_set_maintenance_baseline(
             }
     return out
 
-@mcp.tool()
+@mcp.tool(annotations=RO)
 def teslamate_maintenance() -> dict:
     """查**保养 / 轮胎提醒**：「我轮胎还能跑多少」「保养超期了吗」「该什么时候做保养」。
 
@@ -1777,3 +2168,229 @@ def teslamate_maintenance() -> dict:
     return out
 
 
+
+# --------------------------------------------------------------------------
+# 入口（**必须在文件最末** —— 见上面那条 v0.166.0 的教训）
+# --------------------------------------------------------------------------
+
+def _read_http_token() -> str:
+    """HTTP 模式的口令：环境变量优先，其次同目录/仓库根的 .env。
+
+    ⚠️ **为什么与 API_TOKEN 分开**：API_TOKEN 是**本机**调 API 用的；
+    HTTP 暴露的是**能把车开走**的入口 ⇒ 必须有独立的、
+    **可以随时吊销**的口令 ⇒ 吊销它 = 一键关掉远程车控。
+    """
+    tok = os.environ.get("MCP_HTTP_TOKEN", "").strip()
+    if tok:
+        return tok
+    for cand in (_HERE / ".env", _REPO / ".env"):
+        try:
+            for line in cand.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("MCP_HTTP_TOKEN="):
+                    return line.split("=", 1)[1].strip()
+        except OSError:
+            continue
+    return ""
+
+
+class _StaticTokenVerifier:
+    """校验 Bearer 令牌（实现 MCP 官方的 TokenVerifier 协议）。
+
+    ⚠️ **为什么自己写这个类**：MCP 的授权规范面向 OAuth 2.1（动态注册、
+    授权码流程…）—— 那是给**公网多租户**服务用的。本项目是
+    **单用户自用** ⇒ 一个静态口令就够，且更好管：
+    改 .env 里的 MCP_HTTP_TOKEN ⇒ **一键吊销**所有远程车控。
+
+    ⚠️ 用 hmac.compare_digest 比较 ⇒ 不给时序侧信道留机会。
+    """
+
+    def __init__(self, token: str):
+        self._token = token or ""
+
+    async def verify_token(self, token: str):
+        if not self._token:
+            # 没配口令 ⇒ 放行（但只绑回环；非回环时上面已 fail closed 退出）
+            return _access_token(token)
+        if not token or not hmac.compare_digest(str(token), self._token):
+            return None
+        return _access_token(token)
+
+
+def _access_token(token: str):
+    """造一个 AccessToken 对象。
+
+    ⚠️ **SDK 2.0 的 AccessToken 必填 client_id**（实测：只给 token + scopes
+    会抛 pydantic 校验错）⇒ 这里给一个固定值（单用户自用，没有真实 OAuth 客户端）。
+    ⚠️ 老 SDK 的字段名不同 ⇒ 逐个构造签名试，谁成用谁。
+    """
+    try:
+        from mcp.server.auth.provider import AccessToken
+    except Exception:  # pragma: no cover - 老 SDK
+        return None
+    for kwargs in (
+        {"token": token, "client_id": "teslamate-mcp", "scopes": ["teslamate"]},
+        {"token": token, "client_id": "teslamate-mcp"},
+        {"token": token, "scopes": ["teslamate"]},
+        {"token": token},
+    ):
+        try:
+            return AccessToken(**kwargs)
+        except Exception:
+            continue
+    return None
+
+
+def _copy_registry(src_server, dst_server) -> None:
+    """把源 server 上已注册的工具与资源**搬**到目标 server。
+
+    ⚠️ **为什么需要**：鉴权必须在**构造时**传进 MCPServer（SDK 2.0 的约束）
+    ⇒ HTTP 模式要另建一个带鉴权的实例 ⇒ 而工具是装饰器注册的（在源实例上）
+    ⇒ 这里把注册表搬过去（**不复制工具实现**，只是让两个实例指向同一批函数）。
+
+    ⚠️ **add_tool 收的是「函数」不是 Tool 对象**（实测：传 Tool 会静默失败，
+    症状是 tools/list 返回 0 个工具 ⇒ 看起来像「服务没工具」，极难查）
+    ⇒ 这里统一从 Tool 对象上取 .fn 再注册，并**带上注解**
+    （否则客户端看不见 readOnly / destructive 标记）。
+    """
+    s_tools = getattr(getattr(src_server, "_tool_manager", None), "_tools", None)
+    if isinstance(s_tools, dict):
+        for item in list(s_tools.values()):
+            fn = getattr(item, "fn", None)
+            if fn is None:
+                continue
+            try:
+                dst_server.add_tool(
+                    fn,
+                    name=item.name,
+                    title=item.title,
+                    description=item.description,
+                    annotations=item.annotations,
+                )
+            except Exception:
+                pass
+    # ⚠️ **add_resource 收的是「Resource 对象」**（与 add_tool 不同：
+    #    add_tool 收函数，add_resource 收对象）⇒ 这里直接搬对象。
+    s_res = getattr(getattr(src_server, "_resource_manager", None), "_resources", None)
+    if isinstance(s_res, dict):
+        for uri, item in list(s_res.items()):
+            try:
+                dst_server.add_resource(item)
+            except Exception:
+                pass
+
+
+def _run_http(host: str, port: int, path: str) -> None:
+    """以 Streamable HTTP 传输跑（规范 basic/transports 的第二种标准传输）。
+
+    ⚠️ **安全三件套**（缺一不可）：
+    ① **默认只绑回环**（127.0.0.1）—— 规范明写：本地服务 SHOULD 只绑回环；
+    ② **绑非回环必须带口令** —— 否则同网段任何机器都能开车 ⇒ fail closed；
+    ③ **Origin / Host 校验**（规范：MUST validate the Origin header，防 DNS rebinding）
+       ⇒ 由 SDK 的 TransportSecuritySettings 承担（allowed_hosts/allowed_origins）。
+
+    ⚠️ **Bearer 令牌用 MCP 官方的 TokenVerifier 协议**（规范 2025-06-18 授权）
+    ⇒ 客户端配置里带 headers.Authorization 即可；
+    ⇒ 令牌不对 ⇒ **401**（不是 200 + 空结果）。
+    """
+    import sys
+
+    tok = _read_http_token()
+    is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    if not is_loopback and not tok:
+        print("[teslamate-mcp] 拒绝启动：绑 %s 需要 MCP_HTTP_TOKEN" % host,
+              file=sys.stderr)
+        raise SystemExit(2)
+    if not tok:
+        print("[teslamate-mcp] 警告：没有 MCP_HTTP_TOKEN ⇒ 本地 HTTP 口令为空"
+              "（只绑回环，仅本机可用）",
+              file=sys.stderr)
+
+    security = None
+    if _TransportSecuritySettings is not None:
+        security = _TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=["%s:*" % host, "127.0.0.1:*", "localhost:*", "[::1]:*"],
+            allowed_origins=["http://%s:*" % host, "http://127.0.0.1:*", "http://localhost:*"],
+        )
+
+    print("[teslamate-mcp] Streamable HTTP：http://%s:%d%s（口令：%s）"
+          % (host, port, path, "有" if tok else "无"),
+          file=sys.stderr)
+
+    # ⚠️ **鉴权用 SDK 官方的 TokenVerifier 协议**（不是自己写中间件 ——
+    #    那样容易漏掉某些路径；SDK 的实现会统一套在整条 /mcp 路由上）。
+    verifier = _StaticTokenVerifier(tok)
+    auth_settings = None
+    try:
+        from mcp.server.auth.settings import AuthSettings as _AuthSettings
+        auth_settings = _AuthSettings(
+            issuer_url="http://%s:%d" % (host, port),
+            resource_server_url="http://%s:%d" % (host, port),
+            required_scopes=[],
+        )
+    except Exception:  # pragma: no cover - 老 SDK 没有授权模块
+        auth_settings = None
+
+    # ⚠️ **鉴权必须在「构造 MCPServer 时」传进去**（SDK 2.0 的真实约束）：
+    #    · `MCPServer(..., auth=..., token_verifier=...)` ⇒ **构造参数**；
+    #    · `streamable_http_app()` 与 `run()` **都不接受** auth 参数
+    #      ⇒ 走那两条路时鉴权会被**悄悄丢掉** ⇒ 错令牌也返回 200（**假鉴权**）。
+    # ⇒ 所以 HTTP 模式**另建一个带鉴权的 server 实例**，
+    #    再把已注册的工具与资源**搬过去**（不复制工具实现）。
+    http_mcp = mcp
+    if auth_settings is not None:
+        try:
+            http_mcp = _MCP(
+                "teslamate",
+                instructions=SERVER_INSTRUCTIONS,
+                auth=auth_settings,
+                token_verifier=verifier,
+            )
+            _copy_registry(mcp, http_mcp)
+        except Exception as e:  # pragma: no cover
+            print("[teslamate-mcp] 鉴权实例创建失败，退回无鉴权：%r" % e,
+                  file=sys.stderr)
+
+    app = http_mcp.streamable_http_app(
+        streamable_http_path=path,
+        transport_security=security,
+        host=host,
+    )
+    import uvicorn
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
+def _main() -> None:
+    """命令行入口。
+
+    ⚠️ stdio 传输：stdout 是协议通道，**任何 print 都会破坏它** ⇒ 日志只走 stderr。
+    """
+    import argparse
+    import sys
+
+    ap = argparse.ArgumentParser(
+        prog="teslamate-mcp",
+        description="TeslaMate MCP 服务（查车况 + 控车）",
+    )
+    ap.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default=os.environ.get("MCP_TRANSPORT", "stdio"),
+        help="stdio=由 MCP 客户端拉起（默认）；http=独立跑一个 HTTP 端点",
+    )
+    ap.add_argument("--host", default=HTTP_HOST, help="HTTP 监听地址（默认 127.0.0.1）")
+    ap.add_argument("--port", type=int, default=HTTP_PORT, help="HTTP 监听端口（默认 8765）")
+    ap.add_argument("--path", default=HTTP_PATH, help="HTTP 端点路径（默认 /mcp）")
+    args = ap.parse_args()
+
+    print("[teslamate-mcp] API=%s car=%s token=%s transport=%s"
+          % (API_URL, CAR_ID, "有" if TOKEN else "缺", args.transport),
+          file=sys.stderr)
+    if args.transport == "http":
+        _run_http(args.host, args.port, args.path)
+    else:
+        mcp.run()
+
+
+if __name__ == "__main__":
+    _main()

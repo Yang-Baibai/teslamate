@@ -41,6 +41,17 @@ import teslamate_mcp as T
 # ⚠️ 只断言「**必然存在**」的字段：
 #    费用（没配电价时合法为 null）、锁车状态（车在休眠时合法为 null）**不列**。
 SPEC = [
+    # ⚠️ **v0.166.0 补记**：这一轮补齐的「服务端有、MCP 没有」的 6 个端点。
+    #    这里只断言**恒在**的字段（数据没到时合法为 null 的**不进 SPEC**）。
+    #    ⚠️ **写工具绝不入 SPEC**（自检每轮都跑 ⇒ 会一直写用户的数据）。
+    ("teslamate_car_info", {}, "车号", "车辆身份（车号）"),
+    ("teslamate_car_info", {}, "VIN", "车辆身份（VIN）"),
+    ("teslamate_vehicle_data", {}, "采集于", "车端原始数据的采集时刻"),
+    ("teslamate_vehicle_snapshot", {}, "采集于", "车端快照的采集时刻"),
+    ("teslamate_telemetry_state", {}, "遥测已接入", "遥测是否接得上（没它就没法判断「无故障码」是真是假）"),
+    ("teslamate_telemetry_state", {}, "车端此刻在线", "车端此刻是否连着"),
+    ("teslamate_server_health", {}, "数据库正常", "服务端数据库是否正常"),
+    ("teslamate_fleet_telemetry", {}, "已配置", "遥测设施是否已配置"),
     # ⚠️ **v0.122.0 补记**：「App 能看到的，Hermes 也要能取」（能力对账）。
     #    这两个是 App 有、而 Hermes 原来没有的端点 ⇒ 本轮补上。
     ("teslamate_drive_energy_profile", {}, "采样点数", "这趟行程的逐公里电量剖面"),
@@ -257,6 +268,49 @@ def check_command_catalog_params() -> list:
             with_params += 1
     if with_params == 0:
         bad.append("一个带参数的动作都没有 —— 「参数怎么填」这条链路是空的")
+    return bad
+
+
+def check_annotations_contract() -> list:
+    """每个工具都必须带 **annotations**（MCP 协议 2025-06-18 server/tools）。
+
+    ⚠️ **v0.166.0 补**：规范里 tool 有 `annotations` 字段
+    （readOnlyHint / destructiveHint / idempotentHint / openWorldHint），
+    客户端**靠它决定要不要弹确认框** ⇒ 不标 = 让客户端自己猜
+    ⇒ 车控这类不可逆动作可能被静默执行。
+
+    ⇒ 这条自检把「每个工具都标了」变成**可断言的契约**。
+
+    ⚠️ **判据不依赖写法形态**：直接问 **SDK 里的工具对象**（不是扫源码字面量）
+    ⇒ 探针把 `@mcp.tool()` 改成 `@mcp.tool(annotations=RO)` 或反过来都咬得住。
+    """
+    bad = []
+    try:
+        import asyncio
+        tools = asyncio.run(T.mcp.list_tools())
+    except Exception as e:
+        return ["拿不到已注册的工具清单：%r" % (e,)]
+
+    if not tools:
+        return ["已注册的工具清单是空的 ⇒ MCP 服务一个工具都没有"]
+
+    for t in tools:
+        ann = getattr(t, "annotations", None)
+        if ann is None:
+            bad.append("%-34s 没有 annotations ⇒ 客户端不知道该不该弹确认框" % t.name)
+            continue
+        # 车控 / 解锁这类**不可逆**动作 ⇒ 必须标 destructive
+        if t.name == "teslamate_vehicle_command":
+            if not getattr(ann, "destructive_hint", False):
+                bad.append("%-34s 是不可逆的车控动作 ⇒ 必须标 destructiveHint=True" % t.name)
+            if getattr(ann, "read_only_hint", True):
+                bad.append("%-34s 会下发命令 ⇒ readOnlyHint 必须是 False" % t.name)
+        # 只读工具 ⇒ 必须标 readOnly（否则客户端会一直弹确认框烦人）
+        elif t.name.startswith("teslamate_") and t.name not in (
+            "teslamate_set_maintenance_baseline", "teslamate_feedback_decision",
+        ):
+            if not getattr(ann, "read_only_hint", False):
+                bad.append("%-34s 是只读工具 ⇒ readOnlyHint 必须是 True" % t.name)
     return bad
 
 
@@ -1409,6 +1463,14 @@ def main() -> int:
     if not cab_bad:
         print("  ✓ %-26s %-24s 三态字符串 + 不编方向盘档位名" % ("teslamate_status", "座舱契约"))
     bad.extend(cab_bad)
+
+    # ⚠️ **v0.166.0**：注解体检（客户端靠它决定要不要弹确认框）
+    ann_bad = check_annotations_contract()
+    for b in ann_bad:
+        print("  ✗ %s" % b)
+    if not ann_bad:
+        print("  ✓ %-26s %-24s 每个工具都标了 readOnly / destructive" % ("（annotations）", "工具注解契约"))
+    bad.extend(ann_bad)
 
     desc_bad = check_descriptions()
     for b in desc_bad:

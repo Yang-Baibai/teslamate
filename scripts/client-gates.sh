@@ -2444,7 +2444,12 @@ else:
         i += 1
     colon = mcp.find(':', i)
     rest = mcp[colon + 1:] if colon >= 0 else ''
-    nxt = rest.find('\n@mcp.tool()')
+    # ⚠️ **v0.166.0 修正**：原来找的是 '\n@mcp.tool()'（**无参形式**）。
+    # MCP 工具加了注解（annotations=RO）⇒ 那个字符串**再也匹配不到**
+    # ⇒ body 一直取到文件末尾 ⇒ 把**后面所有工具的键**都算进来 ⇒ 闸门假红。
+    # ⇒ 改成匹配「装饰器行」本身（**不限定有没有参数**）⇒ 两种写法都盖住。
+    _nxt = re.search(r'\n@mcp\.tool\s*\(', rest)
+    nxt = _nxt.start() if _nxt else -1
     body = rest[:nxt] if nxt >= 0 else rest
 
 # ② 它读的**服务端键**必须都在服务端结构体里（键名写错 ⇒ 值恒 null）

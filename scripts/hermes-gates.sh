@@ -202,8 +202,13 @@ while i < len(mcp):
     i += 1
 colon = mcp.find(':', i)
 rest = mcp[colon + 1:] if colon >= 0 else ''
-nxt = rest.find('\n@mcp.tool()')
-body = rest[:nxt] if nxt >= 0 else rest
+# ⚠️ **v0.166.0 修正**：原来找的是 '\n@mcp.tool()'（**无参形式**）。
+# 这一轮给工具加了注解 ⇒ 装饰器变成 '@mcp.tool(annotations=RO)'
+# ⇒ 那个字符串**再也匹配不到** ⇒ body 一直取到文件末尾
+# ⇒ 把**后面所有工具的键**都算进来 ⇒ 闸门假红（实测报了几百个不存在的键）。
+# ⇒ 改成匹配「装饰器行」本身（**不限定有没有参数**）⇒ 两种写法都盖住。
+_nxt = re.search(r'\n@mcp\.tool\s*\(', rest)
+body = rest[:_nxt.start()] if _nxt else rest
 
 read_keys = set(re.findall(r'\.get\("([^"]+)"\)', body))
 missing = sorted(k for k in read_keys if k not in server_tags)
@@ -2148,6 +2153,227 @@ print('保养 / 轮胎基准的写入只有一个入口 ✔（MCP 会合并，�
 PYEOF
 if [ $? -eq 0 ]; then ok "保养/轮胎基准的写入只有一个入口（写工具不进自检 SPEC）"; else fail "保养/轮胎基准的写入没收好"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 30：**活进程**注册的工具数 == 源码里定义的工具数 ───────────────────
+#
+# ⚠️ **v0.166.0（一次真实的假绿事故）**
+#
+# 原来 MCP 的「入口」块（`if __name__ == "__main__": mcp.run()`）在**文件中部**
+# ⇒ `mcp.run()` 在 stdio 模式下**阻塞** ⇒ 后面定义的 4 个工具
+#   （保养 / 轮胎基准 / 逐公里电量 / 爬升模型）**从来没被注册进服务**
+# ⇒ 飞书里根本调不到它们（v0.165.0 声称「飞书能设保养基准」⇒ **不成立**）。
+# ⇒ 而 `mcp/check_tool_fields.py` 是 `import teslamate_mcp` 直接调函数
+#   （**走模块导入路径，不是 stdio 启动路径**）⇒ 那里全绿 ⇒ **假绿**。
+#
+# ⇒ 教训（与 v0.163.0「定义了自检函数 ≠ 它真跑了」同型）：
+#   **「源码里有」不等于「活进程里有」** ⇒ 必须**起一个真的 stdio 服务**
+#   并 `tools/list` 数一遍。
+#
+# ⚠️ **判据不依赖写法形态**：起真进程 + 数 tools/list ⇒
+#   探针把入口块挪位置、改名、注释掉，都咬得住。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import json, os, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
+ROOT = os.path.abspath(os.path.join(HERE, '..')) if not os.path.exists(os.path.join(HERE, 'mcp')) else HERE
+SRV = os.path.join(ROOT, 'mcp', 'teslamate_mcp.py')
+if not os.path.exists(SRV):
+    print('找不到 %s' % SRV)
+    sys.exit(1)
+
+# 源码里定义的工具（模块导入路径）
+sys.path.insert(0, os.path.join(ROOT, 'mcp'))
+try:
+    import teslamate_mcp as T
+except Exception as e:
+    print('import 失败：%r' % (e,))
+    sys.exit(1)
+defined = sorted(n for n in dir(T) if n.startswith('teslamate_') and callable(getattr(T, n, None)))
+
+# 活进程里注册的工具（stdio 启动路径）—— 这才是客户端真正看到的
+p = subprocess.Popen([sys.executable, SRV], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                     stderr=subprocess.PIPE, text=True, encoding='utf-8', bufsize=1)
+
+
+def send(o):
+    p.stdin.write(json.dumps(o, ensure_ascii=False) + '\n')
+    p.stdin.flush()
+
+
+def recv(timeout=30):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        line = p.stdout.readline()
+        if not line:
+            return None
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return json.loads(line)
+        except Exception:
+            continue
+    return None
+
+
+try:
+    send({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+          'params': {'protocolVersion': '2025-06-18', 'capabilities': {},
+                     'clientInfo': {'name': 'gate30', 'version': '1'}}})
+    recv()
+    send({'jsonrpc': '2.0', 'method': 'notifications/initialized', 'params': {}})
+    send({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list', 'params': {}})
+    resp = recv()
+    live = sorted(t['name'] for t in (resp or {}).get('result', {}).get('tools', []))
+finally:
+    try:
+        p.kill()
+    except Exception:
+        pass
+
+if not live:
+    print('活进程一个工具都没有 ⇒ MCP 服务起不来（或入口块位置错了）')
+    sys.exit(1)
+
+missing = [n for n in defined if n not in live]
+extra = [n for n in live if n not in defined]
+if missing or extra:
+    print('活进程与源码的工具清单不一致：')
+    if missing:
+        print('   源码里有、活进程里没有（客户端调不到）：')
+        for n in missing:
+            print('      ', n)
+    if extra:
+        print('   活进程里有、源码里没有：')
+        for n in extra:
+            print('      ', n)
+    print('   ⇒ 入口块必须在**文件最末**（v0.166.0 修过一次这个 bug）')
+    sys.exit(1)
+
+print('活进程注册 %d 个工具，与源码一致 ✔' % len(live))
+PYEOF
+if [ $? -eq 0 ]; then ok "活进程注册的工具 == 源码定义的（不是假绿）"; else fail "活进程与源码的工具清单不一致"; cat "$TMP"; fi
+rm -f "$TMP"
+
+
+# ── 闸门 31：每个 MCP 工具都必须带 annotations（协议 2025-06-18）──────────
+#
+# ⚠️ 规范里 tool 有 annotations 字段（readOnlyHint / destructiveHint /
+#    idempotentHint / openWorldHint），客户端**靠它决定要不要弹确认框**
+# ⇒ 不标 = 让客户端自己猜 ⇒ 车控这类不可逆动作可能被静默执行。
+#
+# ⚠️ 判据问的是 **SDK 里的工具对象**（不是扫源码字面量）
+# ⇒ 探针把 @mcp.tool() 改成 @mcp.tool(annotations=RO) 或反过来都咬得住。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import asyncio, os, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
+ROOT = os.path.abspath(os.path.join(HERE, '..')) if not os.path.exists(os.path.join(HERE, 'mcp')) else HERE
+sys.path.insert(0, os.path.join(ROOT, 'mcp'))
+try:
+    import teslamate_mcp as T
+except Exception as e:
+    print('import 失败：%r' % (e,))
+    sys.exit(1)
+
+try:
+    tools = asyncio.run(T.mcp.list_tools())
+except Exception as e:
+    print('拿不到工具清单：%r' % (e,))
+    sys.exit(1)
+
+if not tools:
+    print('工具清单为空 ⇒ 没有工具可查')
+    sys.exit(1)
+
+problems = []
+for t in tools:
+    ann = getattr(t, 'annotations', None)
+    if ann is None:
+        problems.append('%-34s 没有 annotations' % t.name)
+        continue
+    if t.name == 'teslamate_vehicle_command':
+        if not getattr(ann, 'destructive_hint', False):
+            problems.append('%-34s 不可逆动作 ⇒ 必须 destructiveHint=True' % t.name)
+        if getattr(ann, 'read_only_hint', True):
+            problems.append('%-34s 会下发命令 ⇒ readOnlyHint 必须 False' % t.name)
+    elif t.name.startswith('teslamate_') and t.name not in (
+            'teslamate_set_maintenance_baseline', 'teslamate_feedback_decision'):
+        if not getattr(ann, 'read_only_hint', False):
+            problems.append('%-34s 只读工具 ⇒ readOnlyHint 必须 True' % t.name)
+
+if problems:
+    print('工具注解不全 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    sys.exit(1)
+
+print('%d 个工具都带注解 ✔' % len(tools))
+PYEOF
+if [ $? -eq 0 ]; then ok "每个 MCP 工具都带 annotations（客户端知道该不该弹确认）"; else fail "MCP 工具注解不全"; cat "$TMP"; fi
+rm -f "$TMP"
+
+
+# ── 闸门 32：HTTP 传输的安全三件套（鉴权 / Origin / 只绑回环）─────────────
+#
+# ⚠️ **v0.166.0 实测踩到**：一开始用 mcp.run(transport="streamable-http")，
+#    但它**不接受** auth / token_verifier 参数 ⇒ 鉴权被**悄悄丢掉**
+# ⇒ 实测「错令牌」与「无令牌」都返回 **200**（**假鉴权**）。
+# ⇒ 一个能把车开走的接口不能没有认证 ⇒ 现在这条闸门钉住三件事：
+#   ① 鉴权**必须在构造 MCPServer 时**传进去（不是 run() / streamable_http_app()）；
+#   ② **默认只绑回环**；
+#   ③ **绑非回环必须带口令**（fail closed）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+HERE = pathlib.Path('.').resolve()
+MCP = HERE / 'mcp' / 'teslamate_mcp.py'
+if not MCP.exists():
+    print('找不到 %s' % MCP)
+    sys.exit(1)
+
+src = MCP.read_text(encoding='utf-8', errors='replace')
+
+problems = []
+
+# ① 默认只绑回环
+if not re.search(r'MCP_HTTP_HOST"\s*,\s*"127\.0\.0\.1"', src):
+    problems.append('HTTP 默认监听地址不是 127.0.0.1 ⇒ 同网段任何机器都能开车')
+
+# ② 鉴权必须在**构造**时传（run / streamable_http_app 都不吃这个参数）
+# ⚠️ **判据要精确**：不能只查「全文出现过 token_verifier」——
+#    探针把它挪到别的上下文里也照样绿 ⇒ **假绿**。
+# ⇒ 这里必须看到**同一个 _MCP(...) 调用里**同时有 auth 与 token_verifier。
+_mcp_calls = re.findall(r'_MCP\((?:[^()]|\([^()]*\))*\)', src, re.S)
+_ctor_ok = False
+for _call in _mcp_calls:
+    if 'token_verifier' in _call and 'auth=' in _call:
+        _ctor_ok = True
+        break
+if not _ctor_ok:
+    problems.append('带鉴权的 MCPServer 构造里没同时传 auth= 与 token_verifier ⇒ 鉴权没生效（假鉴权）')
+
+# ③ 绑非回环必须带口令（fail closed）
+if '需要 MCP_HTTP_TOKEN' not in src:
+    problems.append('绑非回环时没有 fail closed 的拒绝启动逻辑')
+
+# ④ Origin / Host 校验（规范要求，防 DNS rebinding）
+if 'enable_dns_rebinding_protection=True' not in src:
+    problems.append('没开 DNS rebinding 防护 ⇒ 恶意网页能借浏览器打本地服务')
+
+if problems:
+    print('HTTP 传输的安全项缺了 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    sys.exit(1)
+
+print('HTTP 传输安全三件套齐 ✔（回环默认 + 构造期鉴权 + fail closed + Origin 校验）')
+PYEOF
+if [ $? -eq 0 ]; then ok "HTTP 传输的安全项齐（回环默认 / 构造期鉴权 / fail closed）"; else fail "HTTP 传输的安全项缺失"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"
