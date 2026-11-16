@@ -2058,6 +2058,96 @@ print('天气的判定与阈值只在服务端一份 ✔（MCP / 推送脚本只
 PYEOF
 if [ $? -eq 0 ]; then ok "天气的判定与阈值只在服务端一份（MCP / 脚本只读结论）"; else fail "天气的判定漏到 MCP / 脚本里了"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 29：保养 / 轮胎基准的**写入**只有一个入口，写工具不许进自检 ──────
+#
+# ⚠️ **v0.165.0**：服务端的写接口（POST /maintenance/baseline）**早就有**（App 在用），
+#   但 Hermes 侧没有写工具 ⇒ 飞书只能答「还没设置基准」，
+#   用户想设却只能去 App 翻设置页 ⇒ 这个缺口**反复卡了好几轮**。
+#
+# 判据：
+#   ① 服务端的写接口必须在，且**写完要回读结论**（不是只写不报）；
+#   ② MCP 必须有写工具（飞书里能设）；
+#   ③ 工具必须**先读当前基准再写** —— 服务端是**整份 upsert**，
+#      不合并就是把没说的一项清零；
+#   ④ ⚠️ **写工具不许进自检的 SPEC**：自检**每轮都跑**（冒烟第 19 项）
+#      ⇒ 它会一直写用户的基准；
+#   ⑤ 契约自检必须有**合并逻辑**的核对（纯函数，不写库）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROUTES = pathlib.Path('api/main.go')
+MAINT = pathlib.Path('api/maintenance.go')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+CHK = pathlib.Path('mcp/check_tool_fields.py')
+
+for p in (ROUTES, MAINT, MCP, CHK):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)#.*$', '', src)
+
+
+problems = []
+
+routes = ROUTES.read_text(encoding='utf-8', errors='replace')
+maint = strip_comments(MAINT.read_text(encoding='utf-8', errors='replace'))
+mcp = strip_comments(MCP.read_text(encoding='utf-8', errors='replace'))
+chk = CHK.read_text(encoding='utf-8', errors='replace')
+
+# ① 服务端的写接口在，且写完**回读结论**
+if 'POST /api/v1/cars/{id}/maintenance/baseline' not in routes:
+    problems.append('api/main.go 里没有 POST /api/v1/cars/{id}/maintenance/baseline ⇒ 没有写基准的入口')
+if 'func handleMaintenanceBaseline' not in maint:
+    problems.append('api/maintenance.go 里没有 handleMaintenanceBaseline ⇒ 写基准的处理器不见了')
+else:
+    m = re.search(r'func handleMaintenanceBaseline.*?\n\}', maint, re.S)
+    body = m.group(0) if m else ''
+    if 'computeMaintenance' not in body:
+        problems.append('handleMaintenanceBaseline 写完**没有回读结论** ⇒ 写完不知道还剩多少公里')
+
+# ② MCP 必须有写工具
+if 'def teslamate_set_maintenance_baseline' not in mcp:
+    problems.append('MCP 没有写基准的工具 ⇒ 飞书里答不出「我轮胎还能跑多少」也设不了')
+
+# ③ 工具必须先读当前基准再写（不许整份覆盖）
+m = re.search(r'def teslamate_set_maintenance_baseline.*?\n(?=@mcp|def )', mcp, re.S)
+tool = m.group(0) if m else ''
+if tool and 'cur.get("baseline")' not in tool:
+    problems.append('写基准的工具**没有读当前基准** ⇒ 服务端是整份 upsert ⇒ 没说的一项会被清零')
+if tool and 'merge_maintenance_baseline' not in tool:
+    problems.append('写基准的工具没有走合并（merge_maintenance_baseline）⇒ 没说的一项会被清零')
+
+# ④ ⚠️ 写工具不许进自检的 SPEC（自检每轮都跑 ⇒ 会一直写用户的基准）
+m_spec = re.search(r'SPEC\s*=\s*\[(.*?)\n\]', chk, re.S)
+spec_body = m_spec.group(1) if m_spec else ''
+if 'teslamate_set_maintenance_baseline' in spec_body:
+    problems.append('写基准的工具进了自检的 SPEC ⇒ 自检每轮都会写用户的基准（绝不允许）')
+
+# ⑤ 契约自检必须有合并逻辑的核对（纯函数，不写库）
+# ⚠️ 判据要**精确**（函数名带括号）：只搜名字的话，改个名就照样绿（探针 D 实测假绿）。
+if not re.search(r'def\s+check_baseline_merge_contract\s*\(', chk):
+    problems.append('mcp/check_tool_fields.py 里没有 check_baseline_merge_contract() ⇒ 合并逻辑没人守')
+if not re.search(r'check_baseline_merge_contract\s*\(\s*\)', chk.split('def main(', 1)[-1]):
+    problems.append('check_baseline_merge_contract() 没在 main() 里被调用 ⇒ 它一次都没跑过')
+if 'merge_maintenance_baseline' not in chk:
+    problems.append('mcp/check_tool_fields.py 没有核对 merge_maintenance_baseline ⇒ 护栏是空壳')
+
+if problems:
+    print('保养 / 轮胎基准的写入没有收好 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 写入只有一个入口（服务端），写工具要合并、且绝不许进自检的 SPEC')
+    sys.exit(1)
+
+print('保养 / 轮胎基准的写入只有一个入口 ✔（MCP 会合并，写工具不在自检 SPEC 里）')
+PYEOF
+if [ $? -eq 0 ]; then ok "保养/轮胎基准的写入只有一个入口（写工具不进自检 SPEC）"; else fail "保养/轮胎基准的写入没收好"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

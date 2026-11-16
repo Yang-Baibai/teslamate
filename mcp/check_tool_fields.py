@@ -880,6 +880,43 @@ def check_place_name_contract() -> list:
     return bad
 
 
+def check_baseline_merge_contract() -> list:
+    """写基准时的「合并」必须是**只说哪项就只改哪项**（不许把别的清零）。
+
+    ⚠️ **v0.165.0**：服务端的写接口是**整份 upsert** ⇒ 直接写用户给的两项，
+    没说的一项（轮胎）会被 0 覆盖 ⇒ 轮胎提醒凭空消失。
+
+    ⇒ 这里**只测纯函数**（不写库、不调写接口）。
+    ⚠️ 写工具**绝不能**进 SPEC：自检每轮都跑 ⇒ 它会一直写用户的基准。
+    """
+    bad = []
+    cur = {"service_odo_km": 90000, "service_interval_km": 20000,
+           "tire_odo_km": 30000, "tire_interval_km": 40000}
+    cases = (
+        # 只说保养 ⇒ 轮胎那两项**保持原样**
+        ({"service_odo_km": 95000},
+         {"service_odo_km": 95000, "service_interval_km": 20000,
+          "tire_odo_km": 30000, "tire_interval_km": 40000}),
+        # 只说换胎 ⇒ 保养那两项**保持原样**
+        ({"tire_odo_km": 35000, "tire_interval_km": 45000},
+         {"service_odo_km": 90000, "service_interval_km": 20000,
+          "tire_odo_km": 35000, "tire_interval_km": 45000}),
+        # 什么都没说 ⇒ 原样
+        ({},
+         {"service_odo_km": 90000, "service_interval_km": 20000,
+          "tire_odo_km": 30000, "tire_interval_km": 40000}),
+    )
+    for given, want in cases:
+        got = T.merge_maintenance_baseline(cur, given)
+        if got != want:
+            bad.append("合并基准不对：给了 %r ⇒ 得到 %r，应为 %r" % (given, got, want))
+    # 什么都没设过 ⇒ 缺的那项是 0（服务端会套用默认间隔）
+    got = T.merge_maintenance_baseline({}, {"service_odo_km": 90000})
+    if got.get("service_odo_km") != 90000 or got.get("service_interval_km") != 0:
+        bad.append("空基准时的合并不对：%r" % (got,))
+    return bad
+
+
 def check_weather_risk_contract() -> list:
     """天气的结论必须**与服务端同一份**（取不到就说「不知道」，不许编）。
 
@@ -1532,6 +1569,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 天气的结论与服务端是**同一份**（取不到就说不知道）"
               % ("teslamate_status", "天气契约"))
     bad.extend(weather_bad)
+
+    base_bad = check_baseline_merge_contract()
+    for b in base_bad:
+        print("  ✗ %s" % b)
+    if not base_bad:
+        print("  ✓ %-26s %-24s 写基准只改用户说的那几项（不把别的清零）"
+              % ("（纯函数）", "基准合并契约"))
+    bad.extend(base_bad)
 
     print("\n  ⇒ %s（%d 项不合规）" % ("通过" if not bad else "有问题", len(bad)))
     return 0 if not bad else 1

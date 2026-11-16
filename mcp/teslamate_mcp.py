@@ -1634,6 +1634,93 @@ def teslamate_climb_model(min_km: float = 20.0) -> dict:
         "注意": d.get("caveat"),
     }
 
+# ⚠️ **v0.165.0**：写「保养 / 轮胎基准」时**只改用户说的那几项**。
+#
+# 为什么：服务端的写接口是**整份 upsert**（四个数一起写）⇒
+#   如果直接拿用户给的两项去写，**没说的那两项会被 0 覆盖**
+#   （比如「上次保养 9 万公里」⇒ 轮胎基准被清零 ⇒ 轮胎提醒凭空消失）。
+#
+# ⇒ 先读当前基准，再合并 ⇒ 只说哪项就只改哪项。
+def merge_maintenance_baseline(current: dict, given: dict) -> dict:
+    """合并基准：用户给了的用用户的，没给的**保持原样**。
+
+    ⚠️ 纯函数（不碰网络、不写库）⇒ 契约自检可以**只测它**
+    （写工具本身绝不能进自检的 SPEC —— 自检每轮都跑 ⇒ 会一直写用户的基准）。
+    """
+    cur = current if isinstance(current, dict) else {}
+    out = {}
+    for key in ("service_odo_km", "service_interval_km", "tire_odo_km", "tire_interval_km"):
+        v = given.get(key)
+        if v is None:
+            v = cur.get(key)
+        out[key] = 0 if v is None else v
+    return out
+
+
+@mcp.tool()
+def teslamate_set_maintenance_baseline(
+    service_odo_km: float | None = None,
+    service_interval_km: int | None = None,
+    tire_odo_km: float | None = None,
+    tire_interval_km: int | None = None,
+) -> dict:
+    """把**保养 / 轮胎基准**写进服务端（按车隔离）—— 之后「我轮胎还能跑多少」就能答了。
+
+    **什么时候用**：用户**明确给出**这些数字时 ——
+    「上次保养是 9 万公里，每 2 万公里一次」「换胎是 6 万公里，每 4 万公里一次」
+    —— 或者他直接说「把保养基准记成 …」。
+
+    ⚠️ **先向用户确认再写**：基准是**车主的线下行为**（他知道自己换过机油、开了保养单）
+    ⇒ **别替他猜数字**，也别把「上次保养大概 9 万」当成精确值写进去。
+    ⚠️ **只写用户说的那几项**：没说的（保养还是轮胎）**保持原样**
+    （服务端的写接口是整份覆盖 ⇒ 直接写会把没说的一项清零）。
+    ⚠️ **间隔（每多少公里一次）要一起给**：如果之前也没设过间隔，
+    只给里程会被服务端拒（间隔必须 > 0）⇒ 那就**问用户一句**再写。
+
+    ✅ 写完服务端会**回读并给出结论**（「还剩多少公里」）⇒ 把那个结论原样报给用户。
+    """
+    given = {
+        "service_odo_km": service_odo_km,
+        "service_interval_km": service_interval_km,
+        "tire_odo_km": tire_odo_km,
+        "tire_interval_km": tire_interval_km,
+    }
+    # ⚠️ 负数一律拒（服务端也会拒，但**别**把错误丢成一句 HTTP 400）。
+    for k, v in given.items():
+        if v is not None and v < 0:
+            return {"错误": "%s 不能是负数（里程表读数不可能是负的）" % k}
+    # ⚠️ **先读当前基准** ⇒ 合并 ⇒ 只改用户说的那几项。
+    cur = _get(f"/api/v1/cars/{CAR_ID}/maintenance")
+    if not isinstance(cur, dict) or "error" in cur:
+        return {"错误": "取不到当前基准（先修好服务器连接）", "详情": str(cur)[:200]}
+    body = merge_maintenance_baseline(cur.get("baseline") or {}, given)
+    res = _request("POST", f"/api/v1/cars/{CAR_ID}/maintenance/baseline", body)
+    if not isinstance(res, dict) or "error" in res:
+        return {"错误": "写入失败", "详情": str(res)[:300]}
+    base = res.get("baseline") or {}
+    out = {
+        "已写入": True,
+        "上次保养时的里程(km)": base.get("service_odo_km"),
+        "保养间隔(km)": base.get("service_interval_km"),
+        "上次换胎时的里程(km)": base.get("tire_odo_km"),
+        "轮胎更换间隔(km)": base.get("tire_interval_km"),
+        # ⚠️ 结论是**服务端渲染的原文**（ADR #41）⇒ 原样带出去。
+        "一句话": res.get("summary"),
+        "已设置基准": res.get("configured"),
+        "说明": res.get("note"),
+    }
+    for key, label in (("service", "保养"), ("tire", "轮胎")):
+        it = res.get(key)
+        if isinstance(it, dict):
+            out[label] = {
+                "还剩(km)": it.get("remaining_km"),
+                "该在里程表(km)时做": it.get("due_odo_km"),
+                "已超期": it.get("overdue"),
+                "快到了": it.get("due_soon"),
+                "结论": it.get("text"),
+            }
+    return out
+
 @mcp.tool()
 def teslamate_maintenance() -> dict:
     """查**保养 / 轮胎提醒**：「我轮胎还能跑多少」「保养超期了吗」「该什么时候做保养」。

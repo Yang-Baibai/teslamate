@@ -343,6 +343,23 @@ func chargeBriefBatteryFromHealth(h *BatteryHealth, ws, we *time.Time) *ChargeBr
 	return out
 }
 
+// briefEnergyWindowStart 简报能耗段用的窗口起点（**纯函数**，可单测）。
+//
+// ⚠️ **v0.165.0**：充电区间的窗口起点是一个**时刻**（库里按 UTC 存），
+//
+//	而分桶的键按**本地时区**取 ⇒ 直接拿来加天数就是**按 UTC 加**
+//	⇒ 7 个桶会落在 [前天 16:00, 昨天 16:00]（UTC 日期）⇒ **今天的行程整段漏掉**。
+//	实测 2026-11-16：简报 41.63 度 vs 用量页 83.64 度，差的正是今天那 42.01 度
+//	⇒ 飞书简报与 App 用量页**对不上账**（ADR #38 的病）。
+//
+// ⇒ 借窗口要**连时区口径一起借**：先转成本地时区，再加天数。
+func briefEnergyWindowStart(ws *time.Time, loc *time.Location) time.Time {
+	if ws == nil {
+		return time.Time{}
+	}
+	return ws.In(loc)
+}
+
 // chargeBriefEnergyFromSummary 把用量页的**汇总**变成简报的**能耗段**（纯函数，可单测）。
 //
 // ⚠️ **没有里程就不给数**（反幻觉）：里程不足 0.1km ⇒ 没有能耗结论 ⇒ nil。
@@ -453,7 +470,14 @@ func handleChargeBrief(w http.ResponseWriter, r *http.Request) {
 	if n := spec.bucketCount(loc, now); n == 0 {
 		energyNote = "这一档不并能耗段"
 	} else {
-		_, summary, err := statsBucketsForWindow(id, "day", n, tz, *target.WindowStart)
+		// ⚠️ **v0.165.0 修**：借窗口要**连时区口径一起借**。
+		//
+		// 充电区间的窗口起点是一个**时刻**（库里按 UTC 存）⇒ 直接拿来加天数，
+		// 加的是 **UTC 的天数** ⇒ 7 个桶落在 [前天 16:00, 昨天 16:00]（UTC 日期）
+		// ⇒ **今天的行程整段漏掉**（实测 2026-11-16：简报 41.63 度 vs 用量页 83.64 度，
+		// 差的正好是今天那 42.01 度 ⇒ 飞书简报与 App 用量页对不上账）。
+		// ⇒ 先转成本地时区再分桶（与 [dayWindowStart] 同一口径 ⇒ 两边同一个窗口）。
+		_, summary, err := statsBucketsForWindow(id, "day", n, tz, briefEnergyWindowStart(target.WindowStart, loc))
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
