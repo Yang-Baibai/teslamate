@@ -4209,6 +4209,61 @@ print('「低电量」判定在服务端一份：客户端不裸比阈值 ＋ �
 PYEOF
 if [ $? -eq 0 ]; then ok "「低电量」的判定与阈值只以服务端为准"; else fail "「低电量」的判定又漏到客户端/脚本里了"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 42：实心琥珀底上的文字不许再用黑字 ──────────────────────────
+#
+# ⚠️ **v0.166.0**：车控页的主角 CTA「解锁车门」是**一整块实心琥珀**，
+#   而琥珀（warnAmber）在主题里是**图形色**（画图形 ≥3:1 即可）
+#   ⇒ 配黑字出来是「一团泥 + 几乎读不出」（2026-11-17 模拟器实拍）。
+#
+# ⇒ 主题新增 @BT@onWarnAmber@BT@（实心底色上的文字色：浅色白字 / 深色近黑字），
+#   并且**不许**再出现 @BT@content = Color.Black@BT@。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+THEME = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/Theme.kt')
+CARD = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/VehicleControlCard.kt')
+TEST = pathlib.Path('app-android/app/src/test/java/com/teslamate/app/ui/ThemeContrastTest.kt')
+
+for p in (THEME, CARD, TEST):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+problems = []
+theme = THEME.read_text(encoding='utf-8', errors='replace')
+card = CARD.read_text(encoding='utf-8', errors='replace')
+
+# ① 主题必须有 onWarnAmber，且两个主题都定义了
+if 'val onWarnAmber: Color,' not in theme:
+    problems.append('Theme.kt 里没有 onWarnAmber ⇒ 实心琥珀底上的文字没有专用色')
+if len(re.findall(r'onWarnAmber\s*=\s*Color\(', theme)) < 2:
+    problems.append('onWarnAmber 没有在浅色与深色两套主题里都定义')
+
+# ② 车控的主角 CTA 必须用它
+if 'onWarnAmber' not in card:
+    problems.append('VehicleControlCard.kt 没有用 onWarnAmber ⇒ 主角 CTA 还在拿黑字压琥珀底')
+
+# ③ 不许再出现「黑字当按钮文字」
+if re.search(r'content\s*=\s*Color\.Black', card):
+    problems.append('VehicleControlCard.kt 里还有 content = Color.Black ⇒ 黑字压深色底读不出来')
+
+# ④ 护栏不许是空壳（单测要真的钉住对比度）
+t = TEST.read_text(encoding='utf-8', errors='replace')
+if 'onWarnAmber' not in t:
+    problems.append('ThemeContrastTest.kt 没有断言 onWarnAmber ⇒ 护栏是空壳')
+
+if problems:
+    print('实心琥珀底上的文字没被管住 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 图形色（warnAmber）不许直接当按钮底色配黑字；用 onWarnAmber')
+    sys.exit(1)
+
+print('实心琥珀底上的文字用 onWarnAmber ✔（两个主题都定义了 ＋ 单测钉住对比度）')
+PYEOF
+if [ $? -eq 0 ]; then ok "实心底色上的文字不许再用黑字（用 onWarnAmber）"; else fail "实心琥珀底上又用回黑字了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

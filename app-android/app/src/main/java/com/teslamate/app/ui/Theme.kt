@@ -71,6 +71,21 @@ data class AccentColors(
      * 深色模式沿用 #F5A623（对 #1C1C1E 有 6.14:1 ✓）。
      */
     val warnAmberText: Color,
+    /**
+     * ⚠️ **v0.166.0**：**实心琥珀底上的文字色**。
+     *
+     * ## 为什么要有这个 token
+     *
+     * `warnAmber` 是**图形色**（画图形 ≥3:1 即可），`warnAmberText` 是**浅底上的文字色**。
+     * 而「解锁车门」那个主角 CTA 是**一整块实心琥珀** ——
+     * 原来给它配的是**黑字** ⇒ 出来是「一团泥 + 几乎读不出」
+     * （2026-11-17 模拟器实拍，车控页第一屏）。
+     *
+     * ⇒ 实心琥珀底上的文字**必须**用这个 token：
+     *   浅色：#FFFFFF on #9A5B00 = **5.43:1** ✓
+     *   深色：#1C1C1E on #F5A623 = **8.4:1** ✓
+     */
+    val onWarnAmber: Color,
     /** 危险红：电量 < 10%、胎压异常 */
     val danger: Color,
     // ⚠️ v0.14.0（苹果 HIG P0-2）：**删除 `fastCharge` / `slowCharge`**。
@@ -142,7 +157,9 @@ data class AccentColors(
     val cardStrokeEnd: Color,
 )
 
-private val LightAccents = AccentColors(
+// ⚠️ v0.166.0：`internal`（不是 `private`）—— JVM 单测要能读这两套配色，
+//   才能把「实心琥珀底上的文字够不够清楚」**钉成数字**。
+internal val LightAccents = AccentColors(
     teslaRed = Color(0xFFD70012),
     teslaRedLight = Color(0xFFFF6B6B),
     energyBlue = Color(0xFF2F5FD0),
@@ -155,6 +172,8 @@ private val LightAccents = AccentColors(
     // 新值对白 **5.43:1**，对卡片内凹块 #EBEBF0 也有 4.57:1。
     warnAmber = Color(0xFF9A5B00),
     warnAmberText = Color(0xFF8A5200),
+    // ⚠️ v0.166.0：实心琥珀底上的文字（白字）—— 浅色底本来就是深琥珀。
+    onWarnAmber = Color(0xFFFFFFFF),
     danger = Color(0xFFD13438),
     chartTrack = Color(0xFF77777D),
     // ⚠️ v0.14.0（苹果 HIG P1）：#9AA1A8 → #8C939B
@@ -186,7 +205,7 @@ private val LightAccents = AccentColors(
     cardStrokeEnd = Color(0x08000000),
 )
 
-private val DarkAccents = AccentColors(
+internal val DarkAccents = AccentColors(
     teslaRed = Color(0xFFFF453A),
     teslaRedLight = Color(0xFFFF8A80),
     energyBlue = Color(0xFF5B8DEF),
@@ -194,6 +213,8 @@ private val DarkAccents = AccentColors(
     chargeGreenText = Color(0xFF5FD69A),
     warnAmber = Color(0xFFF5A623),
     warnAmberText = Color(0xFFF5A623),
+    // ⚠️ v0.166.0：深色模式下琥珀底本身很亮 ⇒ 文字用近黑（#1C1C1E）而不是白。
+    onWarnAmber = Color(0xFF1C1C1E),
     // ⚠️ v0.20.0（a11y 评审 P1-5）：#E5484D → #FF6B6E
     // 原值对**卡片面** #1C1C1E 只有 4.35:1（低于文字 4.5:1）——
     // 注释里的「对底色达标」是拿 #000000 算的，而它实际画在卡片上。

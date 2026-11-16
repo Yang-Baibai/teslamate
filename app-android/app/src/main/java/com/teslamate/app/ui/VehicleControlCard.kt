@@ -575,7 +575,10 @@ private fun LockHeroTile(
                     onClick = onUnlock,
                     enabled = !busy,
                     container = accents.warnAmber,
-                    content = Color.Black,
+                    // ⚠️ **v0.166.0**：琥珀是**图形色** ⇒ 原来配的黑字压上去
+                    //   是「一团泥 + 几乎读不出」（2026-11-17 模拟器实拍）
+                    //   ⇒ 实心底色的文字用 `onWarnAmber`（浅色白字 / 深色近黑字）。
+                    content = accents.onWarnAmber,
                 )
                 // 未锁 → 突出「锁车」
                 false -> HeroButton(
