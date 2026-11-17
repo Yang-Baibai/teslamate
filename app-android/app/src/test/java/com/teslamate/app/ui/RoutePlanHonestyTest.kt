@@ -38,7 +38,7 @@ class RoutePlanHonestyTest {
     }
 
     @Test
-    fun `旧算法会把低 23% 报成高 77%`() {
+    fun `旧算法会把低于官方百分之 23 报成高于官方百分之 77`() {
         // 这是**回归的证明**：旧代码算的是 round(median/official*100) = 77，
         // 然后当成「超出 100 的百分比」用 ⇒ 打印「实测高 77%」。
         val oldWrong = Math.round((346.6238 / 448.01 * 100.0)).toInt()

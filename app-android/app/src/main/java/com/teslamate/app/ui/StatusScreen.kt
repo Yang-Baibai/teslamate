@@ -599,53 +599,26 @@ fun StatusScreen(
                         // 服务端现在显式下发 `fleet_enabled`：
                         //   false → 「这台车没连实时状态源」—— 原因说准，且它**不会变**
                         //   true  → 「这会儿没取到」—— 原因另说（fleet_error）
-                        val fleetNotice = remember(st.locked, st.fleet_error, st.fleet_last_ok, st.fleet_enabled, st.fleet_state) {
-                            buildString {
-                                if (st.locked == null) {
-                                    when (st.fleet_state) {
-                                        "disabled" ->
-                                            append("这台车没连实时状态源，锁车与实时胎压拿不到 —— 不是车的问题。")
-                                        // ⚠️ **v0.75.0（模拟器真机复核）：不再重复「车在休眠」。**
-                                        //
-                                        // 页面顶部那行状态芯片已经写着
-                                        // 「车在休眠 · 锁车状态等它醒来才更新」——
-                                        // 横幅又说一遍「车在休眠，锁车…要等它醒来才更新」，
-                                        // **同一个事实说了两遍**，两块灰横幅把电量环挤到第三屏。
-                                        //
-                                        // 上面那段注释写的分工是「**横幅 = 顶部那行没有的信息**」——
-                                        // 那就照它做：顶部说了「车在休眠 + 锁车状态」，
-                                        // 横幅只补**实时胎压**这一条。
-                                        "asleep" ->
-                                            append("实时胎压要等它醒来才更新 —— 不是车的问题。")
-                                        else ->
-                                            append("没读到车机的锁车状态 —— 这不代表车没锁。")
-                                    }
-                                }
-                                if (st.fleet_error.isNotBlank()) {
-                                    if (isNotEmpty()) append(" ")
-                                    append(st.fleet_error)
-                                }
-                                st.fleet_last_ok?.let { ok ->
-                                    if (st.locked == null) {
-                                        append("（最后一次成功获取：${ok.relTime()}）")
-                                    } else {
-                                        // ⚠️ **v0.75.0（模拟器真机复核）：只有**真的旧**才说「旧值」。**
-                                        //
-                                        // 原来无条件写「上面显示的是 X 读到的旧值」——
-                                        // 而 X 可能是「刚刚」⇒ 屏幕上出现
-                                        // 「上面显示的是 刚刚读到的旧值」⇒ **既刚刚又旧，自相矛盾**。
-                                        //
-                                        // 现在按**值自己的采集时间**（`locked_at`）判断新鲜度：
-                                        // 5 分钟内 = 新鲜 ⇒ 不加这句（没脏就别提「脏」）。
-                                        val ageMin = st.locked_at?.let {
-                                            java.time.Duration.between(it, java.time.Instant.now()).toMinutes()
-                                        } ?: Long.MAX_VALUE
-                                        if (ageMin >= 5) {
-                                            append(" —— 上面显示的是 ${ok.relTime()}读到的旧值。")
-                                        }
-                                    }
-                                }
-                            }.takeIf { it.isNotBlank() }
+
+                        // ⚠️ **v0.171.0**：横幅的**文案与判据**都搬进纯函数
+                        // [fleetNoticeText]（`ui/FleetNotice.kt`）⇒ 单测钉得住。
+                        //
+                        // ⚠️ 原来的 `remember` key **漏了 `st.locked_at`** ⇒
+                        // 「这个值有多旧」变了、横幅却不刷新 ⇒ 现在补上。
+                        val fleetNotice = remember(
+                            st.locked,
+                            st.locked_at,
+                            st.fleet_error,
+                            st.fleet_last_ok,
+                            st.fleet_state,
+                        ) {
+                            fleetNoticeText(
+                                locked = st.locked,
+                                lockedAt = st.locked_at,
+                                fleetError = st.fleet_error,
+                                fleetLastOk = st.fleet_last_ok,
+                                fleetState = st.fleet_state,
+                            )
                         }
 
                         // ⚠️ v0.9.0：**弹性首屏** —— 大字号时电量环与续航**上下排**，
