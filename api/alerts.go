@@ -90,6 +90,22 @@ func EvaluateLowBattery(soc *int, charging, driving bool, dataAgeHours int) LowB
 	return r
 }
 
+// EvaluateSentryAlert 判「哨兵警报是不是触发了」。
+//
+// ⚠️ **v0.168.0**：哨兵状态是官方枚举（off / idle / armed / aware / **panic** / quiet），
+//
+//	其中 **panic = 警报触发**（有人在动车 / 车被撬）⇒ 这是**安全事件**，用户一定想知道。
+//
+// ⇒ 判定**只在服务端做一次**（ADR #38）：推送脚本与 Hermes 都只读结论。
+//
+// ⚠️ **已知局限（如实写，不藏）**：哨兵状态是**每 5 分钟一采**的遥测字段
+//
+//	⇒ 警报若在两次采样之间就结束了，**可能赶不上**。
+//	这是状态型告警的固有局限，写在代码里（不塞进推送文案 —— 啰嗦棘轮）。
+func EvaluateSentryAlert(state string) bool {
+	return state == sentryStatePanic
+}
+
 // TpmsAlertResult 胎压判定结果。
 type TpmsAlertResult struct {
 	Alerting bool     // 是否有异常

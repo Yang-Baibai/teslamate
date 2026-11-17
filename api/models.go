@@ -257,6 +257,9 @@ type CarStatus struct {
 	SentrySource string `json:"sentry_source"`
 	// SentryAt 这批结论的**采集时刻**（两个来源里更晚的那个）。
 	SentryAt *time.Time `json:"sentry_at"`
+	// ⚠️ **v0.168.0**：哨兵**警报**是否触发（true = 有人在动车 / 车被撬）。
+	// 判定只在服务端做一次（ADR #38）⇒ 推送脚本与 Hermes 都只读这个布尔。
+	SentryAlarm bool `json:"sentry_alarm"`
 
 	// ⚠️ **v0.82.0**：这一组安全状态（车窗 / 车门 / 哨兵）里**最旧**的采集时刻。
 	//

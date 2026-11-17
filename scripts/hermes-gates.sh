@@ -2374,6 +2374,72 @@ PYEOF
 if [ $? -eq 0 ]; then ok "HTTP 传输的安全项齐（回环默认 / 构造期鉴权 / fail closed）"; else fail "HTTP 传输的安全项缺失"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 30：哨兵警报的判定只在服务端一份 ──────────────────────────────
+#
+# ⚠️ **v0.168.0**：mission §2.2 明列的「哨兵模式警报触发」——
+#   哨兵状态是**官方枚举**（off / idle / armed / aware / **panic** / quiet），
+#   其中 panic = 警报触发（有人在动车 / 车被撬）⇒ **安全事件**。
+# ⇒ 判定只在服务端（api/alerts.go 的 EvaluateSentryAlert），
+#   推送脚本与 MCP **都只读结论**（ADR #38 / #41）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ALERTS = pathlib.Path('api/alerts.go')
+MODELS = pathlib.Path('api/models.go')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+CHK = pathlib.Path('mcp/check_tool_fields.py')
+SCRIPT = pathlib.Path('scripts/watch-car.ps1')
+
+for p in (ALERTS, MODELS, MCP, CHK, SCRIPT):
+    if not p.exists():
+        print('找不到 %s —— 这道闸门要跟着改' % p)
+        sys.exit(1)
+
+problems = []
+alerts = ALERTS.read_text(encoding='utf-8', errors='replace')
+models = MODELS.read_text(encoding='utf-8', errors='replace')
+mcp = MCP.read_text(encoding='utf-8', errors='replace')
+chk = CHK.read_text(encoding='utf-8', errors='replace')
+script = SCRIPT.read_text(encoding='utf-8', errors='replace')
+
+# ① 判定在服务端，且判据是官方枚举里的 panic
+if 'func EvaluateSentryAlert' not in alerts:
+    problems.append('api/alerts.go 里没有 EvaluateSentryAlert ⇒ 哨兵警报的判定没有事实源')
+if not re.search(r'func\s+EvaluateSentryAlert\([^)]*\)\s*bool\s*\{[^}]*sentryStatePanic', alerts, re.S):
+    problems.append('EvaluateSentryAlert 没有以 panic（官方枚举里的警报触发）为判据')
+
+# ② /status 必须给这个结论
+if 'json:"sentry_alarm"' not in models:
+    problems.append('api/models.go 里 CarStatus 没有 sentry_alarm ⇒ /status 不给哨兵警报的结论')
+
+# ③ MCP 只透传
+if 'sentry_alarm' not in mcp:
+    problems.append('MCP 没有透传 sentry_alarm ⇒ 飞书里问不出「哨兵是不是在报警」')
+
+# ④ 推送脚本必须从车况里读它，且不许自己认状态词
+reads = set(re.findall(r"Get-Prop\s+\$\w+\s+'([^']+)'", script))
+reads |= set(re.findall(r'\$[A-Za-z_]\w*\.([A-Za-z_]\w*)', script))
+if 'sentry_alarm' not in reads:
+    problems.append('scripts/watch-car.ps1 没有从车况里读 sentry_alarm ⇒ 飞书那条哨兵提醒不是服务端的结论')
+if re.search(r"sentry_state[^\n]{0,20}panic", script):
+    problems.append('scripts/watch-car.ps1 自己认了 panic 状态词 ⇒ 判定必须只在服务端（ADR #38）')
+
+# ⑤ 契约自检必须有核对（护栏不许是空壳）
+if 'check_sentry_alarm_contract' not in chk:
+    problems.append('mcp/check_tool_fields.py 里没有 check_sentry_alarm_contract ⇒ 护栏是空壳')
+
+if problems:
+    print('哨兵警报的判定没有收敛到服务端 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 判定只在 api/alerts.go；脚本与 MCP 都只读结论（ADR #38 / #41）')
+    sys.exit(1)
+
+print('哨兵警报的判定只在服务端一份 ✔（脚本 / MCP 只读结论，自检有护栏）')
+PYEOF
+if [ $? -eq 0 ]; then ok "哨兵警报的判定只在服务端一份（脚本 / MCP 只读结论）"; else fail "哨兵警报的判定漏到脚本 / MCP 了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

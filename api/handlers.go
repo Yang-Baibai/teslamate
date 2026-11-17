@@ -466,7 +466,9 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.SentryText = sentryText(sentryState)
 	s.SentrySource = sentrySource
 	s.SentryAt = sentryAt
-
+	// ⚠️ **v0.168.0**：哨兵**警报**的判定（服务端一份，ADR #38）。
+	//   官方枚举里的 panic（警报触发）才是「有人在动车」。
+	s.SentryAlarm = EvaluateSentryAlert(sentryState)
 	// ⚠️ **v0.88.0**：座舱状态（空调 / 座椅加热 / 方向盘加热）。
 	//
 	//	来自**同一次**遥测读库（telSafety），不多查一次 DB。

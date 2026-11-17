@@ -1012,6 +1012,32 @@ def check_weather_risk_contract() -> list:
     return bad
 
 
+def check_sentry_alarm_contract() -> list:
+    """哨兵**警报**的结论必须与服务端同一份（ADR #38）。
+
+    ⚠️ **v0.168.0**：判定在服务端（官方枚举里的 panic = 警报触发）
+    ⇒ MCP 只透传；且「结论为真」时状态词**必须**是 panic（不许两边各判各的）。
+    """
+    bad = []
+    try:
+        st = T._get("/api/v1/cars/%s/status" % T.CAR_ID)
+        tool = T.teslamate_status()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(st, dict) or "error" in st:
+        return ["车况取不到：%r" % (st,)]
+    if not isinstance(tool, dict) or "错误" in tool:
+        return ["状态工具取不到：%r" % (tool,)]
+    got, want = tool.get("哨兵警报"), st.get("sentry_alarm")
+    if bool(got) != bool(want):
+        bad.append("MCP 的「哨兵警报」=%r 与服务端的 sentry_alarm=%r 不一致 ⇒ 两边各判各的"
+                   % (got, want))
+    if want and st.get("sentry_state") != "panic":
+        bad.append("服务端说「哨兵警报」但状态词是 %r（应为 panic）⇒ 判定与状态不自洽"
+                   % (st.get("sentry_state"),))
+    return bad
+
+
 def check_low_battery_contract() -> list:
     """「低电量」必须**与服务端同一份**，MCP 不许自己重算。
 
@@ -1631,6 +1657,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 天气的结论与服务端是**同一份**（取不到就说不知道）"
               % ("teslamate_status", "天气契约"))
     bad.extend(weather_bad)
+
+    sentry_bad = check_sentry_alarm_contract()
+    for b in sentry_bad:
+        print("  ✗ %s" % b)
+    if not sentry_bad:
+        print("  ✓ %-26s %-24s 哨兵警报的结论与服务端是**同一份**"
+              % ("teslamate_status", "哨兵警报契约"))
+    bad.extend(sentry_bad)
 
     base_bad = check_baseline_merge_contract()
     for b in base_bad:

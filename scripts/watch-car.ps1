@@ -650,6 +650,18 @@ Update-Alert $alerted 'weather_risk' $weatherAlert `
   "✅ $CarName 天气提醒已解除" `
   "未来两天没有需要特别留意的天气了。"
 
+# ── 哨兵警报（v0.168.0）────────────────────────────────────────────────
+#
+# ⚠️ **判定在服务端**：/status 的 sentry_alarm 才是结论
+#   （api/alerts.go 的 EvaluateSentryAlert：官方枚举里的 panic = 警报触发）。
+#   ⇒ 这个脚本**不自己认状态词** ⇒ 与 App / Hermes 同一口径（ADR #38 / #41）。
+$sentryAlarm = [bool](Get-Prop $st 'sentry_alarm' $false)
+Update-Alert $alerted 'sentry_alarm' $sentryAlarm `
+  "🚨 $CarName 哨兵警报触发了" `
+  "车上的哨兵模式触发了警报（有人在动车 / 车被撬）。`n请尽快去看一眼。" `
+  "✅ $CarName 哨兵警报已解除" `
+  "哨兵状态已回到正常。"
+
 # ── Fleet 授权失效 ──
 Update-Alert $alerted 'fleet_unauthorized' ($fleetState -eq 'unauthorized') `
   "🔑 $CarName Tesla 授权已失效 · 锁车状态已停更" `
