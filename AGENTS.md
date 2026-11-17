@@ -176,6 +176,10 @@ panic `open /certs/server.crt: no such file or directory` ⇒ **崩溃循环**�
 - `docs/adr.md`（架构决策，别推翻已决定的事）
 - `scripts/client-gates.sh`（客户端的硬规矩，尤其是**啰嗦棘轮**：
   新增长说明块要么短、要么折进 ⓘ、要么登记进 `scripts/verbose-baseline.txt` 并在 CHANGELOG 写明理由）
+- ⚠️ **服务端下发的文案，只有「App 真的会印」的才受行宽约束**（**ADR #83**）：
+  客户端**不许直读** `caveat` / `method` / `implied_eta_note`（**客户端闸门 43**）⇒
+  真要渲染别的服务端文案 ⇒ 先让它受那道上约束（进白名单 ＋ 补一条钉住 `NOTE_LINE_LIMIT` 的 JVM 单测），
+  否则展开就是 338 宽的一堵字墙，而**没有任何判据会红**。
 
 ## 复核基线（版面走模拟器 · 真机按节奏）
 

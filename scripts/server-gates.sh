@@ -348,5 +348,58 @@ else
   ok "Go 格式闸门跳过（本机无 docker）"
 fi
 
+# ── ⑦ CHANGELOG 版本段顺序（后来者「跳到最新段落」不许跳错）─────────
+#
+# ⚠️ **v0.169.0**：v0.167.0 / v0.168.0 两段被插到了**旧段落下面** ⇒
+#   文件顶部那一段是 v0.166.0（**三个版本之前**）⇒
+#   AGENTS.md 明写「后来者多半是**直接跳到最新段落**」⇒ 他们会跳错。
+#
+# ⚠️ 判据只盯**顶部**：
+#   ① 顶部那一段必须是全文件里（日期, 版本号）**最大**的那个；
+#   ② 从顶部起连续 3 段必须**严格倒序**（新版本不许被插到旧版本下面）。
+#
+# ⚠️ **历史深处还有 3 处旧乱序**（v0.131.0/v0.130.0、v0.9.0/v0.10.0、
+#   v0.3.0/v0.5.2）—— 那是**历史区**，不影响「跳到最新段落」，
+#   翻动 18000 行历史文本的**风险大于收益** ⇒ 本闸门**不查**它们（如实写明）。
+CHG=$(python - <<'PY' 2>/dev/null
+import pathlib, re, sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+except Exception:
+    pass
+CL = pathlib.Path('docs/CHANGELOG.md')
+if not CL.exists():
+    print('SKIP'); sys.exit(0)
+HEAD = re.compile(r'^##\s+(\d{4}-\d{2}-\d{2})（\s*v(\d+)\.(\d+)\.(\d+)')
+secs = []
+for i, ln in enumerate(CL.read_text(encoding='utf-8-sig', errors='replace').splitlines(), 1):
+    m = HEAD.match(ln)
+    if m:
+        secs.append((i, m.group(1), (int(m.group(2)), int(m.group(3)), int(m.group(4)))))
+if not secs:
+    print('SKIP'); sys.exit(0)
+problems = []
+top = secs[0]
+best = max(secs, key=lambda s: (s[1], s[2]))
+if (top[1], top[2]) != (best[1], best[2]):
+    problems.append('顶部那一段（行%d %s v%d.%d.%d）不是最新的 —— 最新的是行%d %s v%d.%d.%d' % (
+        top[0], top[1], *top[2], best[0], best[1], *best[2]))
+for a, b in zip(secs[:3], secs[1:3]):
+    if (b[1], b[2]) > (a[1], a[2]):
+        problems.append('行%d v%d.%d.%d 后面跟的是**更新**的 行%d v%d.%d.%d ⇒ 插错位置' % (
+            a[0], *a[2], b[0], *b[2]))
+if problems:
+    print('HITS:' + ' || '.join(problems))
+else:
+    print('CLEAN')
+PY
+)
+case "$CHG" in
+  HITS:*) fail "CHANGELOG 版本段顺序 —— $(echo "$CHG" | sed 's/^HITS://')"
+          echo "    ⇒ 新版本段必须插在**顶部第一个二级标题之前**（CHANGELOG 规矩 ①）" ;;
+  CLEAN) ok "CHANGELOG 版本段顺序（顶部那一段真的是最新的）" ;;
+  SKIP)  ok "CHANGELOG 版本段顺序跳过（没有 CHANGELOG.md）" ;;
+  *)     fail "CHANGELOG 顺序闸门自身出错（扫描器没有输出）—— 这次没检查成，不算通过" ;;
+esac
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ]

@@ -4264,6 +4264,116 @@ print('实心琥珀底上的文字用 onWarnAmber ✔（两个主题都定义了
 PYEOF
 if [ $? -eq 0 ]; then ok "实心底色上的文字不许再用黑字（用 onWarnAmber）"; else fail "实心琥珀底上又用回黑字了"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 43：客户端不许直读服务端下发的 ⓘ 文案字段 ────────────────────
+#
+# ⚠️ **v0.169.0**：v0.147.0 立了「服务端下发的 ⓘ 文案每行 ≤ 96」的判据，
+#   但它只盖住**电池衰减那两条**（decay.caveat / decay.method）。
+#   ⇒ 别的服务端文案**一行判据都没有**（2026-11-17 实测线上值）：
+#     climb_model.caveat            整段 207 宽（最宽分句 67 ✅）
+#     climb_model.method            整段 338 宽（最宽分句 **101** ⇒ 超 96）
+#     climb_model.implied_eta_note  整段 116 宽（**116** ⇒ 超 96）
+#     energy_profile.note           最宽分句 **126** ⇒ 超 96
+#   ⇒ 它们现在**没被 App 印**（客户端根本不读那几个字段）⇒ 暂时安全；
+#   但「暂时安全」靠的是「还没人写那一行」⇒ 哪天有人写了呢？
+#   ⇒ 展开就是 338 宽的一堵字墙，而**没有任何判据会红**。
+#
+# ⇒ 这道闸门：客户端**读取**服务端 ⓘ 文案字段的地方，只许在白名单里。
+#   「读取」= 前面带点（.caveat / ?.caveat / .method / …）；
+#   data class 里的**声明**（val caveat: String = ""）前面没有点 ⇒ 天然不算读取。
+#
+# ⚠️ 判据是**形态无关**的：扫的是「属性读取」这个事实，不管它出现在哪种写法里。
+# ⚠️ 白名单里的文件**必须**被一个含 NOTE_LINE_LIMIT 的 JVM 单测覆盖 ——
+#   否则就是「又加了一条没人管宽度的服务端文案」。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('app-android/app/src/main/java')
+TESTROOT = pathlib.Path('app-android/app/src/test')
+ALLOW = {'com/teslamate/app/ui/BatteryDecay.kt'}
+FIELDS = ('caveat', 'method', 'implied_eta_note')
+PAT = re.compile(r'\.\??(' + '|'.join(FIELDS) + r')\b')
+
+
+def strip_code(src):
+    """去掉注释与字符串字面量 —— 只留**真正的代码**。
+    （注释里写「服务端 caveat」不该被判成「读了服务端的 caveat」。）"""
+    out = []
+    i = 0
+    n = len(src)
+    depth = 0      # 块注释深度
+    in_str = False
+    while i < n:
+        c = src[i]
+        nxt = src[i + 1] if i + 1 < n else ''
+        if depth > 0:
+            if c == '*' and nxt == '/':
+                depth -= 1
+                i += 2
+                continue
+            if c == '/' and nxt == '*':
+                depth += 1
+                i += 2
+                continue
+            i += 1
+            continue
+        if in_str:
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        if c == '/' and nxt == '/':
+            while i < n and src[i] != chr(10):
+                i += 1
+            continue
+        if c == '/' and nxt == '*':
+            depth = 1
+            i += 2
+            continue
+        if c == '"':
+            in_str = True
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return ''.join(out)
+
+
+if not ROOT.exists():
+    print('找不到客户端源码目录 %s' % ROOT)
+    sys.exit(1)
+
+problems = []
+for p in sorted(ROOT.rglob('*.kt')):
+    rel = p.relative_to(ROOT).as_posix()
+    src = strip_code(p.read_text(encoding='utf-8', errors='replace'))
+    for i, ln in enumerate(src.splitlines(), 1):
+        for m in PAT.finditer(ln):
+            if rel not in ALLOW:
+                problems.append('%s:%d  读了服务端的 .%s' % (rel, i, m.group(1)))
+
+tests = []
+if TESTROOT.exists():
+    for p in sorted(TESTROOT.rglob('*.kt')):
+        tests.append(p.read_text(encoding='utf-8', errors='replace'))
+for rel in sorted(ALLOW):
+    stem = pathlib.Path(rel).stem
+    if not any(stem in s and 'NOTE_LINE_LIMIT' in s for s in tests):
+        problems.append('白名单里的 %s 没有任何 JVM 单测钉住 NOTE_LINE_LIMIT' % rel)
+
+if problems:
+    print('客户端直读了服务端下发的 ⓘ 文案 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 服务端下发的 ⓘ 文案每行必须 ≤ 96（noteLineWidthLimit）')
+    print('   ⇒ 要印就得先受那道上行宽约束：把渲染放进 %s，' % '/' .join(sorted(ALLOW)))
+    print('     并给那个文件补一条钉住 NOTE_LINE_LIMIT 的 JVM 单测')
+    sys.exit(1)
+
+print('客户端没有直读服务端 ⓘ 文案（读取点只有 %s，且有单测钉住行宽）' % '/' .join(sorted(ALLOW)))
+PYEOF
+if [ $? -eq 0 ]; then ok "客户端不许直读服务端下发的 ⓘ 文案"; else fail "客户端直读了服务端 ⓘ 文案（那些文案没有行宽判据）"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

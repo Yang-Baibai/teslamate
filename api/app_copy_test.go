@@ -100,33 +100,107 @@ func TestTempCaveatRenderedWithinWidth(t *testing.T) {
 	}
 }
 
-// TestDecayNoteLinesWithinWidth 服务端下发的 ⓘ 文案：一行一个事实、每行不许超宽。
+// assertNoteLinesWithinWidth 量一段服务端下发文案的**每一行**（按「；」拆行，客户端同规则）。
 //
-// ⚠️ v0.147.0 实测：caveat 整段 **750** 宽（12 个话题用「；」挤成一段）⇒ 展开是一堵字墙；
-//
-//	而客户端的 ⓘ 预算只扫客户端调用点的字面量 ⇒ 服务端这一半没人管 ⇒ 这道单测补上。
-func TestDecayNoteLinesWithinWidth(t *testing.T) {
-	d := &BatteryDecay{
-		HasStep: true, StepSignificant: true,
-		StepDate: "2026-09-28", StepKm: 96791.5, StepKwh: -0.7,
-		StepCiLo: -1.078, StepCiHi: -0.323,
-		NaiveOverstate: 5.446, NaivePer1000Km: -0.104, UnderlyingPer1000Km: -0.019,
-		TempN: 18, AdjustedPer1000Km: -0.023, AdjustedCiLo: -0.083, AdjustedCiHi: 0.037,
-		TempPerC:       0.011,
-		LeaveOneOutMin: -0.037, LeaveOneOutMax: -0.004, LeaveOneOutTotal: 18,
-		TempR2: 0.151, DroppedEmpty: 1, SpanKm: 10104.457, SpanDays: 90,
+// ⚠️ 客户端拆行用的也是「；」（ui/BatteryDecay.kt 的 detailLines）⇒ 两端同一个拆法。
+// ⚠️ 用 Errorf 不用 Fatalf ⇒ 一次把所有超限的行都报出来（不是一个一个试）。
+func assertNoteLinesWithinWidth(t *testing.T, name, text string) {
+	t.Helper()
+	if strings.TrimSpace(text) == "" {
+		return
 	}
-	if w := copyVisualWidth(decayMethodTmpl); w > noteLineWidthLimit {
-		t.Fatalf("方法说明宽度 %d > %d：%q", w, noteLineWidthLimit, decayMethodTmpl)
-	}
-	cav := decayCaveat(d)
-	for _, c := range strings.Split(cav, "；") {
+	for _, c := range strings.Split(text, "；") {
 		c = strings.TrimSpace(c)
 		if c == "" {
 			continue
 		}
 		if w := copyVisualWidth(c); w > noteLineWidthLimit {
-			t.Fatalf("caveat 分句宽度 %d > %d：%q", w, noteLineWidthLimit, c)
+			t.Errorf("[%s] 分句宽度 %d > %d：%q", name, w, noteLineWidthLimit, c)
 		}
 	}
+}
+
+// TestDecayNoteLinesWithinWidth 服务端下发的 ⓘ 文案：每一行一个事实、每行不许超宽。
+//
+// ⚠️ v0.147.0 实测：caveat 整段 **750** 宽（12 个话题用「；」挤成一段）⇒ 展开是一堵字墙；
+//
+//	而客户端的 ⓘ 预算只扫客户端调用点的字面量 ⇒ 服务端这一半没人管 ⇒ 这道单测补上。
+//
+// ⚠️ **v0.169.0：这一版从「一条路径」扩到「每一条条件分支」。**
+//
+//	v0.147.0 那版只摆了一个样本（有落差 / 落差显著）⇒ decayCaveat 的**其余分支**
+//	（没有落差 / 落差不显著 / 不触发高估 / 区间上界贴着 0 / 没有气温样本 /
+//	  气温样本不足 / 没有留一法 / 没有空会话 / 字段最少）
+//	**从没被任何判据跑过** ⇒ 「闸门跑绿 ≠ 它在检查东西」（与 ADR #69 的盲区同一类）。
+//	⇒ 现在把每一条条件分支都摆出来逐条量。
+//
+// ⚠️ **顺带把 analyzeBatteryDecay 的两条提前返回也钉上** ——
+//
+//	那两句（点数不足 / 线性拟合失败）也是**服务端下发**的 caveat，
+//	同样会进 App 的 ⓘ ⇒ 同样要守行宽。
+func TestDecayNoteLinesWithinWidth(t *testing.T) {
+	// 基准值取**线上真实形状**（2026-11-12 那份）：改动会让某个分支不触发。
+	base := func() *BatteryDecay {
+		return &BatteryDecay{
+			N: 18, StrictN: 18, ExcludedN: 12, DroppedEmpty: 1,
+			SpanKm: 10104.457, SpanDays: 90,
+			NaivePer1000Km: -0.104, NaiveCiLo: -0.162, NaiveCiHi: -0.047,
+			NaiveSignificant: true, R2Linear: 0.478,
+			HasStep: true, StepKm: 96791.508598, StepDate: "2026-09-28",
+			StepKwh: -0.7, StepCiLo: -1.078, StepCiHi: -0.323, StepSignificant: true,
+			R2Step: 0.744, NaiveOverstate: 5.446,
+			UnderlyingPer1000Km: -0.019, UnderlyingCiLo: -0.081, UnderlyingCiHi: 0.043,
+			UnderlyingSignificant: false,
+			TempPerC:              0.011, TempR2: 0.151, TempN: 18,
+			AdjustedPer1000Km: -0.023, AdjustedCiLo: -0.083, AdjustedCiHi: 0.037,
+			AdjustedSignificant: false,
+			LeaveOneOutMin:      -0.037, LeaveOneOutMax: -0.004,
+			LeaveOneOutSignificant: 0, LeaveOneOutTotal: 18,
+		}
+	}
+	mut := func(f func(*BatteryDecay)) *BatteryDecay {
+		d := base()
+		f(d)
+		return d
+	}
+
+	cases := []struct {
+		name string
+		d    *BatteryDecay
+	}{
+		{"线上真实形状", base()},
+		{"没有落差", mut(func(d *BatteryDecay) { d.HasStep = false })},
+		{"落差存在但不显著", mut(func(d *BatteryDecay) { d.StepSignificant = false })},
+		{"落差没被高估（不触发那条）", mut(func(d *BatteryDecay) { d.NaiveOverstate = 1.05 })},
+		{"区间上界贴着 0", mut(func(d *BatteryDecay) {
+			d.UnderlyingCiHi = -0.0056
+			d.UnderlyingCiLo = -0.08
+		})},
+		{"没有气温样本", mut(func(d *BatteryDecay) {
+			d.TempN = 0
+			d.TempPerC = 0
+			d.TempR2 = 0
+		})},
+		{"气温样本不足 5 条", mut(func(d *BatteryDecay) { d.TempN = 3 })},
+		{"没有留一法", mut(func(d *BatteryDecay) {
+			d.LeaveOneOutTotal = 0
+			d.LeaveOneOutSignificant = 0
+		})},
+		{"没有空会话", mut(func(d *BatteryDecay) { d.DroppedEmpty = 0 })},
+		{"字段最少", &BatteryDecay{N: 8, StrictN: 8}},
+	}
+	for _, c := range cases {
+		assertNoteLinesWithinWidth(t, c.name, decayCaveat(c.d))
+	}
+
+	// ⚠️ analyzeBatteryDecay 的两条提前返回（也是服务端下发的 caveat）
+	assertNoteLinesWithinWidth(t, "点数不足", analyzeBatteryDecay(nil, 0, 0, 0).Caveat)
+	collinear := make([]decayPoint, 8)
+	for i := range collinear {
+		collinear[i] = decayPoint{date: "2026-01-01", km: 100, kwh: 60}
+	}
+	assertNoteLinesWithinWidth(t, "线性拟合失败", analyzeBatteryDecay(collinear, 0, 10, 0).Caveat)
+
+	// 方法说明（也是服务端下发、进 App ⓘ 的那一行）
+	assertNoteLinesWithinWidth(t, "方法说明", decayMethodTmpl)
 }
