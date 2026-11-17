@@ -69,7 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -956,9 +956,13 @@ fun StatusScreen(
                         // ⚠️ **v0.46.0（第 27 轮复审）：把「最近 30 天」接回车况页。**
                         //
                         // ⚠️ **这张卡从 v0.8.5 起就没在任何人眼前出现过** ——
-                        // `RecentSummaryCard` 只被 `ChargesScreen` / `DrivesScreen`
+                        // ~~`RecentSummaryCard` 只被 `ChargesScreen` / `DrivesScreen`
                         // 这两个**死屏**调用（顶层 Composable 从未被调用），
-                        // 而 `ChargeListPage`（活的）又没接它。
+                        // 而 `ChargeListPage`（活的）又没接它。~~
+                        // ⇒ **v0.170.0 就地订正**：这条**已被 v0.46.0 证伪** —— 下面那行
+                        //   `RecentSummaryCard(...)` **就是这张卡**，它现在**在车况页上渲染**。
+                        //   （当时那句说的是「v0.8.5 ~ v0.46.0 之间没人渲染它」；
+                        //     v0.170.0 又把那两个死屏删了 ⇒ 旧文件名也一并失效。）
                         //
                         // 它给的六个数（行驶里程 / 充入 / 充电次数 / 行程次数 /
                         // 平均能耗 / 快充占比）恰恰是「我最近到底怎么用车」的答案 ——
@@ -1290,6 +1294,9 @@ private fun OdometerLine(st: CarStatus) {
  * （「锁车状态 · 授权已失效 · 车窗车门已关」）。
  */
 @Composable
+// ⚠️ **v0.170.0**：`Icons.Filled.HelpOutline` 在 material-icons-extended 1.7.6 里
+// **没有** AutoMirrored 变体（废弃提示指向的那个符号**不存在**）⇒ 只能继续用它。
+@Suppress("DEPRECATION")
 private fun LockStateChip(locked: Boolean?, fleetState: String? = null) {
     val accents = LocalAccentColors.current
     val icon: androidx.compose.ui.graphics.vector.ImageVector
@@ -2320,6 +2327,9 @@ private fun TelemetryAlertRow(a: TelemetryAlert) {
  *    红是给「车出问题」用的；这里用红会让用户以为车坏了。
  */
 @Composable
+// ⚠️ **v0.170.0**：`Icons.Filled.HelpOutline` 在 material-icons-extended 1.7.6 里
+// **没有** AutoMirrored 变体（废弃提示指向的那个符号**不存在**）⇒ 只能继续用它。
+@Suppress("DEPRECATION")
 private fun TelemetryNoDataNotice(tel: TelemetryStatus) {
     val accents = LocalAccentColors.current
     Surface(

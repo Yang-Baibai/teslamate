@@ -79,146 +79,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-@Composable
-fun DrivesScreen(
-    settings: AppSettings,
-    modifier: Modifier,
-    /** v0.8.5：false = 嵌在「记录」页里（顶栏与「近 30 天」汇总统一收敛） */
-    showHeader: Boolean = true,
-) {
-    val api = remember(settings) { settings.api() }
-    val scope = rememberCoroutineScope()
-    var list by remember { mutableStateOf<List<Drive>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(true) }
-    var refreshing by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf<Drive?>(null) }
-
-    // ⚠️ v0.9.0：抽成可复用的 load() —— 原来只有一次性加载，
-    // 网络一断就再也不请求，用户必须「切走再切回」才能重试。
-    suspend fun load() {
-        if (api == null) {
-            error = if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页"
-            loading = false
-            return
-        }
-        // ⚠️ **v0.38.0（第 23 轮数据自洽性审计 P2-4）：200 → 500 趟。**
-        //
-        // 原来只拉最近 **200** 趟，而记录页拉 500 趟 ——
-        // 实测全库 **362** 趟 ⇒ 行程页有 **162 趟（44.8%）看不到，而且界面零提示**。
-        // 同一个数据两个页面给两个范围，用户会以为行程记录丢了。
-        runCatching { withContext(Dispatchers.IO) { api.drives(settings.carId, 500) } }
-            .onSuccess { list = it; error = null; loading = false }
-            .onFailure { error = it.message; loading = false }
-    }
-
-    LaunchedEffect(settings) { load() }
-
-    // ⚠️ **v0.71.0（苹果设计总监复审）**：边缘投影**只在转场期间**出现。
-    //
-    // 原来它是 `AnimatedContent` 内容里的**常驻**节点 ⇒ 转场结束后那条
-    // 16dp 宽的黑灰渐变**永久钉在屏幕左缘**，用户读作「渲染 bug」。
-    // 现在由父层持有「转场进行中」的信号，转场一结束投影就没了。
-    val edgeActive = rememberPushTransitionActive(selected)
-
-    AnimatedContent(
-        targetState = selected,
-        modifier = modifier,
-        transitionSpec = { pushDetailTransition(this) },
-        label = "driveDetail",
-    ) { sel ->
-        Box(Modifier.fillMaxSize()) {
-            if (sel == null) DriveList(
-                list = list,
-                loading = loading,
-                error = error,
-                settings = settings,
-                showHeader = showHeader,
-                refreshing = refreshing,
-                onRefresh = {
-                    scope.launch {
-                        refreshing = true
-                        load()
-                        refreshing = false
-                    }
-                },
-                onSelect = { selected = it },
-            )
-            else DriveDetail(sel, api, settings) { selected = null }
-            // ⚠️ v0.71.0：`edgeActive` 把投影限制在**转场期间**。
-            if (sel != null && edgeActive) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
-        }
-    }
-}
-
-@Composable
-private fun DriveList(
-    list: List<Drive>,
-    loading: Boolean,
-    error: String?,
-    settings: AppSettings,
-    showHeader: Boolean = true,
-    refreshing: Boolean = false,
-    onRefresh: () -> Unit = {},
-    onSelect: (Drive) -> Unit,
-) {
-
-    Column(Modifier.fillMaxSize()) {
-        if (showHeader) {
-            TopAppBar(
-                title = { ScreenTitle("行程") },
-            )
-        }
-        // ⚠️ v0.9.0：加下拉刷新（原来失败后只能切 Tab 重试）。
-        PullToRefreshBox(
-            isRefreshing = refreshing,
-            onRefresh = onRefresh,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            when {
-                error != null -> Column(Modifier.fillMaxSize().padding(16.dp)) { ErrorBanner(error!!) }
-                loading -> ListSkeleton(items = 7)
-                list.isEmpty() -> Column(Modifier.padding(16.dp)) { SectionCard { Text("暂无行程记录") } }
-                else -> {
-                    val groups = remember(list) { list.groupBy { it.start_date.fmtMonth() } }
-                    LazyColumn(
-                        Modifier.fillMaxSize(),
-                        // 与充电页保持一致：固定 padding，不用 systemBars。
-                        // systemBars 含 top inset，会在 TopAppBar 下方重复加一次状态栏高度，
-                        // 表现为标题与列表之间多出一块空白。
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (showHeader) {
-                            item(key = "summary") {
-                                RecentSummaryCard(settings = settings, fallback = {
-                                    Text(
-                                        "共 ${list.size} 次行程",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                })
-                            }
-                        }
-                        groups.forEach { (month, drives) ->
-                            item(key = "h-$month") {
-                                Text(
-                                    month,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(top = 8.dp).animateItem(),
-                                )
-                            }
-                            items(drives, key = { it.id }) { d ->
-                                DriveItem(d, Modifier.animateItem()) { onSelect(d) }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
+//
+// 行程相关的**组件**（列表行 / 详情页）。
+//
+// `v0.170.0`：这里原本叫 `DrivesScreen.kt`，里面装着一个**死屏**。
+//
+//   - `fun DrivesScreen(...)`（顶层屏）**从来没有被调用过** —— v0.8.5 起「行程」就并进了「记录」页，
+//     而旧屏还留在仓库里（CHANGELOG v0.8.5 段已记「从未渲染过」）。
+//   - 但它里面装着两个**活的**组件：`DriveItem`（列表行）与 `DriveDetail`（详情），
+//     记录页时间轴一直在用 ⇒ **不能整文件删**。
+//
+// ⇒ 本轮把死屏本体删掉，把活组件搬到这个**名副其实**的文件里
+//   （并加了客户端闸门 44：**顶层屏不许没人调用**）。
 /**
  * 行程列表行。
  *

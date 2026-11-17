@@ -225,7 +225,7 @@ v0.39.0 已把措辞改成「模型残差约 ±N 个点」（不夸大），
 | `Scaffold` 底栏与内容的**语义树顺序** | a11y §7 未知项 1 | `ScaffoldLayout` 内部先组合 `bottomBar` 还是先组合 `content`，需要翻 Compose 源码或真机 `uiautomator dump`。若底栏排在内容之前，TalkBack 第一次右滑会先落在 4 个 Tab 上（与视觉顺序相反） |
 | `LazyRow → Row` 改动的**实测**验证 | a11y P0-2 | v0.47.0 已把起点选择器改成 `Row + horizontalScroll`（38 项全部组合进语义树）。验证方法：`adb shell uiautomator dump` 后统计 `clickable="true"` 且 `content-desc` 含「公里」的节点数，应 = 38 |
 | 按下反馈**全 App 统一**成 `pressable` | HIG P0-2 | `pressable` 6 处 vs 原生 `.clickable` 14 处（Material 涟漪、无变暗、无缩放）。v0.47.0 只统一了设置页与线路卡那几处**触感**；**视觉**全量统一要逐屏看，缺设备验证 |
-| 3D 倾斜的**补间**（`Motion.TiltPress` 零引用） | HIG P1-1 | `DrivesScreen.kt:560` 的 `rotationX` 是**裸 Float**进 `graphicsLayer`，按下瞬间是**瞬时跳变**。改成 spring 需要 `animateFloatAsState` 驱动，而 spring 的手感必须真机看 |
+| 3D 倾斜的**补间**（`Motion.TiltPress` 零引用） | HIG P1-1 | ~~`DrivesScreen.kt:560`~~ 的 `rotationX` 是**裸 Float**进 `graphicsLayer`，按下瞬间是**瞬时跳变**。改成 spring 需要 `animateFloatAsState` 驱动，而 spring 的手感必须真机看。⚠️ **v0.170.0**：该文件已改名 **`DriveComponents.kt`**（行号随之变化）⇒ 按名字找 |
 
 ### B2. 第 29 轮崩溃与健壮性审计的其余两条（**需要真机或大数据**才能验证）
 

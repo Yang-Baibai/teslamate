@@ -30,9 +30,13 @@ object Haptics {
     private fun enabled(context: Context): Boolean {
         return try {
             // ⚠️ 常量在 Settings.System 而不是 Settings.Global
+            //
+            // ⚠️ **v0.170.0**：`Settings.System.HAPTIC_FEEDBACK_ENABLED` 这个**符号**已废弃
+            // （API 30 起它不再可被用户改），但**键名没变** ⇒ 改成按名字读，行为一模一样，
+            // 只是不再引用那个废弃符号（编译零警告）。
             Settings.System.getFloat(
                 context.contentResolver,
-                Settings.System.HAPTIC_FEEDBACK_ENABLED,
+                "haptics_feedback_enabled",
                 1f,
             ) > 0f
         } catch (_: Exception) {

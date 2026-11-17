@@ -140,7 +140,7 @@ rm -f "$TMP"
 # ③ 更糟的是**字符串字面量**里出现它 ⇒ 界面直接印出「[U+FFFD]」。
 #
 # 已实测抓到 6 处历史损坏（api/battery_decay.go、api/climb.go、
-# Haptics.kt、DrivesScreen.kt、RecordsScreen.kt、docs/operations.md）——
+# Haptics.kt、DriveComponents.kt（当时叫 DrivesScreen.kt）、RecordsScreen.kt、docs/operations.md）——
 # 全在注释里，但都是**人读**的东西。
 TMP=$(mktemp)
 "$PY" - > "$TMP" <<'PYEOF'
@@ -3201,7 +3201,7 @@ import pathlib, re, sys
 ROOT = pathlib.Path('.')
 KT = ROOT / 'app-android/app/src/main/java/com/teslamate/app'
 MEAS = KT / 'ui/ChargeMeasured.kt'
-SCREEN = KT / 'ui/ChargesScreen.kt'
+SCREEN = KT / 'ui/ChargeComponents.kt'   # ⚠️ **v0.170.0**：原名 ChargesScreen.kt（那个顶层屏是**死的**，已删）
 BASE = ROOT / 'scripts/verbose-baseline.txt'
 
 for p in (MEAS, SCREEN, BASE):
@@ -3230,13 +3230,13 @@ for fn in ('measuredTo80Label', 'measuredTo80Value', 'noteMeasuredTo80'):
 # ② 旧句式不许复活（剥注释后查）
 for bad in ('本次实测：从 $', '充到 80% 用了', '（读自充电曲线）', '（从曲线直接读）'):
     if bad in screen:
-        problems.append('ChargesScreen.kt 里还有旧句式「%s」⇒ 自由句又回来了' % bad)
+        problems.append('ChargeComponents.kt 里还有旧句式「%s」⇒ 自由句又回来了' % bad)
 
 # ③ 两条分支都走**同一个**纯函数：各调用恰好两次（服务端路径 + 老服务端兜底）
 for fn in ('measuredTo80Label(', 'measuredTo80Value('):
     n = screen.count(fn)
     if n != 2:
-        problems.append('ChargesScreen.kt 里 %s 调用了 %d 次（应为 2：服务端路径 + 兜底路径）⇒ 两条分支写法又分叉了' % (fn, n))
+        problems.append('ChargeComponents.kt 里 %s 调用了 %d 次（应为 2：服务端路径 + 兜底路径）⇒ 两条分支写法又分叉了' % (fn, n))
 
 # ④ 啰嗦棘轮基线里那两句必须已经删掉
 base = BASE.read_text(encoding='utf-8', errors='replace')
@@ -3272,7 +3272,7 @@ rm -f "$TMP"
 # ⇒ 而且两遍是**两种说法**（「（第 N 公里 · …之后）」vs「（在第 N 公里…）」）。
 # ⇒ 现在只留 `verdictDetail()` 一处；末尾那行删掉，「低于 20% 保底」并进细节行。
 #
-# ⚠️ 判据**只扫 RoutePlan.kt** —— `DrivesScreen.kt` 里也有「全程最低」，
+# ⚠️ 判据**只扫 RoutePlan.kt** —— `DriveComponents.kt`（原 DrivesScreen.kt）里也有「全程最低」，
 #   但那是**行程详情**的另一个事实（不是这张卡的）⇒ 全 App 扫会**假红**。
 # ⚠️ 判据必须先剥注释 —— 否则注释里提一句就能满足 ⇒ 假绿。
 TMP=$(mktemp)
@@ -4373,6 +4373,73 @@ if problems:
 print('客户端没有直读服务端 ⓘ 文案（读取点只有 %s，且有单测钉住行宽）' % '/' .join(sorted(ALLOW)))
 PYEOF
 if [ $? -eq 0 ]; then ok "客户端不许直读服务端下发的 ⓘ 文案"; else fail "客户端直读了服务端 ⓘ 文案（那些文案没有行宽判据）"; cat "$TMP"; fi
+rm -f "$TMP"
+# ── 闸门 44：顶层屏不许没人调用 ───────────────────────────────────────
+#
+# ⚠️ **v0.170.0**：仓库里曾有两个**死顶层屏**（@BT@DrivesScreen@BT@ / @BT@ChargesScreen@BT@）——
+#   v0.8.5 起「行程」「充电」就并进了「记录」页，可这两个屏**全项目没有任何调用点**，
+#   却各自带着自己的 @BT@load()@BT@、自己的骨架屏、自己的文案 ⇒ 看上去像「在用」，其实一行都不渲染。
+#
+#   ⇒ 危害不是「多几行代码」，是**后来者会改错文件**：
+#     有人以为「行程列表页」就是 @BT@DrivesScreen@BT@ ⇒ 改了半天，改的是个死屏。
+#     （@BT@ui/ChargeListPage.kt@BT@ 的注释**早就写明**了这件事，却一直没人还债。）
+#
+# ⇒ 判据：每个 @BT@fun XxxScreen(@BT@ / @BT@fun XxxPage(@BT@ 的**顶层屏**，
+#   都必须**至少有一个调用点**（定义行自己不算）⇒ 没人调用 ⇒ 报红。
+#
+# ⚠️ 判据是**形态无关**的：扫的是「这个名字在**剥掉注释后**的代码里出现几次」，
+#   不管调用写在哪个文件、哪种写法；注释里提一句**不算**调用（否则一句注释就能骗过它）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('app-android/app/src/main/java')
+
+if not ROOT.exists():
+    print('找不到客户端源码目录 %s' % ROOT)
+    sys.exit(1)
+
+
+def strip_comments(src):
+    """剥掉块注释（含 KDoc）与行注释 —— 只留**真正的代码**。"""
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+files = {}
+for p in sorted(ROOT.rglob('*.kt')):
+    files[p.relative_to(ROOT).as_posix()] = strip_comments(
+        p.read_text(encoding='utf-8', errors='replace'))
+
+DEF = re.compile(r'fun\s+([A-Za-z0-9_]+)\s*\(')
+screens = []
+for rel, src in files.items():
+    for m in DEF.finditer(src):
+        name = m.group(1)
+        if name.endswith('Screen') or name.endswith('Page'):
+            screens.append((name, rel))
+
+problems = []
+for name, rel in screens:
+    pat = re.compile(r'\b%s\s*\(' % re.escape(name))
+    hits = 0
+    for src2 in files.values():
+        hits += len(pat.findall(src2))
+    # 定义本身算 1 次 ⇒ 至少还要有 1 次**调用**
+    if hits <= 1:
+        problems.append('%s 定义在 %s  ⇒ 全项目没有任何调用点（死屏）' % (name, rel))
+
+if problems:
+    print('顶层屏没人调用 —— %d 个：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 死屏会误导后来者（以为它在用）⇒ 要么接上，要么删掉')
+    print('   ⇒ 真不再需要的屏：连同它独占的组件一起删，别留「看着像在用」的文件')
+    sys.exit(1)
+
+print('顶层屏都有调用点（%d 个）' % len(screens))
+PYEOF
+if [ $? -eq 0 ]; then ok "顶层屏不许没人调用（没有死屏）"; else fail "有顶层屏没人调用（死屏）"; cat "$TMP"; fi
 rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"

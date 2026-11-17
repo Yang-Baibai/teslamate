@@ -32,12 +32,13 @@
      ├── TrackMap.kt        高德静态图（经服务端 /api/v1/app/staticmap 中转，Coil 加载）
      ├── StatusScreen.kt    车况页
      ├── RecordsScreen.kt   「记录」页（充电 | 行程，段控件切换）
-     ├── ChargesScreen.kt   充电页（列表+详情，嵌在「记录」页内）
-     ├── DrivesScreen.kt    行程页（列表+详情，嵌在「记录」页内）
+     ├── ChargeListPage.kt  充电记录列表页（「记录」页内）
+     ├── ChargeComponents.kt 充电组件（列表行 / 详情，**没有顶层屏**）
+     ├── DriveComponents.kt  行程组件（列表行 / 详情，**没有顶层屏**）
      ├── StatsScreen.kt     用量页
      ├── SettingsScreen.kt  设置页
      ├── StatusStore.kt     App 级车况缓存（切 Tab 不闪骨架屏）
-     ├── RecentSummaryCard.kt  充电/行程页顶部「近 30 天」汇总卡（v0.8.5 起不再渲染：汇总已收敛到「用量」页）
+     ├── RecentSummaryCard.kt  「近 30 天」汇总卡（**v0.46.0 起渲染在车况页**；记录页顶部那个 v0.8.5 就撤了）
      ├── UpdateDialog.kt    启动更新弹窗
      └── PushTransition.kt  页面切换过渡
  ```

@@ -141,6 +141,9 @@ enum class GlassLevel(
  * @param realBlur true=真毛玻璃（需要 haze 源是**兄弟节点**）；
  *                 false=半透明 + 渐变描边的假毛玻璃（可安全嵌套在 haze 源内部）。
  */
+// ⚠️ **v0.170.0**：`hazeChild` 的 `shape` 参数在 haze 1.0.0 已废弃 ——
+// 但**去掉它会改变圆角处的模糊裁剪**（底栏的毛玻璃会糊出圆角）⇒ 保留并抑制警告。
+@Suppress("DEPRECATION")
 @Composable
 fun Modifier.glassSurface(
     level: GlassLevel = GlassLevel.Regular,
@@ -1177,7 +1180,7 @@ fun SettingRow(
                 contentDescription = null,
                 // ⚠️ **v0.47.0（第 28 轮 a11y P1-7）**：箭头**不是纯装饰** ——
                 // 它是「这一行会 push 出新页面」的**唯一视觉线索**
-                // （`DrivesScreen.kt:293-295` 的注释自己写着：
+                // （`DriveComponents.kt:215-218` 的注释自己写着：
                 // 「可推入的卡片要有 disclosure indicator」）。
                 // ⇒ 它属于「有意义的非文字图形」，WCAG 1.4.11 要求 **≥3:1**。
                 //

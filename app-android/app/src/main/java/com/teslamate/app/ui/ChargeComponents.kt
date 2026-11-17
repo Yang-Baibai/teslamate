@@ -75,154 +75,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
-@Composable
-fun ChargesScreen(
-    settings: AppSettings,
-    modifier: Modifier,
-    /**
-     * v0.8.5：false = 嵌在「记录」页里（RecordsScreen 已提供顶栏与段控件，
-     * 且「近 30 天」汇总数据统一收敛到「用量」页 —— 同一份 stats 不该被抓两次）。
-     */
-    showHeader: Boolean = true,
-) {
-    val api = remember(settings) { settings.api() }
-    val scope = rememberCoroutineScope()
-    var list by remember { mutableStateOf<List<Charge>>(emptyList()) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(true) }
-    var refreshing by remember { mutableStateOf(false) }
-    var selected by remember { mutableStateOf<Charge?>(null) }
-    // 该站历史统计（按地点聚合）：回答「这个桩快不快、我要等多久」。
-    // 这是决定「进不进这个服务区」的唯一信息，单次充电的峰值/平均功率给不了。
-    val stats = remember(list) { buildStationStats(list) }
-
-    // ⚠️ v0.9.0：抽成可复用的 load() ——
-    // 原来只有 LaunchedEffect 里的**一次性**加载，网络一断就再也不请求了，
-    // 用户必须「切走再切回」才能重试（可靠性复核：列表页没有下拉刷新）。
-    // 现在：初次加载 + 下拉刷新都走这一条路径。
-    suspend fun load() {
-        if (api == null) {
-            error = if (settings.configured) "服务器地址或令牌无效" else "尚未配置服务器，请到「设置」页"
-            loading = false
-            return
-        }
-        runCatching { withContext(Dispatchers.IO) { api.charges(settings.carId, 200) } }
-            .onSuccess { list = it; error = null; loading = false }
-            .onFailure { error = it.message; loading = false }
-    }
-
-    LaunchedEffect(settings) { load() }
-
-    // ⚠️ **v0.71.0（苹果设计总监复审）**：边缘投影**只在转场期间**出现。
-    //
-    // 原来它是 `AnimatedContent` 内容里的**常驻**节点 ⇒ 转场结束后那条
-    // 16dp 宽的黑灰渐变**永久钉在屏幕左缘**，用户读作「渲染 bug」。
-    // 现在由父层持有「转场进行中」的信号，转场一结束投影就没了。
-    val edgeActive = rememberPushTransitionActive(selected)
-
-    // 列表 ⇄ 详情：iOS 式 push（新页推入，旧页 30% 视差退让 + 左缘投影）
-    AnimatedContent(
-        targetState = selected,
-        modifier = modifier,
-        transitionSpec = { pushDetailTransition(this) },
-        label = "chargeDetail",
-    ) { sel ->
-        Box(Modifier.fillMaxSize()) {
-            if (sel == null) ChargeList(
-                list = list,
-                stats = stats,
-                loading = loading,
-                error = error,
-                settings = settings,
-                showHeader = showHeader,
-                refreshing = refreshing,
-                onRefresh = {
-                    scope.launch {
-                        refreshing = true
-                        load()
-                        refreshing = false
-                    }
-                },
-                onSelect = { selected = it },
-            )
-            else ChargeDetail(sel, api, stats) { selected = null }
-            // ⚠️ v0.71.0：`edgeActive` 把投影限制在**转场期间**。
-            if (sel != null && edgeActive) PushEdgeShadow(Modifier.align(Alignment.CenterStart))
-        }
-    }
-}
-
-@Composable
-private fun ChargeList(
-    list: List<Charge>,
-    stats: Map<String, StationStat>,
-    loading: Boolean,
-    error: String?,
-    settings: AppSettings,
-    showHeader: Boolean = true,
-    refreshing: Boolean = false,
-    onRefresh: () -> Unit = {},
-    onSelect: (Charge) -> Unit,
-) {
-
-    Column(Modifier.fillMaxSize()) {
-        if (showHeader) {
-            TopAppBar(
-                title = { ScreenTitle("充电") },
-            )
-        }
-        // ⚠️ v0.9.0：加下拉刷新。
-        // 原来这个页只有一次性加载 —— 网络抖一下失败后，只能「切走再切回」才重试。
-        PullToRefreshBox(
-            isRefreshing = refreshing,
-            onRefresh = onRefresh,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            when {
-                error != null -> Column(Modifier.fillMaxSize().padding(16.dp)) { ErrorBanner(error!!) }
-                loading -> ListSkeleton(items = 7)
-                list.isEmpty() -> Column(Modifier.padding(16.dp)) { SectionCard { Text("暂无充电记录") } }
-                else -> {
-                    val groups = remember(list) { list.groupBy { it.start_date.fmtMonth() } }
-                    val totalKwh = list.sumOf { it.energy_added_kwh ?: 0.0 }
-                    val totalCost = list.sumOf { it.cost ?: 0.0 }
-                    val dcCount = list.count { it.is_dc }
-                    LazyColumn(
-                        Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 32.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (showHeader) {
-                            item(key = "summary") {
-                                RecentSummaryCard(settings = settings, fallback = {
-                                    Text(
-                                        "共 ${list.size} 次 · 充入 ${totalKwh.fmt(1)} 度",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                    )
-                                })
-                            }
-                        }
-                        groups.forEach { (month, charges) ->
-                            item(key = "h-$month") {
-                                Text(
-                                    month,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(top = 8.dp).animateItem(),
-                                )
-                            }
-                            items(charges, key = { it.id }) { c ->
-                                val stat = stats[stationKey(c)]
-                                ChargeItem(c, stat, Modifier.animateItem()) { onSelect(c) }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
+//
+// 充电相关的**组件**（列表行 / 详情页 / 小件组件）。
+//
+// `v0.170.0`：这里原本叫 `ChargesScreen.kt`，里面装着一个**死屏**。
+//
+//   - `fun ChargesScreen(...)`（顶层屏）**从来没有被调用过** —— v0.8.5 起充电列表就并进了「记录」页，
+//     而旧屏还留在仓库里（`ChargeListPage.kt` 的注释早就写明了这件事）。
+//   - 但它里面装着一批**活的**组件：`ChargeItem`（列表行）、`ChargeTypeChip`、
+//     `ChargeDetail`（详情）、`foldBiasPercent`、`rangeDelta`。
+//
+// ⇒ 本轮把死屏本体删掉，把活组件搬到这个**名副其实**的文件里
+//   （并加了客户端闸门 44：**顶层屏不许没人调用**）。
 /**
  * 充电列表行。
  *
