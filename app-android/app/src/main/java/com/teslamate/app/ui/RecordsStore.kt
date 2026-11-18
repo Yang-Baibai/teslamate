@@ -8,6 +8,7 @@ import com.teslamate.app.ApiErrorKind
 import com.teslamate.app.Charge
 import com.teslamate.app.ChargeStats
 import com.teslamate.app.Drive
+import com.teslamate.app.FullChargeRange
 import com.teslamate.app.UserFacingException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -65,6 +66,19 @@ class RecordsStore {
      * 任一失败 → 两份数据一起被丢弃 → 整页回到骨架屏。
      */
     var chargeError by mutableStateOf<UserFacingException?>(null)
+        private set
+
+    /**
+     * ⚠️ **v0.174.0：实测满电续航 —— 服务端算的结论**。
+     *
+     * ⚠️ 原来 App 是在**客户端**折算这段（ui/RangeSegments.kt）⇒
+     * ① 飞书里问不出来；② 两端各算一套阈值，必然漂（ADR #38）。
+     * ⇒ 现在判定与文案都在服务端，App 只透传。
+     *
+     * ⚠️ 为 null = 没拿到（服务端是旧版本，或这次请求失败）
+     * ⇒ 卡片**整个不显示**（绝不自己在客户端算一套顶替 —— 那会变成第二个口径）。
+     */
+    var fullChargeRange by mutableStateOf<FullChargeRange?>(null)
         private set
 
     /**
@@ -142,6 +156,16 @@ class RecordsStore {
         }.onFailure {
             chargeStats = null
         }
+        // ④ 实测满电续航（v0.174.0，服务端算的结论）
+        //
+        // ⚠️ 失败**不阻塞**记录页 ⇒ 只把结论清成 null，卡片就不显示。
+        runCatching {
+            withContext(Dispatchers.IO) { api.fullChargeRange(carId) }
+        }.onSuccess {
+            fullChargeRange = it
+        }.onFailure {
+            fullChargeRange = null
+        }
         loading = false
         refreshing = false
     }
@@ -153,6 +177,7 @@ class RecordsStore {
         error = null
         chargeError = null
         chargeStats = null
+        fullChargeRange = null
         loading = true
         loadedFor = null
     }

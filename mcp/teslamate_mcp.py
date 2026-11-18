@@ -1021,6 +1021,67 @@ def _fmt_tz(ts: Any, tz: str) -> str:
         return str(ts)
 
 
+
+
+# ⚠️ **v0.174.0**：实测满电续航 —— Hermes 也能问了。
+#
+# 为什么加：App 用量页那张「实测满电续航」以前是**客户端自己折算**的
+# ⇒ 飞书里问「满电到底能跑多少」问不出来（mission §2.1，
+# docs/app-conclusions.json 的第 1 条 gap）。
+# ⇒ 现在判定与文案都在**服务端**（/full_charge_range），这里**只透传**
+# ⇒ App 与飞书是**同一份**数（ADR #38 / ADR #41）。
+#
+# ⚠️ **别自己复算**：折算要看「每次充电的起止电量 + 里程表」，
+# 还要剔掉物理上不可能的段 —— 这里读服务端那份，别在这里另算一遍。
+@mcp.tool(annotations=RO)
+def teslamate_full_charge_range() -> dict:
+    """查「**实测满电续航**」：这台车满电到底能跑多少公里（实测折算的中位数）。
+
+    **什么时候用**：用户问「满电能跑多少」「满电能跑多远」「这车的真实续航是多少」
+    「官方标称 448 公里是真的吗」「实测比官方低多少」—— 都归它。
+
+    ⚠️ **这是折算值，不是某一次满电实跑的公里数**：
+    把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电，
+    取所有有效段的**中位数** ⇒ 市区与高速工况不同，中位数不代表任何一次具体出行。
+
+    ⚠️ **别拿它当规划依据**：规划请用 `teslamate_range_estimate`（那是「现在能开多少」）。
+    """
+    data = _get(f"/api/v1/cars/{CAR_ID}/full_charge_range")
+    if not isinstance(data, dict) or "error" in data:
+        return data
+    median = data.get("median_km")
+    official = data.get("official_km")
+    pct = data.get("vs_official_percent")
+    out = {
+        # ⚠️ **算不出来就是「不知道」** —— 不给 0，也不给半截数。
+        "实测满电续航(km)": median,
+        "官方标称满电续航(km)": official,
+        "实测段数": data.get("segment_count"),
+        "依据": data.get("note"),
+    }
+    if pct is not None:
+        # ⚠️ **方向**：正数 = 实测**高**出百分之几；负数 = 实测**低**百分之几。
+        #   （旧算法把方向搞反过，报成「实测高 77%」，而真相是「低 23%」——
+        #    那是 v0.40.0 的教训，服务端口径已钉住。）
+        out["实测比官方标称(%)"] = pct
+        out["实测与官方标称的关系"] = ("实测高 %d%%" % pct) if pct >= 0 else ("实测低 %d%%" % (-pct))
+    caveat = data.get("caveat")
+    if caveat:
+        out["为什么没有数"] = caveat
+    segs = data.get("segments") or []
+    if segs:
+        # ⚠️ **段明细**也透传（App 的折叠区与这里是同一份）。
+        out["段明细"] = [
+            {
+                "开始": s.get("start_date"),
+                "起始%": s.get("from_soc"),
+                "到达%": s.get("to_soc"),
+                "实跑km": s.get("km"),
+                "折算满电km": s.get("full_charge_km"),
+            }
+            for s in segs
+        ]
+    return out
 @mcp.tool(annotations=RO)
 def teslamate_charge_stats(period: str = "7d") -> dict:
     """查**充电统计**：按区间给出充了多少度、几次、直交流拆分、平均时长、上次充满。

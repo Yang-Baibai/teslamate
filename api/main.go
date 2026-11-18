@@ -155,6 +155,11 @@ func main() {
 	mux.HandleFunc("GET /api/v1/cars/{id}/stats", auth(handleStats))
 	mux.HandleFunc("GET /api/v1/cars/{id}/battery", auth(handleBattery))
 	mux.HandleFunc("GET /api/v1/cars/{id}/range_estimate", auth(handleRangeEstimate))
+	// ⚠️ **v0.174.0**：实测满电续航（**服务端算的结论**）。
+	//   原来 App 那个「实测满电续航」是**客户端自己折算**的
+	//   ⇒ ① 飞书里问不出来（mission §2.1）；② 两端各算一套阈值，必然漂。
+	//   ⇒ 判定、阈值与文案都收归服务端（api/full_charge_range.go），App 只透传。
+	mux.HandleFunc("GET /api/v1/cars/{id}/full_charge_range", auth(handleFullChargeRange))
 	// ⚠️ **v0.123.0**：保养 / 轮胎提醒（**基准与判定都在服务端**）。
 	//   GET  → 读某台车的基准 + 算好的提醒结论（App 与 Hermes 共用）
 	//   POST → 写某台车的基准（App「设置 → 保养与轮胎」页调用）

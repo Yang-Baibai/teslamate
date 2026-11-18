@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.teslamate.app.AppSettings
 import com.teslamate.app.Charge
+import com.teslamate.app.FullChargeRange
 import com.teslamate.app.Drive
 import com.teslamate.app.firstSegment
 import com.teslamate.app.fmtMonth
@@ -432,7 +433,7 @@ fun RecordsScreen(
                             }
                             else -> RecordTimeline(
                                 records, stationStats, routePlan, routeHistoryMap,
-                                charges = charges,
+                                fullChargeRange = store.fullChargeRange,
                                 routeTemplates = routeTemplates,
                                 selectedRouteKey = selectedRouteKey,
                                 onSelectRouteKey = { selectedRouteKey = it },
@@ -493,19 +494,18 @@ private fun RecordTimeline(
     rates: com.teslamate.app.ChargeRates? = null,
     onSelect: (RecordItem) -> Unit,
     /**
-     * ⚠️ v0.27.0：实测满电续航卡片要用充电记录（充前/充后电量 + 里程表）。
+     * ⚠️ **v0.174.0：实测满电续航 —— 服务端算好的结论。**
      *
      * ⚠️ 必须放在**最后** —— 这个函数的调用点是**位置参数**调用
      * （`RecordTimeline(records, stationStats, routePlan, routeHistoryMap, …`），
      * 插在中间会让后面所有位置参数**整体错位**。
      */
-    charges: List<Charge> = emptyList(),
+    fullChargeRange: FullChargeRange? = null,
 ) {
     TimelineList(
         records = records,
         stationStats = stationStats,
-        // ⚠️ v0.27.0：实测满电续航卡片要用充电记录。
-        charges = charges,
+        fullChargeRange = fullChargeRange,
         routePlan = routePlan,
         routeHistory = routeHistory,
         routeTemplates = routeTemplates,
@@ -565,8 +565,13 @@ private fun RecentDriveCard(drive: Drive, modifier: Modifier = Modifier) {
 private fun TimelineList(
     records: List<RecordItem>,
     stationStats: Map<String, StationStat>,
-    /** ⚠️ v0.27.0：实测满电续航卡片要用充电记录（充前/充后电量 + 里程表）。 */
-    charges: List<Charge> = emptyList(),
+    /**
+     * ⚠️ **v0.174.0：实测满电续航 —— 服务端算好的结论（客户端只渲染）。**
+     *
+     * ⚠️ 原来这里传的是 `charges`（充电记录）⇒ 卡片**自己在客户端折算**。
+     * 现在传服务端那份结论 ⇒ ① 飞书里也问得到；② 两端不会各算一套阈值。
+     */
+    fullChargeRange: FullChargeRange? = null,
     routePlan: RoutePlan? = null,
     routeHistory: Map<RouteKey, List<Drive>> = emptyMap(),
     routeTemplates: List<RouteTemplate> = emptyList(),
@@ -578,9 +583,13 @@ private fun TimelineList(
 ) {
     // 按月份分组，但保持整体的时间倒序
     val groups = remember(records) { records.groupBy { it.at.fmtMonth() } }
-    // ⚠️ v0.27.0：行程表（给「实测满电续航」核对用）。
+    // ⚠️ 行程表（记录页「最近一趟」用）。
     // 记录本身就是行程 + 充电的合并列表，这里把行程挑出来，
     // 不额外拉一次接口 —— 同一份数据、同一套口径。
+    //
+    // ⚠️ **v0.174.0**：它**不再**给「实测满电续航」核对了 ——
+    // 那张卡的判定已收归服务端（官方标称拿得到时用物理可行性判据，
+    // 覆盖率那条退化路径在本机走不到）。
     val driveList = remember(records) {
         records.filterIsInstance<RecordItem.DriveItem>().map { it.drive }
     }
@@ -647,16 +656,15 @@ private fun TimelineList(
         // 放在「线路余量表」**之后** —— 那张卡回答「这条线怎么走」，
         // 这张卡回答「这台车满电到底能跑多远」，是它的**前提**。
         //
-        // 数据全部来自 `charging_processes` 的充前/充后电量 + `positions` 的里程表，
-        // **纯客户端可算**，不需要新端点。
-        if (charges.size >= 3) {
+        // ⚠️ **v0.174.0**：判定与文案都在**服务端**（/full_charge_range）——
+        // 客户端只渲染（ADR #38 / ADR #41）。
+        //
+        // ⚠️ 服务端没给数（服务器挂掉 / 老服务端 / 官方标称缺失）⇒
+        // **整张卡不出现**（宁可不说，也不说半句）。
+        if (fullChargeRange != null && fullChargeRange.median_km != null) {
             item(key = "range-segments") {
                 RangeSegmentsCard(
-                    charges = charges,
-                    // ⚠️ v0.27.0：行程表用来核对「这一段是不是真的全程有记录」——
-                    // 实测有一段 366 公里**没有行程记录**（里程表与行程表之间有空洞），
-                    // 折算出来是 1744 公里/满电（物理上不可能），必须剔除。
-                    drives = driveList,
+                    data = fullChargeRange,
                     modifier = Modifier.animateItem(),
                 )
             }

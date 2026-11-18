@@ -4441,6 +4441,149 @@ print('顶层屏都有调用点（%d 个）' % len(screens))
 PYEOF
 if [ $? -eq 0 ]; then ok "顶层屏不许没人调用（没有死屏）"; else fail "有顶层屏没人调用（死屏）"; cat "$TMP"; fi
 rm -f "$TMP"
+
+# ── 闸门 45：实测满电续航的**折算与阈值只以服务端为准** ──────────────────
+#
+# ⚠️ **v0.174.0**：这段折算原来在**客户端**（ui/RangeSegments.kt 的 buildRangeSegments）
+#   ⇒ ① **飞书里问不出来**（mission §2.1：App 能看到的，Hermes 也要能取）；
+#   ② **两端各算一套阈值** —— 掉电 20 个百分点、1.5 倍物理可行性这两个阈值
+#      只写在客户端 ⇒ 以后任一边改了，用户在 App 与飞书里会看到**互相矛盾的两个数**。
+#
+# ⇒ 现在判定、阈值、文案都在**服务端**（api/full_charge_range.go ＋
+#   `GET /api/v1/cars/{id}/full_charge_range`），App 只透传（ADR #38 / ADR #41）。
+#
+# 判据（**形态无关** —— 这是本闸门第一版栽过的坑，见下面的「为什么不能只认函数名」）：
+#   ① 客户端**不许**再出现「把公里数按掉电百分比折算成满电」这个**算法**；
+#      判的不是某个函数名，而是**算法结构**：
+#      「一个公里数 ÷ 一个掉电百分点 × 100」这个形状（换名字、换写法都盖得住）。
+#   ② 客户端**不许**出现服务端的两个**阈值**（20 个百分点 / 1.5 倍）——
+#      阈值是判定的核心，客户端一旦自己写一份，两边就会漂。
+#   ③ 客户端**必须**读服务端的结论（`fullChargeRange` 出现在客户端源码里）；
+#   ④ 服务端**必须**真的有那份判定（api/full_charge_range.go ＋ 路由）；
+#   ⑤ 阈值**只在服务端一份**，且服务端单测必须引用它们（护栏不许是空壳）。
+#
+# ⚠️ **为什么不能只认函数名**（v0.174.0 实测踩到）：
+#   第一版判据只查 `buildRangeSegments` 这类**函数名** ⇒
+#   负向探针用**内联算式**（不起函数名）在客户端加回本地折算 ⇒ **静默放行**。
+#   ⇒ 「闸门跑绿」不等于「它在检查东西」⇒ 判据必须钉**算法结构**，不是名字。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+KT_SEG = UI / 'ui/RangeSegments.kt'
+KT_API = UI / 'Api.kt'
+KT_STORE = UI / 'ui/RecordsStore.kt'
+GO = pathlib.Path('api/full_charge_range.go')
+GO_MAIN = pathlib.Path('api/main.go')
+GO_TEST = pathlib.Path('api/full_charge_range_test.go')
+
+problems = []
+
+for p in (KT_SEG, KT_API, KT_STORE, GO, GO_MAIN, GO_TEST):
+    if not p.exists():
+        problems.append('找不到 %s —— 这道闸门要跟着改' % p)
+
+
+def strip_kt(src):
+    """剥掉块注释与行注释 ⇒ 只看**真正的代码**。"""
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+if not problems:
+    seg = strip_kt(KT_SEG.read_text(encoding='utf-8', errors='replace'))
+    api = strip_kt(KT_API.read_text(encoding='utf-8', errors='replace'))
+    store = strip_kt(KT_STORE.read_text(encoding='utf-8', errors='replace'))
+
+    # ① 客户端不许再自己折算：**算法结构**，不是函数名。
+    #
+    #    折算的**定义形状** = 「某个公里数 ÷ 某个掉电百分点 × 100」。
+    #    ⇒ 变量改名（socUsed → drop → whatever）、写成内联、抽成函数都盖得住；
+    #    ⇒ 但「把公里数除以掉电再乘 100」这个动作本身盖不住。
+    #
+    #    ⚠️ **为什么不能只判「分母是 soc 变量」**（v0.174.0 实测踩到）：
+    #    第一版正则要求分母是 `soc*` 变量 ⇒ 而客户端真实代码里那个分母
+    #    叫 `socUsed`（后来被删了）—— 换个名字就绕过去了 ⇒ 探针静默放行。
+    #    ⇒ 现在判的是**整条算式的结构**：左边像公里数、中间是除号、
+    #    右边是「一个数」，再乘 100。
+    #
+    #    匹配（三个条件同时成立，跨行也算）：
+    #      ① 左边出现「像公里/里程」的标识符（km / odo / odometer / distance / mile）；
+    #      ② 紧接着一个除号；
+    #      ③ 除号右边是**一个数**（掉电百分点），且整条算式里出现 × 100。
+    km_pat = r'(?:km|km\b|odo|odometer|distance|mile|segment)'
+    fold_pat = re.compile(
+        r'(?:%s[A-Za-z0-9_]*)\s*/\s*\(?\s*([A-Za-z0-9_]+|\d+(?:\.\d+)?)\s*\)?' % km_pat,
+    )
+    hits = []
+    for m in fold_pat.finditer(seg):
+        # 该除法所在的那一行 + 后面两行（算式可能跨行）
+        start = seg.rfind('\n', 0, m.start()) + 1
+        nxt = seg.find('\n', m.end())
+        if nxt < 0:
+            nxt = len(seg)
+        window = seg[start:nxt + 200]
+        if re.search(r'\*\s*100(?:\.0)?\b', window):
+            hits.append(m.group(0).strip())
+    for h in hits:
+        problems.append(
+            'ui/RangeSegments.kt 里还有「公里数 ÷ 掉电 × 100」的算式（%s）' % h
+            + ' ⇒ 客户端在自己折算续航（与服务端成了两套算法）')
+
+    #    旧函数名也一并禁掉（那是同一件事的另一层皮）。
+    for b in ('buildRangeSegments', 'officialFullChargeRangeKm',
+              'fullChargeVsOfficialPercent', 'minSocUsed', 'socUsed'):
+        if b in seg:
+            problems.append('ui/RangeSegments.kt 里还有 `%s` ⇒ 客户端在自己折算续航' % b)
+
+    # ② 客户端不许出现服务端的两个阈值（那两条判定是服务端的核心）。
+    for bad in ('20', '1.5'):
+        # 只在「像阈值」的位置算命中：与 soc / 满电 / 续航 同行。
+        for i, line in enumerate(seg.split('\n'), 1):
+            if not re.search(r'(?<![\d.])' + re.escape(bad) + r'(?![\d.])', line):
+                continue
+            if re.search(r'(soc|满电|续航|fullCharge|full_charge)', line, re.I):
+                problems.append(
+                    'ui/RangeSegments.kt:%d 客户端自己写了阈值 %s（%s）' % (i, bad, line.strip()[:70])
+                    + ' ⇒ 阈值只许在服务端（两端各写一份必然漂）')
+                break
+
+    # ③ 客户端必须读服务端的结论
+    if 'fullChargeRange' not in api:
+        problems.append('Api.kt 里没有 fullChargeRange ⇒ 客户端拿不到服务端的续航结论')
+    if 'fullChargeRange' not in store:
+        problems.append('ui/RecordsStore.kt 里没有 fullChargeRange ⇒ 记录页不会去取服务端的结论')
+
+    # ④ 服务端必须真的有那份判定
+    go = GO.read_text(encoding='utf-8', errors='replace')
+    if 'func buildFullChargeSegments' not in go:
+        problems.append('api/full_charge_range.go 里没有 buildFullChargeSegments ⇒ 服务端没有那份折算')
+    if 'func fullChargeVsOfficialPercent' not in go:
+        problems.append('api/full_charge_range.go 里没有 fullChargeVsOfficialPercent ⇒ 服务端没有那份差百分比判定')
+    main = GO_MAIN.read_text(encoding='utf-8', errors='replace')
+    if '/full_charge_range' not in main:
+        problems.append('api/main.go 里没有 /full_charge_range 路由 ⇒ 服务端没把这个结论端点挂出来')
+
+    # ⑤ 阈值只在服务端一份，且单测必须引用它们
+    for name in ('fullChargeMinSocUsed', 'fullChargeFeasibleRatio'):
+        if name not in go:
+            problems.append('api/full_charge_range.go 里找不到阈值 %s' % name)
+    t = GO_TEST.read_text(encoding='utf-8', errors='replace')
+    if 'fullChargeMinSocUsed' not in t or 'fullChargeFeasibleRatio' not in t:
+        problems.append('api/full_charge_range_test.go 没有引用两个阈值 ⇒ 阈值护栏是空壳')
+
+if problems:
+    print('实测满电续航的判定不在服务端 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 折算、阈值与文案只许在 api/full_charge_range.go；客户端只透传服务端的结论')
+    sys.exit(1)
+
+print('实测满电续航的判定在服务端一份：客户端不自己折算（按算法结构判）＋ 服务端有折算与阈值 ＋ 单测钉住阈值')
+PYEOF
+if [ $? -eq 0 ]; then ok "实测满电续航的折算与阈值只以服务端为准"; else fail "实测满电续航的判定又漏到客户端了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

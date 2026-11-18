@@ -56,6 +56,12 @@ SPEC = [
     #    这两个是 App 有、而 Hermes 原来没有的端点 ⇒ 本轮补上。
     ("teslamate_drive_energy_profile", {}, "采样点数", "这趟行程的逐公里电量剖面"),
     ("teslamate_climb_model", {}, "上坡每米耗电(Wh/m)", "爬升能耗标定的上坡系数"),
+    # ⚠️ **v0.174.0**：实测满电续航（服务端折算 ⇒ App 与飞书同一份）。
+    #    「实测段数」与「依据」**恒在**（哪怕算不出数也有说明）⇒ 可以断言。
+    #    ⚠️ 「实测满电续航(km)」**不能**进 SPEC —— 官方标称缺失时它合法为 null
+    #    （那是「不知道」，不是「0 公里」）。
+    ("teslamate_full_charge_range", {}, "实测段数", "实测满电续航的样本段数"),
+    ("teslamate_full_charge_range", {}, "依据", "实测满电续航的样本说明"),
     # ⚠️ **v0.123.0**：保养 / 轮胎工具。
     #    这两个**恒在**（哪怕车主还没填过基准）⇒ 可以断言。
     #    ⚠️ 「保养.还剩(km)」**不能**进 SPEC —— 车主没填基准 / 里程表读不到时
@@ -1152,6 +1158,43 @@ def check_brief_range_contract() -> list:
 
 
 
+def check_full_charge_range_contract():
+    """实测满电续航：MCP 的数必须与**服务端端点逐值相等**（同一份，不是两套算法）。
+
+    ⚠️ 为什么查：v0.172.0 的教训是「客户端自己编了一个口径」（90~98%）。
+    这一轮把折算搬回服务端 ⇒ 若 MCP 又自己算一遍，就会出现**第二个口径**。
+    ⇒ 这里把两边的中位数 / 官方标称 / 差百分比**逐值**比对。
+    """
+    bad = []
+    try:
+        rep = T._get("/api/v1/cars/%s/full_charge_range" % T.CAR_ID)
+        m = T.teslamate_full_charge_range()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(rep, dict) or "error" in rep:
+        return ["实测满电续航端点取不到：%r" % (rep,)]
+    if not isinstance(m, dict) or "错误" in m:
+        bad.append("MCP 的实测满电续航工具取不到：%r" % (m,))
+        return bad
+    pairs = [
+        ("median_km", "实测满电续航(km)"),
+        ("official_km", "官方标称满电续航(km)"),
+        ("vs_official_percent", "实测比官方标称(%)"),
+    ]
+    for srv_key, mcp_key in pairs:
+        sv = rep.get(srv_key)
+        mv = m.get(mcp_key)
+        if sv is None and mv is None:
+            continue
+        if sv is None or mv is None:
+            bad.append("%s 两端不一致（服务端 %r / MCP %r）" % (srv_key, sv, mv))
+            continue
+        if abs(float(sv) - float(mv)) > 1e-9:
+            bad.append("%s 两端不一致（服务端 %r / MCP %r）⇒ 有两套算法" % (srv_key, sv, mv))
+    if rep.get("segment_count") is not None and rep.get("segment_count") != m.get("实测段数"):
+        bad.append("段数两端不一致（服务端 %r / MCP %r）" % (rep.get("segment_count"), m.get("实测段数")))
+    return bad
+
 def check_maintenance_contract() -> list:
     """保养 / 轮胎提醒必须**与服务端同源**（不许模型自己减）。
 
@@ -1566,6 +1609,13 @@ def main() -> int:
               % ("teslamate_range_estimate", "续航契约"))
     bad.extend(range_bad)
 
+    fcr_bad = check_full_charge_range_contract()
+    for b in fcr_bad:
+        print("  ✗ %s" % b)
+    if not fcr_bad:
+        print("  ✓ %-26s %-24s 实测满电续航与服务端同一个判定、同一份数"
+              % ("teslamate_full_charge_range", "满电续航契约"))
+    bad.extend(fcr_bad)
     maint_bad = check_maintenance_contract()
     for b in maint_bad:
         print("  ✗ %s" % b)

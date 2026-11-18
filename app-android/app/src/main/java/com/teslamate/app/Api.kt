@@ -901,6 +901,35 @@ data class Stats(
  * ⇒ 三个区间一次给全：切区间**不重新请求**（秒切）。
  */
 @Serializable
+data class FullChargeSegment(
+    val start_odometer_km: Double = 0.0,
+    val end_odometer_km: Double = 0.0,
+    val km: Double = 0.0,
+    val from_soc: Int = 0,
+    val to_soc: Int = 0,
+    val soc_used: Int = 0,
+    @Serializable(with = InstantSer::class) val start_date: Instant? = null,
+    val full_charge_km: Double = 0.0,
+)
+
+@Serializable
+data class FullChargeRange(
+    val car_id: Int = 0,
+    /** 折算满电里程的中位数（公里）—— null = 算不出来 ⇒ 不显示这张卡。 */
+    val median_km: Double? = null,
+    /** 官方标称的满电续航（公里）—— 车机在满电时自己报的数。 */
+    val official_km: Double? = null,
+    /** 实测 vs 官方标称的差（%）：正数 = 高，负数 = 低。 */
+    val vs_official_percent: Int? = null,
+    val segment_count: Int = 0,
+    val segments: List<FullChargeSegment> = emptyList(),
+    /** 常驻说明（服务端唯一一份）。 */
+    val note: String = "",
+    /** 算不出数时的原因（可空）—— 「不知道」而不是「正常」。 */
+    val caveat: String = "",
+)
+
+@Serializable
 data class ChargeStats(
     /** 服务端分日用的时区（如 "Asia/Shanghai"）。 */
     val server_timezone: String = "",
@@ -1930,6 +1959,18 @@ class Api private constructor(private val base: String, private val token: Strin
     fun track(driveId: Int): List<TrackPoint> = get("/api/v1/drives/$driveId/track")
     fun charges(carId: Int, limit: Int = 200): List<Charge> =
         get("/api/v1/cars/$carId/charges?limit=$limit")
+    /**
+     * ⚠️ **v0.174.0：实测满电续航 —— 服务端算的结论。**
+     *
+     * ⚠️ App **不再自己折算**（原来在 ui/RangeSegments.kt 的 buildRangeSegments）
+     * ⇒ ① 飞书里也问得到（mission §2.1）；② 两端不会各算一套阈值而漂（ADR #38）。
+     * 取不到时（服务器挂掉 / 老服务端）⇒ **不显示这张卡**，
+     * 绝不在客户端自己算一套顶替（那会变成第二个口径）。
+     */
+    fun fullChargeRange(carId: Int): FullChargeRange =
+        get("/api/v1/cars/$carId/full_charge_range")
+    
+
     fun curve(chargeId: Int): List<CurvePoint> = get("/api/v1/charges/$chargeId/curve")
     fun stats(carId: Int, period: String): Stats =
         get("/api/v1/cars/$carId/stats?period=$period")

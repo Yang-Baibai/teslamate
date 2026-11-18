@@ -165,28 +165,31 @@
       "id": "full_charge_range",
       "结论": "实测满电续航（折算中位，公里）",
       "界面": "用量页",
-      "服务端": null,
-      "mcp": [],
-      "状态": "gap",
-      "理由": "客户端 ui/RangeSegments.kt 本地折算（相邻两次充电之间：公里 ÷ 掉电% × 100）；服务端没有这个字段 ⇒ 飞书问不出「满电到底能跑多少」。**下一轮搬服务端**：服务端已有 odometer_start/end 与 start/end_soc ⇒ 数据齐；物理可行性判据（官方标称 × 1.5）也已能算。"
+      "服务端": "/full_charge_range",
+      "mcp": [
+        "teslamate_full_charge_range"
+      ],
+      "状态": "covered"
     },
     {
       "id": "full_charge_vs_official",
       "结论": "实测满电续航 vs 官方标称的差 %",
       "界面": "用量页",
-      "服务端": null,
-      "mcp": [],
-      "状态": "gap",
-      "理由": "同上（客户端 RangeSegments.kt 的 fullChargeVsOfficialPercent 自己算）⇒ 与 full_charge_range 一起搬服务端。"
+      "服务端": "/full_charge_range vs_official_percent",
+      "mcp": [
+        "teslamate_full_charge_range"
+      ],
+      "状态": "covered"
     },
     {
       "id": "full_charge_segments",
       "结论": "实测满电续航的**段明细**（每段公里 / 掉电%）",
       "界面": "用量页（折叠区）",
-      "服务端": null,
-      "mcp": [],
-      "状态": "gap",
-      "理由": "同上 ⇒ 搬服务端时一并给段明细 ⇒ App 与飞书同一份。"
+      "服务端": "/full_charge_range segments",
+      "mcp": [
+        "teslamate_full_charge_range"
+      ],
+      "状态": "covered"
     },
     {
       "id": "route_plan_margin",

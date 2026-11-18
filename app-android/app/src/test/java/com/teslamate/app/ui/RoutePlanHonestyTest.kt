@@ -28,42 +28,16 @@ import org.junit.Test
 class RoutePlanHonestyTest {
 
     // ── ① 实测满电续航 vs 官方标称 ─────────────────────────────
-
-    @Test
-    fun `实测低于官方时必须报低 而不是报高`() {
-        // 本车真实数据：中位 346.62 公里 / 官方标称 448.01 公里
-        val diff = fullChargeVsOfficialPercent(346.6238, 448.01)
-        assertEquals("应报 -23（实测低 23%）", -23, diff)
-        assertTrue("必须是负数（实测低于官方）", diff!! < 0)
-    }
-
-    @Test
-    fun `旧算法会把低于官方百分之 23 报成高于官方百分之 77`() {
-        // 这是**回归的证明**：旧代码算的是 round(median/official*100) = 77，
-        // 然后当成「超出 100 的百分比」用 ⇒ 打印「实测高 77%」。
-        val oldWrong = Math.round((346.6238 / 448.01 * 100.0)).toInt()
-        assertEquals("旧算法确实会算出 77", 77, oldWrong)
-        // 新的必须与它不同，且是 -23
-        assertEquals(-23, fullChargeVsOfficialPercent(346.6238, 448.01))
-    }
-
-    @Test
-    fun `实测高于官方时如实报高`() {
-        assertEquals(25, fullChargeVsOfficialPercent(560.0, 448.0))
-    }
-
-    @Test
-    fun `官方标称缺失或非法时不报错`() {
-        assertNull("官方标称 0 应返回 null", fullChargeVsOfficialPercent(346.0, 0.0))
-        assertNull("官方标称为负应返回 null", fullChargeVsOfficialPercent(346.0, -1.0))
-        assertNull("实测为 0 应返回 null", fullChargeVsOfficialPercent(0.0, 448.0))
-    }
-
-    @Test
-    fun `正好等于官方时差是 0`() {
-        assertEquals(0, fullChargeVsOfficialPercent(448.0, 448.0))
-    }
-
+    //
+    // ⚠️ **v0.174.0：这一节的断言**搬到了服务端**（api/full_charge_range_test.go）。
+    //
+    // 为什么：那段百分比的方向判断（实测低 23% 曾经被报成「高 77%」——
+    // 一个让 App 看起来比官方**强 77%**、而实际**弱 23%** 的假恭维）
+    // 现在是**服务端的判定** ⇒ 护栏必须住在判定所在的地方。
+    //
+    // ⚠️ **客户端那三个函数已删**（buildRangeSegments / officialFullChargeRangeKm /
+    // fullChargeVsOfficialPercent）—— 客户端不再自己折算（ADR #38）。
+    // ⇒ 这份测试文件里对它们的引用**必须**一起删掉，否则编译不过。
     // ── ② 「到不了保底」而不是「到不了」 ────────────────────────
 
     private fun stop(
