@@ -2440,6 +2440,82 @@ print('哨兵警报的判定只在服务端一份 ✔（脚本 / MCP 只读结�
 PYEOF
 if [ $? -eq 0 ]; then ok "哨兵警报的判定只在服务端一份（脚本 / MCP 只读结论）"; else fail "哨兵警报的判定漏到脚本 / MCP 了"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 33：App 界面上的「结论」清单必须完整（缺口要写理由，不许默默漏）──
+#
+# ⚠️ **v0.173.0**：mission §2.1「App 能看到的，Hermes 也要能取」这条对账
+#   以前是**人工**的（闸门 11 只逐条对**端点**）⇒ 客户端**本地算**出来的结论
+#   全从网眼里漏过去（v0.173.0 实测两个：实测满电续航 / 路线余量表）。
+#
+# ⇒ 现在有一份显式清单 `docs/app-conclusions.json` ＋ 这道闸门：
+#   ① 每条结论都必须登记（缺字段 ⇒ 红）；
+#   ② 标成 covered 的 ⇒ 它指向的 MCP 工具**必须真的存在**（工具改名了清单就烂 ⇒ 红）；
+#   ③ 标成 gap / local-only 的 ⇒ **必须写理由**（不许默默漏）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import json, pathlib, re, sys
+
+MAN = pathlib.Path('docs/app-conclusions.json')
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+
+if not MAN.exists():
+    print('找不到 docs/app-conclusions.json')
+    sys.exit(1)
+try:
+    data = json.loads(MAN.read_text(encoding='utf-8'))
+except Exception as e:
+    print('清单不是合法 JSON：%s' % e)
+    sys.exit(1)
+
+items = data.get('结论清单') or []
+if not items:
+    print('清单是空的 —— 那等于没对账')
+    sys.exit(1)
+
+src = MCP.read_text(encoding='utf-8', errors='replace')
+tools = set(re.findall(r'@mcp\.tool\([^)]*\)\s*\ndef\s+([A-Za-z0-9_]+)', src))
+if not tools:
+    print('没从 mcp/teslamate_mcp.py 解析出任何工具名 —— 判据本身坏了')
+    sys.exit(1)
+
+problems = []
+for it in items:
+    cid = it.get('id') or '(无 id)'
+    for k in ('结论', '界面', '状态'):
+        if not it.get(k):
+            problems.append('%s 缺字段 %s' % (cid, k))
+    st = it.get('状态')
+    if st not in ('covered', 'gap', 'local-only'):
+        problems.append('%s 的状态不合法：%r（只能是 covered / gap / local-only）' % (cid, st))
+    mcp = it.get('mcp') or []
+    if isinstance(mcp, str):
+        mcp = [mcp]
+    if st == 'covered':
+        if not mcp:
+            problems.append('%s 标成 covered 却没写 MCP 工具 ⇒ 默默漏掉了' % cid)
+        for t in mcp:
+            if t not in tools:
+                problems.append('%s 指向的 MCP 工具 %s 不存在（工具改名了？清单烂了？）' % (cid, t))
+    else:
+        if not (it.get('理由') or '').strip():
+            problems.append('%s 是 %s ⇒ 必须写理由（不许默默漏）' % (cid, st))
+
+covered = sum(1 for it in items if it.get('状态') == 'covered')
+gap = sum(1 for it in items if it.get('状态') == 'gap')
+local = sum(1 for it in items if it.get('状态') == 'local-only')
+print('App 结论清单：%d 条（covered %d / gap %d / local-only %d）' % (len(items), covered, gap, local))
+for it in items:
+    if it.get('状态') == 'gap':
+        print('   ⚠ 缺口：%s —— %s' % (it.get('结论'), (it.get('理由') or '')[:40]))
+if problems:
+    print('App↔Hermes 结论对账有问题 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 清单要么补齐，要么写清理由（不许默默漏）')
+    sys.exit(1)
+print('App 界面上每条结论都有明确归属（取得到 / 缺口且写明理由）✔')
+PYEOF
+if [ $? -eq 0 ]; then ok "App 界面结论清单完整（缺口都写了理由）"; else fail "App 界面结论清单有遗漏或理由缺失"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"

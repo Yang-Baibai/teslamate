@@ -1,0 +1,312 @@
+{
+  "_说明": "App 界面上的「结论」清单 —— mission §2.1「App 能看到的，Hermes 也要能取」的对账表（ADR #87）。",
+  "_为什么要有它": "这条对账以前是**人工**的（闸门 11 只逐条对**端点**）⇒ 客户端**本地算**出来的结论全从网眼里漏过去（v0.173.0 实测两个：实测满电续航 / 路线余量表）⇒ 这份清单把每一条显式登记，缺口必须写理由，闸门 33 机检。",
+  "_字段": {
+    "id": "稳定标识（不要改）",
+    "结论": "App 界面上用户能看到的那个数 / 判断",
+    "界面": "在哪个页面",
+    "服务端": "服务端的判定来源（端点或字段）；null = 客户端本地算",
+    "mcp": "能取到它的 MCP 工具名（数组）；空 = 取不到",
+    "状态": "covered（Hermes 能取） / gap（该取但取不到 ⇒ 欠账） / local-only（本来就只该在本地）",
+    "理由": "状态为 gap / local-only 时必填：为什么"
+  },
+  "结论清单": [
+    {
+      "id": "battery_level",
+      "结论": "现在还剩多少电（%）",
+      "界面": "车况页",
+      "服务端": "/status battery_level",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "range_estimate",
+      "结论": "现在能开多少公里（真实可达续航）",
+      "界面": "车况页",
+      "服务端": "/range_estimate",
+      "mcp": [
+        "teslamate_range_estimate"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "range_floor",
+      "结论": "留 20% 保底还能开多少公里",
+      "界面": "车况页",
+      "服务端": "/range_estimate floor_range_km",
+      "mcp": [
+        "teslamate_range_estimate"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "odometer",
+      "结论": "里程表（车端读数 + 采集时刻）",
+      "界面": "车况页",
+      "服务端": "/status odometer_km / odometer_note",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "lock_state",
+      "结论": "锁没锁（含「是不是旧值」）",
+      "界面": "车况页 / 车控页",
+      "服务端": "/status locked / locked_at",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "tpms",
+      "结论": "四轮胎压与异常轮",
+      "界面": "车况页",
+      "服务端": "/status tpms_* / tpms_alert",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "temp_inside",
+      "结论": "车内温度（当前读数）",
+      "界面": "车况页",
+      "服务端": "/status inside_temp",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "temp_outside",
+      "结论": "车外温度（当前读数）",
+      "界面": "车况页",
+      "服务端": "/status outside_temp",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "location",
+      "结论": "当前位置（城市 + 地址）",
+      "界面": "车况页",
+      "服务端": "/status location",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "sentry_state",
+      "结论": "哨兵模式状态（开 / 关）",
+      "界面": "车况页 / 车控页",
+      "服务端": "/status fleet_state",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "low_battery",
+      "结论": "低电量（低于警戒线 / 停着不动还低）",
+      "界面": "车况页",
+      "服务端": "/status low_battery*",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "weather_risk",
+      "结论": "天气风险（结冰 / 暴雨 / 极端高温）",
+      "界面": "车况页",
+      "服务端": "/status weather_risk",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "fault_codes",
+      "结论": "当前故障码（＋官方口径的处置建议）",
+      "界面": "车况页",
+      "服务端": "/alerts",
+      "mcp": [
+        "teslamate_alerts"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "battery_health",
+      "结论": "电池健康度（还能装多少度 / 相对出厂 %）",
+      "界面": "用量页",
+      "服务端": "/battery",
+      "mcp": [
+        "teslamate_battery"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "battery_decay",
+      "结论": "电池衰减结论与依据（v0.172.0 起文案也在服务端）",
+      "界面": "用量页",
+      "服务端": "/battery decay",
+      "mcp": [
+        "teslamate_battery"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "full_charge_range",
+      "结论": "实测满电续航（折算中位，公里）",
+      "界面": "用量页",
+      "服务端": null,
+      "mcp": [],
+      "状态": "gap",
+      "理由": "客户端 ui/RangeSegments.kt 本地折算（相邻两次充电之间：公里 ÷ 掉电% × 100）；服务端没有这个字段 ⇒ 飞书问不出「满电到底能跑多少」。**下一轮搬服务端**：服务端已有 odometer_start/end 与 start/end_soc ⇒ 数据齐；物理可行性判据（官方标称 × 1.5）也已能算。"
+    },
+    {
+      "id": "full_charge_vs_official",
+      "结论": "实测满电续航 vs 官方标称的差 %",
+      "界面": "用量页",
+      "服务端": null,
+      "mcp": [],
+      "状态": "gap",
+      "理由": "同上（客户端 RangeSegments.kt 的 fullChargeVsOfficialPercent 自己算）⇒ 与 full_charge_range 一起搬服务端。"
+    },
+    {
+      "id": "full_charge_segments",
+      "结论": "实测满电续航的**段明细**（每段公里 / 掉电%）",
+      "界面": "用量页（折叠区）",
+      "服务端": null,
+      "mcp": [],
+      "状态": "gap",
+      "理由": "同上 ⇒ 搬服务端时一并给段明细 ⇒ App 与飞书同一份。"
+    },
+    {
+      "id": "route_plan_margin",
+      "结论": "路线余量表（跑这条线到下一站还剩多少电）",
+      "界面": "记录页",
+      "服务端": null,
+      "mcp": [],
+      "状态": "gap",
+      "理由": "客户端 ui/RoutePlan.kt 本地推算（线路段 + 爬升修正 + 能耗模型）⇒ 飞书问不出「跑这条线还剩多少电」。**下一轮搬服务端**：服务端已有线路段（route_profile）与爬升模型（climb_model）。"
+    },
+    {
+      "id": "charge_outcome",
+      "结论": "这次充电到底怎么了（充到上限 / 附近 / 提前结束 / 中断）",
+      "界面": "充电详情",
+      "服务端": "/status charge_outcome",
+      "mcp": [
+        "teslamate_charge_outcome"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "charge_measured_80",
+      "结论": "同起点实测充到 80% 的时间",
+      "界面": "充电列表 / 记录页",
+      "服务端": "/charge_stats ch_measured",
+      "mcp": [
+        "teslamate_charge_stats"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "charge_fold_80",
+      "结论": "按典型功率折算的充到 80% 时间",
+      "界面": "充电列表",
+      "服务端": "/charge_stats ch_measured.minutes_to_80",
+      "mcp": [
+        "teslamate_charge_stats"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "drive_score",
+      "结论": "驾驶平顺分（中位 · 合成指标）",
+      "界面": "记录页（行程详情）",
+      "服务端": "/driving_profile",
+      "mcp": [
+        "teslamate_driving_profile"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "energy_profile",
+      "结论": "能耗-车速曲线（最省电速度档的毛耗电）",
+      "界面": "用量页",
+      "服务端": "/energy_profile",
+      "mcp": [
+        "teslamate_energy_profile"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "climb_model",
+      "结论": "爬升模型（爬升修正系数与可信度）",
+      "界面": "记录页（路线）",
+      "服务端": "/climb_model",
+      "mcp": [
+        "teslamate_climb_model"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "maintenance",
+      "结论": "保养 / 轮胎还能跑多少",
+      "界面": "车况页",
+      "服务端": "/maintenance",
+      "mcp": [
+        "teslamate_maintenance"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "cost",
+      "结论": "充电费用",
+      "界面": "用量页",
+      "服务端": "/cost_summary",
+      "mcp": [
+        "teslamate_cost"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "stay_points",
+      "结论": "常驻点（停过多少次 / 累计多久）",
+      "界面": "记录页",
+      "服务端": "/stay_points",
+      "mcp": [
+        "teslamate_stay_points"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "record_timeline",
+      "结论": "行程 / 充电记录列表",
+      "界面": "记录页",
+      "服务端": "/drives / /charges",
+      "mcp": [
+        "teslamate_drives",
+        "teslamate_charges"
+      ],
+      "状态": "covered"
+    },
+    {
+      "id": "consumption_model",
+      "结论": "实测能耗模型（车速 → Wh/km 桶）",
+      "界面": "车况页 / 记录页",
+      "服务端": "/energy_profile（客户端那份是**同规则**的本地兜底）",
+      "mcp": [
+        "teslamate_energy_profile"
+      ],
+      "状态": "covered"
+    }
+  ]
+}
