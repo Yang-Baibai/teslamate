@@ -925,6 +925,22 @@ data class FullChargeRange(
     val segments: List<FullChargeSegment> = emptyList(),
     /** 常驻说明（服务端唯一一份）。 */
     val note: String = "",
+    /**
+     * ⚠️ **v0.175.0：ⓘ「这个数怎么算的」** —— 服务端唯一一份（客户端只透传）。
+     *
+     * ⚠️ 以前这段是**客户端自己拼**的（含「车机满电时自己报的是 X 公里」——
+     * 而那个数服务端**已经给了**）⇒ 违反 ADR #41（文案只有一份）。
+     */
+    val method_note: String = "",
+    /** ⓘ「最好/最差怎么读」—— 服务端唯一一份。 */
+    val read_note: String = "",
+    /**
+     * ⓘ「口径」—— 服务端唯一一份。
+     *
+     * ⚠️ 里面那句「最好与中位差 X 倍」的倍数由**真实段数据**算
+     * （客户端原来硬编码「1.7 倍」，实测已经是 1.7562 ⇒ 早就在说错）。
+     */
+    val scope_note: String = "",
     /** 算不出数时的原因（可空）—— 「不知道」而不是「正常」。 */
     val caveat: String = "",
 )

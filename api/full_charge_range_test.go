@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -301,6 +302,79 @@ func TestFullChargeNoteWidth(t *testing.T) {
 func TestFullChargeCaveatWidth(t *testing.T) {
 	if w := copyVisualWidth(fullChargeCaveat); w > appCopyWidthLimit {
 		t.Errorf("caveat 宽度 %d > %d：%q", w, appCopyWidthLimit, fullChargeCaveat)
+	}
+}
+
+// TestFullChargeSpreadFromRealData ⚠️ **「市区与高速差 1.7 倍」不许再硬编码**。
+//
+// ⚠️ **v0.175.0 实测**：那是个**具体的分布断言**（随数据变化）
+// ⇒ 实测「最好/中位」已经是 **1.7562**（该写 1.8 倍）⇒ 那句话早就在说错，
+// 而没有任何判据会红。
+// ⇒ 现在这个倍数必须**由真实段数据算出来**。
+func TestFullChargeSpreadFromRealData(t *testing.T) {
+	segs := []FullChargeSegment{
+		{FullCharge: 200.0},
+		{FullCharge: 300.0},
+		{FullCharge: 400.0},
+	}
+	// 最好 400 ÷ 中位 300 = 1.333… ⇒ 一位小数 = 1.3
+	if got := fullChargeSpread(segs, 300.0); got != "1.3" {
+		t.Fatalf("倍数应按真实数据算成 1.3，实得 %q", got)
+	}
+	// 中位 = 0 ⇒ 不给数（不编）
+	if got := fullChargeSpread(segs, 0.0); got != "" {
+		t.Fatalf("中位为 0 时不该给倍数，实得 %q", got)
+	}
+	// 样本不足 ⇒ 不给数
+	if got := fullChargeSpread(segs[:1], 300.0); got != "" {
+		t.Fatalf("样本不足时不该给倍数，实得 %q", got)
+	}
+}
+
+// TestFullChargeScopeNoteHasNoHardcodedRatio ⓘ 口径里不许再写死倍数。
+//
+// ⚠️ **v0.175.0**：客户端原来那句「市区与高速差 **1.7 倍**」是**硬编码**的
+// ⇒ 真实值已经变成 1.7562 ⇒ 那句话早就在说错。
+// ⇒ 现在倍数是**填进去的** ⇒ 模板里不许出现任何写死的倍数。
+func TestFullChargeScopeNoteHasNoHardcodedRatio(t *testing.T) {
+	if strings.Contains(fullChargeScopeNoteTmpl, "1.7") {
+		t.Errorf("口径模板里不许写死倍数：%q", fullChargeScopeNoteTmpl)
+	}
+	if !strings.Contains(fullChargeScopeNoteTmpl, "%s 倍") {
+		t.Errorf("口径模板应留一个填倍数的槽位：%q", fullChargeScopeNoteTmpl)
+	}
+	// 填进去之后必须是一句能读的话
+	note := strings.Replace(fullChargeScopeNoteTmpl, "%s", "1.8", 1)
+	if !strings.Contains(note, "最好与中位差 1.8 倍") {
+		t.Errorf("填好倍数的口径句不对：%q", note)
+	}
+}
+
+// TestFullChargeNoteLinesWithinWidth 服务端下发的三段 ⓘ 文案：每行 ≤ 96。
+//
+// ⚠️ **v0.175.0**：这三段现在由服务端下发 ⇒ 进界面 ⇒ 受 noteLineWidthLimit 约束。
+func TestFullChargeNoteLinesWithinWidth(t *testing.T) {
+	notes := map[string]string{
+		"method_note": fmt.Sprintf(fullChargeMethodNote, 449),
+		"read_note":   fullChargeReadNote,
+		"scope_note":  strings.Replace(fullChargeScopeNoteTmpl, "%s", "1.8", 1),
+	}
+	for name, text := range notes {
+		for _, line := range strings.Split(text, "\n") {
+			if w := copyVisualWidth(line); w > noteLineWidthLimit {
+				t.Errorf("%s 有一行宽 %d > %d：%q", name, w, noteLineWidthLimit, line)
+			}
+		}
+	}
+}
+
+// TestFullChargeMethodNoteKeepsKeyFacts 收窄也不许丢关键事实。
+func TestFullChargeMethodNoteKeepsKeyFacts(t *testing.T) {
+	note := fmt.Sprintf(fullChargeMethodNote, 449)
+	for _, must := range []string{"折算", "下坡回充", "偏乐观", "规划"} {
+		if !strings.Contains(note, must) {
+			t.Errorf("折算口径丢了关键事实 %q：%q", must, note)
+		}
 	}
 }
 

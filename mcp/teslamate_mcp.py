@@ -1068,6 +1068,16 @@ def teslamate_full_charge_range() -> dict:
     caveat = data.get("caveat")
     if caveat:
         out["为什么没有数"] = caveat
+    # ⚠️ **v0.175.0**：三段 ⓘ 文案也透传（服务端唯一一份 —— ADR #41）。
+    #
+    # ⇒ 飞书里也能问清「这个数怎么算的」「最好/最差怎么读」「口径是什么」，
+    # 且与 App 卡片上印的**是同一段字**。
+    if data.get("method_note"):
+        out["这个数怎么算的"] = data.get("method_note")
+    if data.get("read_note"):
+        out["最好/最差怎么读"] = data.get("read_note")
+    if data.get("scope_note"):
+        out["口径"] = data.get("scope_note")
     segs = data.get("segments") or []
     if segs:
         # ⚠️ **段明细**也透传（App 的折叠区与这里是同一份）。

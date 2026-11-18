@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -89,6 +90,42 @@ const fullChargeRangeNoteDiffLow = "，实测低 %d%%"
 // 客户端据此**不显示这张卡**，飞书里则说清为什么没有数。
 const fullChargeCaveat = "官方标称拿不到，无法换算成满电续航。"
 
+// ---------- ⓘ 文案（服务端唯一一份，v0.175.0） ----------
+//
+// ⚠️ **v0.175.0**：这三段以前在**客户端**（ui/RangeSegments.kt 里的 InfoNote 拼接）。
+// 两个问题：
+//   ① **违反 ADR #41** —— 客户端在拼文案，而「车机满电时自己报的是 X 公里」
+//      这个数服务端**已经给了**（note 里就有）⇒ 两处拼装 = 迟早漂。
+//   ② **「市区与高速差 1.7 倍」是硬编码的具体分布断言** —— 实测「最好/中位」
+//      已变成 **1.7562**（应写 1.8 倍）⇒ 那句话**早就在说错了**，
+//      而没有任何判据会红。
+// ⇒ 现在三段文案都在服务端；「差几倍」由**真实段数据**算（见 [fullChargeSpread]）。
+//
+// ⚠️ **每行 ≤ [noteLineWidthLimit]（96，在 api/app_copy.go）** —— 单测钉住。
+// ⇒ 这里用 **\n** 分行（不是「；」）：客户端直接透传，Compose 的 Text 会照换行渲染。
+
+// fullChargeMethodNote ⓘ「这个数怎么算的」（折算口径）。
+//
+// ⚠️ **%d = 官方标称（公里）** —— 服务端算好后填进去，客户端不许自己拼。
+// ⚠️ **「X%」里的 % 在 Sprintf 里必须写成 %%** —— 否则 go vet 报「unknown verb」。
+const fullChargeMethodNote = "这是折算值：把「从 X%% 开到 Y%% 跑了多少公里」按掉电比例折算到满电，含没充满就走的段\n" +
+	"折算用净掉电，下坡回充被抵扣，所以偏乐观\n" +
+	"车机满电时自己报的是 %d 公里\n" +
+	"这两个数都是这车跑出来的，区别是一个折算、一个直读，规划请用上面的线路余量表"
+
+// fullChargeReadNote ⓘ「最好/最差怎么读」（读法说明）。
+const fullChargeReadNote = "「最好」多半含下坡回充，长下坡几乎不耗电，别拿它当平路规划依据\n" +
+	"「最差」才是市区工况更接近的那个数"
+
+// fullChargeScopeNoteTmpl ⓘ「口径」（段定义 + 分布）。
+//
+// ⚠️ **%s = 最好/中位的倍数**（由真实段数据算，见 [fullChargeSpread]）
+// ⇒ 不再硬编码「1.7 倍」（实测已经是 1.7562 ⇒ 那是**过期的事实**）。
+const fullChargeScopeNoteTmpl = "口径：一次充电结束到下一次充电开始，按掉电百分比折算到满电\n" +
+	"这是折算值，不是某一次满电实跑\n" +
+	"最好与中位差 %s 倍\n" +
+	"中位数不代表任何一次具体出行"
+
 // ---------- 端点返回结构 ----------
 
 // FullChargeSegment 一段实测续航。
@@ -129,6 +166,12 @@ type FullChargeRange struct {
 	Segments []FullChargeSegment `json:"segments"`
 	// Note 常驻说明（服务端唯一一份）。
 	Note string `json:"note"`
+	// MethodNote ⓘ「这个数怎么算的」（服务端唯一一份，客户端只透传）。
+	MethodNote string `json:"method_note"`
+	// ReadNote ⓘ「最好/最差怎么读」（服务端唯一一份）。
+	ReadNote string `json:"read_note"`
+	// ScopeNote ⓘ「口径」（服务端唯一一份；里面的倍数按**真实段数据**算）。
+	ScopeNote string `json:"scope_note"`
 	// Caveat 算不出数时的原因（可空）。
 	//
 	// ⚠️ **v0.174.0**：这是「不知道」而不是「正常」——
@@ -280,6 +323,37 @@ func fullChargeVsOfficialPercent(medianKm float64, officialKm float64) *int {
 	return &pct
 }
 
+// fullChargeSpread 「最好与中位差几倍」。
+//
+// ⚠️ **v0.175.0**：这个倍数以前是**客户端硬编码的「1.7 倍」** ——
+// 而它是个**具体的分布断言**（随数据变化）⇒ 实测已变成 1.7562（该写 1.8 倍）
+// ⇒ 那句话**早就在说错**，而没有任何判据会红。
+// ⇒ 现在由**真实段数据**算：最好段 ÷ 中位数，保留一位小数。
+//
+// ⚠️ **为什么是「最好/中位」而不是「市区/高速」**：
+// 服务端**不分类**路段工况（那要引入「这段算市区还是高速」的另一个判定）
+// ⇒ 只说**能查证的事实**（最好那趟与中位数差几倍）——
+// 「最好多半含下坡回充」这句在 [fullChargeReadNote] 里，是**读法提示**不是分类。
+//
+// @return 倍数（一位小数的字符串）；样本不足时返回 ""（不给数，不编）。
+func fullChargeSpread(segments []FullChargeSegment, medianKm float64) string {
+	if len(segments) < 2 || medianKm <= 0 {
+		return ""
+	}
+	best := segments[0].FullCharge
+	for _, s := range segments {
+		if s.FullCharge > best {
+			best = s.FullCharge
+		}
+	}
+	if best <= 0 {
+		return ""
+	}
+	ratio := best / medianKm
+	// 一位小数（四舍五入）。
+	return strconv.FormatFloat(ratio, 'f', 1, 64)
+}
+
 // ---------- 取数 ----------
 
 // sqlFullChargeRows 取折算要用的充电字段（最小集）。
@@ -414,6 +488,12 @@ func handleFullChargeRange(w http.ResponseWriter, r *http.Request) {
 		} else {
 			out.Note += fmt.Sprintf(fullChargeRangeNoteDiffLow, -*pct)
 		}
+	}
+	// ⚠️ **v0.175.0**：三段 ⓘ 文案也在服务端拼好（客户端只透传）。
+	out.MethodNote = fmt.Sprintf(fullChargeMethodNote, int(*official+0.5))
+	out.ReadNote = fullChargeReadNote
+	if spread := fullChargeSpread(segments, median); spread != "" {
+		out.ScopeNote = fmt.Sprintf(fullChargeScopeNoteTmpl, spread)
 	}
 	writeJSON(w, out)
 }

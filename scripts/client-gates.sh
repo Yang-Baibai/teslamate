@@ -4290,8 +4290,18 @@ import pathlib, re, sys
 
 ROOT = pathlib.Path('app-android/app/src/main/java')
 TESTROOT = pathlib.Path('app-android/app/src/test')
-ALLOW = {'com/teslamate/app/ui/BatteryDecay.kt'}
-FIELDS = ('caveat', 'method', 'implied_eta_note')
+ALLOW = {'com/teslamate/app/ui/BatteryDecay.kt',
+         # ⚠️ **v0.175.0**：实测满电续航卡的 ⓘ 文案也改成服务端下发
+         #   （method_note / read_note / scope_note）⇒ 这个文件要进白名单。
+         # ⇒ 连带义务：补一条钉住 NOTE_LINE_LIMIT 的 JVM 单测（下面会查）。
+         'com/teslamate/app/ui/RangeSegments.kt'}
+# ⚠️ **v0.175.0**：字段清单扩了三个 —— 实测满电续航的三段 ⓘ 文案。
+#
+# ⚠️ **为什么必须扩**：判据是「扫**属性读取点**」，而字段名必须**在清单里**
+#   才会被扫到 ⇒ 清单不全 = 新加的字段**静默放行**。
+#   这正是 v0.174.0 踩过的那个坑（闸门只认一种写法形态 ⇒ 另一种写法静默放行）。
+FIELDS = ('caveat', 'method', 'implied_eta_note',
+          'method_note', 'read_note', 'scope_note')
 PAT = re.compile(r'\.\??(' + '|'.join(FIELDS) + r')\b')
 
 
@@ -4584,6 +4594,116 @@ print('实测满电续航的判定在服务端一份：客户端不自己折算�
 PYEOF
 if [ $? -eq 0 ]; then ok "实测满电续航的折算与阈值只以服务端为准"; else fail "实测满电续航的判定又漏到客户端了"; cat "$TMP"; fi
 rm -f "$TMP"
+#!/usr/bin/env bash
+# ── 闸门 46：实测满电续航卡的 ⓘ 文案**只在服务端一份** ──────────────────────
+#
+# ⚠️ **v0.175.0**：这三段 ⓘ 文案以前是**客户端自己拼**的（ui/RangeSegments.kt），
+#   而服务端**已经给了**同一个数（note 里的「官方标称 X 公里」）⇒ 两处拼装 ⇒ 漂。
+#
+#   而且其中一句「市区与高速差 **1.7 倍**」是**硬编码的具体分布断言** ——
+#   实测真实值（最好/中位）已经是 **1.7562** ⇒ 那句话**早就在说错**，
+#   而没有任何判据会红。
+#
+# 判据（**形态无关**）：
+#   ① 客户端**不许**再出现这三段文案的**任何片段**（不许自己拼）；
+#   ② 客户端**必须**读服务端那三个字段（method_note / read_note / scope_note）；
+#   ③ 服务端与客户端的**文案必须逐字一致**（夹具比对）—— 两端不许漂；
+#   ④ 客户端夹具里**不许**出现写死的倍数（那句已经漂了）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+KT_SEG = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/RangeSegments.kt')
+KT_TEST = pathlib.Path('app-android/app/src/test/java/com/teslamate/app/ui/RangeSegmentsNoteTest.kt')
+GO = pathlib.Path('api/full_charge_range.go')
+
+problems = []
+
+for p in (KT_SEG, KT_TEST, GO):
+    if not p.exists():
+        problems.append('找不到 %s —— 这道闸门要跟着改' % p)
+
+
+def strip_comments(src):
+    """剥掉块注释与行注释 ⇒ 只留**真正的代码**。"""
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+if not problems:
+    seg = strip_comments(KT_SEG.read_text(encoding='utf-8', errors='replace'))
+    test = KT_TEST.read_text(encoding='utf-8', errors='replace')
+    go = GO.read_text(encoding='utf-8', errors='replace')
+
+    # ① 客户端不许再自己拼这三段文案（任一片段出现 ⇒ 报红）。
+    #    ⚠️ **形态无关**：判的是**文案内容**，不是写法 ——
+    #    变量改名、换行重排、抽成常量都盖得住（只要那句话还在客户端）。
+    #    ⚠️ **必须剥掉注释** —— 否则「注释里解释这段文案从哪来」
+    #    会被当成「客户端又在拼这段文案」（v0.175.0 实测误报过一轮）。
+    fragments = [
+        '车机满电时自己报的是',   # 服务端 note 里已有这个数
+        '市区与高速差',           # 硬编码的具体分布断言（已漂）
+        '最好与中位差',           # 现在由服务端按真实数据算
+        '折算用净掉电',           # 折算口径的第一段说明
+        '下坡回充被抵扣',         # 折算口径的第一段说明
+        '长下坡几乎不耗电',       # 读法说明
+    ]
+    for f in fragments:
+        if f in seg:
+            problems.append(
+                'ui/RangeSegments.kt 里还有「%s」⇒ 客户端又在自己拼这段文案' % f
+                + '（与服务端成了两份 ⇒ ADR #41 的文案只有一份）')
+
+    # ② 客户端必须读服务端那三个字段
+    for f in ('method_note', 'read_note', 'scope_note'):
+        if f not in seg:
+            problems.append('ui/RangeSegments.kt 里没有读服务端的 %s ⇒ 界面拿不到服务端那份文案' % f)
+
+    # ③ 两端逐字一致：服务端的文案片段必须出现在客户端夹具里。
+    #    ⚠️ 服务端是 Go 的 Sprintf ⇒ 文本里的 % 写成 %% ⇒ 比对前要先还原。
+    go_fragments = [
+        '这是折算值：把「从 X% 开到 Y% 跑了多少公里」按掉电比例折算到满电',
+        '折算用净掉电，下坡回充被抵扣，所以偏乐观',
+        '车机满电时自己报的是',
+        '这两个数都是这车跑出来的，区别是一个折算、一个直读，规划请用上面的线路余量表',
+        '「最好」多半含下坡回充，长下坡几乎不耗电，别拿它当平路规划依据',
+        '「最差」才是市区工况更接近的那个数',
+        '口径：一次充电结束到下一次充电开始，按掉电百分比折算到满电',
+        '这是折算值，不是某一次满电实跑',
+        '中位数不代表任何一次具体出行',
+    ]
+    for f in go_fragments:
+        # 服务端源码里 % 是 %%（Sprintf 转义）⇒ 比对时用还原后的形态
+        if f.replace('%', '%%') not in go and f not in go:
+            problems.append('api/full_charge_range.go 里没有这句「%s」⇒ 服务端文案被改了' % f)
+        if f not in test:
+            problems.append(
+                '客户端夹具里没有这句「%s」' % f
+                + ' ⇒ 两端文案漂了（客户端那份是抄的，改一边就打架）')
+
+    # ④ 客户端夹具里的**文案**里不许出现写死的倍数。
+    #
+    # ⚠️ **只查文案本身，不查整个文件** —— 因为「1.7 倍」这句话
+    #    **必须**出现在测试文件里（那就是「客户端原来写死了它」的证据，
+    #    而且断言文案里也要引用它）⇒ 查整个文件会误报（v0.175.0 实测踩到）。
+    # ⇒ 改成：把夹具函数体**取出来**再查。
+    m = re.search(r'fun serverScopeNote\([^)]*\): String =((?:.|\n)*?)\n\s*private fun', test)
+    scope_fn = m.group(1) if m else ''
+    if '1.7 倍' in scope_fn:
+        problems.append('客户端夹具的 scope_note 文案里写死了「1.7 倍」⇒ 那是**过期的事实**（实测 1.7562）')
+
+if problems:
+    print('实测满电续航卡的 ⓘ 文案不在服务端一份 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 三段 ⓘ 文案只许在 api/full_charge_range.go；客户端只透传（ADR #41）')
+    sys.exit(1)
+
+print('实测满电续航的三段 ⓘ 文案在服务端一份（客户端只透传 ＋ 两端逐字一致 ＋ 倍数按真实数据算）')
+PYEOF
+if [ $? -eq 0 ]; then ok "实测满电续航卡的 ⓘ 文案只在服务端一份"; else fail "实测满电续航卡的 ⓘ 文案又漏到客户端了"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
