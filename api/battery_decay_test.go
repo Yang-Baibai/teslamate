@@ -56,7 +56,7 @@ func near(t *testing.T, name string, got, want, tol float64) {
 }
 
 func TestBatteryDecayStrictTier(t *testing.T) {
-	d := analyzeBatteryDecay(fixtureStrict, 12, 76, 1)
+	d := analyzeBatteryDecay(fixtureStrict, 12, 3, 76, 1)
 	if d == nil {
 		t.Fatal("decay = nil")
 	}
@@ -131,7 +131,7 @@ func TestBatteryDecayStrictTier(t *testing.T) {
 }
 
 func TestBatteryDecayTooFewPoints(t *testing.T) {
-	d := analyzeBatteryDecay(fixtureStrict[:5], 24, 20, 0)
+	d := analyzeBatteryDecay(fixtureStrict[:5], 24, 2, 20, 0)
 	if d == nil {
 		t.Fatal("decay = nil")
 	}
@@ -156,7 +156,7 @@ func TestBatteryDecayFlatSeriesHasNoStep(t *testing.T) {
 			kwh:  65.0,
 		})
 	}
-	d := analyzeBatteryDecay(pts, 0, 300, 0)
+	d := analyzeBatteryDecay(pts, 0, 0, 300, 0)
 	if d == nil {
 		t.Fatal("decay = nil")
 	}
@@ -178,7 +178,7 @@ func TestBatteryDecayFlatSeriesHasNoStep(t *testing.T) {
 // ② 留一法（结果：16 次只有 1 次仍然显著）；
 // ③ 不得把落差说成「物理事件」（它可能是车机重新标定）。
 func TestBatteryDecayConclusionStrength(t *testing.T) {
-	d := analyzeBatteryDecay(fixtureStrict, 12, 76, 1)
+	d := analyzeBatteryDecay(fixtureStrict, 12, 3, 76, 1)
 	if d == nil {
 		t.Fatal("decay = nil")
 	}
@@ -221,5 +221,49 @@ func TestBatteryDecayConclusionStrength(t *testing.T) {
 	// caveat 必须说清落差**可能不是**电池变化
 	if !strings.Contains(d.Caveat, "可能不是") {
 		t.Errorf("caveat must not assert the drop is a battery event: %s", d.Caveat)
+	}
+}
+
+// TestDecayNoteUsesRealExcludedBreakdown ⚠️ **v0.172.0**
+//
+// 客户端以前把「没充到 100%」的场次**编**成「90~98% 未计入」
+// ⇒ 而服务端的判据只是「没充到 100%」（实测那批点的结束电量从 8% 到 99% 都有）。
+// ⇒ 现在：口径由服务端算，文案由服务端给（ADR #86）。
+func TestDecayNoteUsesRealExcludedBreakdown(t *testing.T) {
+	d := analyzeBatteryDecay(fixtureStrict, 12, 3, 76, 1)
+	if d.ExcludedNearFullN != 3 {
+		t.Fatalf("ExcludedNearFullN = %d，want 3", d.ExcludedNearFullN)
+	}
+	note := d.Note
+	if note == "" {
+		t.Fatal("note 不该为空")
+	}
+	if !strings.Contains(note, "另有 12 场没充满") {
+		t.Errorf("note 没说清未计入的真实口径：%q", note)
+	}
+	if !strings.Contains(note, "3 场充到 90% 以上") {
+		t.Errorf("note 没说清其中充到 90%% 以上的有多少场：%q", note)
+	}
+	// ⚠️ **全都** ≥90% 时不许说「另有 N 场没充满（N 场充到 90% 以上）」⇒ 那是冗余
+	allNear := analyzeBatteryDecay(fixtureStrict, 5, 5, 76, 1)
+	if !strings.Contains(allNear.Note, "另有 5 场充到 90% 以上但没充满") {
+		t.Errorf("全都接近充满时该换一种说法：%q", allNear.Note)
+	}
+	if strings.Contains(allNear.Note, "（5 场充到 90% 以上）") {
+		t.Errorf("全都接近充满时不该再用括注：%q", allNear.Note)
+	}
+	if strings.Contains(note, "90~98%") {
+		t.Errorf("note 里还在说「90~98%%」⇒ 那是客户端编的口径：%q", note)
+	}
+	// note 的每一段都要 ≤ 96（ⓘ 行宽上限；客户端是同一个数）
+	for _, seg := range strings.Split(note, "\n\n") {
+		if w := copyVisualWidth(seg); w > noteLineWidthLimit {
+			t.Errorf("note 有一段宽度 %d > %d：%q", w, noteLineWidthLimit, seg)
+		}
+	}
+	// 点数不足时也要有 note（不能让界面空着）
+	small := analyzeBatteryDecay(fixtureStrict[:5], 24, 2, 20, 0)
+	if small.Note == "" {
+		t.Error("点数不足时也该给 note")
 	}
 }

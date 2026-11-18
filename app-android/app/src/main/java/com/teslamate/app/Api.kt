@@ -1007,6 +1007,8 @@ data class BatteryDecay(
     val strict_n: Int = 0,
     /** 未计入的非满充点数 */
     val excluded_n: Int = 0,
+    /** ⚠️ **v0.172.0**：未计入场次里**结束电量 ≥ 90%** 的那部分（服务端算出来的口径）。 */
+    val excluded_near_full_n: Int = 0,
     val span_km: Double = 0.0,
     val span_days: Int = 0,
     /** 朴素线性速率（度/1000km） */
@@ -1078,6 +1080,14 @@ data class BatteryDecay(
      * 嘴上说「显著」是**过度承诺**。
      */
     val conclusion: String = "",
+    /**
+     * ⚠️ **v0.172.0**：这条卡常驻的那段说明 —— **服务端唯一一份**。
+     *
+     * ⇒ 客户端**只透传**（ADR #41 / ADR #86）：以前是客户端自己拼的，
+     *   而它拼的时候**编了一个口径**（「12 个 90~98% 未计入」）。
+     * ⇒ 空（老服务端没这个字段）⇒ **不显示**（宁可不说，也不说半句）。
+     */
+    val note: String = "",
     val method: String = "",
     val caveat: String = "",
 )

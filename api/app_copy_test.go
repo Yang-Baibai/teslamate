@@ -194,12 +194,12 @@ func TestDecayNoteLinesWithinWidth(t *testing.T) {
 	}
 
 	// ⚠️ analyzeBatteryDecay 的两条提前返回（也是服务端下发的 caveat）
-	assertNoteLinesWithinWidth(t, "点数不足", analyzeBatteryDecay(nil, 0, 0, 0).Caveat)
+	assertNoteLinesWithinWidth(t, "点数不足", analyzeBatteryDecay(nil, 0, 0, 0, 0).Caveat)
 	collinear := make([]decayPoint, 8)
 	for i := range collinear {
 		collinear[i] = decayPoint{date: "2026-01-01", km: 100, kwh: 60}
 	}
-	assertNoteLinesWithinWidth(t, "线性拟合失败", analyzeBatteryDecay(collinear, 0, 10, 0).Caveat)
+	assertNoteLinesWithinWidth(t, "线性拟合失败", analyzeBatteryDecay(collinear, 0, 0, 10, 0).Caveat)
 
 	// 方法说明（也是服务端下发、进 App ⓘ 的那一行）
 	assertNoteLinesWithinWidth(t, "方法说明", decayMethodTmpl)

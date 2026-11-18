@@ -850,6 +850,11 @@ def teslamate_battery() -> dict:
     decay = b.get("decay") or {}
     if decay:
         out["衰减结论"] = decay.get("conclusion")
+        # ⚠️ **v0.172.0**：那段说明也透传（服务端唯一一份）——
+        # App 的电池健康卡上写着它，飞书这边也该能问到**同一句**
+        # （ADR #41：文案只有一份）。
+        if decay.get("note"):
+            out["说明"] = decay.get("note")
         out["覆盖天数"] = b.get("series_span_days")
         out["覆盖里程km"] = b.get("odometer_span_km")
     return out

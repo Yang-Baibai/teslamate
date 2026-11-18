@@ -1124,12 +1124,24 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                             // 依据（样本 / 落差 / 口径）折进 ⓘ，点开在下面就地展开。
                             // 一段文字都没删，只是换了位置。
                             b.decay?.let { d ->
-                                TextWithNote(
-                                    text = BatteryDecayText.headline(d),
-                                    note = BatteryDecayText.note(d),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    a11yLabel = "电池衰减结论的依据",
-                                )
+                                // ⚠️ **v0.172.0**：说明**只透传服务端**（ADR #41 / ADR #86）⇒
+                                // 服务端没给（老服务端没这个字段）⇒ **不显示 ⓘ**
+                                // （宁可不说，也不说半句 —— v0.85.0 的老规矩）。
+                                val decayNote = BatteryDecayText.note(d)
+                                if (decayNote != null) {
+                                    TextWithNote(
+                                        text = BatteryDecayText.headline(d),
+                                        note = decayNote,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        a11yLabel = "电池衰减结论的依据",
+                                    )
+                                } else {
+                                    Text(
+                                        BatteryDecayText.headline(d),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
                         }
 

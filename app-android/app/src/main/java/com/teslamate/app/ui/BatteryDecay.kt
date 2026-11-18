@@ -71,42 +71,18 @@ object BatteryDecayText {
      * （「口径提示与服务端判定**必须是同一份**，否则必然漂移」）。
      * ⇒ 这一轮删掉它：**不是丢信息，是去掉一个会自己跑偏的副本。**
      *
-     * 保留第 1 段（样本与覆盖）—— 其中「12 个 90~98% 未计入」
-     * 是**服务端 `caveat` 里没有的**（`caveat` 只说了剔除 1 场空会话）。
+     * ⚠️ **v0.172.0（就地订正上面那段）**：当时「保留第 1 段（样本与覆盖）」，
+     * 理由是「『12 个 90~98% 未计入』是**服务端 caveat 里没有的**」——
+     * ⇒ **这个理由本身是错的**：不是「服务端没有」，而是**客户端自己编的**
+     *   （服务端的判据只是「没充到 100%」；实测那批点的结束电量从 8% 到 99%
+     *    全都有 ⇒「90~98%」是**假的**）。
+     * ⇒ 现在这段**整体**收归服务端（`battery.decay.note`，ADR #41 / ADR #86），
+     *   客户端**只透传**，一个字都不加。
+     *
+     * ⇒ 服务端没给（老服务端没这个字段）⇒ **不显示**
+     *   （宁可不说，也不说半句 —— v0.85.0 的老规矩）。
      */
-    fun note(d: BatteryDecay): String {
-        val parts = mutableListOf<String>()
-
-        // ── 样本与覆盖 ────────────────────────────────────────
-        val sample = StringBuilder()
-        sample.append(d.n).append(" 个 100% 满充点")
-        if (d.excluded_n > 0) {
-            sample.append("（").append(d.excluded_n).append(" 个 90~98% 未计入）")
-        }
-        sample.append(" · ").append(d.span_km.roundToInt()).append(" 公里 / ")
-            .append(d.span_days).append(" 天")
-        // ⚠️ v0.41.0：空会话要**说清楚剔了什么** ——
-        // 悄悄少一个点，读者会以为「怎么从 29 个变成 16 个」。
-        if (d.dropped_empty > 0) {
-            sample.append(" · 剔除 ").append(d.dropped_empty).append(" 场没实际充电的")
-        }
-        parts += sample.toString()
-
-        // ── 那次落差（如果检测到） ───────────────────────────
-        if (d.has_step) {
-            val step = StringBuilder()
-            step.append("有一次 ").append(d.step_kwh.fmt(2)).append(" 度落差，已扣除")
-            // ⚠️ **v0.41.0：不能替用户下「只是重新标定」的判断** ——
-            // 那是**物理断言**，而数据分不清「电池真掉了一次」与
-            // 「车机重新标定了续航估值」。所以只说「分不清」。
-            // 完整的那次落差（日期 / 公里处 / 不扣它会高估几倍）由服务端
-            // `caveat` 呈现，见「怎么算的」。
-            step.append("（车机重新标定还是电池变化，分不清）。")
-            parts += step.toString()
-        }
-
-        return parts.joinToString("\n\n")
-    }
+    fun note(d: BatteryDecay): String? = d.note.takeIf { it.isNotBlank() }
 
     /**
      * 连续衰减速率那一行 —— **按结论强度说话**。

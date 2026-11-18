@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -124,6 +125,11 @@ type BatteryDecay struct {
 	StrictN int `json:"strict_n"`
 	// 未计入的非满充点数
 	ExcludedN int `json:"excluded_n"`
+	// ⚠️ **v0.172.0**：未计入的场次里，**结束电量 ≥ 90%** 的那部分。
+	//
+	// 这批点最要紧：90~98% 的点从 94% 线性外推到 100% **系统性偏高 0.56%**
+	// ⇒ 它们被排除，是「只用严格档」这个选择**要付的代价**，必须说清。
+	ExcludedNearFullN int `json:"excluded_near_full_n"`
 	// ⚠️ v0.41.0：**没有实际充电**的场次数（同一场会话被 TeslaMate 拆成两段的尾巴）。
 	// 那不是独立的测量点 —— 实测本机有 1 场（100%→100%、0.04 度、1 分钟）。
 	DroppedEmpty int `json:"dropped_empty"`
@@ -193,6 +199,12 @@ type BatteryDecay struct {
 	// 方法与警告
 	Method string `json:"method"`
 	Caveat string `json:"caveat"`
+	// ⚠️ **v0.172.0**：这条卡常驻的那段说明（样本与覆盖 / 那次落差）—— **服务端唯一一份**。
+	//
+	// ⇒ v0.172.0 之前这段是**客户端自己拼**的，而它拼的时候**编了一个口径**
+	// （「12 个 90~98% 未计入」—— 服务端的判据只是「没充到 100%」）
+	// ⇒ 现在文案与口径都在服务端（ADR #41 / ADR #86）。
+	Note string `json:"note"`
 }
 
 // decayMinPoints 做阶跃检测至少需要的点数。
@@ -333,16 +345,18 @@ func meanTempOf(pts []decayPoint) float64 {
 //
 // @param strict      严格档（end_soc == 100）且里程/容量齐全的点（按里程升序）
 // @param excluded    未计入的非满充点数
+// @param excludedNearFull 未计入场次里**结束电量 ≥ 90%** 的那部分（v0.172.0）
 // @param spanDays    数据覆盖的天数
 // @param droppedEmpty 没实际充电的场次数
-func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int, droppedEmpty int) *BatteryDecay {
+func analyzeBatteryDecay(strict []decayPoint, excluded int, excludedNearFull int, spanDays int, droppedEmpty int) *BatteryDecay {
 	out := &BatteryDecay{
-		N:            len(strict),
-		StrictN:      len(strict),
-		ExcludedN:    excluded,
-		DroppedEmpty: droppedEmpty,
-		SpanDays:     spanDays,
-		Method:       decayMethodTmpl,
+		N:                 len(strict),
+		StrictN:           len(strict),
+		ExcludedN:         excluded,
+		ExcludedNearFullN: excludedNearFull,
+		DroppedEmpty:      droppedEmpty,
+		SpanDays:          spanDays,
+		Method:            decayMethodTmpl,
 	}
 	if len(strict) >= 2 {
 		out.SpanKm = strict[len(strict)-1].km - strict[0].km
@@ -351,6 +365,7 @@ func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int, droppe
 		out.Conclusion = DecayInsufficient
 		out.Caveat = "只有 " + strconv.Itoa(len(strict)) + " 个 100% 满充点，不足以判定趋势。" +
 			"（判定趋势至少要 " + strconv.Itoa(decayMinPoints) + " 个点）"
+		out.Note = decayNote(out)
 		return out
 	}
 
@@ -433,6 +448,7 @@ func analyzeBatteryDecay(strict []decayPoint, excluded int, spanDays int, droppe
 
 	out.Conclusion = decayConclusion(out)
 	out.Caveat = decayCaveat(out)
+	out.Note = decayNote(out)
 	return out
 }
 
@@ -648,6 +664,50 @@ func decayCaveat(d *BatteryDecay) string {
 			"结论只在这 %.0f 公里 / %d 天内有效，不能外推",
 		d.SpanKm, d.SpanDays))
 	return joinCN(parts, "；")
+}
+
+// decayNote 这条卡常驻的那段说明（**服务端唯一一份**：ADR #41 / ADR #86）。
+//
+// ⚠️ **v0.172.0**：这段以前是**客户端自己拼**的，而它拼的时候**编了一个口径** ——
+// 「12 个 90~98% 未计入」⇒ 而服务端的判据只是「没充到 100%」
+// （实测未计入场次的结束电量从 8% 到 99% 全都有 ⇒ 「90~98%」是**假的**）。
+//
+// ⇒ 现在：口径由服务端算（ExcludedNearFullN），文案由服务端给（这里）。
+func decayNote(d *BatteryDecay) string {
+	parts := make([]string, 0, 2)
+
+	// ── 样本与覆盖 ───────────────────────────────────────────────
+	sample := fmt.Sprintf("%d 个 100%% 满充点", d.N)
+	if d.ExcludedN > 0 {
+		// ⚠️ 措辞要短：这行受 ⓘ 行宽上限（96）约束 ——
+		// 「没充到 100%」比「没充满」多 4 格（滤掉「其中」两个字更紧）。
+		if d.ExcludedNearFullN == d.ExcludedN {
+			// ⚠️ **全都**充到 90% 以上 ⇒ 再说「另有 N 场没充满（N 场充到 90% 以上）」是冗余
+			sample += fmt.Sprintf(" · 另有 %d 场充到 90%% 以上但没充满", d.ExcludedN)
+		} else if d.ExcludedNearFullN > 0 {
+			sample += fmt.Sprintf(" · 另有 %d 场没充满（%d 场充到 90%% 以上）",
+				d.ExcludedN, d.ExcludedNearFullN)
+		} else {
+			sample += fmt.Sprintf(" · 另有 %d 场没充满", d.ExcludedN)
+		}
+	}
+	sample += fmt.Sprintf(" · %d 公里 / %d 天", int(math.Round(d.SpanKm)), d.SpanDays)
+	// ⚠️ v0.41.0：空会话要**说清楚剔了什么** ——
+	// 悄悄少一个点，读者会以为「怎么从 29 个变成 16 个」。
+	if d.DroppedEmpty > 0 {
+		sample += fmt.Sprintf(" · 剔除 %d 场没实际充电的", d.DroppedEmpty)
+	}
+	parts = append(parts, sample)
+
+	// ── 那次落差（如果检测到） ────────────────────────────────────
+	if d.HasStep {
+		// ⚠️ v0.41.0：不能替用户下「只是重新标定」的判断 —— 那是**物理断言**，
+		// 而数据分不清「电池真掉了一次」与「车机重新标定了续航估值」。所以只说「分不清」。
+		parts = append(parts, fmt.Sprintf(
+			"有一次 %.2f 度落差，已扣除（车机重新标定还是电池变化，分不清）。",
+			d.StepKwh))
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // ifStr 条件为真取 a，否则取 b。

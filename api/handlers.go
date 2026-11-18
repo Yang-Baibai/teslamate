@@ -1734,18 +1734,19 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 	var lastCapAt *time.Time
 	// ⚠️ v0.22.0（电池健康专家 P1-5 / P1-1 / P0-3）：下面这些累加器。
 	var (
-		lastOdo      *float64
-		firstOdo     *float64
-		firstDate    time.Time
-		lastDate     time.Time
-		haveDate     bool
-		strictMax    *float64
-		energyCaps   []float64
-		baselineCaps []float64
-		strictPts    []decayPoint
-		scaleRatios  []float64
-		excludedPts  int
-		droppedEmpty int
+		lastOdo          *float64
+		firstOdo         *float64
+		firstDate        time.Time
+		lastDate         time.Time
+		haveDate         bool
+		strictMax        *float64
+		energyCaps       []float64
+		baselineCaps     []float64
+		strictPts        []decayPoint
+		scaleRatios      []float64
+		excludedPts      int
+		excludedNearFull int
+		droppedEmpty     int
 	)
 	for rows.Next() {
 		p := &BatteryPoint{}
@@ -1845,6 +1846,13 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 				}
 			} else {
 				excludedPts++
+				// ⚠️ **v0.172.0**：这批点里**结束电量 ≥ 90%** 的那部分要单独记 ——
+				// 「90~98% 的点从 94% 线性外推到 100% 系统性偏高 0.56%」
+				// ⇒ 它们被排除，是「只用严格档」要付的代价
+				// （客户端以前把这批点**编**成「90~98% 未计入」⇒ 见 ADR #86）。
+				if p.EndSoc != nil && *p.EndSoc >= 90 {
+					excludedNearFull++
+				}
 			}
 		}
 	}
@@ -1873,7 +1881,7 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 		if first, last, ok := strictDateRange(strictPts); ok {
 			spanDays = int(last.Sub(first).Hours() / 24)
 		}
-		h.Decay = analyzeBatteryDecay(strictPts, excludedPts, spanDays, droppedEmpty)
+		h.Decay = analyzeBatteryDecay(strictPts, excludedPts, excludedNearFull, spanDays, droppedEmpty)
 	}
 
 	// ⚠️ v0.22.0（P1-1）：**相对首测** —— 唯一不受 `cars.efficiency` 影响的健康指标。

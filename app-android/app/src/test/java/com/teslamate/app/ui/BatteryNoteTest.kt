@@ -3,6 +3,7 @@ package com.teslamate.app.ui
 import com.teslamate.app.BatteryDecay
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -160,10 +161,15 @@ class BatteryNoteTest {
 
     // ── ④ 衰减结论 ⓘ（`BatteryDecayText.note`）──────────────────
 
-    /** 实测本机：17 个 100% 满充点、9836 公里 / 83 天、剔除 1 场、2026-09-28 落差。 */
+    /**
+     * 实测本机：17 个 100% 满充点、9836 公里 / 83 天、剔除 1 场、2026-09-28 落差。
+     *
+     * ⚠️ **v0.172.0**：`note` 现在是**服务端给的原文**（客户端只透传）。
+     */
     private fun realDecay() = BatteryDecay(
         n = 17,
         excluded_n = 12,
+        excluded_near_full_n = 3,
         span_km = 9835.521468,
         span_days = 83,
         has_step = true,
@@ -173,56 +179,29 @@ class BatteryNoteTest {
         naive_overstate = 3.26,
         dropped_empty = 1,
         conclusion = "weak",
+        note = "17 个 100% 满充点 · 另有 12 场没充满（3 场充到 90% 以上） · 9836 公里 / 83 天 · 剔除 1 场没实际充电的" +
+            "\n\n有一次 -0.66 度落差，已扣除（车机重新标定还是电池变化，分不清）。",
     )
 
-    @Test
-    fun `衰减结论依据在上限内`() {
-        val note = BatteryDecayText.note(realDecay())
-        assertTrue(
-            "ⓘ 宽度 ${noteVisualWidth(note)} > $NOTE_WIDTH_LIMIT：$note",
-            noteVisualWidth(note) <= NOTE_WIDTH_LIMIT,
-        )
-        assertTrue("必须给样本量：$note", note.contains("17 个 100% 满充点"))
-        assertTrue("必须说清没计入的那些：$note", note.contains("12 个 90~98% 未计入"))
-        assertTrue("必须给覆盖窗口：$note", note.contains("9836 公里 / 83 天"))
-        assertTrue("必须说清剔了什么：$note", note.contains("剔除 1 场"))
-        assertTrue("必须说落差已扣除：$note", note.contains("已扣除"))
-        assertTrue("不能替用户下断言：$note", note.contains("分不清"))
-    }
-
     /**
-     * ⚠️ **客户端不再维护第二份口径副本** ——
-     * 「容量口径」「不能外推」「高估几倍」都由**服务端 `caveat`** 呈现
-     * （同卡的「怎么算的」折叠区），客户端留一份必然漂移。
+     * ⚠️ **v0.172.0**：这条卡的说明**必须逐字来自服务端**。
+     *
+     * ⇒ 以前是客户端自己拼的，而它拼的时候**编了一个口径**
+     *   （「12 个 90~98% 未计入」⇒ 服务的判据只是「没充到 100%」）。
+     * ⇒ 现在**只透传**（ADR #41 / ADR #86）⇒ 这条断言就是防它再漂回去。
      */
     @Test
-    fun `衰减结论依据里不重复服务端口径`() {
-        val note = BatteryDecayText.note(realDecay())
-        assertFalse("不能出现物理测量口径：$note", note.contains("物理测量"))
-        assertFalse("不能出现不能外推：$note", note.contains("不能外推"))
-        assertFalse("不能出现高估倍数：$note", note.contains("高估"))
+    fun `这条卡的说明逐字来自服务端`() {
+        val d = realDecay()
+        assertEquals("必须逐字等于服务端的 note", d.note, BatteryDecayText.note(d))
     }
 
-    /** 没有落差时，那句「落差已扣除」不能出现。 */
+    /** 服务端没给（老服务端）⇒ **不显示**（宁可不说，也不说半句）。 */
     @Test
-    fun `没有落差时不提落差`() {
-        val note = BatteryDecayText.note(realDecay().copy(has_step = false, step_kwh = 0.0))
-        assertFalse("不能提落差：$note", note.contains("落差"))
-        assertTrue(
-            "ⓘ 宽度 ${noteVisualWidth(note)} > $NOTE_WIDTH_LIMIT：$note",
-            noteVisualWidth(note) <= NOTE_WIDTH_LIMIT,
-        )
-    }
-
-    /** 没有未计入点、没有空会话时，那两段都不该出现（v0.14.0 P2-4：零值段是噪音）。 */
-    @Test
-    fun `没有未计入点时不提未计入`() {
-        val note = BatteryDecayText.note(realDecay().copy(excluded_n = 0, dropped_empty = 0))
-        assertFalse("不能提未计入：$note", note.contains("未计入"))
-        assertFalse("不能提剔除：$note", note.contains("剔除"))
-        assertTrue(
-            "ⓘ 宽度 ${noteVisualWidth(note)} > $NOTE_WIDTH_LIMIT：$note",
-            noteVisualWidth(note) <= NOTE_WIDTH_LIMIT,
+    fun `服务端没给说明就不显示`() {
+        assertNull(
+            "服务端没给就不该显示",
+            BatteryDecayText.note(realDecay().copy(note = "")),
         )
     }
 }

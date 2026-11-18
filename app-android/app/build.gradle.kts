@@ -35,8 +35,8 @@ android {
         // ⚠️ **v0.166.0**：接着 151 之后是 **152**（车控页「解锁车门」那个主角 CTA
         //   的配色修正：实心琥珀底上的文字从黑字改成 onWarnAmber）
         //    ⇒ 仍然**没有跳号**。
-        versionCode = 153
-        versionName = "0.144.0"
+        versionCode = 154
+        versionName = "0.145.0"
     }
 
     buildTypes {
