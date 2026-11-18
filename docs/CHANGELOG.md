@@ -39,7 +39,7 @@
 | `app-android/.../ui/RangeSegments.kt` | **删掉三个本地折算函数**，改成只渲染服务端结论 |
 | `app-android/.../ui/RecordsStore.kt` | 新增 `fullChargeRange` 状态（失败 ⇒ 整张卡不出现） |
 | `app-android/.../ui/RecordsScreen.kt` | 卡片调用点改传服务端结论；删掉「纯客户端可算」的旧注释 |
-| `docs/app-conclusions.json` | **3 条 gap → covered**（清单 28 条：covered 27 / gap 1） |
+| `docs/app-conclusions.json` | **3 条 gap → covered**（清单 **30 条**：covered **29** / gap **1**） |
 | `scripts/client-gates.sh` | 新增**闸门 45**（折算与阈值只以服务端为准） |
 
 ⚠️ **服务端没给数 ⇒ 整张卡不出现**（服务器挂掉 / 老服务端 / 官方标称缺失）——
@@ -108,7 +108,7 @@
 
 Hermes 闸门 11 一直在做「App 能看到的，Hermes 也要能取」—— 但它**逐条对的是端点**。
 
-⇒ **客户端本地算出来的结论，全从网眼里漏过去。** 实测扫下来，App 界面上的结论有 **28 条**，
+⇒ **客户端本地算出来的结论，全从网眼里漏过去。** 实测扫下来，App 界面上的结论有 **30 条**，
 其中 **4 条是客户端本地算的、服务端没有、Hermes 取不到**：
 
 | 结论 | 界面 | 谁在算 | 飞书能不能答 |
@@ -129,7 +129,10 @@ Hermes 闸门 11 一直在做「App 能看到的，Hermes 也要能取」—— 
 | `scripts/hermes-gates.sh` | 新增**闸门 33**：① 每条必须登记 ② 标成 covered 的 ⇒ 它指向的 MCP 工具**必须真的存在** ③ 标成 gap / local-only 的 ⇒ **必须写理由**（不许默默漏） |
 
 ⇒ **状态三档**：**covered**（Hermes 能取）/ **gap**（该取却取不到 ⇒ **欠账**）/ **local-only**（本来就只该在本地）。
-⇒ 本轮清单：**28 条**（covered 24 / gap 4 / local-only 0）。
+⇒ 本轮清单：**30 条**（covered 26 / gap 4 / local-only 0）。
+> ⚠️ **v0.174.0 就地订正**：这一段原来写的是「**28 条**（covered 24 / gap 4）」——
+> **数字当时就错了**（清单实际 **30 条**）⇒ 是本轮回读 `docs/app-conclusions.json`
+> 才发现的 ⇒ 说明「写进 CHANGELOG 的数字」也可能是拍的 ⇒ **清单条数要回读，不能凭印象写**。
 
 ### 三、闸门 33 ＋ 两个负向探针
 
