@@ -164,21 +164,54 @@ fun RangeSegmentsCard(
                     label = "这个数怎么算的",
                     a11yLabel = "实测满电续航的折算口径",
                 )
+                // ⚠️ **v0.176.0**：这两行改成**两行式**（与下面的段明细同款）。
+                //
+                // ## 为什么改
+                //
+                // 原来是一句**自由句**：「最好：607 公里（2026-09-12 从 96% 开到 6%，实跑 546 公里）」
+                // ⇒ 模拟器实拍（1440×3200@600）：**末尾「里」单独折成一行**
+                // ⇒ 一句话断成两行，而第二行只剩一个字（典型的「孤字成行」）。
+                // ⚠️ 下面那段**段明细**在 v0.86.0 就改成两行式了（日期 ｜ 电量 / 实跑 ｜ 折算）
+                // ⇒ 这两行还留在自由句形态 ⇒ **同一张卡里两套行样式**。
+                //
+                // ## 为什么这么排
+                //
+                // ① 第一行 = **结论**（最好/最差 + 折算满电公里）—— 最重要，直接可见；
+                // ② 第二行 = **上下文**（哪一天、从多少开到多少）—— 辅助，淡一点；
+                // ③ 「实跑多少公里」**不重复**（下面段明细里每一段都有）—— 不做重复信息。
+                //
+                // ⚠️ 宽度预算：第二行最长「2026-09-12 从 96% 开到 6%」≈ 19 字符
+                // ⇒ 200% 字号下 78dp + 228sp ≈ 306dp ≤ 328dp（内容区）⇒ 不折行。
                 best?.let {
-                    Text(
-                        "最好：${it.full_charge_km.roundToInt()} 公里" +
-                            "（${it.start_date?.fmtDate().orEmpty()} 从 ${it.from_soc}% 开到 ${it.to_soc}%，实跑 ${it.km.roundToInt()} 公里）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    // ⚠️ **v0.176.0**：顶部留 8dp ——
+                    // 原来「最好」那行**紧贴**上面 ⓘ 的标签行（ⓘ 未展开时只有徽标＋标签一行）
+                    // ⇒ 读起来像「这个数怎么算的」是「607 公里」的**标签** ⇒ 歧义。
+                    Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 2.dp)) {
+                        Text(
+                            "最好：约 ${it.full_charge_km.roundToInt()} 公里/满电",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "${it.start_date?.fmtDate().orEmpty()} 从 ${it.from_soc}% 开到 ${it.to_soc}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 worst?.let {
-                    Text(
-                        "最差：${it.full_charge_km.roundToInt()} 公里" +
-                            "（${it.start_date?.fmtDate().orEmpty()}，跑了 ${it.km.roundToInt()} 公里）",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Column(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+                        Text(
+                            "最差：约 ${it.full_charge_km.roundToInt()} 公里/满电",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            "${it.start_date?.fmtDate().orEmpty()} 从 ${it.from_soc}% 开到 ${it.to_soc}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 // ⚠️ v0.28.0（复审 P2-13）：「最好」那个数必须打折看。
                 // 实测最好那趟是**山地下坡**的产物（海拔 1389~4327 m），

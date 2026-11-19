@@ -164,7 +164,7 @@
     {
       "id": "full_charge_range",
       "结论": "实测满电续航（折算中位，公里）",
-      "界面": "用量页",
+      "界面": "记录页",
       "服务端": "/full_charge_range",
       "mcp": [
         "teslamate_full_charge_range"
@@ -174,7 +174,7 @@
     {
       "id": "full_charge_vs_official",
       "结论": "实测满电续航 vs 官方标称的差 %",
-      "界面": "用量页",
+      "界面": "记录页",
       "服务端": "/full_charge_range vs_official_percent",
       "mcp": [
         "teslamate_full_charge_range"
@@ -184,7 +184,7 @@
     {
       "id": "full_charge_segments",
       "结论": "实测满电续航的**段明细**（每段公里 / 掉电%）",
-      "界面": "用量页（折叠区）",
+      "界面": "记录页（折叠区）",
       "服务端": "/full_charge_range segments",
       "mcp": [
         "teslamate_full_charge_range"
