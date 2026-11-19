@@ -1320,8 +1320,17 @@ func handleTeslaCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ⚠️ 车在休眠时 proxy 回 408 —— 那不是命令错，是「车没醒」。
-	// 把它翻译成 409 + 人话，让 App 能显示「先唤醒它」。
-	if !res.Sent && strings.Contains(res.Error, "408") {
+	//
+	// ⚠️ **v0.179.0**：现在**自动**「唤醒 → 等 → 重试」一次（见 api/tesla_wake.go）
+	// ⇒ 用户在飞书里说「开空调」**一次就完成**，不用断成「先唤醒、再开空调」两步。
+	//
+	// ⚠️ **唤醒本身会耗电、可能计费** ⇒ 完成后必须**披露**（「已唤醒」写进 done）。
+	if isTeslaAsleepError(res) {
+		if woke := tesla.wakeAndRetry(r.Context(), action, params); woke != nil {
+			writeJSON(w, woke)
+			return
+		}
+		// 唤醒这条路走不通（车大概率离线）⇒ 翻译成 409 + 人话，让 App 能显示「先唤醒它」。
 		writeJSON(w, map[string]any{
 			"action":      res.Action,
 			"risk":        res.Risk,
