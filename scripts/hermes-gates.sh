@@ -2496,7 +2496,12 @@ for it in items:
             if t not in tools:
                 problems.append('%s 指向的 MCP 工具 %s 不存在（工具改名了？清单烂了？）' % (cid, t))
     else:
-        if not (it.get('理由') or '').strip():
+        # ⚠️ v0.180.0：理由**可能是数组**（v0.173.0 写的几条就是）⇒
+        #   原来 `(it.get('理由') or '').strip()` 遇到数组会抛 AttributeError
+        #   ⇒ 闸门自己崩了（报「清单有遗漏」其实是崩在判据里）。
+        reason = it.get('理由')
+        has_reason = bool(reason) if isinstance(reason, str) else bool(reason)
+        if not has_reason:
             problems.append('%s 是 %s ⇒ 必须写理由（不许默默漏）' % (cid, st))
 
 covered = sum(1 for it in items if it.get('状态') == 'covered')
@@ -2516,6 +2521,73 @@ print('App 界面上每条结论都有明确归属（取得到 / 缺口且写明
 PYEOF
 if [ $? -eq 0 ]; then ok "App 界面结论清单完整（缺口都写了理由）"; else fail "App 界面结论清单有遗漏或理由缺失"; cat "$TMP"; fi
 rm -f "$TMP"
+#!/usr/bin/env bash
+# ── 闸门 34：清单里的 covered 必须**名副其实**（客户端不许自己算） ──────────────
+#
+# ⚠️ **v0.180.0**：闸门 33 只查「清单里的条目对不对」，**查不出清单本身不实**。
+#
+#   实测（v0.180.0 回读客户端源码）：`charge_measured_80` 与 `charge_fold_80` 两条
+#   写着「服务端 /charge_stats ch_measured」、状态 covered ——
+#   **但客户端实际用的是本地 `StationStat`**（ui/ChargeStats.kt 的
+#   `measuredMedianNear` / `minutesTo`，由 `buildStationStats` 从充电记录本地聚合）。
+#   ⇒ 那是**假 covered**：飞书取到的是「每场实测耗时」，App 显示的是「按站聚合同起点中位」
+#   ⇒ **两件事**，用户看到的两个数可能对不上。
+#
+# ⇒ 判据：**清单每条要写 client_source**（客户端这个数实际从哪来）；
+#   写着「客户端本地」的 ⇒ **状态不许是 covered** ⇒ 报红。
+#
+# ⚠️ **判据是形态无关的**：它查的是「这个数是不是客户端自己算的」这个**事实**
+#   （client_source 里写了「客户端本地」），不查任何代码写法 ⇒ 改名/换写法都盖得住。
+#
+# ⚠️ **渐进收紧**：client_source 为空的条目**不报错**（否则一次性要补 22 条），
+#   只统计「待补齐」条数 ⇒ 逐轮补齐，补一条钉一条。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import json, pathlib, sys
+
+MAN = pathlib.Path('docs/app-conclusions.json')
+if not MAN.exists():
+    print('找不到 docs/app-conclusions.json')
+    sys.exit(1)
+try:
+    data = json.loads(MAN.read_text(encoding='utf-8'))
+except Exception as e:
+    print('清单不是合法 JSON：%s' % e)
+    sys.exit(1)
+
+items = data.get('结论清单') or []
+problems = []
+todo = 0
+for it in items:
+    src = (it.get('client_source') or '').strip()
+    state = it.get('状态')
+    if not src:
+        if state == 'covered':
+            todo += 1
+        continue
+    # ⚠️ 核心判据：客户端本地算的 ⇒ 不许标 covered。
+    if ('客户端本地' in src or '本地兜底' in src) and state == 'covered':
+        problems.append(
+            '%s 标成 covered，但 client_source 写着「客户端本地算」' % it.get('id')
+            + '（%s）⇒ 飞书取到的与 App 显示的不是同一份' % src)
+    if state == 'gap':
+        reason = it.get('理由')
+        has_reason = bool(reason) if isinstance(reason, str) else bool(reason)
+        if not has_reason:
+            problems.append('%s 是 gap ⇒ 必须写理由（不许默默漏）' % it.get('id'))
+
+if problems:
+    print('清单里的 covered 名不副实 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 客户端自己算的结论，Hermes 取不到 ⇒ 状态必须是 gap（并写理由）')
+    sys.exit(1)
+
+print('清单的 covered 名副其实（%d 条已核 client_source；%d 条 covered 待补 client_source）' % (len(items) - todo, todo))
+PYEOF
+if [ $? -eq 0 ]; then ok "清单的 covered 名副其实（客户端本地算的不许标 covered）"; else fail "清单里有假 covered（客户端本地算的却标 covered）"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"
 exit "$FAIL"
