@@ -607,6 +607,16 @@ def teslamate_server_health() -> dict:
     再去怀疑车或网络。
 
     ⚠️ `数据库正常` = false ⇒ 整个系统读不到数据（**所有**工具都会失败）。
+
+    ⚠️ **修掉一个「恒为 false」的假红（2026-11-19）**：原来这里读的是
+    `teslamate.ok` / `fleet.ok` —— **服务端 `/api/v1/health` 从来没有这两个字段**
+    ⇒ `.get("ok")` 永远拿到 None ⇒ 那两项**恒为 false**（与服务端死活无关：
+    服务端好好的也报「采集 / 车端 API 都不正常」）。
+    ⇒ 现在只透传服务端**真有的**字段：
+    · `车端API状态` = 服务端自己的五态结论（ok / asleep / unauthorized /
+      unreachable / disabled）—— **别自己另写一套映射**（红线 #1）。
+    · `采集滞后小时` / `最后采集于` = 服务端给的**原值**；新不新鲜由服务端自己
+      的口径说（/status 的「车况数据是旧的」）—— 这里不自己算阈值。
     """
     d = _get("/api/v1/health")
     if not isinstance(d, dict) or "error" in d:
@@ -616,8 +626,11 @@ def teslamate_server_health() -> dict:
     return {
         "数据库正常": bool(d.get("db_ok")),
         "数据库延迟ms": d.get("db_latency_ms"),
-        "采集正常": bool(tm.get("ok") if isinstance(tm, dict) else tm),
-        "车端API正常": bool(fl.get("ok") if isinstance(fl, dict) else fl),
+        "车端API状态": fl.get("state"),
+        "车端API最近成功": fl.get("last_ok"),
+        "车端API错误": fl.get("error") or None,
+        "采集滞后小时": tm.get("age_hours"),
+        "最后采集于": tm.get("last_position_at"),
         "服务器时间": d.get("server_time"),
         "服务器时区": d.get("server_timezone"),
         "说明": "服务端自检：读不到车况时先排除这里",
