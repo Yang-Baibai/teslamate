@@ -288,7 +288,18 @@ fun RecordsScreen(
         }
         climbModelLoaded = true
     }
-    val routePlan = remember(drives, charges, stationStats, selectedRouteKey, socProfile, consumption, batteryCapacityKwh, climbModel) {
+    // ⚠️ **v0.181.0（模拟器复核当场抓到）：`pickedTemplate` 必须在 remember 的键里。**
+    //
+    // 原来键是 (drives, charges, stationStats, selectedRouteKey, socProfile, consumption,
+    // batteryCapacityKwh, climbModel) —— 里面**没有线路模板**。
+    // 那时模板是**客户端同步算**的（drives/charges 一到就有）⇒ 不在键里也没事。
+    // ⚠️ **v0.181.0 模板改成服务端异步给**（store.routeTemplates，晚一拍到）
+    // ⇒ 这个 remember **不会重算** ⇒ routePlan 永远是 null
+    // ⇒ **线路余量卡整张不出现**（模拟器实测：记录页第一张卡直接是「最近一趟」，
+    // 线路那条完全不见 —— 而且**编译、单测、闸门全绿**，只有版面才暴露）。
+    //
+    // ⇒ 现在把 `pickedTemplate` 加进键里：模板一变，余量表跟着重算。
+    val routePlan = remember(pickedTemplate, drives, charges, stationStats, selectedRouteKey, socProfile, consumption, batteryCapacityKwh, climbModel) {
         val tpl = pickedTemplate
         tpl?.let {
             buildRoutePlan(
