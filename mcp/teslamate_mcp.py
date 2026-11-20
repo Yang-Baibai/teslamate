@@ -1105,6 +1105,67 @@ def teslamate_full_charge_range() -> dict:
             for s in segs
         ]
     return out
+# ⚠️ **v0.181.0**：长途线路（journey）—— Hermes 也能问了。
+#
+# 为什么加：「哪些算一次长途出门」「沿途有哪些充电站」原来在**客户端**算
+# ⇒ 飞书里问「我那条长途线路上次在哪儿充的电」问不出来
+#   （mission §2.1；docs/app-conclusions.json 的 route_plan_margin 那条 gap 的第一段）。
+# ⇒ 现在判定与阈值都在**服务端**（/route_plans），这里**只透传**
+# ⇒ App 与飞书是**同一份**（ADR #38 / #41）。
+#
+# ⚠️ **别自己复算**：切分要「里程连续 + 回家了」两个判据，归属要同时看里程与时间
+# —— 这里读服务端那份，别在这里另算一遍。
+@mcp.tool(annotations=RO)
+def teslamate_route_plans() -> dict:
+    """查**长途线路**：历史上跑过哪些长途（≥200 公里的一次出门），以及沿途在哪儿充的电。
+
+    **什么时候用**：用户问「我上次那条长途是哪个」「那条线路沿途在哪儿充的电」
+    「我一共跑过几次长途」「那条 600 公里的线中途停了几站」—— 都归它。
+
+    ⚠️ **一条线路 = 一次连续出门**（不是一趟行程）：充电必然打断行程，
+    所以一次长途会被切成好几段 ⇒ 这里按「里程连续 + 回家了」合并回一次出门。
+
+    ⚠️ **到站余量 / 够不够到 20% 保底**不在这里（那仍是 App 的余量表判定）——
+    这里给的是**线路清单 + 沿途站归属**。
+    """
+    data = _get(f"/api/v1/cars/{CAR_ID}/route_plans")
+    if not isinstance(data, list):
+        if isinstance(data, dict):
+            return data
+        return {"错误": "返回格式异常"}
+    out = {
+        "线路数": len(data),
+        "线路": [
+            {
+                "key": t.get("key"),
+                "从": t.get("from_label"),
+                "到": t.get("to_label"),
+                "里程(km)": t.get("distance_km"),
+                "段数": t.get("leg_count"),
+                "总段数": t.get("total_leg_count"),
+                "沿途充电次数": t.get("stop_count"),
+                "最近一次": t.get("last_driven_at"),
+                "出发%": t.get("start_soc"),
+                "到达%": t.get("end_soc"),
+                "均速(km/h)": t.get("avg_speed_kph"),
+                "是往返": t.get("is_round_trip"),
+                "沿途站": [
+                    {
+                        # ⚠️ 站名由**服务端**给（ADR #41：文案只有一份）—— 这里不再拼。
+                        "地点": (s.get("charge") or {}).get("name"),
+                        "第几公里": s.get("km_along"),
+                        "到站%": s.get("arrival_soc"),
+                        "插枪%": s.get("soc_before"),
+                        "充完%": s.get("soc_after"),
+                        "是终点站": s.get("is_endpoint"),
+                    }
+                    for s in (t.get("stops") or [])
+                ],
+            }
+            for t in data
+        ],
+    }
+    return out
 @mcp.tool(annotations=RO)
 def teslamate_charge_stats(period: str = "7d") -> dict:
     """查**充电统计**：按区间给出充了多少度、几次、直交流拆分、平均时长、上次充满。

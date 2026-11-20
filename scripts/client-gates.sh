@@ -4704,6 +4704,144 @@ PYEOF
 if [ $? -eq 0 ]; then ok "实测满电续航卡的 ⓘ 文案只在服务端一份"; else fail "实测满电续航卡的 ⓘ 文案又漏到客户端了"; cat "$TMP"; fi
 rm -f "$TMP"
 
+# ── 闸门 47：长途线路的**选线 ＋ 沿途站归属**只以服务端为准 ──────────────────
+#
+# ⚠️ **v0.181.0**：这段判据原来在**客户端**（ui/RouteJourney.kt 的 buildJourneys）
+#   ⇒ ① **飞书里问不出来**（mission §2.1）；
+#   ② **两端各算一套** —— 那套判据有 7 个阈值 ＋ 7 处评审修出来的坑，
+#      只写在客户端 ⇒ 以后任一边改了，用户在 App 与飞书里会看到**不同的线路**。
+#
+# ⇒ 现在判定与阈值都在**服务端**（api/route_plans.go ＋
+#   `GET /api/v1/cars/{id}/route_plans`），App 只透传（ADR #38）。
+#
+# 判据（**形态无关** —— 不认函数名，认**结构与事实**）：
+#   ① 客户端**不许**再有「行程 ＋ 充电 ⇒ 线路/journey」的**聚合函数**
+#      （判的是**类型签名**：入参同时含行程列表与充电列表、返回值是线路模板/journey）
+#      ⇒ 改名 / 改参数名 / 换写法都盖得住；
+#   ② 客户端**必须**读服务端那份结论（`routePlans(` 与 `/route_plans`）；
+#   ③ 服务端**必须**真的有那份判定（api/route_plans.go ＋ 路由 ＋ 单测引用阈值）
+#      —— 护栏不许是空壳；
+#   ④ 客户端**不许**出现选线的**阈值副本**（「一个阈值数字 ＋ 同行的单位词」这个形状）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+KT_API = UI / 'Api.kt'
+KT_STORE = UI / 'ui/RecordsStore.kt'
+GO = pathlib.Path('api/route_plans.go')
+GO_MAIN = pathlib.Path('api/main.go')
+GO_TEST = pathlib.Path('api/route_plans_test.go')
+
+problems = []
+for p in (KT_API, KT_STORE, GO, GO_MAIN, GO_TEST):
+    if not p.exists():
+        problems.append('找不到 %s —— 这道闸门要跟着改' % p)
+
+
+def strip_kt(src):
+    """剥掉块注释与行注释 ⇒ 只看**真正的代码**。"""
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+if not problems:
+    api = strip_kt(KT_API.read_text(encoding='utf-8', errors='replace'))
+    store = strip_kt(KT_STORE.read_text(encoding='utf-8', errors='replace'))
+    go = GO.read_text(encoding='utf-8', errors='replace')
+    go_main = GO_MAIN.read_text(encoding='utf-8', errors='replace')
+    go_test = GO_TEST.read_text(encoding='utf-8', errors='replace')
+
+    # ① 客户端不许再有「行程 ＋ 充电 ⇒ 线路」的聚合函数（**类型签名**判据）。
+    #
+    #    ⚠️ **为什么不能只认函数名**（v0.174.0 在闸门 45 上踩过）：
+    #    第一版判据只查 `buildJourneys` 这个名字 ⇒ 探针用**内联实现**加回本地切线
+    #    ⇒ 静默放行 ⇒ 闸门成了空壳。
+    #    ⇒ 现在判的是**签名**：入参同时含行程列表与充电列表、
+    #      返回值是线路模板/journey ⇒ 改名、改参数名、改写法都盖得住。
+    sig_pat = re.compile(r'fun\s+\w+\s*\(([^)]*)\)\s*:\s*([^\n{=]+)')
+    for kt in sorted(UI.rglob('*.kt')):
+        src = strip_kt(kt.read_text(encoding='utf-8', errors='replace'))
+        for m in sig_pat.finditer(src):
+            params, ret = m.group(1), m.group(2)
+            if not re.search(r'List\s*<\s*(com\.teslamate\.app\.)?Drive\s*>', params):
+                continue
+            if not re.search(r'List\s*<\s*(com\.teslamate\.app\.)?Charge\s*>', params):
+                continue
+            if not re.search(r'(RouteTemplate|Journey)', ret):
+                continue
+            problems.append(
+                '%s 里还有「行程 ＋ 充电 ⇒ 线路」的聚合函数（返回 %s）'
+                % (kt.name, ret.strip()[:40])
+                + ' ⇒ 客户端又在自己切线路（与服务端成了两套算法）')
+
+    # ② 客户端必须读服务端那份结论。
+    if 'routePlans(' not in api:
+        problems.append('Api.kt 里没有 routePlans( ⇒ 客户端没有读服务端那份线路结论')
+    if '/route_plans' not in api:
+        problems.append('Api.kt 里没有 /route_plans 端点 ⇒ 客户端拿不到服务端那份线路结论')
+    if 'routePlans' not in store:
+        problems.append('RecordsStore.kt 里没有 routePlans ⇒ 记录页不会用服务端那份结论')
+
+    # ③ 服务端必须真的有那份判定（护栏不许是空壳）。
+    if '/route_plans' not in go_main:
+        problems.append('api/main.go 里没有 /route_plans 路由 ⇒ 服务端那个端点没挂上')
+    for const in ('routeMaxGapKm', 'routeMaxGapHours', 'routeHomeReturnKm',
+                  'routeHomeReturnMinHours', 'routeBoundaryTolKm',
+                  'routeSameStopMergeKm', 'routeNearbyStopMergeKm',
+                  'routeMinDistanceKm'):
+        if const not in go:
+            problems.append('api/route_plans.go 里没有阈值 %s ⇒ 判据被删了' % const)
+        if const not in go_test:
+            problems.append(
+                'api/route_plans_test.go 里没有引用 %s ⇒ 这道判据没被钉住（空壳护栏）' % const)
+
+    # ④ 客户端不许出现选线的阈值副本。
+    #
+    #    判据是**形状**：「一个阈值数字 ＋ 同一行的单位词」
+    #    ⇒ 不认常量名、不认文件名（改名/搬文件都盖得住）。
+    #    判据是**两个形状**（都不认常量名、不认文件名 ⇒ 改名/搬文件都盖得住）：
+    #      A「数字紧跟单位」：60.0 km / 36.0 hour
+    #      B「标识符以单位结尾 ＋ 后面就是这个数」：MAX_GAP_KM = 60.0
+    #
+    #    ⚠️ **必须带小数**（60.0 而不是 60）—— v0.181.0 实测踩到：
+    #    第一版写成「同行的数字 ＋ 单位词」，结果把 `night_end_hour: Int = 6`
+    #    （夜里的结束小时，**不是**选线阈值）、`120 km/h`（限速）、
+    #    `distanceKm`（变量名里含 Km）全判成了「客户端又写了一份阈值」
+    #    ⇒ 闸门自己会假红 ⇒ 没人敢看它 ⇒ 判据必须**精确**。
+    thresholds = [
+        ('60', 'km|kilometers', '公里缺口 60'),
+        ('36', 'hour|hours|hrs', '小时缺口 36'),
+        ('120', 'km|kilometers', '回到常驻点 120 公里'),
+        ('6', 'hour|hours|hrs', '回到常驻点 6 小时'),
+        ('3', 'km|kilometers', '边界容差 3 公里'),
+        ('200', 'km|kilometers', '长途门槛 200 公里'),
+    ]
+    for kt in sorted(UI.rglob('*.kt')):
+        src = strip_kt(kt.read_text(encoding='utf-8', errors='replace'))
+        for i, line in enumerate(src.split('\n'), 1):
+            for num, unit, desc in thresholds:
+                pat_a = r'(?<![\w.])' + num + r'\.0\s*(?:' + unit + r')\b(?!/h)'
+                pat_b = (r'[A-Za-z_][A-Za-z0-9_]*(?:' + unit + r')\b\s*[:=]{1,2}\s*'
+                         + r'(?<![\w.])' + num + r'\.0(?![\w.])')
+                if re.search(pat_a, line, re.I) or re.search(pat_b, line, re.I):
+                    problems.append(
+                        '%s:%d 客户端自己写了选线阈值（%s）：%s'
+                        % (kt.name, i, desc, line.strip()[:70])
+                        + ' ⇒ 阈值只许在服务端（两端各写一份必然漂）')
+                    break
+
+if problems:
+    print('长途线路的选线 ＋ 沿途站归属不在服务端一份 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 判定与阈值只许在 api/route_plans.go；客户端只透传（ADR #38）')
+    sys.exit(1)
+
+print('长途线路的选线 ＋ 沿途站归属在服务端一份（客户端只透传 ＋ 阈值无副本 ＋ 服务端单测钉住）')
+PYEOF
+if [ $? -eq 0 ]; then ok "长途线路的选线 ＋ 沿途站归属只在服务端一份"; else fail "长途线路的选线又在客户端算了一份"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

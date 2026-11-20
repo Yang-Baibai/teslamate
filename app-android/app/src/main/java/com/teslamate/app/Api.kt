@@ -848,6 +848,75 @@ data class Charge(
 )
 
 @Serializable
+data class RoutePlanLegDto(
+    val drive_id: Int,
+    val start_km: Double,
+    val end_km: Double,
+    val distance_km: Double,
+    val start_soc: Int? = null,
+    val end_soc: Int? = null,
+    val start_place: String? = null,
+    val end_place: String? = null,
+    @Serializable(with = InstantSer::class) val start_date: Instant,
+    @Serializable(with = InstantSer::class) val end_date: Instant,
+    val duration_min: Int? = null,
+    val start_place_key: String? = null,
+    val end_place_key: String? = null,
+    val ascent_m: Int? = null,
+    val descent_m: Int? = null,
+)
+
+@Serializable
+data class RoutePlanChargeMetaDto(
+    val place_label: String? = null,
+    val poi_name: String? = null,
+    val geofence_name: String? = null,
+    val place: String? = null,
+    val place_key: String? = null,
+    val map_lat: Double? = null,
+    val map_lng: Double? = null,
+    val start_soc: Int? = null,
+    val end_soc: Int? = null,
+    val start_odometer_km: Double? = null,
+    @Serializable(with = InstantSer::class) val start_date: Instant,
+)
+
+@Serializable
+data class RoutePlanStopDto(
+    val charge_id: Int,
+    val km_along: Double,
+    val is_endpoint: Boolean = false,
+    val soc_before: Int? = null,
+    val soc_after: Int? = null,
+    val arrival_soc: Int? = null,
+    /** 这场充电的显示字段（本地没有这条记录时的兜底）。 */
+    @SerialName("charge") val charge_meta: RoutePlanChargeMetaDto,
+)
+
+@Serializable
+data class RoutePlanTemplateDto(
+    val key: String,
+    val from_label: String,
+    val to_label: String,
+    val distance_km: Double,
+    val start_soc: Int? = null,
+    val end_soc: Int? = null,
+    val leg_count: Int,
+    val total_leg_count: Int = 0,
+    val stop_count: Int,
+    @Serializable(with = InstantSer::class) val last_driven_at: Instant? = null,
+    val start_odo_km: Double,
+    val last_distance_km: Double,
+    val avg_speed_kph: Double? = null,
+    val is_round_trip: Boolean = false,
+    val last_start_soc: Int? = null,
+    val last_end_soc: Int? = null,
+    val last_drive_id: Int,
+    val leg_ids: List<Int> = emptyList(),
+    val legs: List<RoutePlanLegDto> = emptyList(),
+    val stops: List<RoutePlanStopDto> = emptyList(),
+)
+@Serializable
 data class CurvePoint(
     @Serializable(with = InstantSer::class) val date: Instant,
     val battery_level: Int? = null,
@@ -1985,6 +2054,15 @@ class Api private constructor(private val base: String, private val token: Strin
      */
     fun fullChargeRange(carId: Int): FullChargeRange =
         get("/api/v1/cars/$carId/full_charge_range")
+    /**
+     * ⚠️ **v0.181.0：长途线路清单 + 沿途站（服务端算的结论）。**
+     *
+     * ⚠️ App **不再自己算**「哪些算一次长途出门」「沿途有哪些充电站」
+     * （原来在 ui/RouteJourney.kt 的 buildJourneys）
+     * ⇒ ① 飞书里也问得到（mission §2.1）；② 两端不会各算一套阈值而漂（ADR #38）。
+     */
+    fun routePlans(carId: Int): List<RoutePlanTemplateDto> =
+        get("/api/v1/cars/$carId/route_plans")
     
 
     fun curve(chargeId: Int): List<CurvePoint> = get("/api/v1/charges/$chargeId/curve")

@@ -62,6 +62,10 @@ SPEC = [
     #    （那是「不知道」，不是「0 公里」）。
     ("teslamate_full_charge_range", {}, "实测段数", "实测满电续航的样本段数"),
     ("teslamate_full_charge_range", {}, "依据", "实测满电续航的样本说明"),
+    # ⚠️ **v0.181.0**：长途线路（服务端切线 ⇒ App 与飞书同一份）。
+    #    ⚠️ 「线路[0].key」这种**列表元素**不进 SPEC（没线路时数组长度为 0 ⇒ 越界 ⇒ 假红）。
+    #    那部分交给 check_route_plans_contract()（有数据才查）。
+    ("teslamate_route_plans", {}, "线路数", "长途线路条数"),
     # ⚠️ **v0.123.0**：保养 / 轮胎工具。
     #    这两个**恒在**（哪怕车主还没填过基准）⇒ 可以断言。
     #    ⚠️ 「保养.还剩(km)」**不能**进 SPEC —— 车主没填基准 / 里程表读不到时
@@ -1195,6 +1199,54 @@ def check_full_charge_range_contract():
         bad.append("段数两端不一致（服务端 %r / MCP %r）" % (rep.get("segment_count"), m.get("实测段数")))
     return bad
 
+def check_route_plans_contract() -> list:
+    """长途线路：MCP 的线路必须与**服务端端点逐条相等**（同一份，不是两套算法）。
+
+    ⚠️ 为什么查：v0.181.0 把「切线路 + 沿途站归属」从客户端搬到服务端
+    ⇒ 若 MCP 又自己算一遍，就会出现**第二个口径**（App 与飞书看到不同的线路）。
+    ⇒ 这里把两边的线路条数、key、里程、段数、沿途站数**逐条**比对。
+    """
+    bad = []
+    try:
+        rep = T._get("/api/v1/cars/%s/route_plans" % T.CAR_ID)
+        m = T.teslamate_route_plans()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(rep, list):
+        return ["长途线路端点取不到：%r" % (rep,)]
+    if not isinstance(m, dict) or "错误" in m:
+        return ["MCP 的长途线路工具取不到：%r" % (m,)]
+    if m.get("线路数") != len(rep):
+        bad.append("线路条数两端不一致（服务端 %d / MCP %r）" % (len(rep), m.get("线路数")))
+    lines = m.get("线路") or []
+    pairs = (
+        ("key", "key"),
+        ("distance_km", "里程(km)"),
+        ("leg_count", "段数"),
+        ("total_leg_count", "总段数"),
+        ("stop_count", "沿途充电次数"),
+    )
+    for i, t in enumerate(rep):
+        if i >= len(lines):
+            bad.append("MCP 少了第 %d 条线路" % i)
+            break
+        ml = lines[i]
+        for srv_key, mcp_key in pairs:
+            sv = t.get(srv_key)
+            mv = ml.get(mcp_key)
+            if sv is None and mv is None:
+                continue
+            if sv is None or mv is None:
+                bad.append("线路[%d] %s 两端不一致（服务端 %r / MCP %r）" % (i, srv_key, sv, mv))
+                continue
+            if isinstance(sv, (int, float)) and isinstance(mv, (int, float)):
+                if abs(float(sv) - float(mv)) > 1e-9:
+                    bad.append("线路[%d] %s 两端不一致（服务端 %r / MCP %r）⇒ 有两套算法"
+                              % (i, srv_key, sv, mv))
+            elif sv != mv:
+                bad.append("线路[%d] %s 两端不一致（服务端 %r / MCP %r）" % (i, srv_key, sv, mv))
+    return bad
+
 def check_maintenance_contract() -> list:
     """保养 / 轮胎提醒必须**与服务端同源**（不许模型自己减）。
 
@@ -1616,6 +1668,15 @@ def main() -> int:
         print("  ✓ %-26s %-24s 实测满电续航与服务端同一个判定、同一份数"
               % ("teslamate_full_charge_range", "满电续航契约"))
     bad.extend(fcr_bad)
+
+    rp_bad = check_route_plans_contract()
+    for b in rp_bad:
+        print("  ✗ %s" % b)
+    if not rp_bad:
+        print("  ✓ %-26s %-24s 长途线路与服务端同一份判定、逐条一致"
+              % ("teslamate_route_plans", "线路契约"))
+    bad.extend(rp_bad)
+
     maint_bad = check_maintenance_contract()
     for b in maint_bad:
         print("  ✗ %s" % b)

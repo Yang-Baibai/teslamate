@@ -237,8 +237,9 @@ fun RecordsScreen(
     //
     // 原来按「起止地名」分组、取最近那一趟 —— 但**充电必然打断行程**，
     // 一趟 drive 内部永远不会充电，于是「沿途充电站」列的其实是**上一趟的起点站**。
-    // 现在按 [buildJourneys] 的连续性 + 「回家了」切出完整的一次出门。
-    val routeTemplates = remember(drives, charges) { buildRouteTemplates(drives, charges) }
+    // 现在由**服务端**按连续性 + 「回家了」切出完整的一次出门（api/route_plans.go）。
+    // ⚠️ **v0.181.0**：App **不再自己算**这段判定（原来在 ui/RouteJourney.kt）。
+    val routeTemplates = store.routeTemplates
     var selectedRouteKey by rememberSaveable { mutableStateOf<String?>(null) }
     val pickedTemplate = remember(routeTemplates, selectedRouteKey) {
         pickRouteTemplate(routeTemplates, selectedRouteKey)

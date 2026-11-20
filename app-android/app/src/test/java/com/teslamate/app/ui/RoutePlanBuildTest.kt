@@ -13,19 +13,20 @@ import org.junit.Test
 import java.time.Instant
 
 /**
- * ⚠️ **v0.37.0：端到端测 [buildJourneys] + [buildRoutePlan]。**
+ * ⚠️ **v0.181.0：余量表的输入改成**显式夹具**。**
  *
- * ## 为什么盯这条链
+ * ## 为什么改了夹具
  *
- * 这条链上出过**两个 P0**：
+ * 「哪些算一次长途出门」「沿途有哪些充电站」搬到服务端了（api/route_plans.go）
+ * ⇒ 客户端不再有 `buildJourneys` / `buildRouteTemplates`。
+ * ⇒ 这里原来靠 `buildRouteTemplates(drives, charges)` 造出来的模板，
+ *   改成**显式给出段与站** —— 归属判据的测试**已经移到服务端 Go 单测**
+ * （api/route_plans_test.go：长途门槛 / 断链 / 沿途站归属 / 合并 / 到站电量）。
  *
- * ① v0.36.0：「上次实测到站剩 Y%」在 6/35 个站取错场次
- *    （用插枪电量而不是到站电量；合并时取的是**后**一场）。
- * ② v0.37.0：折叠态的 `longestHop` 仍在用 `nxt.socBefore` ——
- *    v0.36.0 修了逐站行却漏了折叠态。
+ * ## 什么还在这里测
  *
- * 两处都是**「口径对了、但取数那一层还错」**，
- * 只测最终文案抓不到 —— 必须测**整条链的输入输出**。
+ * **余量表本身**（`buildRoutePlan`）：站间距离、到站电量口径、处方数字、
+ * 终点前那一段、剖面插值标记 —— 这些**仍在客户端**（下一轮才搬）。
  */
 class RoutePlanBuildTest {
 
@@ -90,77 +91,96 @@ class RoutePlanBuildTest {
         return drives to charges
     }
 
-    @Test
-    fun `journey 把两站都归到同一次出门`() {
-        val (drives, charges) = scenario()
-        val journeys = buildJourneys(drives, charges, 200.0)
-        assertEquals(1, journeys.size)
-        val j = journeys[0]
-        assertEquals(3, j.legs.size)
-        assertEquals(2, j.stops.size)
-        assertEquals(100.0, j.stops[0].kmAlong, 0.001)
-        assertEquals(300.0, j.stops[1].kmAlong, 0.001)
+    /**
+     * ⚠️ **显式**造出这条线路的模板。
+     *
+     * 段来自行程；站**显式**给出（里程、插枪电量、到站电量）——
+     * 「这一场充电算不算这条线的沿途站」是**服务端**的判定（api/route_plans.go）。
+     */
+    private fun templateOf(drives: List<Drive>, stops: List<JourneyStop>): RouteTemplate {
+        val legs = drives.map { d ->
+            JourneyLeg(
+                driveId = d.id,
+                startKm = d.odometer_start!!,
+                endKm = d.odometer_end!!,
+                distanceKm = d.distance_km ?: (d.odometer_end!! - d.odometer_start!!),
+                startSoc = d.start_soc,
+                endSoc = d.end_soc,
+                startPlace = d.start_place,
+                endPlace = d.end_place,
+                startDate = d.start_date,
+                endDate = d.end_date ?: d.start_date,
+                durationMin = d.duration_min,
+                startPlaceKey = d.start_place_key,
+                endPlaceKey = d.end_place_key,
+                ascentM = d.ascent_m,
+                descentM = d.descent_m,
+            )
+        }
+        val startKm = legs.first().startKm
+        val endKm = legs.last().endKm
+        // ⚠️ v0.30.0：真实均速 = 只统计有里程且有时间的段。
+        val withTime = legs.filter { (it.durationMin ?: 0) > 0 && it.distanceKm >= 2.0 }
+        val avg = if (withTime.isEmpty()) {
+            null
+        } else {
+            val km = withTime.sumOf { it.distanceKm }
+            val min = withTime.sumOf { it.durationMin!! }
+            if (km <= 0.1 || min <= 0) null else km / (min / 60.0)
+        }
+        return RouteTemplate(
+            key = "journey-${legs.first().driveId}-${legs.last().driveId}",
+            fromLabel = "起点",
+            toLabel = "终点",
+            distanceKm = endKm - startKm,
+            startSoc = legs.first().startSoc,
+            endSoc = legs.last().endSoc,
+            legCount = legs.count { it.distanceKm >= 2.0 },
+            totalLegCount = legs.size,
+            stopCount = stops.count { !it.isEndpoint },
+            lastDrivenAt = legs.last().startDate,
+            startOdoKm = startKm,
+            lastDistanceKm = endKm - startKm,
+            avgSpeedKph = avg,
+            isRoundTrip = false,
+            lastStartSoc = legs.first().startSoc,
+            lastEndSoc = legs.last().endSoc,
+            lastDriveId = legs.last().driveId,
+            legIds = legs.map { it.driveId },
+            legs = legs,
+            stops = stops,
+        )
     }
 
-    @Test
-    fun `到站真值取那一趟行程的结束电量`() {
+    /** 场景的两站：**显式**给出里程与到站电量（那一趟行程的 end_soc）。 */
+    private fun scenarioTemplate(): Pair<RouteTemplate, List<Charge>> {
         val (drives, charges) = scenario()
-        val journeys = buildJourneys(drives, charges, 200.0)
-        // 第 2 趟行程结束时的电量是 40 —— 那才是「开到充电点时」的电量
-        assertEquals(40, journeys[0].stops[1].arrivalSoc)
+        val stops = listOf(
+            JourneyStop(charges[0], 100.0, false, 70, 95, 70),
+            JourneyStop(charges[1], 300.0, false, 40, 90, 40),
+        )
+        return templateOf(drives, stops) to charges
     }
 
-    @Test
-    fun `同一处被拆成两场充电时合并并取最早那一场的插枪电量`() {
-        // 模拟「一次插枪被 TeslaMate 切成两个 process」：
-        // 同一里程、同一地点，cp#16(8→27) 与 cp#17(27→86)。
-        // ⚠️ `sqlCharges` 按 start_date DESC 返回（新的在前），
-        //    客户端按里程**稳定排序** ⇒ 后一场排在前。
-        val drives = listOf(
-            drive(1, 100000.0, 100100.0, 100, 8, 0, 60),
-            drive(2, 100100.0, 100300.0, 8, 30, 70, 120),
-        )
-        val charges = listOf(
-            // ⚠️ 顺序按 API 的返回顺序（新的在前）
-            charge(17, 100100.0, 27, 86, 65, "a11"),
-            charge(16, 100100.0, 8, 27, 64, "a11"),
-        )
-        val journeys = buildJourneys(drives, charges, 200.0)
-        assertEquals(1, journeys.size)
-        val stops = journeys[0].stops
-        // 同一处只应有**一个**站
-        assertEquals(1, stops.size)
-        // 到站电量 = **最早**那一场的插枪电量 = 8（不是 27）
-        assertEquals(8, stops[0].socBefore)
-        // 充完 = 充得最多的那一场的 end_soc = 86
-        assertEquals(86, stops[0].socAfter)
-    }
+    private fun model() = ConsumptionModel(
+        buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
+        cruiseKph = 50.0,
+    )
 
     @Test
     fun `处方数字自洽`() {
-        val (drives, charges) = scenario()
-        val templates = buildRouteTemplates(drives, charges, 200.0)
-        assertEquals(1, templates.size)
-        val tpl = templates[0]
-        val model = ConsumptionModel(
-            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
-            cruiseKph = 50.0,
-        )
+        val (tpl, charges) = scenarioTemplate()
         val plan = buildRoutePlan(
             template = tpl,
             charges = charges,
             stationStats = emptyMap(),
-            consumption = model,
+            consumption = model(),
             batteryCapacityKwh = 65.0,
             planSpeedKph = 50.0,
         )
         assertNotNull("plan 不应为 null", plan)
         val p = plan!!
         // ⚠️ **v0.43.0（第 25 轮车主复审 P0）：`stops` 的第 0 位是**合成的起点行**。**
-        //
-        // 原来 `stops` 只包含**充电站** ⇒「出发 → 第一个站」这一跳**完全没有模型**
-        // （实测那条线：出发 89%、第 276 公里到站只剩 6%，全线最险的一段零提示）。
-        // 现在起点被建成一行放在最前。
         assertEquals(3, p.stops.size)
         assertTrue("第 0 行必须是起点行", p.stops[0].isStart)
         assertEquals("起点行里程 = 0", 0.0, p.stops[0].kmAlongRoute, 0.001)
@@ -181,7 +201,6 @@ class RoutePlanBuildTest {
         assertEquals(75, s0.requiredSocHere)
         // 充到 95% 出发 → 到站剩 95 − 55 = 40%
         assertEquals(40, s0.socAtNextStop)
-        // 站间距离
         assertEquals(200.0, s0.gapToNextKm!!, 0.001)
         // 真值（下一站的到站电量）= 第 2 趟行程的结束电量 40
         assertEquals(40, s0.nextStopRealSoc)
@@ -189,17 +208,12 @@ class RoutePlanBuildTest {
 
     @Test
     fun `终点前那一段也给出余量`() {
-        val (drives, charges) = scenario()
-        val tpl = buildRouteTemplates(drives, charges, 200.0)[0]
-        val model = ConsumptionModel(
-            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
-            cruiseKph = 50.0,
-        )
+        val (tpl, charges) = scenarioTemplate()
         val plan = buildRoutePlan(
             template = tpl,
             charges = charges,
             stationStats = emptyMap(),
-            consumption = model,
+            consumption = model(),
             batteryCapacityKwh = 65.0,
             planSpeedKph = 50.0,
         )!!
@@ -214,56 +228,36 @@ class RoutePlanBuildTest {
     @Test
     fun `终点前那一段只给最后一站`() {
         // ⚠️ v0.38.0（第 23 轮车主复审 P0-1）：原来 `distanceToEndKm` 对**每一站**都非空
-        // （它是「每站到终点的距离」），于是 36 个站每个都多渲染一行，
-        // 还渲染出「估到终点剩 -1508%」这种物理上不存在的数。
-        val (drives, charges) = scenario()
-        val tpl = buildRouteTemplates(drives, charges, 200.0)[0]
-        val model = ConsumptionModel(
-            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
-            cruiseKph = 50.0,
-        )
+        val (tpl, charges) = scenarioTemplate()
         val plan = buildRoutePlan(
             template = tpl,
             charges = charges,
             stationStats = emptyMap(),
-            consumption = model,
+            consumption = model(),
             batteryCapacityKwh = 65.0,
             planSpeedKph = 50.0,
         )!!
-        // ⚠️ v0.43.0：`stops` 第 0 位是**合成的起点行**（不是站）⇒ 3 行。
         assertEquals(3, plan.stops.size)
-        // 只有**最后一个**沿途站才有「距终点」
         assertNull("第一站不该有「距终点」", plan.stops[1].distanceToEndKm)
         assertNull("起点行也不该有「距终点」", plan.stops[0].distanceToEndKm)
         val last = plan.stops.last()
         assertEquals(100.0, last.distanceToEndKm!!, 1.0)
-        // 100 公里 × 180 Wh/km ÷ 1000 = 18 kWh；18 ÷ 65 × 100 = 27.7 → 28 个点
-        // 最后一站充到 90% → 到终点剩 90 − 28 = 62%
         assertEquals(62, last.estSocAtEnd)
     }
 
     @Test
     fun `详情行的到站电量用到站口径而不是插枪口径`() {
-        // ⚠️ v0.38.0（P0-2）：合并充电会话时，插枪电量（socBefore）
-        // 与到站电量（arrivalSoc）会差很多 —— 实测 36 站里 12 站差，最多 57 个点。
-        // 决策行与详情行必须**同一个口径**，否则同一个站两行打架。
-        val (drives, charges) = scenario()
-        val tpl = buildRouteTemplates(drives, charges, 200.0)[0]
-        val model = ConsumptionModel(
-            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
-            cruiseKph = 50.0,
-        )
+        // ⚠️ v0.38.0（P0-2）：插枪电量（socBefore）与到站电量（arrivalSoc）会差很多。
+        val (tpl, charges) = scenarioTemplate()
         val plan = buildRoutePlan(
             template = tpl,
             charges = charges,
             stationStats = emptyMap(),
-            consumption = model,
+            consumption = model(),
             batteryCapacityKwh = 65.0,
             planSpeedKph = 50.0,
         )!!
         // 第 1 站的 arrivalSoc = 第 1 趟行程的 end_soc = 70
-        // ⚠️ v0.43.0：`stops[0]` 是**合成的起点行**（arrivalSoc = 出发电量 100），
-        // 真正的站从 `stops[1]` 开始。
         assertEquals(100, plan.stops[0].arrivalSoc)
         assertEquals(70, plan.stops[1].arrivalSoc)
         // 第 2 站 = 第 2 趟的 end_soc = 40
@@ -279,10 +273,7 @@ class RoutePlanBuildTest {
             drive(1, 100000.0, 100150.0, 100, 70, 0, 90),
             drive(2, 100150.0, 100300.0, 70, 40, 100, 90),
         )
-        val journeys = buildJourneys(drives, emptyList(), 200.0)
-        assertEquals(1, journeys.size)
-        assertTrue(journeys[0].stops.isEmpty())
-        val tpl = buildRouteTemplates(drives, emptyList(), 200.0)[0]
+        val tpl = templateOf(drives, emptyList())
         val plan = buildRoutePlan(
             template = tpl,
             charges = emptyList(),
@@ -292,11 +283,9 @@ class RoutePlanBuildTest {
             planSpeedKph = 50.0,
         )
         // ⚠️ 没有能耗模型**只影响每站的到站估算**，余量剖面仍然建得出来
-        // （起点/终点的真实电量是有的）—— 所以 plan 不是 null。
         assertNotNull("plan 仍应建得出来（剖面用真实起止电量）", plan)
         val p = plan!!
         assertTrue("不应有任何站", p.stops.isEmpty())
-        // 没有站 → 没有「最长的一跳」，决策句不能编站间数据
         assertNull(p.longestHop)
         assertTrue(
             "没有站时决策句应说「能一次开到」: ${p.verdict()}",
@@ -312,22 +301,12 @@ class RoutePlanBuildTest {
 
     @Test
     fun `拿不到真实剖面时标记为插值`() {
-        // 服务端 `route_profile` 有 **400 段上限**（实测那条 6227 公里线现在就有 191 段），
-        // 超限会 400；客户端**静默**退回「端点 + 充电跳升」的插值，
-        // 而插值在山区的误差实测达 **13 公里**（自述「会导致危险决策」）。
-        //
-        // ⇒ 这个降级必须**在界面上说出来**，不能静默。
-        val (drives, charges) = scenario()
-        val tpl = buildRouteTemplates(drives, charges, 200.0)[0]
-        val model = ConsumptionModel(
-            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
-            cruiseKph = 50.0,
-        )
+        val (tpl, charges) = scenarioTemplate()
         val plan = buildRoutePlan(
             template = tpl,
             charges = charges,
             stationStats = emptyMap(),
-            consumption = model,
+            consumption = model(),
             batteryCapacityKwh = 65.0,
             planSpeedKph = 50.0,
             socProfile = null,
@@ -337,17 +316,12 @@ class RoutePlanBuildTest {
 
     @Test
     fun `有真实剖面时不标记为插值`() {
-        val (drives, charges) = scenario()
-        val tpl = buildRouteTemplates(drives, charges, 200.0)[0]
-        val model = ConsumptionModel(
-            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
-            cruiseKph = 50.0,
-        )
+        val (tpl, charges) = scenarioTemplate()
         val plan = buildRoutePlan(
             template = tpl,
             charges = charges,
             stationStats = emptyMap(),
-            consumption = model,
+            consumption = model(),
             batteryCapacityKwh = 65.0,
             planSpeedKph = 50.0,
             // 真实剖面至少要 3 个点（`socProfile?.takeIf { it.size >= 3 }`）
@@ -364,17 +338,12 @@ class RoutePlanBuildTest {
     fun `真实剖面少于三个点时仍按插值处理`() {
         // ⚠️ `real = socProfile?.takeIf { it.size >= 3 }` ——
         // 少于 3 个点时**照样走插值**，所以标志也必须是 true。
-        val (drives, charges) = scenario()
-        val tpl = buildRouteTemplates(drives, charges, 200.0)[0]
-        val model = ConsumptionModel(
-            buckets = listOf(SpeedBucket(0, 60, 180.0, 5)),
-            cruiseKph = 50.0,
-        )
+        val (tpl, charges) = scenarioTemplate()
         val plan = buildRoutePlan(
             template = tpl,
             charges = charges,
             stationStats = emptyMap(),
-            consumption = model,
+            consumption = model(),
             batteryCapacityKwh = 65.0,
             planSpeedKph = 50.0,
             socProfile = listOf(SocProfilePoint(0.0, 100.0)),

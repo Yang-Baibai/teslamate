@@ -82,6 +82,19 @@ class RecordsStore {
         private set
 
     /**
+     * ⚠️ **v0.181.0：长途线路清单 + 沿途站（服务端算的结论）**。
+     *
+     * ⚠️ 原来 App 是在**客户端**切线路（ui/RouteJourney.kt 的 buildJourneys）
+     * ⇒ ① 飞书里问不出来；② 两端各算一套阈值，必然漂（ADR #38）。
+     * ⇒ 现在判定与阈值都在服务端，App 只透传（映射见 routeTemplatesFromServer）。
+     *
+     * ⚠️ 为空 = 没拿到（服务端是旧版本，或这次请求失败）
+     * ⇒ 线路卡片**不显示**，**绝不在客户端自己算一套顶替**。
+     */
+    var routeTemplates by mutableStateOf<List<RouteTemplate>>(emptyList())
+        private set
+
+    /**
      * ⚠️ **v0.108.0（用户反馈 #27）**：充电统计的**三个区间**（服务端算）。
      *
      * ⚠️ 为 null = 没拿到（服务端是旧版本，或这次请求失败）
@@ -166,6 +179,16 @@ class RecordsStore {
         }.onFailure {
             fullChargeRange = null
         }
+        // ⑤ 长途线路清单 + 沿途站（v0.181.0，服务端算的结论）
+        //
+        // ⚠️ 映射要用**本地那份充电列表**（按 charge_id 找显示名）⇒ 放在②之后。
+        runCatching {
+            withContext(Dispatchers.IO) { api.routePlans(carId) }
+        }.onSuccess { dtos ->
+            routeTemplates = routeTemplatesFromServer(dtos, charges)
+        }.onFailure {
+            routeTemplates = emptyList()
+        }
         loading = false
         refreshing = false
     }
@@ -178,6 +201,7 @@ class RecordsStore {
         chargeError = null
         chargeStats = null
         fullChargeRange = null
+        routeTemplates = emptyList()
         loading = true
         loadedFor = null
     }

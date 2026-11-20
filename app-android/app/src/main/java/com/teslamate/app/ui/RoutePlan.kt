@@ -1517,68 +1517,6 @@ fun singleHopArrivalText(lowestSoc: Int): String = "能一次开到 · 上次到
 fun startChipAccessibleName(label: String): String = label.replace(" · ", "，")
 
 /**
- * 从历史行程里挑出**历史长途 journey**。
- *
- * ⚠️ **v0.26.0（第 17 轮长途自驾党 P0-1）：单位从「一趟 drive」改成「一段 journey」。**
- *
- * ## 为什么必须改
- *
- * 原来按「起止地名」分组、取**最近那一趟** —— 这在数据上是错的：
- * **充电必然打断行程**（实测 78/78 场充电都落在某趟 drive 的起点或终点附近，
- * 最近距离 ≤ 0.022 km），所以**一趟 drive 内部永远不会发生充电**。
- *
- * 后果（复刻 App 的实际输出）：
- * 1. 「沿途充电站」列出来的其实是**上一趟的收尾充电** ——
- *    它落在本趟的起点里程上，被里程窗口捞进来了。
- * 2. 本趟**真正**的那次充电落在终点里程上，被判成「终点处的充电」而剔除。
- * 3. 「站间距离」「到下一站剩多少电」全建立在**错位的站**上。
- *
- * 「11 条 ≥200 km 的线路」其实是**同一次长途被充电切碎的 11 段**。
- *
- * 现在用 [buildJourneys]：按**里程连续** + **「回家了」**两个判据切出连续出门，
- * 沿途站按**行程边界**归属 —— 详见 [RouteJourney.kt]。
- *
- * @param minDistanceKm 多远算「长途」（默认 **200 km**）
- * @return 按「最近一次走的时刻」倒序排列
- */
-fun buildRouteTemplates(
-    drives: List<Drive>,
-    charges: List<Charge>,
-    minDistanceKm: Double = 200.0,
-): List<RouteTemplate> =
-    buildJourneys(drives, charges, minDistanceKm).map { j ->
-        RouteTemplate(
-            key = j.key,
-            fromLabel = j.fromLabel,
-            toLabel = j.toLabel,
-            distanceKm = j.distanceKm,
-            // ⚠️ 端点取**整段旅程**的两端：
-            // 起点 SOC 来自**首段**（出发状态），终点 SOC 来自**末段**（到达状态）。
-            startSoc = j.legs.first().startSoc,
-            endSoc = j.legs.last().endSoc,
-            // ⚠️ v0.28.0（复审 P1-10）：用「有效段数」（排除充电站内挪车微行程）。
-            legCount = j.meaningfulLegCount,
-            // ⚠️ v0.30.0（P1-2）：**全部**段数也带上（两个数都要能显示）
-            totalLegCount = j.legCount,
-            stopCount = j.midStopCount,
-            lastDrivenAt = j.endDate,
-            startOdoKm = j.startKm,
-            lastDistanceKm = j.distanceKm,
-            // ⚠️ v0.30.0（P0-1）：真实均速（不再硬编码 90 km/h）
-            avgSpeedKph = j.avgSpeedKph,
-            // ⚠️ v0.31.0：是不是往返
-            isRoundTrip = j.isRoundTrip,
-            lastStartSoc = j.legs.first().startSoc,
-            lastEndSoc = j.legs.last().endSoc,
-            lastDriveId = j.legs.last().driveId,
-            legIds = j.legs.map { it.driveId },
-            legs = j.legs,
-            stops = j.stops,
-        )
-    }
-
-
-/**
  * 用模板 + 历史充电 + 站点统计，算出这条线路的余量表。
  *
  * 余量剖面**不是模型算的**，而是把这条线路上**历史上真实发生过的充电**

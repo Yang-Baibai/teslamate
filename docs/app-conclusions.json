@@ -204,13 +204,22 @@
       "mcp": [],
       "状态": "gap",
       "理由": [
-        "客户端 ui/RouteJourney.kt 的 buildJourneys（选线 ＋ 沿途站归属）＋ ui/RoutePlan.kt 的 buildRoutePlan（到站余量 ＋ 保底判定）本地算。",
-        "⚠️ **v0.180.0 实测**：buildJourneys 那套判据有 7 个阈值 ＋ 6 处评审修出来的坑，完整搬迁约 2000 行 ⇒ **一轮搬不完**。",
-        "⇒ **必须连续两轮**才能闭环（第一轮：服务端出「线路清单 ＋ 沿途站」；第二轮：服务端出「到站余量 ＋ 保底判定」），",
-        "**且客户端要在第一轮就换源**（否则两份聚合并存 ⇒ 违反 ADR #38）。",
-        "⇒ 已写进 CHANGELOG 的下一轮建议，不再推迟。"
+        "⚠️ **v0.181.0 第一轮已完成**：「选线 ＋ 沿途站归属」搬到服务端（/route_plans ＋ teslamate_route_plans），App **同轮换源**（客户端那份 buildJourneys 已删）。",
+        "⇒ **还欠**：「到下一站还剩多少电 / 够不够到 20% 保底」那个判定仍在客户端（ui/RoutePlan.kt 的 buildRoutePlan）⇒ **第二轮**才闭环。",
+        "⇒ 第二轮的规矩不变：服务端出结论、客户端同轮换源（否则两份聚合并存 ⇒ 违反 ADR #38）。"
       ],
-      "client_source": "客户端本地（ui/RouteJourney.kt 的 buildJourneys ＋ ui/RoutePlan.kt 的 buildRoutePlan）"
+      "client_source": "客户端本地（ui/RoutePlan.kt 的 buildRoutePlan）"
+    },
+    {
+      "id": "route_lines",
+      "结论": "历史上跑过哪些长途线路（≥200 公里的一次出门），以及沿途在哪儿充的电",
+      "界面": "记录页",
+      "服务端": "/route_plans",
+      "mcp": [
+        "teslamate_route_plans"
+      ],
+      "状态": "covered",
+      "client_source": "服务端 /route_plans"
     },
     {
       "id": "charge_outcome",

@@ -1063,31 +1063,46 @@ func handleCharges(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	list := []*Charge{}
 	for rows.Next() {
-		var c Charge
-		if err := rows.Scan(
-			&c.ID, &c.StartDate, &c.EndDate, &c.DurationMin,
-			&c.EnergyAdded, &c.EnergyUsed, &c.Cost, &c.StartSoc, &c.EndSoc,
-			&c.Place, &c.PlaceKey, &c.PoiName, &c.PlaceLabel, &c.PoiType, &c.MapLat, &c.MapLng, &c.IsDC,
-			&c.GeofenceName,
-			&c.StartRangeKm, &c.EndRangeKm,
-			&c.StartOdoKm, &c.EndOdoKm,
-			&c.PeakPowerKw, &c.AvgPowerKw, &c.AvgPowerKwTrue,
-			&c.PeakVoltage, &c.AvgVoltage,
-			&c.PeakCurrent, &c.AvgCurrent,
-			&c.StartOutsideT, &c.EndOutsideT,
-			&c.StartIndoorT, &c.EndIndoorT,
-			&c.OutsideTempAvg,
-			&c.ChargerPhases, &c.ChargerVolts, &c.ChargerAmps,
-			&c.CableType, &c.ChargerBrand, &c.IsTeslaSC,
-			// ⚠️ v0.31.0：实测口径（见 sqlCharges 的 ch_measured 注释）
-			&c.MeasuredMinutesTo80, &c.MeasuredFromSoc, &c.MeasuredUnavailableReason,
-		); err != nil {
+		c, err := scanCharge(rows)
+		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		list = append(list, sanitizeCharge(&c))
+		list = append(list, sanitizeCharge(c))
 	}
 	writeJSON(w, list)
+}
+
+// scanCharge 扫一行充电（列顺序与 sqlCharges 的 SELECT 一一对应）。
+//
+// ⚠️ 抽出来的原因与 [scanDrive] 一样：「长途线路」那条链路（api/route_plans.go）
+// 必须读**同一批**充电 ⇒ 同一条 SQL + 同一个 limit + **同一个顺序**
+// （sqlCharges 是 ORDER BY start_date DESC）
+// ⇒ 服务端算出来的沿途站与客户端那份**必然一致**。
+func scanCharge(rows rowScanner) (*Charge, error) {
+	var c Charge
+	err := rows.Scan(
+		&c.ID, &c.StartDate, &c.EndDate, &c.DurationMin,
+		&c.EnergyAdded, &c.EnergyUsed, &c.Cost, &c.StartSoc, &c.EndSoc,
+		&c.Place, &c.PlaceKey, &c.PoiName, &c.PlaceLabel, &c.PoiType, &c.MapLat, &c.MapLng, &c.IsDC,
+		&c.GeofenceName,
+		&c.StartRangeKm, &c.EndRangeKm,
+		&c.StartOdoKm, &c.EndOdoKm,
+		&c.PeakPowerKw, &c.AvgPowerKw, &c.AvgPowerKwTrue,
+		&c.PeakVoltage, &c.AvgVoltage,
+		&c.PeakCurrent, &c.AvgCurrent,
+		&c.StartOutsideT, &c.EndOutsideT,
+		&c.StartIndoorT, &c.EndIndoorT,
+		&c.OutsideTempAvg,
+		&c.ChargerPhases, &c.ChargerVolts, &c.ChargerAmps,
+		&c.CableType, &c.ChargerBrand, &c.IsTeslaSC,
+		// ⚠️ v0.31.0：实测口径（见 sqlCharges 的 ch_measured 注释）
+		&c.MeasuredMinutesTo80, &c.MeasuredFromSoc, &c.MeasuredUnavailableReason,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 // sanitizeCharge 把不真实的占位值归零：
