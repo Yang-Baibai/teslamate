@@ -281,7 +281,11 @@ class StatusStore(private val cache: StatusCache? = null) {
         drives = list
         // ⚠️ v0.9.0：模型在这里存（而不是页面里 `remember`），
         // 这样才能一起落盘 —— 服务器挂掉时续航口径不变。
-        consumption = model
+        // ⚠️ **v0.183.0**：模型为 null 时**保留**原来那份 ——
+        // 别用 null 把一个好模型覆盖掉（那会让续航突然退化成「官方标称」，乐观 50%）。
+        if (model != null) {
+            consumption = model
+        }
         recentAscentM = list.firstOrNull()?.ascent_m
         model?.let {
             cache?.saveRangeContext(carId, CachedRangeContext(it, recentAscentM))

@@ -338,20 +338,22 @@
       "id": "consumption_model",
       "结论": "实测能耗模型（车速 → Wh/km 桶）",
       "界面": "车况页 / 记录页",
-      "服务端": "/energy_profile",
+      "服务端": "/consumption_model（标定法净值）",
       "mcp": [
-        "teslamate_energy_profile"
+        "teslamate_consumption_model"
       ],
-      "状态": "gap",
-      "client_source": "客户端本地（ConsumptionModel.from(drives)）＋ 服务端 /energy_profile（两份口径）",
+      "状态": "covered",
+      "client_source": "服务端 /consumption_model",
       "理由": [
         "⚠️ **v0.180.0 订正**：原来标 covered 并注明「客户端那份是同规则的本地兜底」——",
         "但**两份口径同时存在**（App 用本地 ConsumptionModel.from(drives) 拟合 500 趟行程，",
         "Hermes 读服务端 /energy_profile）⇒ 用户在 App 与飞书里可能看到**两个数**。",
         "⇒ 状态改 gap（不是 covered）：要么服务端那份为准、客户端只透传，",
         "要么明确记为 local-only（只该在本地）。**下一轮定夺**。",
-        "⚠️ **v0.182.0 查证**：服务端 /energy_profile 的样本过滤与客户端 ConsumptionModel.from() **逐条一致**（km ≥ 20、均速 > 0、wh ∈ [50,400]、最近 500 趟），",
-        "分桶边界也同（0/60/90/110/130）⇒ **改到服务端不会让数字变** ⇒ 下一轮可放心同轮换源。"
+        "⚠️ **v0.183.0 已搬**：标定法实测能耗模型（分桶 / 残差 P90 / 参考车速 / 样本筛选）收归服务端（api/consumption_model.go ＋ GET /consumption_model），",
+        "客户端的 `ConsumptionModel.from(drives)` **已删**（不再有第二份）⇒ App 与飞书同一份（ADR #38）。",
+        "⚠️ **口径说明**：服务端的 **/energy_profile 是另一个口径**（车轮功率梯形积分的能耗曲线）—— 曲线展示用它，**规划与续航用标定法那份**；两者不合并。",
+        "⚠️ 数值不变：样本筛选与分桶边界与客户端**逐条一致**（km ≥ 20、均速 > 0、wh ∈ [50,400]、最近 500 趟、边界 0/60/90/110/130）⇒ 换源后界面上的 Wh/km 与误差带不变。"
       ]
     }
   ]

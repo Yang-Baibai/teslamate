@@ -82,6 +82,7 @@ import com.teslamate.app.ActiveCharge
 import com.teslamate.app.AppSettings
 import com.teslamate.app.CarStatus
 import com.teslamate.app.ConsumptionModel
+import com.teslamate.app.toConsumptionModel
 import com.teslamate.app.Haptics
 import com.teslamate.app.TelemetryAlert
 import com.teslamate.app.TelemetryStatus
@@ -151,12 +152,18 @@ fun StatusScreen(
             // 原来它在主线程（`onSuccess` 已切回 Main），
             // 而这正好落在「数据落地那一帧」（实测已是全 App 最卡的一帧）。
             runCatching {
-                withContext(Dispatchers.IO) {
-                    val list = api.drives(settings.carId, 500)
-                    list to ConsumptionModel.from(list)
+                withContext(Dispatchers.IO) { api.drives(settings.carId, 500) }
+            }.onSuccess { list ->
+                // ⚠️ **v0.183.0**：能耗模型改读**服务端**（客户端不再自己拟合）。
+                // ⚠️ 两个请求**分开**：模型取不到时**不许**把行程也一起丢掉。
+                runCatching {
+                    withContext(Dispatchers.IO) { api.consumptionModel(settings.carId)?.toConsumptionModel() }
+                }.onSuccess { model ->
+                    store.updateDrives(list, settings.carId, model)
+                }.onFailure {
+                    // 模型取不到 ⇒ 保留原来那份（可能是落盘的）⇒ 续航口径不变。
+                    store.updateDrives(list, settings.carId, null)
                 }
-            }.onSuccess { (list, model) ->
-                store.updateDrives(list, settings.carId, model)
             }
         }
     }

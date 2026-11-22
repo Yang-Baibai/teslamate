@@ -421,175 +421,27 @@ PYEOF
 if [ $? -eq 0 ]; then ok "简报电池段与 /battery 同一份 SOH、趋势借同一窗口"; else fail "简报的电池段契约"; cat "$TMP"; fi
 rm -f "$TMP"
 
-# ── 闸门 6：能耗/续航口径 —— Kotlin 与 Go 两份实现必须逐条一致 ─────────
+# ── 闸门 6（v0.183.0 重写：原 6 + 7 合并）：能耗口径**只在服务端一份** ──
 #
-# ⚠️ **为什么这道闸门存在**（2026-11-03）：
+# ⚠️ **为什么重写**（v0.183.0）：原来这道闸门比的是「客户端的 ConsumptionModel.kt ↔
+#   服务端 climb_calib.go」—— 因为那时候判定在**两个地方各写了一遍**。
+#   ⚠️ **v0.183.0 判定搬到服务端了**（api/consumption_model.go ＋ GET /consumption_model）
+#   ⇒ 客户端那份**已删** ⇒ 「两份逐条一致」这件事本身**不再成立**
+#   ⇒ 旧判据必然报红（「客户端取不到 EDGES」）⇒ **判据要跟着搬家**。
 #
-# 「真实可达续航」这条判定的**分档边界 + 样本过滤**，在**两个地方各写了一遍**：
-#   · 客户端 `ConsumptionModel.kt`（`EDGES` + `usable` 过滤）
-#   · 服务端 `api/climb_calib.go`（`climbSpeedEdges`）+ `api/queries.go`（`sqlClimbCalib` 过滤）
-#
-# 两边**只靠注释**（「必须与客户端逐条一致」）维持一致 ⇒ **没有任何机器校验**
-# ⇒ 谁改了一边，另一边静默跟着漂 ⇒ App 的「真实可达」与服务端 / Hermes 的数各说各话
-# （本项目吃过同款亏：「60 分」那句话抄了第二份，错了 57 个版本）。
-#
-# ⇒ 这道闸门把那句注释变成**机器校验**：逐条比对两份实现的分档边界与样本过滤阈值，
-#   并报出**是哪一行**不一样。
+# ⇒ 现在的判据（三条）：
+#   ① **客户端不许再有算法副本**（EDGES / usable 过滤 / residuals）—— 一份判定只许有一处；
+#   ② **服务端两份拟合的样本筛选必须逐字一致**（模型端点 ↔ 爬升系数拟合）
+#      ⇒ 同一批样本 ⇒ 同一批行程；
+#   ③ **服务端两份拟合的阈值与分桶边界必须一致**（4 / 100 / 10 / 2 ＋ 0/60/90/110/130）。
 TMP=$(mktemp)
 "$PY" - > "$TMP" <<'PYEOF'
 import pathlib, re, sys
 
-KT    = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ConsumptionModel.kt')
-GOED  = pathlib.Path('api/climb_calib.go')
-GOSQL = pathlib.Path('api/queries.go')
-
-
-def load(p):
-    if not p.exists():
-        print('找不到 %s —— 这道闸门要跟着改' % p)
-        sys.exit(1)
-    return p.read_text(encoding='utf-8')
-
-
-def strip_comments(t):
-    # ⚠️ **必须先剥注释再匹配**：改过的旧值都留在注释里（"原来是 20.0" 之类）
-    # ⇒ 不剥就可能在**注释里**找到那个数 ⇒ 假绿。
-    t = re.sub(r'(?s)/\*.*?\*/', '', t)
-    t = re.sub(r'(?m)//.*$', '', t)
-    return t
-
-
-def lineno(t, idx):
-    return t.count('\n', 0, idx) + 1
-
-
-kt    = strip_comments(load(KT))
-goed  = strip_comments(load(GOED))
-gosql = strip_comments(load(GOSQL))
-
-problems = []
-ok_lines = []
-
-# ── 客户端的 `usable` 过滤体 / 服务端的 `sqlClimbCalib` 体 ─────
-m_kf = re.search(r'val\s+usable\s*=\s*drives\.filter\s*\{(.*?)\n\s*\}', kt, re.S)
-m_gs = re.search(r'const\s+sqlClimbCalib\s*=\s*`(.*?)`', gosql, re.S)
-
-if not m_kf:
-    problems.append('客户端取不到 usable 过滤体（ConsumptionModel.kt）⇒ 规则搬走了？')
-if not m_gs:
-    problems.append('服务端取不到 sqlClimbCalib（queries.go）⇒ 规则搬走了？')
-
-# ── ① 车速分档边界（EDGES ↔ climbSpeedEdges）────────────────────
-m_kt_edges = re.search(r'EDGES\s*=\s*listOf\(([^)]*)\)', kt)
-m_go_edges = re.search(r'climbSpeedEdges\s*=\s*\[\]int\{([^}]*)\}', goed)
-
-
-def edges_kt(raw):
-    out = []
-    for p in [x.strip() for x in raw.split(',') if x.strip()]:
-        if 'MAX_VALUE' in p:
-            out.append('MAX')
-        elif re.match(r'^-?\d+$', p):
-            out.append(p)
-        else:
-            return None
-    return out
-
-
-def edges_go(raw):
-    parts = [x.strip() for x in raw.split(',') if x.strip()]
-    out = []
-    for i, p in enumerate(parts):
-        if not re.match(r'^-?\d+$', p):
-            return None
-        # ⚠️ Go 侧末档用 **0** 表示「开区间」（代码里 `if hi == 0`）⇒ 归一化成 MAX
-        out.append('MAX' if (i == len(parts) - 1 and p == '0') else p)
-    return out
-
-
-if not m_kt_edges:
-    problems.append('客户端取不到 EDGES（listOf 形式）⇒ 规则搬走了？')
-if not m_go_edges:
-    problems.append('服务端取不到 climbSpeedEdges（[]int 形式）⇒ 规则搬走了？')
-if m_kt_edges and m_go_edges:
-    a = edges_kt(m_kt_edges.group(1))
-    b = edges_go(m_go_edges.group(1))
-    if a is None or b is None:
-        problems.append('分档边界解析不出来 ⇒ 这道闸门要跟着改')
-    elif a != b:
-        problems.append(
-            '车速分档边界不一致：客户端 %s（ConsumptionModel.kt:%d） ↔ 服务端 %s（climb_calib.go:%d）'
-            % ('/'.join(a), lineno(kt, m_kt_edges.start()),
-               '/'.join(b), lineno(goed, m_go_edges.start())))
-    else:
-        ok_lines.append('分档边界 %s（ConsumptionModel.kt:%d ↔ climb_calib.go:%d）'
-                        % ('/'.join(a), lineno(kt, m_kt_edges.start()),
-                           lineno(goed, m_go_edges.start())))
-
-
-# ── ② 样本过滤阈值：最小里程 km / wh 区间 ──────────────────────
-def pick(pat, body):
-    if body is None:
-        return None
-    m = re.search(pat, body)
-    return m.group(1) if m else None
-
-
-def rule(name, kt_pat, go_pat, norm=None):
-    kv = pick(kt_pat, m_kf.group(1) if m_kf else None)
-    gv = pick(go_pat, m_gs.group(1) if m_gs else None)
-    if norm:
-        kv = norm(kv)
-        gv = norm(gv)
-    if kv is None:
-        problems.append('%s：客户端取不到（ConsumptionModel.kt 的规则搬走了？）' % name)
-        return
-    if gv is None:
-        problems.append('%s：服务端取不到（queries.go 的规则搬走了？）' % name)
-        return
-    if kv != gv:
-        problems.append('%s 不一致：客户端 %s ↔ 服务端 %s' % (name, kv, gv))
-    else:
-        ok_lines.append('%s = %s（两侧一致）' % (name, kv))
-
-
-rule('样本过滤·最小里程 km',
-     r'km\s*>=\s*([0-9]+(?:\.[0-9]+)?)',
-     r'd\.distance\s*>=\s*([0-9]+(?:\.[0-9]+)?)')
-
-rule('样本过滤·wh 区间',
-     r'wh\s+in\s+([0-9]+(?:\.[0-9]+)?)\.\.([0-9]+(?:\.[0-9]+)?)',
-     r'BETWEEN\s+([0-9]+(?:\.[0-9]+)?)\s+AND\s+([0-9]+(?:\.[0-9]+)?)',
-     norm=lambda v: (v.replace('..', ' AND ') if v else v))
-
-if problems:
-    print('能耗/续航口径的两份实现已经漂了 %d 处 ——' % len(problems))
-    for pr in problems:
-        print('   ', pr)
-    print('   ⇒ 客户端 ConsumptionModel.kt 与服务端 climb_calib.go / queries.go 必须逐条一致')
-    sys.exit(1)
-
-for ln in ok_lines:
-    print('   ✓', ln)
-print('能耗/续航口径：Kotlin ↔ Go 两份实现逐条一致 ✔')
-PYEOF
-if [ $? -eq 0 ]; then ok "能耗/续航口径：客户端与服务端两份实现逐条一致"; else fail "能耗/续航口径两份实现漂了"; cat "$TMP"; fi
-rm -f "$TMP"
-
-# ── 闸门 7：客户端 ↔ 服务端「真实可达续航」实现的常量必须逐条一致 ──
-#
-# ⚠️ **为什么还要一道**（2026-11-03）：闸门 6 盯的是「客户端 ↔ climb_calib.go」，
-#    而**真实可达续航**这条判定搬到了服务端（api/range_estimate.go）
-#    ⇒ 那边的温度修正 / EPA Wh/km / 样本门槛 / 残差口径**也必须**与客户端一致
-#    ⇒ 否则飞书说 171 公里、App 说 180 公里（两个渠道各说各话）。
-#
-# ⇒ 这道闸门把「服务端那份是照客户端搬的」从注释变成**机器校验**。
-TMP=$(mktemp)
-"$PY" - > "$TMP" <<'PYEOF'
-import pathlib, re, sys
-
-KT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ConsumptionModel.kt')
-GO = pathlib.Path('api/range_estimate.go')
+KT   = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ConsumptionModel.kt')
+GOM  = pathlib.Path('api/consumption_model.go')
+GOQ  = pathlib.Path('api/queries.go')
+GOR  = pathlib.Path('api/range_estimate.go')
 
 
 def load(p):
@@ -606,24 +458,50 @@ def strip_comments(t):
 
 
 kt = strip_comments(load(KT))
-go = strip_comments(load(GO))
+gom = strip_comments(load(GOM))
+goq = strip_comments(load(GOQ))
+gor = strip_comments(load(GOR))
 
 problems = []
 ok_lines = []
 
-# (说明, 客户端正则, 服务端正则)
+# ① 客户端不许再有算法副本。
+for token, why in (('EDGES', '车速分档边界'),
+                   ('val usable', '可用样本过滤'),
+                   ('residuals', '残差 P90 的样本体')):
+    if token in kt:
+        problems.append('客户端 ConsumptionModel.kt 里还有 %s（%s）⇒ 判定搬回客户端了一份' % (token, why))
+
+# ② 服务端两份拟合的样本筛选必须逐字一致。
+def where_of(sql):
+    i = sql.find('WHERE d.car_id')
+    if i < 0:
+        return None
+    return ' '.join(sql[i:].split())
+
+
+m1 = re.search(r'const\s+sqlConsumptionModelRows\s*=\s*`(.*?)`', gom, re.S)
+m2 = re.search(r'const\s+sqlClimbCalib\s*=\s*`(.*?)`', goq, re.S)
+if not m1:
+    problems.append('服务端取不到 sqlConsumptionModelRows（consumption_model.go）⇒ 规则搬走了？')
+if not m2:
+    problems.append('服务端取不到 sqlClimbCalib（queries.go）⇒ 规则搬走了？')
+if m1 and m2:
+    w1 = where_of(m1.group(1))
+    w2 = where_of(m2.group(1))
+    if w1 is None or w2 is None:
+        problems.append('两份 SQL 的 WHERE 子句解析不出来 ⇒ 这道闸门要跟着改')
+    elif w1 != w2:
+        problems.append('两份拟合的样本筛选不一致：\n     模型 %s\n     爬升 %s' % (w1, w2))
+    else:
+        ok_lines.append('两份拟合的样本筛选逐字一致')
+
+# ③ 阈值与分桶边界必须一致（模型端点 ↔ 真实可达续航）。
 PAIRS = [
-    ('EPA Wh/km（标称能耗）', r'EPA_WH_PER_KM\s*=\s*([0-9.]+)', r'rangeEPAWhPerKm\s*=\s*([0-9.]+)'),
-    ('温度修正上限', r'minOf\(([0-9.]+),\s*[0-9.]+\s*\*', r'rangeTempMax\s*=\s*([0-9.]+)'),
-    ('温度修正系数', r'minOf\([0-9.]+,\s*([0-9.]+)\s*\*', r'rangeTempCoef\s*=\s*([0-9.]+)'),
-    ('温度修正阈值℃', r'maxOf\(0\.0,\s*it\s*-\s*([0-9.]+)\)', r'rangeTempHotC\s*=\s*([0-9.]+)'),
-    ('低温不可信线℃', r'outsideTempC\s*<=\s*([0-9.]+)', r'rangeTempLowC\s*=\s*([0-9.]+)'),
-    ('低温样本门槛', r'LOW_TEMP_MIN_SAMPLES\s*=\s*([0-9]+)', r'rangeLowTempMinSamples\s*=\s*([0-9]+)'),
-    ('每档样本门槛', r'bucket\.samples\s*<\s*([0-9]+)', r'rangeBucketMinSamples\s*=\s*([0-9]+)'),
-    ('可用样本门槛', r'usable\.size\s*<\s*([0-9]+)', r'rangeMinUsableSamples\s*=\s*([0-9]+)'),
-    ('残差样本的最短里程', r'residuals\s*=\s*usable\s*\.filter\s*\{\s*\(it\.distance_km\s*\?:?\s*0\.0\)\s*>=\s*([0-9.]+)', r'rangeResidualMinKm\s*=\s*([0-9.]+)'),
-    ('残差样本条数门槛', r'residuals\.size\s*>=\s*([0-9]+)', r'rangeResidualMinSamples\s*=\s*([0-9]+)'),
-    ('日常保底余量', r'reserveFactor:\s*Double\s*=\s*([0-9.]+)', r'rangeDefaultReserve\s*=\s*([0-9.]+)'),
+    ('可用样本门槛', r'consumptionMinUsableSamples\s*=\s*([0-9]+)', r'rangeMinUsableSamples\s*=\s*([0-9]+)'),
+    ('每档样本门槛', r'consumptionMinBucketSamples\s*=\s*([0-9]+)', r'rangeBucketMinSamples\s*=\s*([0-9]+)'),
+    ('残差样本的最短里程', r'consumptionMinResidualKm\s*=\s*([0-9.]+)', r'rangeResidualMinKm\s*=\s*([0-9.]+)'),
+    ('残差样本条数门槛', r'consumptionMinResidualSamples\s*=\s*([0-9]+)', r'rangeResidualMinSamples\s*=\s*([0-9]+)'),
 ]
 
 
@@ -632,84 +510,45 @@ def one(pat, text):
     return m.group(1) if m else None
 
 
-def all_vals(pat, text):
-    return sorted(set(re.findall(pat, text)))
-
-
-for label, kpat, gpat in PAIRS:
-    gv = one(gpat, go)
-    if gv is None:
-        problems.append('%s：服务端取不到（range_estimate.go 的写法变了？）' % label)
+for label, mpat, rpat in PAIRS:
+    mv = one(mpat, gom)
+    rv = one(rpat, gor)
+    if mv is None or rv is None:
+        problems.append('%s：取不到（服务端两份的写法变了？）' % label)
         continue
-    # ⚠️ **客户端这边可能有多个同类写法** ⇒ 只取第一个会**假红/假绿**。
-    #    实测：客户端有「distance_km >= 30」（巡航筛选）与「>= 100」（残差筛选）两处
-    #    ⇒ 判据必须精确到上下文；这里再补一道**自检**：取值不唯一 ⇒ 直接报「判据不精确」。
-    kvals = all_vals(kpat, kt)
-    if len(kvals) == 0:
-        problems.append('%s：客户端取不到（ConsumptionModel.kt 的写法变了？）' % label)
-        continue
-    if len(kvals) > 1:
-        problems.append('%s：客户端有多个取值 %s ⇒ 这条判据不精确（改精确到上下文）'
-                        % (label, ' / '.join(kvals)))
-        continue
-    kv = kvals[0]
-    if kv != gv:
-        problems.append('%s 不一致：客户端 %s ↔ 服务端 %s' % (label, kv, gv))
+    if mv != rv:
+        problems.append('%s 不一致：模型 %s ↔ 真实可达续航 %s' % (label, mv, rv))
     else:
-        ok_lines.append('%s = %s' % (label, kv))
+        ok_lines.append('%s = %s' % (label, mv))
 
-# ── 车速分档边界（客户端 EDGES ↔ 服务端 rangeSpeedEdges）──────────
-def edges_kt(t):
-    m = re.search(r'EDGES\s*=\s*listOf\(([^)]*)\)', t)
+# 分桶边界（两边都是 Go 的 []int{…}，末档 0 = 开区间）。
+def edges_of(t, var):
+    m = re.search(var + r'\s*=\s*\[\]int\{([^}]*)\}', t)
     if not m:
         return None
-    out = []
-    for p in [x.strip() for x in m.group(1).split(',') if x.strip()]:
-        if 'MAX_VALUE' in p:
-            out.append('MAX')
-        elif re.match(r'^-?\d+$', p):
-            out.append(p)
-        else:
-            return None
-    return out
+    return [x.strip() for x in m.group(1).split(',') if x.strip()]
 
 
-def edges_go(t):
-    m = re.search(r'rangeSpeedEdges\s*=\s*\[\]int\{([^}]*)\}', t)
-    if not m:
-        return None
-    parts = [x.strip() for x in m.group(1).split(',') if x.strip()]
-    out = []
-    for i, p in enumerate(parts):
-        if not re.match(r'^-?\d+$', p):
-            return None
-        out.append('MAX' if (i == len(parts) - 1 and p == '0') else p)
-    return out
-
-
-ke = edges_kt(kt)
-ge = edges_go(go)
-if ke is None:
-    problems.append('车速分档边界：客户端取不到 EDGES')
-elif ge is None:
-    problems.append('车速分档边界：服务端取不到 rangeSpeedEdges')
-elif ke != ge:
-    problems.append('车速分档边界不一致：客户端 %s ↔ 服务端 %s' % ('/'.join(ke), '/'.join(ge)))
+a = edges_of(gom, 'consumptionBucketEdges')
+b = edges_of(gor, 'rangeSpeedEdges')
+if a is None or b is None:
+    problems.append('分桶边界取不到（服务端写法变了？）')
+elif a != b:
+    problems.append('分桶边界不一致：模型 %s ↔ 真实可达续航 %s' % ('/'.join(a), '/'.join(b)))
 else:
-    ok_lines.append('车速分档边界 = %s' % '/'.join(ke))
+    ok_lines.append('分桶边界 %s（两份一致）' % '/'.join(a))
 
 if problems:
-    print('客户端与服务端的「真实可达续航」常量漂了 %d 处 ——' % len(problems))
+    print('能耗口径不在服务端一份 —— %d 处：' % len(problems))
     for pr in problems:
         print('   ', pr)
-    print('   ⇒ 服务端那份是照客户端搬的：改了一边就必须改另一边')
+    print('   ⇒ 判定只许在 api/consumption_model.go；客户端只透传（ADR #38）')
     sys.exit(1)
 
-for ln in ok_lines:
-    print('   ✓', ln)
-print('真实可达续航的常量：客户端 ↔ 服务端逐条一致 ✔')
+for l in ok_lines:
+    print('   ✓ %s' % l)
 PYEOF
-if [ $? -eq 0 ]; then ok "真实可达续航的常量：客户端与服务端逐条一致"; else fail "真实可达续航的常量漂了"; cat "$TMP"; fi
+if [ $? -eq 0 ]; then ok "能耗口径只在服务端一份（服务端两份逐条一致 ＋ 客户端无副本）"; else fail "能耗口径的两份实现漂了"; cat "$TMP"; fi
 rm -f "$TMP"
 
 # ── 闸门 8：简报的续航段必须复用端点那份算法（同一个数）────────────

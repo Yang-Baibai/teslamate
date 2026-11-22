@@ -4969,6 +4969,104 @@ print('按站画像的聚合在服务端一份（客户端只透传 ＋ 无本�
 PYEOF
 if [ $? -eq 0 ]; then ok "按站画像的聚合只在服务端一份"; else fail "按站画像的聚合又在客户端算了一份"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 49：实测能耗模型的**拟合只在服务端一份** ────────────────────────
+#
+# ⚠️ **v0.183.0**：原来「车速 → Wh/km 桶」是**客户端**现拟合的
+#   （ui/ConsumptionModel.kt 的 `ConsumptionModel.from(drives)`）
+#   ⇒ ① **飞书里问不出来**（mission §2.1）；
+#   ② 与服务端 /energy_profile **是两套口径**（那个是车轮功率曲线）
+#      ⇒ 用户在 App 与飞书里可能看到**两个不同的「实测 Wh/km」**。
+#
+# ⇒ 现在拟合在**服务端**（api/consumption_model.go ＋ `GET /api/v1/cars/{id}/consumption_model`），
+#   App 只映射（Api.kt 的 toConsumptionModel）。
+#
+# 判据（**形态无关** —— 不认函数名，认**结构与事实**）：
+#   ① 客户端**不许**再有「把行程列表拟合成模型」的函数
+#      （判**签名**：入参含 List<Drive>、返回 ConsumptionModel）⇒ 改名/换写法都盖得住；
+#   ② 客户端**必须**读服务端那份（Api.consumptionModel ＋ 状态页真的调用了它）；
+#   ③ 客户端**不许**再留分桶边界的副本（「60, 90, 110, 130」这串数字的形状）；
+#   ④ 服务端**必须**真的有那份判定（文件 ＋ 路由 ＋ 单测引用阈值）—— 护栏不许是空壳。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+KT_API = UI / 'Api.kt'
+KT_SCREEN = UI / 'ui/StatusScreen.kt'
+GO = pathlib.Path('api/consumption_model.go')
+GO_MAIN = pathlib.Path('api/main.go')
+GO_TEST = pathlib.Path('api/consumption_model_test.go')
+
+problems = []
+for p in (KT_API, KT_SCREEN, GO, GO_MAIN, GO_TEST):
+    if not p.exists():
+        problems.append('找不到 %s —— 这道闸门要跟着改' % p)
+
+
+def strip_kt(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+if not problems:
+    api = strip_kt(KT_API.read_text(encoding='utf-8', errors='replace'))
+    screen = strip_kt(KT_SCREEN.read_text(encoding='utf-8', errors='replace'))
+    go = GO.read_text(encoding='utf-8', errors='replace')
+    go_main = GO_MAIN.read_text(encoding='utf-8', errors='replace')
+    go_test = GO_TEST.read_text(encoding='utf-8', errors='replace')
+
+    # ① 客户端不许再有「行程列表 ⇒ 模型」的拟合函数（**签名**判据）。
+    fit_pat = re.compile(
+        r'fun\s+\w+\s*\([^)]*List<Drive>[^)]*\)\s*:\s*ConsumptionModel\??'
+    )
+    for kt in sorted(UI.rglob('*.kt')):
+        src = strip_kt(kt.read_text(encoding='utf-8', errors='replace'))
+        for m in fit_pat.finditer(src):
+            problems.append(
+                '%s 里还有「把行程列表拟合成能耗模型」的函数' % kt.name
+                + ' ⇒ 客户端又在自己拟合（与服务端成了两套口径）')
+
+    # ③ 客户端不许再留分桶边界的副本（**数字形状**判据）。
+    edges_pat = re.compile(r'60\s*,\s*90\s*,\s*110\s*,\s*130')
+    for kt in sorted(UI.rglob('*.kt')):
+        src = strip_kt(kt.read_text(encoding='utf-8', errors='replace'))
+        if edges_pat.search(src):
+            problems.append(
+                '%s 里还有分桶边界的副本（60, 90, 110, 130）' % kt.name
+                + ' ⇒ 分桶边界只许在服务端（两端各写一份必然漂）')
+
+    # ② 客户端必须读服务端那份。
+    if 'fun consumptionModel(' not in api:
+        problems.append('Api.kt 里没有 consumptionModel( ⇒ 客户端没有读服务端那份能耗模型')
+    if '/consumption_model' not in api:
+        problems.append('Api.kt 里没有 /consumption_model 端点 ⇒ 客户端拿不到服务端那份能耗模型')
+    if 'api.consumptionModel(' not in screen:
+        problems.append('StatusScreen.kt 没有调用 api.consumptionModel( ⇒ 界面还在用旧来源')
+
+    # ④ 服务端必须真的有那份判定（护栏不许是空壳）。
+    if '/consumption_model' not in go_main:
+        problems.append('api/main.go 里没有 /consumption_model 路由 ⇒ 服务端那个端点没挂上')
+    for const in ('consumptionMinUsableSamples', 'consumptionMinKm', 'consumptionMinWh',
+                  'consumptionMaxWh', 'consumptionMinBucketSamples', 'consumptionMinCruiseKm',
+                  'consumptionCruiseTrips', 'consumptionMinResidualSamples',
+                  'consumptionMinResidualKm', 'consumptionLowTempC', 'consumptionMaxKph'):
+        if const not in go:
+            problems.append('api/consumption_model.go 里没有阈值 %s ⇒ 判据被删了' % const)
+        if const not in go_test:
+            problems.append(
+                'api/consumption_model_test.go 里没有引用 %s ⇒ 这道判据没被钉住（空壳护栏）' % const)
+
+if problems:
+    print('实测能耗模型的拟合不在服务端一份 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 拟合只许在 api/consumption_model.go；客户端只透传（ADR #38）')
+    sys.exit(1)
+
+print('实测能耗模型的拟合在服务端一份（客户端只透传 ＋ 无本地拟合 ＋ 服务端单测钉住）')
+PYEOF
+if [ $? -eq 0 ]; then ok "实测能耗模型的拟合只在服务端一份"; else fail "实测能耗模型又在客户端拟合了一份"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

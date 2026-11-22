@@ -1224,6 +1224,45 @@ def teslamate_station_stats() -> dict:
             for s in top
         ]
     return out
+# ⚠️ **v0.183.0**：实测能耗模型 —— Hermes 也能问了。
+#
+# 为什么加：这���模型原来在**客户端**现拟合 ⇒ 飞书里问不出来（mission §2.1；
+# docs/app-conclusions.json 的 consumption_model 那条 gap），而且服务端 /energy_profile
+# 那个是**车轮功率曲线**、**不是同一个口径** ⇒ 用户在 App 与飞书里可能看到两个数。
+# ⇒ 现在标定法那份模型在**服务端**（/consumption_model），这里**只透传**。
+@mcp.tool(annotations=RO)
+def teslamate_consumption_model() -> dict:
+    """查**本车实测能耗模型**（车速 → Wh/km 档）。
+
+    **什么时候用**：用户问「我这车高速开多少电一公里」「市区多少 Wh/km」
+    「这个模型的误差有多大」「我最近开得慢不慢」—— 都归它。
+
+    ⚠️ **标定法净值**口径（按行程的标定续航差折算），与 /energy_profile 的
+    **车轮功率曲线**不是一回事 ⇒ 两个数别混着说。
+    """
+    data = _get(f"/api/v1/cars/{CAR_ID}/consumption_model")
+    if not isinstance(data, dict):
+        return {"错误": "返回格式异常"}
+    out = {
+        "样本数": data.get("sample_count"),
+        "参考车速(km/h)": data.get("cruise_kph"),
+        "残差90分位(Wh/km)": data.get("residual_p90_wh_per_km"),
+        "残差样本数": data.get("residual_samples"),
+        "档位": [
+            {
+                "车速": ("%d+" % b["min_kph"]) if b.get("max_kph") == 2147483647
+                        else ("%d–%d" % (b["min_kph"], b["max_kph"])),
+                "Wh/km": b.get("wh_per_km"),
+                "样本": b.get("samples"),
+            }
+            for b in (data.get("buckets") or [])
+        ],
+    }
+    if data.get("caveat"):
+        out["为什么没有数"] = data.get("caveat")
+    if data.get("note"):
+        out["依据"] = data.get("note")
+    return out
 @mcp.tool(annotations=RO)
 def teslamate_charge_stats(period: str = "7d") -> dict:
     """查**充电统计**：按区间给出充了多少度、几次、直交流拆分、平均时长、上次充满。

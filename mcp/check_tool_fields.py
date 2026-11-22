@@ -76,6 +76,9 @@ SPEC = [
     #    ⚠️ 「站点[0].场次」这种**列表元素**不进 SPEC（没站点时数组长度为 0 ⇒ 越界 ⇒ 假红）。
     #    那部分交给 check_station_stats_contract()（有数据才查）。
     ("teslamate_station_stats", {}, "站点数", "按站画像的站点数"),
+    # ⚠️ **v0.183.0**：实测能耗模型（服务端拟合 ⇒ App 与飞书同一份）。
+    #    ⚠️ 「档位[0].Wh/km」这种**列表元素**不进 SPEC（没模型时数组长度为 0 ⇒ 越界 ⇒ 假红）。
+    ("teslamate_consumption_model", {}, "样本数", "实测能耗模型的样本条数"),
     # ⚠️ **v0.123.0**：保养 / 轮胎工具。
     #    这两个**恒在**（哪怕车主还没填过基准）⇒ 可以断言。
     #    ⚠️ 「保养.还剩(km)」**不能**进 SPEC —— 车主没填基准 / 里程表读不到时
@@ -1257,6 +1260,56 @@ def check_route_plans_contract() -> list:
                 bad.append("线路[%d] %s 两端不一致（服务端 %r / MCP %r）" % (i, srv_key, sv, mv))
     return bad
 
+def check_consumption_model_contract() -> list:
+    """实测能耗模型：MCP 必须与服务端**逐档相等**（同一份，不是两套算法）。
+
+    ⚠️ 为什么查：v0.183.0 把拟合从客户端搬到服务端
+    ⇒ 若 MCP 又自己算一遍，就会出现**第二个口径**（App 与飞书两个数）。
+    """
+    bad = []
+    try:
+        rep = T._get("/api/v1/cars/%s/consumption_model" % T.CAR_ID)
+        m = T.teslamate_consumption_model()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(rep, dict):
+        return ["能耗模型端点取不到：%r" % (rep,)]
+    if not isinstance(m, dict) or "错误" in m:
+        return ["MCP 的能耗模型工具取不到：%r" % (m,)]
+    if m.get("样本数") != rep.get("sample_count"):
+        bad.append("样本数两端不一致（服务端 %r / MCP %r）"
+                  % (rep.get("sample_count"), m.get("样本数")))
+    for key, mkey in (("cruise_kph", "参考车速(km/h)"),
+                      ("residual_p90_wh_per_km", "残差90分位(Wh/km)"),
+                      ("residual_samples", "残差样本数")):
+        sv = rep.get(key)
+        mv = m.get(mkey)
+        if sv is None and mv is None:
+            continue
+        if sv is None or mv is None:
+            bad.append("%s 两端不一致（服务端 %r / MCP %r）" % (key, sv, mv))
+            continue
+        if abs(float(sv) - float(mv)) > 1e-9:
+            bad.append("%s 两端不一致（服务端 %r / MCP %r）⇒ 有两套算法" % (key, sv, mv))
+    sb = rep.get("buckets") or []
+    mb = m.get("档位") or []
+    if len(sb) != len(mb):
+        bad.append("档位数不一致（服务端 %d / MCP %d）" % (len(sb), len(mb)))
+    for i, b in enumerate(sb):
+        if i >= len(mb):
+            bad.append("MCP 少了第 %d 档" % i)
+            break
+        g = mb[i]
+        if b.get("wh_per_km") is None or g.get("Wh/km") is None:
+            continue
+        if abs(float(b["wh_per_km"]) - float(g["Wh/km"])) > 1e-9:
+            bad.append("第 %d 档 Wh/km 两端不一致（服务端 %r / MCP %r）"
+                      % (i, b.get("wh_per_km"), g.get("Wh/km")))
+        if b.get("samples") != g.get("样本"):
+            bad.append("第 %d 档样本数两端不一致（服务端 %r / MCP %r）"
+                      % (i, b.get("samples"), g.get("样本")))
+    return bad
+
 def check_vehicle_data_absence_contract() -> list:
     """车端实时数据：**车睡着时必须如实说「没拿到」**，不许编一个采集时刻。
 
@@ -1779,6 +1832,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 按站画像与服务端同一份聚合、逐站一致"
               % ("teslamate_station_stats", "按站画像契约"))
     bad.extend(ss_bad)
+
+    cm_bad = check_consumption_model_contract()
+    for b in cm_bad:
+        print("  ✗ %s" % b)
+    if not cm_bad:
+        print("  ✓ %-26s %-24s 实测能耗模型与服务端同一份拟合、逐档一致"
+              % ("teslamate_consumption_model", "能耗模型契约"))
+    bad.extend(cm_bad)
 
     vd_bad = check_vehicle_data_absence_contract()
     for b in vd_bad:

@@ -39,17 +39,24 @@ class TempCaveatCopyTest {
         outside_temp_avg = temp,
     )
 
-    private fun model(): ConsumptionModel {
-        val drives = buildList {
-            var id = 1
-            repeat(3) { add(drive(id++, 30.0, 50, 168.0)) }
-            repeat(3) { add(drive(id++, 30.0, 70, 174.0)) }
-            repeat(3) { add(drive(id++, 30.0, 100, 183.0)) }
-            repeat(3) { add(drive(id++, 30.0, 120, 197.0)) }
-            repeat(3) { add(drive(id++, 30.0, 140, 210.0)) }
-        }
-        return ConsumptionModel.from(drives)!!
-    }
+    /**
+     * ⚠️ **v0.183.0**：能耗模型的**判定**已搬到服务端 ⇒ 这里**直接构造**模型（不再本地拟合）。
+     */
+    private fun model(): ConsumptionModel = ConsumptionModel(
+        buckets = listOf(
+            com.teslamate.app.SpeedBucket(0, 60, 168.0, 3),
+            com.teslamate.app.SpeedBucket(60, 90, 174.0, 3),
+            com.teslamate.app.SpeedBucket(90, 110, 183.0, 3),
+            com.teslamate.app.SpeedBucket(110, 130, 197.0, 3),
+            com.teslamate.app.SpeedBucket(130, Int.MAX_VALUE, 210.0, 3),
+        ),
+        cruiseKph = 70.0,
+        tempMinC = 22.0,
+        tempMaxC = 22.0,
+        lowTempSamples = 0,
+        firstDrivenAt = "2026-09-01",
+        lastDrivenAt = "2026-09-02",
+    )
 
     @Test
     fun `读不到车外温度时必须给出口径_不许是null`() {

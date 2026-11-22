@@ -945,6 +945,54 @@ data class StationStatsResponse(
     val stations: List<StationStatDto> = emptyList(),
 )
 @Serializable
+data class ConsumptionBucketDto(
+    val min_kph: Int,
+    val max_kph: Int,
+    val wh_per_km: Double,
+    val samples: Int,
+)
+
+@Serializable
+data class ConsumptionModelDto(
+    val car_id: Int = 0,
+    val buckets: List<ConsumptionBucketDto> = emptyList(),
+    val cruise_kph: Double = 0.0,
+    val temp_min_c: Double? = null,
+    val temp_max_c: Double? = null,
+    val low_temp_samples: Int = 0,
+    val first_driven_at: String? = null,
+    val last_driven_at: String? = null,
+    val residual_p90_wh_per_km: Double? = null,
+    val residual_samples: Int = 0,
+    val sample_count: Int = 0,
+    val caveat: String = "",
+    val note: String = "",
+)
+
+/**
+ * ⚠️ **v0.183.0：服务端那份模型 ⇒ 界面模型。**
+ *
+ * 判定（分桶 / 残差 / 参考车速 / 样本筛选）已在服务端（api/consumption_model.go）
+ * ⇒ 客户端**只映射**，不自己算（ADR #38：一份判定只许有一处）。
+ *
+ * ⚠️ 没有桶 = 服务端样本不足 ⇒ **不给模型**（null）
+ * ⇒ 界面退回「官方标称」并说明（宁可说不知道，也不编一个数）。
+ */
+fun ConsumptionModelDto.toConsumptionModel(): ConsumptionModel? {
+    if (buckets.isEmpty()) return null
+    return ConsumptionModel(
+        buckets = buckets.map { SpeedBucket(it.min_kph, it.max_kph, it.wh_per_km, it.samples) },
+        cruiseKph = cruise_kph,
+        tempMinC = temp_min_c,
+        tempMaxC = temp_max_c,
+        lowTempSamples = low_temp_samples,
+        firstDrivenAt = first_driven_at,
+        lastDrivenAt = last_driven_at,
+        residualP90WhPerKm = residual_p90_wh_per_km,
+        residualSamples = residual_samples,
+    )
+}
+@Serializable
 data class CurvePoint(
     @Serializable(with = InstantSer::class) val date: Instant,
     val battery_level: Int? = null,
@@ -2100,6 +2148,15 @@ class Api private constructor(private val base: String, private val token: Strin
      */
     fun stationStats(carId: Int): StationStatsResponse =
         get("/api/v1/cars/$carId/station_stats")
+    /**
+     * ⚠️ **v0.183.0：标定法实测能耗模型（服务端算的结论）。**
+     *
+     * ⚠️ App **不再自己拟合**（原来在 ui/ConsumptionModel.kt 的 `ConsumptionModel.from`）
+     * ⇒ ① 飞书里也问得到；② 两端不会各算一套（ADR #38）。
+     * ⚠️ 与 `/energy_profile` **不是同一个口径**（那个是车轮功率曲线）。
+     */
+    fun consumptionModel(carId: Int): ConsumptionModelDto =
+        get("/api/v1/cars/$carId/consumption_model")
     
 
     fun curve(chargeId: Int): List<CurvePoint> = get("/api/v1/charges/$chargeId/curve")
