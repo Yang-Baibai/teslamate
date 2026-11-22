@@ -162,6 +162,8 @@ func main() {
 	mux.HandleFunc("GET /api/v1/cars/{id}/full_charge_range", auth(handleFullChargeRange))
 	// ⚠️ v0.181.0：长途线路清单 + 沿途站（选线与归属都在服务端 ⇒ App 与飞书同一个数）。
 	mux.HandleFunc("GET /api/v1/cars/{id}/route_plans", auth(handleRoutePlans))
+	// ⚠️ v0.182.0：按站画像（这个桩快不快 / 要等多久）—— 聚合在服务端 ⇒ App 与飞书同一份。
+	mux.HandleFunc("GET /api/v1/cars/{id}/station_stats", auth(handleStationStats))
 	// ⚠️ **v0.123.0**：保养 / 轮胎提醒（**基准与判定都在服务端**）。
 	//   GET  → 读某台车的基准 + 算好的提醒结论（App 与 Hermes 共用）
 	//   POST → 写某台车的基准（App「设置 → 保养与轮胎」页调用）

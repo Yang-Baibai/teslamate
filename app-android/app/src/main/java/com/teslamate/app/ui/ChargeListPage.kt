@@ -248,7 +248,8 @@ fun ChargeListPage(
                     )
                 }
                 items(list, key = { it.id }) { c ->
-                    val stat = stats[stationKey(c)]
+                    // ⚠️ **v0.182.0**：按服务端的 place_key 查。
+                val stat = c.place_key?.let { stats[it] }
                     ChargeItem(c, stat, Modifier.animateItem(), rates = rates) { onSelect(c) }
                 }
             }

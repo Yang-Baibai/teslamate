@@ -1663,7 +1663,8 @@ fun buildRoutePlan(
             ?: c.place.firstSegment() ?: "充电站"
     val stops = journeyStops.mapIndexed { idx, js ->
         val c = js.charge
-        val stat = stationStats[stationKey(c)]
+        // ⚠️ **v0.182.0**：按服务端的 place_key 查（分组键不再客户端自己算）。
+        val stat = c.place_key?.let { stationStats[it] }
         // 到达后的那次充电没有「下一站」。
         val next = journeyStops.getOrNull(idx + 1)?.takeIf { !js.isEndpoint }
         val gapKm = next?.let { it.kmAlong - js.kmAlong }?.takeIf { it > 0.5 }

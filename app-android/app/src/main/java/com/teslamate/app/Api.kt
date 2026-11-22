@@ -917,6 +917,34 @@ data class RoutePlanTemplateDto(
     val stops: List<RoutePlanStopDto> = emptyList(),
 )
 @Serializable
+data class StationMeasuredSampleDto(
+    val from_soc: Int,
+    val minutes: Int,
+)
+
+@Serializable
+data class StationStatDto(
+    val place_key: String,
+    val sessions: Int,
+    val typical_power_kw: Double,
+    val typical_power_dc_kw: Double? = null,
+    val typical_minutes_to_80: Int? = null,
+    val p90_minutes_to_80: Int? = null,
+    val measured_samples: List<StationMeasuredSampleDto> = emptyList(),
+    val dc_never_reached_80: Int = 0,
+    val dc_never_reached_80_short: Int = 0,
+)
+
+@Serializable
+data class StationStatsResponse(
+    val car_id: Int = 0,
+    /** 反推出的**整包**容量（kWh）—— 折算耗时的分母。 */
+    val capacity_kwh: Double = 0.0,
+    val sample_count: Int = 0,
+    val station_count: Int = 0,
+    val stations: List<StationStatDto> = emptyList(),
+)
+@Serializable
 data class CurvePoint(
     @Serializable(with = InstantSer::class) val date: Instant,
     val battery_level: Int? = null,
@@ -2063,6 +2091,15 @@ class Api private constructor(private val base: String, private val token: Strin
      */
     fun routePlans(carId: Int): List<RoutePlanTemplateDto> =
         get("/api/v1/cars/$carId/route_plans")
+    /**
+     * ⚠️ **v0.182.0：按站画像（服务端算的结论）。**
+     *
+     * ⚠️ App **不再自己按地点聚合**充电历史（原来在 ui/ChargeStats.kt 的 buildStationStats）
+     * ⇒ ① 飞书里也问得到「这个桩充到 80% 要多久」（mission §2.1）；
+     * ② 两端不会各算一套阈值而漂（ADR #38）。
+     */
+    fun stationStats(carId: Int): StationStatsResponse =
+        get("/api/v1/cars/$carId/station_stats")
     
 
     fun curve(chargeId: Int): List<CurvePoint> = get("/api/v1/charges/$chargeId/curve")

@@ -95,6 +95,27 @@ class RecordsStore {
         private set
 
     /**
+     * ⚠️ **v0.182.0：按站画像（服务端算的结论）**。
+     *
+     * ⚠️ 原来 App 是在**客户端**按地点聚合充电历史（ui/ChargeStats.kt 的 buildStationStats）
+     * ⇒ ① 飞书里问不出来；② 两端各算一套阈值，必然漂（ADR #38）。
+     * ⇒ 现在聚合在服务端，App 只透传（映射见 stationStatsFromServer）。
+     *
+     * ⚠️ 键 = 服务端的 `place_key` ⇒ 查找用 `charge.place_key`。
+     */
+    var stationStats by mutableStateOf<Map<String, StationStat>>(emptyMap())
+        private set
+
+    /**
+     * ⚠️ **v0.182.0：反推的整包容量（kWh）** —— 服务端给。
+     *
+     * ⚠️ 原来它在客户端从站点统计反推（充入 kWh ÷ ΔSOC% × 100 的中位数）⇒
+     * 而**线路余量表的判定**要用它 ⇒ 留在客户端就等于判定还留一半在客户端。
+     */
+    var stationStatsCapacity by mutableStateOf<Double?>(null)
+        private set
+
+    /**
      * ⚠️ **v0.108.0（用户反馈 #27）**：充电统计的**三个区间**（服务端算）。
      *
      * ⚠️ 为 null = 没拿到（服务端是旧版本，或这次请求失败）
@@ -189,6 +210,16 @@ class RecordsStore {
         }.onFailure {
             routeTemplates = emptyList()
         }
+        // ⑥ 按站画像（v0.182.0，服务端算的结论）
+        runCatching {
+            withContext(Dispatchers.IO) { api.stationStats(carId) }
+        }.onSuccess { resp ->
+            stationStats = stationStatsFromServer(resp)
+            stationStatsCapacity = if (resp.stations.isEmpty()) null else resp.capacity_kwh
+        }.onFailure {
+            stationStats = emptyMap()
+            stationStatsCapacity = null
+        }
         loading = false
         refreshing = false
     }
@@ -202,6 +233,8 @@ class RecordsStore {
         chargeStats = null
         fullChargeRange = null
         routeTemplates = emptyList()
+        stationStats = emptyMap()
+        stationStatsCapacity = null
         loading = true
         loadedFor = null
     }

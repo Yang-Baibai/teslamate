@@ -35,8 +35,8 @@ android {
         // ⚠️ **v0.177.0**：接着 157 之后是 **158**（段明细第一行补列间距
         //   ⇒ 200% 字号下日期与电量不再粘在一起）
         //    ⇒ 仍然**没有跳号**。
-        versionCode = 159
-        versionName = "0.150.0"
+        versionCode = 160
+        versionName = "0.151.0"
     }
 
     buildTypes {

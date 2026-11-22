@@ -509,7 +509,8 @@ internal fun ChargeDetail(
                     // 该站历史：峰值功率没有决策价值（国标直流桩典型 50~110 kW，
                     // 峰值只出现在起步那几分钟）。真正决定「值不值得进」的是
                     // 这个站**历史实测**的典型水平，以及你这次比中位快还是慢。
-                    val stat = stats[stationKey(charge)]
+                    // ⚠️ **v0.182.0**：按服务端的 place_key 查（分组键不再客户端自己算）。
+                    val stat = charge.place_key?.let { stats[it] }
                     val fromSoc = charge.start_soc
                     if (stat != null && stat.sessions >= 2) {
                         Text(

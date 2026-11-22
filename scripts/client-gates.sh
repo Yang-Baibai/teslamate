@@ -4842,6 +4842,133 @@ print('长途线路的选线 ＋ 沿途站归属在服务端一份（客户端�
 PYEOF
 if [ $? -eq 0 ]; then ok "长途线路的选线 ＋ 沿途站归属只在服务端一份"; else fail "长途线路的选线又在客户端算了一份"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 48：按站画像的**聚合只在服务端一份** ────────────────────────────
+#
+# ⚠️ **v0.182.0**：原来「这个桩快不快 / 我要等多久」是**客户端**按地点聚合
+#   充电历史算的（ui/ChargeStats.kt 的 buildStationStats）
+#   ⇒ ① **飞书里问不出来**（mission §2.1；清单里那两条**假 covered** 就是这么来的）；
+#   ② **两端各算一套** —— 那套口径有 9 个阈值 ＋ 5 处评审修出来的坑。
+#
+# ⇒ 现在聚合在**服务端**（api/station_stats.go ＋ `GET /api/v1/cars/{id}/station_stats`），
+#   App 只透传（ui/ChargeStats.kt 的 stationStatsFromServer）。
+#
+# 判据（**形态无关** —— 不认函数名，认**签名与事实**）：
+#   ① 客户端**不许**再有「把充电列表聚合成按站表」的函数
+#      （判**签名**：入参是 List<Charge>、返回 Map<String, StationStat>）
+#      ⇒ 改名 / 换写法都盖得住；
+#   ② 客户端**不许**再自己算分组键
+#      （判**签名 ＋ 字段**：入参是 Charge、返回 String、且读了 map_lat/map_lng
+#       —— 那就是「坐标聚类当分组键」）；
+#   ③ 客户端**必须**读服务端那份（Api.stationStats ＋ 映射函数被调用）；
+#   ④ 服务端**必须**真的有那份判定（文件 ＋ 路由 ＋ 单测引用阈值）—— 护栏不许是空壳。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+UI = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+KT_API = UI / 'Api.kt'
+KT_STATS = UI / 'ui/ChargeStats.kt'
+KT_STORE = UI / 'ui/RecordsStore.kt'
+GO = pathlib.Path('api/station_stats.go')
+GO_MAIN = pathlib.Path('api/main.go')
+GO_TEST = pathlib.Path('api/station_stats_test.go')
+
+problems = []
+for p in (KT_API, KT_STATS, KT_STORE, GO, GO_MAIN, GO_TEST):
+    if not p.exists():
+        problems.append('找不到 %s —— 这道闸门要跟着改' % p)
+
+
+def strip_kt(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    return re.sub(r'(?m)//.*$', '', src)
+
+
+if not problems:
+    api = strip_kt(KT_API.read_text(encoding='utf-8', errors='replace'))
+    stats = strip_kt(KT_STATS.read_text(encoding='utf-8', errors='replace'))
+    store = strip_kt(KT_STORE.read_text(encoding='utf-8', errors='replace'))
+    go = GO.read_text(encoding='utf-8', errors='replace')
+    go_main = GO_MAIN.read_text(encoding='utf-8', errors='replace')
+    go_test = GO_TEST.read_text(encoding='utf-8', errors='replace')
+
+    # ① 客户端不许再有「充电列表 ⇒ 按站表」的聚合函数（**签名**判据）。
+    agg_pat = re.compile(
+        r'fun\s+\w+\s*\(\s*charges\s*:\s*List<Charge>\s*\)\s*:\s*Map<String,\s*StationStat>'
+    )
+    for kt in sorted(UI.rglob('*.kt')):
+        src = strip_kt(kt.read_text(encoding='utf-8', errors='replace'))
+        for m in agg_pat.finditer(src):
+            problems.append(
+                '%s 里还有「把充电列表聚合成按站表」的函数' % kt.name
+                + ' ⇒ 客户端又在自己算按站画像（与服务端成了两套口径）')
+
+    # ② 客户端不许再自己算分组键（**签名 ＋ 字段**判据）。
+    #
+    #    「入参是 Charge、返回 String、且读了 map_lat/map_lng」= 坐标聚类当分组键
+    #    ⇒ 那正是 v0.182.0 之前客户端的 stationKey ⇒ 现在统一用服务端的 place_key。
+    #
+    #    ⚠️ **v0.182.0 实测踩到**：第一版只认**块体**函数（`{ ... }`）
+    #    ⇒ 探针用**表达式体**（`= "xy:" + c.map_lat + ...`）就**静默放行**了
+    #    ⇒ 「闸门跑绿」不等于「它在检查东西」⇒ 现在两种形态都收。
+    key_pat = re.compile(r'fun\s+\w+\s*\(\s*c\s*:\s*Charge\s*\)\s*:\s*String')
+    for kt in sorted(UI.rglob('*.kt')):
+        src = strip_kt(kt.read_text(encoding='utf-8', errors='replace'))
+        lines = src.split('\n')
+        for i, ln in enumerate(lines):
+            m = key_pat.search(ln)
+            if not m:
+                continue
+            indent = len(ln) - len(ln.lstrip())
+            # 表达式体：函数头同一行的 `=` 之后就是函数体。
+            body = [ln[m.end():]]
+            for j in range(i + 1, min(i + 80, len(lines))):
+                nxt = lines[j]
+                if nxt.strip() == '':
+                    continue
+                ind = len(nxt) - len(nxt.lstrip())
+                if ind <= indent and not nxt.lstrip().startswith('.'):
+                    break
+                body.append(nxt)
+            blob = '\n'.join(body)
+            if 'map_lat' in blob and 'map_lng' in blob:
+                problems.append(
+                    '%s 里还有「按坐标聚类当分组键」的函数' % kt.name
+                    + ' ⇒ 分组键必须用服务端的 place_key（两把尺子必然漂）')
+
+    # ③ 客户端必须读服务端那份。
+    if 'fun stationStats(' not in api:
+        problems.append('Api.kt 里没有 stationStats( ⇒ 客户端没有读服务端那份按站画像')
+    if '/station_stats' not in api:
+        problems.append('Api.kt 里没有 /station_stats 端点 ⇒ 客户端拿不到服务端那份按站画像')
+    if 'stationStatsFromServer' not in store:
+        problems.append('RecordsStore.kt 里没有 stationStatsFromServer ⇒ 记录页不会用服务端那份')
+
+    # ④ 服务端必须真的有那份判定（护栏不许是空壳）。
+    if '/station_stats' not in go_main:
+        problems.append('api/main.go 里没有 /station_stats 路由 ⇒ 服务端那个端点没挂上')
+    for const in ('stationCapacityMinKwh', 'stationCapacityMaxKwh', 'stationMinDeltaSoc',
+                  'stationMinAddedKwh', 'stationMinPowerKw', 'stationMinDcSamples',
+                  'stationMinMinutesSamples', 'stationMinP90Samples', 'stationFromSocMax',
+                  'stationTargetSoc', 'stationMinutesMin', 'stationMinutesMax',
+                  'stationShortStayMin'):
+        if const not in go:
+            problems.append('api/station_stats.go 里没有阈值 %s ⇒ 判据被删了' % const)
+        if const not in go_test:
+            problems.append(
+                'api/station_stats_test.go 里没有引用 %s ⇒ 这道判据没被钉住（空壳护栏）' % const)
+
+if problems:
+    print('按站画像的聚合不在服务端一份 —— %d 处：' % len(problems))
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 聚合只许在 api/station_stats.go；客户端只透传（ADR #38）')
+    sys.exit(1)
+
+print('按站画像的聚合在服务端一份（客户端只透传 ＋ 无本地分组键 ＋ 服务端单测钉住）')
+PYEOF
+if [ $? -eq 0 ]; then ok "按站画像的聚合只在服务端一份"; else fail "按站画像的聚合又在客户端算了一份"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

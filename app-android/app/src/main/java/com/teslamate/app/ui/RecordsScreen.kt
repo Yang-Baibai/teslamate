@@ -213,18 +213,15 @@ fun RecordsScreen(
     val selected = selection
 
     val records = remember(drives, charges) { mergeRecords(drives, charges) }
-    // 该站历史统计（充电页原来用它）
-    val stationStats = remember(charges) { buildStationStats(charges) }
+    // 该站历史统计（⚠️ **v0.182.0：服务端算的**，客户端只透传）
+    val stationStats = store.stationStats
     // ⚠️ **v0.25.0：本车可用电池容量（度）** ——
     // 「到下一站剩多少电」要把度数换算成电量百分点，需要本车的**可用**容量。
     //
     // 它从站点统计里反推（充入 kWh ÷ ΔSOC% × 100）—— 那是**本车**的容量，
     // 与站点无关；官方标称（76.8 度）比实测**乐观**，不能拿来算。
-    val batteryCapacityKwh = remember(stationStats) {
-        stationStats.values.mapNotNull { it.batteryCapacityKwh }
-            .takeIf { it.isNotEmpty() }
-            ?.let { com.teslamate.app.medianOf(it) }
-    }
+    // ⚠️ **v0.182.0**：容量现在由**服务端**给（原来在客户端从站点统计反推 ⇒ 第二个口径）。
+    val batteryCapacityKwh = store.stationStatsCapacity
     // ⚠️ v0.11.0（长途自驾党 P0-1）：**线路余量表** ——
     // 出发前 5 分钟真正要看的那张表：这条线路历史上真实发生过哪些充电、
     // 每次到站时剩多少、充到多少、在第几公里。
@@ -809,7 +806,8 @@ private fun TimelineRow(
                         footnote = comparison?.shortLabel(),
                     ) { onClick() }
                     is RecordItem.ChargeItem -> {
-                        val stat = stationStats[stationKey(item.charge)]
+                        // ⚠️ **v0.182.0**：按服务端的 place_key 查（不再自己算分组键）。
+                        val stat = item.charge.place_key?.let { stationStats[it] }
                         ChargeItem(item.charge, stat, rates = rates) { onClick() }
                     }
                 }

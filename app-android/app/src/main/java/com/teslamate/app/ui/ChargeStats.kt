@@ -159,143 +159,41 @@ data class StationStat(
 }
 
 /**
- * 按地点聚合充电历史。
+ * ⚠️ **v0.182.0：按站画像改由**服务端**给**（App 只透传）。
  *
- * ⚠️ **v0.9.2（口径审计 S2-3）：分组 key 改成坐标，而不是地址第一段。**
+ * ## 为什么搬
  *
- * 原来 key 用 `place.firstSegment()`（「石化大道西」「人民路」「G210」）——
- * **同名地点跨城市会被混算**（实测「石化大道西」的 7 次其实横跨多地）。
+ * 原来「这个桩快不快 / 我要等多久」是**客户端**按地点聚合充电历史算的
+ * ⇒ ① **飞书里问不出来**（mission §2.1）；
+ *   ② **两端各算一套** —— 那套口径有 9 个阈值 ＋ 5 处评审修出来的坑（ADR #38）。
  *
- * 现在：优先用**围栏名**（`geofence_name`，由车主自己定义，天然唯一）；
- * 没有围栏名就用**坐标聚类**（保留 2 位小数 ≈ 1.1 km，
- * 既能区分不同城市，又能容忍同一桩的 GPS 抖动）；
- * 两者都没有才退回地址第一段。地点名只用于**显示**。
+ * ## 分组键
+ *
+ * 服务端按 `place_key`（按真实距离聚类 500 m）分组 ⇒ 客户端按 `charge.place_key` 查表。
+ * ⚠️ **实测分组数一致**（本机 84 场充电：坐标 2 位小数分 **58** 组，place_key 也是 **58** 组）
+ * ⇒ 同一批站、同一批样本 ⇒ **数值不变**。
  */
-fun buildStationStats(charges: List<Charge>): Map<String, StationStat> {
-    if (charges.size < 2) return emptyMap()
-
-    // 先反推电池容量：每次充电算一个 kWh/%，取中位数
-    // ⚠️ v0.8.2 修正：这里算出来的是**整包容量**（kWh / ΔSOC% × 100），
-    // 不是「每 1% SOC 的 kWh」。所以合理区间是 30~120 kWh，
-    // 原来误写成 0.3~1.2 —— 那一档会把**全部样本**滤掉，
-    // 于是 perPercent 为空、函数直接返回空 Map，站点历史永远不显示。
-    val perPercent = charges.mapNotNull { c ->
-        val kwh = c.energy_added_kwh ?: return@mapNotNull null
-        val dsoc = (c.end_soc ?: return@mapNotNull null) - (c.start_soc ?: return@mapNotNull null)
-        if (dsoc <= 5) return@mapNotNull null      // ΔSOC 太小，量化误差过大
-        kwh / dsoc * 100.0
-    }.filter { it in 30.0..120.0 }
-    if (perPercent.isEmpty()) return emptyMap()
-    // ⚠️ v0.14.0（口径审计 P1-4）：原来这里取的是**上中位数**（sorted()[n/2]），
-    // 与同一文件里的 `median()` 不一致 —— 第三方按 numpy 复算会系统性对不上。
-    val capacity = medianOf(perPercent) ?: return emptyMap()
-
-    val grouped = charges
-        .filter { !it.place.isNullOrBlank() }
-        .groupBy { stationKey(it) }
-
-    return grouped.mapNotNull { (key, list) ->
-        if (key.isBlank()) return@mapNotNull null
-        // ⚠️ v0.14.0（长途自驾党 P0-2）：原来 `list.size < 2` 的门槛
-        // 把**只充过 1 次的站整条丢掉** —— 而「只充过 1 次」恰恰是
-        // 长途新服务区的常态。结果：出发前最想知道的那个站，
-        // 界面上只有「到站 16%」三个字，没有 kW、没有分钟。
-        // 现在 1 次也保留，界面负责标注「仅 1 次」。
-        // ⚠️ **v0.31.0（第 20 轮充电系统数据专家 P0-3）：典型功率必须排除「零电量尾段」。**
-        //
-        // 实测 id=31（**0.04 度**、1 分钟、5 kW）把某站的典型功率从 32 kW 拉到 **18.5 kW** ——
-        // 而典型功率是「折算耗时」的分母，功率砍掉 42% → 时间翻倍，
-        // 直接造出了那一行 **+185%** 的偏差。
-        //
-        // 判据：充入 **< 0.5 度**的场次是「插了一下没充上」，不参与功率统计。
-        val powerList = list.filter { (it.energy_added_kwh ?: 0.0) >= 0.5 }
-        val powers = powerList.mapNotNull { it.effectiveAvgPowerKw() }.filter { it > 1.0 }
-        if (powers.isEmpty()) return@mapNotNull null
-        val typicalPower = medianOf(powers.map { it.toDouble() }) ?: return@mapNotNull null
-
-        // ⚠️ v0.9.2：直流与交流**分开统计**。
-        // AC 典型约 7 kW、DC 典型约 55 kW，混在一起取中位数得到的数两边都不是。
-        val dcPowers = powerList.filter { it.is_dc }.mapNotNull { it.effectiveAvgPowerKw() }.filter { it > 1.0 }
-        val typicalPowerDc = if (dcPowers.size >= 2) medianOf(dcPowers.map { it.toDouble() }) else null
-
-        // 从 ≤50% 出发的充电：算充到 80% 需要多久
-        //
-        // ⚠️ v0.21.0：**必须用时间加权功率** ——
-        // 采样均值系统性高估（实测 18%~50%），
-        // 而这个数是「我要等多久」的直接来源：高估 45% → 耗时低估 31%。
-        // 例：会话 76（15%→100%）真实 72 分钟，采样均值算法只给 48 分钟。
-        val minutes = list.mapNotNull { c ->
-            val start = c.start_soc ?: return@mapNotNull null
-            val kw = c.effectiveAvgPowerKw() ?: return@mapNotNull null
-            if (start > 50 || kw <= 1.0) return@mapNotNull null
-            val needKwh = (80 - start) / 100.0 * capacity
-            needKwh / kw * 60.0
-        }.filter { it in 3.0..600.0 }.map { it.roundToInt() }.sorted()
-
-        key to StationStat(
-            sessions = list.size,
-            typicalPowerKw = typicalPower,
-            typicalPowerDcKw = typicalPowerDc,
-            typicalMinutesTo80 = if (minutes.size >= 2) {
-                // ⚠️ v0.14.0（口径审计 P1-4）：原来取上中位数（minutes[n/2]）。
-                medianOf(minutes.map { it.toDouble() })?.roundToInt()
-            } else {
-                null
+fun stationStatsFromServer(resp: com.teslamate.app.StationStatsResponse): Map<String, StationStat> =
+    resp.stations.associate { dto ->
+        dto.place_key to StationStat(
+            sessions = dto.sessions,
+            typicalPowerKw = dto.typical_power_kw,
+            typicalPowerDcKw = dto.typical_power_dc_kw,
+            typicalMinutesTo80 = dto.typical_minutes_to_80,
+            p90MinutesTo80 = dto.p90_minutes_to_80,
+            batteryCapacityKwh = resp.capacity_kwh,
+            measuredSamples = dto.measured_samples.map {
+                StationStat.MeasuredSample(it.from_soc, it.minutes)
             },
-            // ⚠️ v0.14.0（口径审计 P1-5）：改用**最近秩法**的 P90，
-            // 样本 < 10 时不给（此时 P90 与最大值没有区别，标 P90 是误导）。
-            p90MinutesTo80 = p90NearestRank(minutes),
-            batteryCapacityKwh = capacity,
-            // ⚠️ **v0.31.0：实测样本**（服务端逐点直读，不是折算）。
-            //
-            // 实测 30 场有效（接口可见 69 场里 30 场 = 43.5%）：
-            // 直流中位 31.4 分钟、P90 41.0 分钟；
-            // 折算口径中位偏差 **−9%**、区间 **−58%（严重低估）~ +80%（高估）**。
-            //
-            // ⚠️ **v0.34.0（第 21 轮口径审计 P1-4）：只收**直流**场次。**
-            //
-            // 原来不过滤 `is_dc`，于是 **3 场交流慢充混进了「直流」统计**：
-            // 最慢那场 **576 分钟**（37%→80%，636 分钟的慢充）——
-            // 一个「中位 31 分钟」里混进 576 分钟的样本，
-            // 中位虽然抗离群，但「同起点最慢一次」会直接跳成 576，
-            // 而那正是长途党最需要提前知道的数，却给错了原因。
-            //
-            // 现在：交流场次**不进入**直流统计（交流站的等待时间由折算给出）。
-            measuredSamples = list.filter { it.is_dc == true }.mapNotNull { c ->
-                val m = c.measured_minutes_to_80 ?: return@mapNotNull null
-                val from = c.measured_from_soc ?: return@mapNotNull null
-                StationStat.MeasuredSample(from, m)
-            },
-            // ⚠️ **v0.42.0：统计该站直流场次里「没充到 80%」的次数。**
-            // 「最慢一次」只从成功子集里取最大值 ⇒ 必须披露这个总体。
-            dcNeverReached80 = list.count { c ->
-                c.is_dc == true && c.measured_unavailable_reason == "never_reached_80"
-            },
-            // ⚠️ **v0.43.0**：其中**停留很短**的次数（≤20 分钟）——
-            // 用实测数据说明这些场次是「提前离场」还是「桩慢」。
-            dcNeverReached80Short = list.count { c ->
-                c.is_dc == true && c.measured_unavailable_reason == "never_reached_80"
-                    && (c.duration_min ?: Int.MAX_VALUE) <= 20
-            },
+            dcNeverReached80 = dto.dc_never_reached_80,
+            dcNeverReached80Short = dto.dc_never_reached_80_short,
         )
-    }.toMap()
-}
-
-/** 分组 key：围栏名优先 → 坐标聚类 → 地址第一段。 */
-fun stationKey(c: Charge): String {
-    c.geofence_name?.takeIf { it.isNotBlank() }?.let { return "gf:$it" }
-    val lat = c.map_lat
-    val lng = c.map_lng
-    if (lat != null && lng != null) {
-        return String.format("xy:%.2f,%.2f", lat, lng)
     }
-    return "nm:${c.place.firstSegment() ?: ""}"
-}
 
 /**
  * ⚠️ v0.21.0：**有效平均功率** —— 优先用时间加权值。
  *
- * `avg_power_kw` 是**按采样点数**的算术平均，而采样间隔不均匀
+ * `avg_power_kw` 是**按采样点数**算的算术平均，而采样间隔不均匀
  * （高功率段 5 秒一个点、掉功率段几十秒一个点），所以它**系统性高估**
  * （实测 18%~50%）。
  *
@@ -304,6 +202,9 @@ fun stationKey(c: Charge): String {
  * 「服务区还要等多久」乐观了近三分之一。
  *
  * 旧服务端没有 `avg_power_kw_true` 时回落到采样均值（行为退化但不崩）。
+ *
+ * ⚠️ **v0.182.0：它留在客户端是有意的** —— 它是「**这一场**充电显示哪个功率字段」，
+ * 是**单场**的显示口径，不是按站聚合；按站聚合已经在服务端（api/station_stats.go）。
  */
 internal fun Charge.effectiveAvgPowerKw(): Int? = avg_power_kw_true ?: avg_power_kw
 

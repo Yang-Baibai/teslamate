@@ -235,32 +235,32 @@
       "id": "charge_measured_80",
       "结论": "同起点实测充到 80% 的时间",
       "界面": "充电列表 / 记录页",
-      "服务端": null,
-      "mcp": [],
-      "状态": "gap",
-      "client_source": "客户端本地（ui/ChargeStats.kt 的 StationStat.measuredMedianNear / buildStationStats）",
+      "服务端": "/station_stats",
+      "mcp": [
+        "teslamate_station_stats"
+      ],
+      "状态": "covered",
+      "client_source": "服务端 /station_stats",
       "理由": [
-        "⚠️ **v0.180.0 订正**：这一条原来标 covered、写的是「服务端 /charge_stats ch_measured」——",
-        "**那是不实的**：App 充电详情页显示的是**客户端本地**算的「该站同起点实测中位」",
-        "（ui/ChargeStats.kt 的 StationStat.measuredMedianNear，由 buildStationStats 从充电记录本地聚合）。",
-        "而服务端的 ch_measured 是**每一场充电**的实测耗时（/charges/{id} 的 measured_minutes_to_80），",
-        "**不是「按站聚合同起点的中位」** ⇒ 两件事，Hermes 取不到后者 ⇒ 状态改 gap。",
-        "**下一轮搬服务端**：按站聚合（sessions / 典型功率 / 同起点实测中位 / 最慢一次 / 折算耗时）收归服务端，",
-        "App 与飞书才真正同一份（ADR #38）。"
+        "⚠️ **v0.182.0 已搬**：按站聚合（sessions / 典型功率 / 同起点实测中位 / 最慢一次 / 折算耗时）收归服务端（api/station_stats.go ＋ GET /station_stats），",
+        "客户端的 buildStationStats **已删**（不再有第二份）⇒ App 与飞书同一份（ADR #38）。",
+        "⚠️ 分组键统一用服务端的 place_key（按真实距离聚类 500 m）⇒ **实测分组数与原坐标聚类一致**（58 组 vs 58 组，每组成员相同）⇒ 数值不变。",
+        "⚠️ 客户端仍保留「**这一场**充电显示哪个功率字段」的选择（effectiveAvgPowerKw）—— 那是**单场**显示口径，不是按站聚合。"
       ]
     },
     {
       "id": "charge_fold_80",
       "结论": "按典型功率折算的充到 80% 时间",
       "界面": "充电列表",
-      "服务端": null,
-      "mcp": [],
-      "状态": "gap",
-      "client_source": "客户端本地（ui/ChargeStats.kt 的 StationStat.minutesTo / buildStationStats）",
+      "服务端": "/station_stats",
+      "mcp": [
+        "teslamate_station_stats"
+      ],
+      "状态": "covered",
+      "client_source": "服务端 /station_stats",
       "理由": [
-        "⚠️ **v0.180.0 订正**：同上 —— 客户端显示的是**本地** StationStat.minutesTo(fromSoc, 80, 典型功率)",
-        "（按该站典型功率线性折算），服务端 ch_measured.minutes_to_80 是**实测**口径，不是折算口径。",
-        "⇒ Hermes 取不到「按典型功率折算的耗时」⇒ 状态改 gap，与 charge_measured_80 一起搬。"
+        "⚠️ **v0.182.0 已搬**（与 charge_measured_80 同一次搬迁）：折算耗时（从 ≤50% 充到 80% 的中位与 P90）也在服务端算。",
+        "⇒ Hermes 取到的与 App 显示的是**同一份**（ADR #38）。"
       ]
     },
     {
@@ -349,7 +349,9 @@
         "但**两份口径同时存在**（App 用本地 ConsumptionModel.from(drives) 拟合 500 趟行程，",
         "Hermes 读服务端 /energy_profile）⇒ 用户在 App 与飞书里可能看到**两个数**。",
         "⇒ 状态改 gap（不是 covered）：要么服务端那份为准、客户端只透传，",
-        "要么明确记为 local-only（只该在本地）。**下一轮定夺**。"
+        "要么明确记为 local-only（只该在本地）。**下一轮定夺**。",
+        "⚠️ **v0.182.0 查证**：服务端 /energy_profile 的样本过滤与客户端 ConsumptionModel.from() **逐条一致**（km ≥ 20、均速 > 0、wh ∈ [50,400]、最近 500 趟），",
+        "分桶边界也同（0/60/90/110/130）⇒ **改到服务端不会让数字变** ⇒ 下一轮可放心同轮换源。"
       ]
     }
   ]

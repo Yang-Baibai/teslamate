@@ -46,8 +46,14 @@ SPEC = [
     #    ⚠️ **写工具绝不入 SPEC**（自检每轮都跑 ⇒ 会一直写用户的数据）。
     ("teslamate_car_info", {}, "车号", "车辆身份（车号）"),
     ("teslamate_car_info", {}, "VIN", "车辆身份（VIN）"),
-    ("teslamate_vehicle_data", {}, "采集于", "车端原始数据的采集时刻"),
-    ("teslamate_vehicle_snapshot", {}, "采集于", "车端快照的采集时刻"),
+    # ⚠️ **v0.182.0 就地订正**：原来这两条断言「采集于」**恒在** ——
+    #    而 **v0.182.0 实测**：车在休眠时 /vehicle_data 与 /vehicle_snapshot 返回
+    #    「还没拿到过车辆实时数据」⇒ MCP 工具**没有**「采集于」这个键
+    #    ⇒ **车一睡着，自检就假红**（那天线上就是红的）。
+    #    ⇒ 「恒在」的假设不成立 ⇒ 按 SPEC 自己的规矩（数据没到时合法为 null 的**不进 SPEC**）撤掉，
+    #    改由下面 check_vehicle_data_absence_contract() 断言**两条分支都成立**：
+    #      · 服务端说「没拿到」⇒ MCP 必须也如实说没拿到（不许编数据）；
+    #      · 服务端有数据 ⇒ MCP 必须给出「采集于」。
     ("teslamate_telemetry_state", {}, "遥测已接入", "遥测是否接得上（没它就没法判断「无故障码」是真是假）"),
     ("teslamate_telemetry_state", {}, "车端此刻在线", "车端此刻是否连着"),
     ("teslamate_server_health", {}, "数据库正常", "服务端数据库是否正常"),
@@ -66,6 +72,10 @@ SPEC = [
     #    ⚠️ 「线路[0].key」这种**列表元素**不进 SPEC（没线路时数组长度为 0 ⇒ 越界 ⇒ 假红）。
     #    那部分交给 check_route_plans_contract()（有数据才查）。
     ("teslamate_route_plans", {}, "线路数", "长途线路条数"),
+    # ⚠️ **v0.182.0**：按站画像（服务端聚合 ⇒ App 与飞书同一份）。
+    #    ⚠️ 「站点[0].场次」这种**列表元素**不进 SPEC（没站点时数组长度为 0 ⇒ 越界 ⇒ 假红）。
+    #    那部分交给 check_station_stats_contract()（有数据才查）。
+    ("teslamate_station_stats", {}, "站点数", "按站画像的站点数"),
     # ⚠️ **v0.123.0**：保养 / 轮胎工具。
     #    这两个**恒在**（哪怕车主还没填过基准）⇒ 可以断言。
     #    ⚠️ 「保养.还剩(km)」**不能**进 SPEC —— 车主没填基准 / 里程表读不到时
@@ -1247,6 +1257,91 @@ def check_route_plans_contract() -> list:
                 bad.append("线路[%d] %s 两端不一致（服务端 %r / MCP %r）" % (i, srv_key, sv, mv))
     return bad
 
+def check_vehicle_data_absence_contract() -> list:
+    """车端实时数据：**车睡着时必须如实说「没拿到」**，不许编一个采集时刻。
+
+    ⚠️ **v0.182.0 实测**：车在休眠时 /vehicle_data 与 /vehicle_snapshot 返回
+    「还没拿到过车辆实时数据」⇒ MCP 工具**没有**「采集于」这个键
+    ⇒ 原来把它当「恒在字段」放进 SPEC ⇒ **车一睡着自检就假红**。
+    ⇒ 现在断言**两条分支都成立**的不变式（形态无关：不看车醒没醒，只看行为对不对）。
+    """
+    bad = []
+    for ep, tool in (("/api/v1/cars/%s/vehicle_data" % T.CAR_ID, "teslamate_vehicle_data"),
+                     ("/api/v1/cars/%s/vehicle_snapshot" % T.CAR_ID, "teslamate_vehicle_snapshot")):
+        try:
+            rep = T._get(ep)
+            m = getattr(T, tool)()
+        except Exception as e:
+            bad.append("%s 调用异常 %r" % (tool, e))
+            continue
+        if not isinstance(m, dict):
+            bad.append("%s 返回格式异常：%r" % (tool, m))
+            continue
+        has_error = isinstance(rep, dict) and "error" in rep
+        if has_error:
+            if "error" not in m:
+                bad.append("%s：服务端说「没拿到实时数据」，MCP 却没报错（编数据？）" % tool)
+            if "采集于" in m:
+                bad.append("%s：服务端说「没拿到实时数据」，MCP 却给出了「采集于」" % tool)
+        else:
+            if "采集于" not in m:
+                bad.append("%s：服务端有数据，MCP 却没给出「采集于」" % tool)
+    return bad
+
+def check_station_stats_contract() -> list:
+    """按站画像：MCP 的站必须与**服务端端点逐站相等**（同一份，不是两套算法）。
+
+    ⚠️ 为什么查：v0.182.0 把「按地点聚合充电历史」从客户端搬到服务端
+    ⇒ 若 MCP 又自己算一遍，就会出现**第二个口径**（App 与飞书看到不同的典型功率/耗时）。
+    ⇒ 这里把两边的站点数、容量、每个站的场次与典型功率**逐站**比对。
+    """
+    bad = []
+    try:
+        rep = T._get("/api/v1/cars/%s/station_stats" % T.CAR_ID)
+        m = T.teslamate_station_stats()
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(rep, dict):
+        return ["按站画像端点取不到：%r" % (rep,)]
+    if not isinstance(m, dict) or "错误" in m:
+        return ["MCP 的按站画像工具取不到：%r" % (m,)]
+    if m.get("站点数") != rep.get("station_count"):
+        bad.append("站点数两端不一致（服务端 %r / MCP %r）"
+                  % (rep.get("station_count"), m.get("站点数")))
+    cap = rep.get("capacity_kwh")
+    mcap = m.get("实测可用容量(度)")
+    if cap is not None and mcap is not None and abs(float(cap) - float(mcap)) > 1e-9:
+        bad.append("反推容量两端不一致（服务端 %r / MCP %r）" % (cap, mcap))
+    # 逐站比对：MCP 只列前 12 个 ⇒ 比对**同样排名的前 N 个**。
+    srv = sorted(
+        rep.get("stations") or [],
+        key=lambda s: (-(s.get("sessions") or 0), s.get("place_key") or ""),
+    )[:12]
+    got = m.get("站点") or []
+    for i, s in enumerate(srv):
+        if i >= len(got):
+            bad.append("MCP 少了第 %d 个站" % i)
+            break
+        g = got[i]
+        for srv_key, mcp_key in (("place_key", "place_key"),
+                                 ("sessions", "场次"),
+                                 ("typical_power_kw", "典型功率(kW)"),
+                                 ("typical_minutes_to_80", "折算充到80%(分钟)")):
+            sv = s.get(srv_key)
+            mv = g.get(mcp_key)
+            if sv is None and mv is None:
+                continue
+            if sv is None or mv is None:
+                bad.append("站[%d] %s 两端不一致（服务端 %r / MCP %r）" % (i, srv_key, sv, mv))
+                continue
+            if isinstance(sv, (int, float)) and isinstance(mv, (int, float)):
+                if abs(float(sv) - float(mv)) > 1e-9:
+                    bad.append("站[%d] %s 两端不一致（服务端 %r / MCP %r）⇒ 有两套算法"
+                              % (i, srv_key, sv, mv))
+            elif sv != mv:
+                bad.append("站[%d] %s 两端不一致（服务端 %r / MCP %r）" % (i, srv_key, sv, mv))
+    return bad
+
 def check_maintenance_contract() -> list:
     """保养 / 轮胎提醒必须**与服务端同源**（不许模型自己减）。
 
@@ -1676,6 +1771,22 @@ def main() -> int:
         print("  ✓ %-26s %-24s 长途线路与服务端同一份判定、逐条一致"
               % ("teslamate_route_plans", "线路契约"))
     bad.extend(rp_bad)
+
+    ss_bad = check_station_stats_contract()
+    for b in ss_bad:
+        print("  ✗ %s" % b)
+    if not ss_bad:
+        print("  ✓ %-26s %-24s 按站画像与服务端同一份聚合、逐站一致"
+              % ("teslamate_station_stats", "按站画像契约"))
+    bad.extend(ss_bad)
+
+    vd_bad = check_vehicle_data_absence_contract()
+    for b in vd_bad:
+        print("  ✗ %s" % b)
+    if not vd_bad:
+        print("  ✓ %-26s %-24s 车睡着时如实说「没拿到」，醒着时给出采集时刻"
+              % ("teslamate_vehicle_data", "车端数据契约"))
+    bad.extend(vd_bad)
 
     maint_bad = check_maintenance_contract()
     for b in maint_bad:

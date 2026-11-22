@@ -1166,6 +1166,64 @@ def teslamate_route_plans() -> dict:
         ],
     }
     return out
+# ⚠️ **v0.182.0**：按站画像 —— Hermes 也能问了。
+#
+# 为什么加：「这个服务区充到 80% 要多久」「这个桩快不快」原来在**客户端**
+# 按地点聚合充电历史算 ⇒ 飞书里问不出来（mission §2.1；
+# docs/app-conclusions.json 的 charge_measured_80 / charge_fold_80 两条 gap）。
+# ⇒ 现在聚合在**服务端**（/station_stats），这里**只透传**
+# ⇒ App 与飞书是**同一份**（ADR #38 / #41）。
+#
+# ⚠️ **别自己复算**：典型功率、折算耗时、实测样本都要按站聚合
+# —— 这里读服务端那份，别在这里另算一遍。
+@mcp.tool(annotations=RO)
+def teslamate_station_stats() -> dict:
+    """查**按站画像**：某个充电桩/服务区到底快不快、我要等多久。
+
+    **什么时候用**：用户问「这个服务区充到 80% 要多久」「这个桩快不快」
+    「我在 X 站充过电，那次用了多久」「这个站有没有一次没充到 80%」—— 都归它。
+
+    ⚠️ **按站点聚合**（服务端按真实距离聚类出来的「同一个地方」），
+    不是某一场充电 ⇒ 回答「这个站」时别拿单场数据冒充。
+
+    ⚠️ **实测耗时**与**折算耗时**是两个口径：
+    - 实测 = 服务端逐点直读那场充电的曲线（准，但只在**直流**场次里）；
+    - 折算 = 用该站典型功率反推（所有场次都有，含交流）。
+
+    ⚠️ 站点数多时只列**场次最多**的前若干个 —— 想看别的站再说。
+    """
+    data = _get(f"/api/v1/cars/{CAR_ID}/station_stats")
+    if not isinstance(data, dict):
+        return {"错误": "返回格式异常"}
+    stations = data.get("stations") or []
+    out = {
+        "站点数": data.get("station_count"),
+        "参与统计的充电场次": data.get("sample_count"),
+        # ⚠️ 反推的**整包**容量（kWh）—— 折算耗时的分母。
+        "实测可用容量(度)": data.get("capacity_kwh"),
+    }
+    ranked = sorted(
+        stations,
+        key=lambda s: (-(s.get("sessions") or 0), s.get("place_key") or ""),
+    )
+    top = ranked[:12]
+    if top:
+        out["站点"] = [
+            {
+                "站点": s.get("name"),
+                "place_key": s.get("place_key"),
+                "场次": s.get("sessions"),
+                "典型功率(kW)": s.get("typical_power_kw"),
+                "直流典型功率(kW)": s.get("typical_power_dc_kw"),
+                "折算充到80%(分钟)": s.get("typical_minutes_to_80"),
+                "P90(分钟)": s.get("p90_minutes_to_80"),
+                "实测样本数": len(s.get("measured_samples") or []),
+                "没充到80%的次数": s.get("dc_never_reached_80"),
+                "其中很快离开的次数": s.get("dc_never_reached_80_short"),
+            }
+            for s in top
+        ]
+    return out
 @mcp.tool(annotations=RO)
 def teslamate_charge_stats(period: str = "7d") -> dict:
     """查**充电统计**：按区间给出充了多少度、几次、直交流拆分、平均时长、上次充满。
