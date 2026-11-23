@@ -393,6 +393,11 @@ func queryStationCharges(ctx context.Context, carID int) ([]*Charge, error) {
 // ⚠️ **v0.182.0 新增**：原来这套聚合在**客户端**（buildStationStats）
 // ⇒ 飞书里问「这个桩充到 80% 要多久」问不出来（mission §2.1）。
 func handleStationStats(w http.ResponseWriter, r *http.Request) {
+	// ⚠️ **v0.184.0**：支持按**名字**查一个站（飞书里「金田服务区充到 80% 要多久」）。
+	//
+	// 匹配规则：站名**包含**该关键字（大小写不敏感），或 place_key **精确等于**它
+	// ⇒ 既能按「金田服务区」这样的名字问，也能按 place_key 精确取。
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
 	id, err := pathID(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "car id 无效")
@@ -418,5 +423,16 @@ func handleStationStats(w http.ResponseWriter, r *http.Request) {
 	out.CapacityKwh = capacity
 	out.Stations = stats
 	out.StationCount = len(stats)
+	// ⚠️ **v0.184.0**：按名字过滤时**只回匹配的站**，但**容量照给**（它是全车的一份）。
+	if name != "" {
+		matched := make([]StationStat, 0, len(stats))
+		for _, s := range stats {
+			if s.PlaceKey == name || strings.Contains(strings.ToLower(s.Name), strings.ToLower(name)) {
+				matched = append(matched, s)
+			}
+		}
+		out.Stations = matched
+		out.StationCount = len(matched)
+	}
 	writeJSON(w, out)
 }

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime
 import sys
+import urllib.parse
 
 # ⚠️ **必须**：这台机器的默认编码是 GBK，Python 打印 '✓' / '✗' 会抛
 #    UnicodeEncodeError ⇒ **扫描器自己崩了**，退出码非 0，
@@ -1291,6 +1292,37 @@ def check_consumption_model_contract() -> list:
             continue
         if abs(float(sv) - float(mv)) > 1e-9:
             bad.append("%s 两端不一致（服务端 %r / MCP %r）⇒ 有两套算法" % (key, sv, mv))
+    # ── 按名字查：必须**只回匹配的站**，且字段与服务端一致 ──
+    try:
+        allst = T._get("/api/v1/cars/%s/station_stats" % T.CAR_ID)
+    except Exception as e:
+        return bad + ["按名字查的契约异常 %r" % (e,)]
+    if isinstance(allst, dict) and (allst.get("stations") or []):
+        target = (allst["stations"] or [])[0]
+        nm = target.get("name") or ""
+        try:
+            one = T._get("/api/v1/cars/%s/station_stats?name=%s"
+                        % (T.CAR_ID, urllib.parse.quote(nm)))
+            m1 = T.teslamate_station_stats(nm)
+        except Exception as e:
+            return bad + ["按名字查的契约异常 %r" % (e,)]
+        if not isinstance(one, dict):
+            return bad + ["按名字查的端点返回异常：%r" % (one,)]
+        got = one.get("stations") or []
+        if len(got) != 1:
+            bad.append("按名字查「%s」应只回 1 个站，实际 %d 个" % (nm, len(got)))
+        elif got[0].get("place_key") != target.get("place_key"):
+            bad.append("按名字查「%s」回的站不对（服务端 %r / MCP %r）"
+                      % (nm, target.get("place_key"), got[0].get("place_key")))
+        else:
+            for k in ("typical_power_kw", "typical_minutes_to_80", "sessions"):
+                a = target.get(k)
+                b = got[0].get(k)
+                if a is None and b is None:
+                    continue
+                if a != b:
+                    bad.append("按名字查「%s」的 %s 两端不一致（服务端 %r / MCP %r）"
+                              % (nm, k, a, b))
     sb = rep.get("buckets") or []
     mb = m.get("档位") or []
     if len(sb) != len(mb):

@@ -94,6 +94,7 @@ import hmac
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -1177,8 +1178,11 @@ def teslamate_route_plans() -> dict:
 # ⚠️ **别自己复算**：典型功率、折算耗时、实测样本都要按站聚合
 # —— 这里读服务端那份，别在这里另算一遍。
 @mcp.tool(annotations=RO)
-def teslamate_station_stats() -> dict:
+def teslamate_station_stats(name: str = "") -> dict:
     """查**按站画像**：某个充电桩/服务区到底快不快、我要等多久。
+
+    ⚠️ **带 `name` 时按名字查**：用户问「金田服务区充到 80% 要多久」
+    ⇒ 直接传 `name="金田服务区"` ⇒ 只回那个站（别让模型在 58 个站里自己挑）。
 
     **什么时候用**：用户问「这个服务区充到 80% 要多久」「这个桩快不快」
     「我在 X 站充过电，那次用了多久」「这个站有没有一次没充到 80%」—— 都归它。
@@ -1192,7 +1196,8 @@ def teslamate_station_stats() -> dict:
 
     ⚠️ 站点数多时只列**场次最多**的前若干个 —— 想看别的站再说。
     """
-    data = _get(f"/api/v1/cars/{CAR_ID}/station_stats")
+    q = ("?name=" + urllib.parse.quote(str(name))) if str(name).strip() else ""
+    data = _get(f"/api/v1/cars/{CAR_ID}/station_stats{q}")
     if not isinstance(data, dict):
         return {"错误": "返回格式异常"}
     stations = data.get("stations") or []
