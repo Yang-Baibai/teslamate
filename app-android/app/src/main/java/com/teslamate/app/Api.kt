@@ -922,6 +922,25 @@ data class StationMeasuredSampleDto(
     val minutes: Int,
 )
 
+/**
+ * ⚠️ **v0.187.0**：该站**最近一次真充电**的实测（服务端唯一一份，App 只透传）。
+ *
+ * ⚠️ 口径：「最近一次」= 最近一场**充入 ≥ 0.5 度**的充电
+ *（「插了一下没充上」那种 0.04 度的尾段不算）⇒ 说明由服务端的 `note` 给出。
+ */
+@Serializable
+data class StationLastSessionDto(
+    @Serializable(with = InstantSer::class) val at: Instant? = null,
+    val from_soc: Int? = null,
+    val to_soc: Int? = null,
+    val minutes: Int? = null,
+    val energy_kwh: Double? = null,
+    val power_kw: Double? = null,
+    val is_dc: Boolean = false,
+    /** 口径说明（服务端唯一一份 ⇒ App 不自己编）。 */
+    val note: String = "",
+)
+
 @Serializable
 data class StationStatDto(
     val place_key: String,
@@ -933,6 +952,8 @@ data class StationStatDto(
     val measured_samples: List<StationMeasuredSampleDto> = emptyList(),
     val dc_never_reached_80: Int = 0,
     val dc_never_reached_80_short: Int = 0,
+    /** ⚠️ v0.187.0：最近一次真充电的实测（服务端给的）。 */
+    val last_session: StationLastSessionDto? = null,
 )
 
 @Serializable

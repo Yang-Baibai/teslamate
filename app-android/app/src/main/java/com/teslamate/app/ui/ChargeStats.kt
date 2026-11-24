@@ -2,6 +2,7 @@ package com.teslamate.app.ui
 
 import com.teslamate.app.Charge
 import com.teslamate.app.firstSegment
+import com.teslamate.app.fmt
 import com.teslamate.app.medianOf
 import com.teslamate.app.p90NearestRank
 import kotlin.math.abs
@@ -96,7 +97,27 @@ data class StationStat(
      * 所以归因要**用实测数据**，不能猜。
      */
     val dcNeverReached80Short: Int = 0,
+    /**
+     * ⚠️ **v0.187.0**：该站**最近一次真充电**的实测（服务端算的，App 只透传）。
+     *
+     * 为什么要有它：中位与折算说的是「这个桩**通常**多快」，
+     * 而用户真正要问的是「**我上次**在这儿充了多久」——
+     * 桩被限功率 / 被占位 / 被换设备时，**中位不会变，最近一次会变**。
+     */
+    val lastSession: LastSession? = null,
 ) {
+    /** ⚠️ v0.187.0：最近一次真充电的实测（与服务端一一对应）。 */
+    data class LastSession(
+        val at: java.time.Instant?,
+        val fromSoc: Int?,
+        val toSoc: Int?,
+        val minutes: Int?,
+        val energyKwh: Double?,
+        val powerKw: Double?,
+        val isDc: Boolean,
+        /** 口径说明（服务端唯一一份）。 */
+        val note: String,
+    )
     /**
      * ⚠️ **v0.42.0**：被排除在「最慢一次」统计之外的直流场次数。
      *
@@ -187,8 +208,38 @@ fun stationStatsFromServer(resp: com.teslamate.app.StationStatsResponse): Map<St
             },
             dcNeverReached80 = dto.dc_never_reached_80,
             dcNeverReached80Short = dto.dc_never_reached_80_short,
+            lastSession = dto.last_session?.let {
+                StationStat.LastSession(
+                    at = it.at,
+                    fromSoc = it.from_soc,
+                    toSoc = it.to_soc,
+                    minutes = it.minutes,
+                    energyKwh = it.energy_kwh,
+                    powerKw = it.power_kw,
+                    isDc = it.is_dc,
+                    note = it.note,
+                )
+            },
         )
     }
+
+/**
+ * ⚠️ **v0.187.0**：「该站最近一次」那一行的文案。
+ *
+ * 只有服务端给了最近一次才有这一行（没有 ⇒ **不显示**，不编）。
+ */
+fun StationStat.lastSessionLine(): String? {
+    val ls = lastSession ?: return null
+    val day = ls.at?.atZone(java.time.ZoneId.systemDefault())?.toLocalDate()?.toString() ?: return null
+    val sb = StringBuilder()
+    sb.append(day)
+    if (ls.fromSoc != null && ls.toSoc != null) {
+        sb.append(" · ").append(ls.fromSoc).append("% → ").append(ls.toSoc).append("%")
+    }
+    ls.minutes?.let { sb.append(" · ").append(it).append(" 分钟") }
+    ls.powerKw?.let { sb.append(" · ").append(it.fmt(1)).append(" kW") }
+    return sb.toString()
+}
 
 /**
  * ⚠️ v0.21.0：**有效平均功率** —— 优先用时间加权值。

@@ -161,6 +161,8 @@ type StationLastSession struct {
 	PowerKw *float64 `json:"power_kw"`
 	// IsDC 是不是直流桩。
 	IsDC bool `json:"is_dc"`
+	// Note 这个口径**必须说清**（App 会渲染 ⇒ 走 app_copy.go 的宽度口径）。
+	Note string `json:"note"`
 }
 
 // StationStatsResponse 按站画像的完整结论。
@@ -185,6 +187,18 @@ func stationEffectivePowerKw(c *Charge) *int {
 	}
 	return c.AvgPowerKw
 }
+
+// stationLastSessionNote 「该站最近一次」的口径说明（App 充电路况卡 ⓘ 里那行）。
+//
+// ⚠️ **v0.187.0**：这个口径**必须说清** ——
+// 「最近一次」不是「最近那一场充电记录」，而是「最近一场**真充上电**的充电」
+// （充入 ≥ 0.5 度；「插了一下没充上」那种 0.04 度的尾段不算）
+// ⇒ 不说清，读者会以为「我刚看的这次」为什么没出现在这一行里。
+//
+// ⚠️ **为什么不在 app_copy.go**：那儿放的是**常驻**文案（44 宽上限）；
+// 而这条是 **ⓘ 里的一行说明**（noteLineWidthLimit = 96）⇒ 放错集合会被
+// 「服务端常驻文案宽度」与「文案两端逐字一致」两道闸门判红（实测踩到）。
+const stationLastSessionNote = "最近一次 = 最近一场充入 ≥ 0.5 度的充电（不含「插了一下没充上」）"
 
 // stationCapacity 反推**整包**容量（kWh）：充入 kWh ÷ ΔSOC% × 100 的中位数。
 //
@@ -401,6 +415,7 @@ func buildStationStats(charges []*Charge) (float64, []StationStat, bool) {
 				Minutes:   lastReal.DurationMin,
 				EnergyKwh: lastReal.EnergyAdded,
 				IsDC:      lastReal.IsDC,
+				Note:      stationLastSessionNote,
 			}
 			// 实际平均功率 = 充入度数 ÷ 停留分钟（拿不到就退回模型给的等效功率）。
 			if lastReal.EnergyAdded != nil && lastReal.DurationMin != nil && *lastReal.DurationMin > 0 {

@@ -518,6 +518,18 @@ internal fun ChargeDetail(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        // ⚠️ **v0.187.0**：「该站最近一次」—— 中位之外的那一票**实测**。
+                        //
+                        // 为什么放在最上面：用户问的是「这个桩**现在**快不快」，
+                        // 而「该站历史 X kW（N 次）」说的是**历史中位**；
+                        // 桩被限功率 / 被换设备时，**中位不会变，最近一次会变**。
+                        stat.lastSessionLine()?.let { line ->
+                            KV(
+                                "该站最近一次",
+                                line,
+                                note = stat.lastSession?.note,
+                            )
+                        }
                         // ⚠️ **v0.31.0（P0-2）：把「实测」放在「折算」**前面**，并说清差多少。**
                         //
                         // 原来这块只有折算值「从 31% 充到 80% 约 43 分钟」，

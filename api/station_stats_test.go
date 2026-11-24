@@ -2,6 +2,7 @@ package main
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -149,6 +150,21 @@ func ssAt(id int, key, label, place string, added float64, startSoc, endSoc, pw,
 		c.PlaceLabel = ssS(label)
 	}
 	return c
+}
+
+// TestStationLastSessionNoteWidth 「该站最近一次」的口径是 ⓘ 里的**一行** ⇒ 受 noteLineWidthLimit 约束。
+//
+// ⚠️ **v0.187.0**：它**不在** app_copy.go 的「常驻文案」集合里
+// （那条是 44 宽的常驻上限；这条是 ⓘ 说明 ⇒ 96）⇒ 单独用 ⓘ 上限钉住。
+func TestStationLastSessionNoteWidth(t *testing.T) {
+	if w := copyVisualWidth(stationLastSessionNote); w > noteLineWidthLimit {
+		t.Fatalf("最近一次口径宽度 %d > %d：%q", w, noteLineWidthLimit, stationLastSessionNote)
+	}
+	for _, must := range []string{"0.5 度", "不含"} {
+		if !strings.Contains(stationLastSessionNote, must) {
+			t.Fatalf("最近一次口径丢了关键事实 %q：%q", must, stationLastSessionNote)
+		}
+	}
 }
 
 // TestStationStats_最近一次真充电
