@@ -136,6 +136,14 @@ type StationStat struct {
 	// ⇒ 只按最新那一条匹配会**漏**掉用户记得的那个地名。
 	// ⚠️ 第一条 = **最近一次**那个地址（list 按 start_date 倒序）。
 	Addresses []string `json:"addresses"`
+
+	// ⚠️ **v0.186.0**：这个站的**坐标**（**GCJ-02**，最近一次充电那个）。
+	//
+	// 为什么加：「我附近的桩」要算距离 ⇒ 没有坐标就算不了。
+	// ⚠️ 坐标系：map_lat/map_lng 是 **GCJ-02**（国内偏移过）⇒
+	// 与车的 map_lat/map_lng **同一套** ⇒ 距离不会差出几百米。
+	MapLat *float64 `json:"map_lat"`
+	MapLng *float64 `json:"map_lng"`
 }
 
 // StationLastSession 这个站**最近一次真充电**的实测。
@@ -406,10 +414,13 @@ func buildStationStats(charges []*Charge) (float64, []StationStat, bool) {
 		}
 
 		stats = append(stats, StationStat{
-			PlaceKey:              key,
-			Name:                  stationName(list[0]),
-			LastSession:           lastSession,
-			Addresses:             addresses,
+			PlaceKey:    key,
+			Name:        stationName(list[0]),
+			LastSession: lastSession,
+			Addresses:   addresses,
+			// ⚠️ **v0.186.0**：坐标取**最近一次**那场（list[0]，start_date 倒序）。
+			MapLat:                list[0].MapLat,
+			MapLng:                list[0].MapLng,
 			Sessions:              len(list),
 			TypicalPowerKw:        typicalPower,
 			TypicalPowerDcKw:      typicalPowerDc,

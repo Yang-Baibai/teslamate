@@ -77,6 +77,8 @@ SPEC = [
     #    ⚠️ 「站点[0].场次」这种**列表元素**不进 SPEC（没站点时数组长度为 0 ⇒ 越界 ⇒ 假红）。
     #    那部分交给 check_station_stats_contract()（有数据才查）。
     ("teslamate_station_stats", {}, "站点数", "按站画像的站点数"),
+    # ⚠️ **v0.186.0**：「我附近的桩」（服务端按车最后一次位置算距离 ⇒ 坐标与距离都只一份）。
+    ("teslamate_nearby_stations", {}, "半径内站点数", "附近的桩的站点数"),
     # ⚠️ **v0.183.0**：实测能耗模型（服务端拟合 ⇒ App 与飞书同一份）。
     #    ⚠️ 「档位[0].Wh/km」这种**列表元素**不进 SPEC（没模型时数组长度为 0 ⇒ 越界 ⇒ 假红）。
     ("teslamate_consumption_model", {}, "样本数", "实测能耗模型的样本条数"),
@@ -1489,6 +1491,72 @@ def check_station_stats_contract() -> list:
         bad.append("按最近一次排序的两端顺序不一致（服务端 %r / MCP %r）" % (rk[:len(mk)], mk))
     return bad
 
+def check_nearby_stations_contract() -> list:
+    """「我附近的桩」：MCP 与服务端端点必须**逐站相等**（距离与画像同一份）。
+
+    ⚠️ **v0.186.0**：距离是**服务端算的**（按车最后一次位置、车与站同一套 GCJ-02 坐标）
+    ⇒ MCP 若自己算一遍，坐标系一旦混用（WGS-84 vs GCJ-02）就会差几百米
+    ⇒ 这里把两边的站数、位置说明、每个站的**距离**与画像**逐项**比对。
+    """
+    bad = []
+    try:
+        rep = T._get("/api/v1/cars/%s/nearby_stations?radius_km=50&sort=distance" % T.CAR_ID)
+        m = T.teslamate_nearby_stations(radius_km=50, sort="distance")
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(rep, dict):
+        return ["附近的桩端点取不到：%r" % (rep,)]
+    if not isinstance(m, dict) or "错误" in m:
+        return ["MCP 的「附近的桩」工具取不到：%r" % (m,)]
+    if m.get("半径内站点数") != rep.get("station_count"):
+        bad.append("半径内站点数两端不一致（服务端 %r / MCP %r）"
+                   % (rep.get("station_count"), m.get("半径内站点数")))
+    if m.get("位置说明") != (rep.get("position") or {}).get("note"):
+        bad.append("位置说明两端不一致（服务端 %r / MCP %r）"
+                   % ((rep.get("position") or {}).get("note"), m.get("位置说明")))
+    srv = rep.get("stations") or []
+    got = m.get("站点") or []
+    # ⚠️ **v0.186.0 的坑（实测踩到）**：车**开着时** positions 每秒一条 ⇒
+    # 「端点那一次」与「MCP 那一次」用的**位置快照不同** ⇒ 距离天然差几米到几十米
+    # （实测 0.88 vs 0.89）⇒ **逐位相等是错判据**（车在动，不是口径漂了）。
+    # ⇒ ① 快照**相同**（位置时刻相等）⇒ 距离必须**逐位相等**；
+    #    ② 快照不同 ⇒ 距离只比**量级**（±0.5 公里），其余字段仍逐项相等；
+    #    ③ 站**按 place_key 配对**（不按下标）⇒ 车跨过半径边界时列表会错位。
+    same_snapshot = m.get("位置时刻") == (rep.get("position") or {}).get("at")
+    dist_tol = 0.0 if same_snapshot else 0.5
+    by_key = {}
+    for g in got:
+        by_key[g.get("place_key")] = g
+    for i, s in enumerate(srv):
+        pk = s.get("place_key")
+        g = by_key.get(pk)
+        if g is None:
+            bad.append("MCP 少了站 %r（服务端有 %r）" % (pk, s.get("name")))
+            continue
+        for srv_key, mcp_key in (("typical_power_dc_kw", "直流典型功率(kW)"),
+                                 ("typical_minutes_to_80", "折算充到80%(分钟)"),
+                                 ("sessions", "场次")):
+            sv = s.get(srv_key)
+            mv = g.get(mcp_key)
+            if sv is None and mv is None:
+                continue
+            if isinstance(sv, (int, float)) and isinstance(mv, (int, float)):
+                if abs(float(sv) - float(mv)) > 1e-9:
+                    bad.append("站[%r] %s 两端不一致（服务端 %r / MCP %r）" % (pk, srv_key, sv, mv))
+            elif sv != mv:
+                bad.append("站[%r] %s 两端不一致（服务端 %r / MCP %r）" % (pk, srv_key, sv, mv))
+        sv = s.get("distance_km")
+        mv = g.get("距离(公里)")
+        if sv is None or mv is None:
+            continue
+        if abs(float(sv) - float(mv)) > dist_tol:
+            bad.append("站[%r] 的距离两端差太多（服务端 %r / MCP %r，容差 %r）"
+                      % (pk, sv, mv, dist_tol))
+    # 站数：快照不同 ⇒ 车可能正好跨过半径边界 ⇒ 允许差 2 个。
+    if not same_snapshot and abs(len(got) - len(srv)) > 2:
+        bad.append("半径内站点数差太多（服务端 %d / MCP %d）" % (len(srv), len(got)))
+    return bad
+
 def check_maintenance_contract() -> list:
     """保养 / 轮胎提醒必须**与服务端同源**（不许模型自己减）。
 
@@ -1926,6 +1994,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 按站画像与服务端同一份聚合、逐站一致"
               % ("teslamate_station_stats", "按站画像契约"))
     bad.extend(ss_bad)
+
+    nb_bad = check_nearby_stations_contract()
+    for b in nb_bad:
+        print("  ✗ %s" % b)
+    if not nb_bad:
+        print("  ✓ %-26s %-24s 附近的桩与服务端同一份距离与画像、逐站一致"
+              % ("teslamate_nearby_stations", "附近的桩契约"))
+    bad.extend(nb_bad)
 
     cm_bad = check_consumption_model_contract()
     for b in cm_bad:

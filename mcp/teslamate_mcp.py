@@ -1274,6 +1274,56 @@ def teslamate_station_stats(name: str = "", sort: str = "") -> dict:
 # docs/app-conclusions.json 的 consumption_model 那条 gap），而且服务端 /energy_profile
 # 那个是**车轮功率曲线**、**不是同一个口径** ⇒ 用户在 App 与飞书里可能看到两个数。
 # ⇒ 现在标定法那份模型在**服务端**（/consumption_model），这里**只透传**。
+# ⚠️ **v0.186.0**：「我附近的桩哪个快」—— Hermes 也能问了。
+#
+# 为什么加：按站画像有（v0.182.0），但**没有距离** ⇒ 用户问「我现在附近的桩哪个快」时，
+# 模型只能拿到 58 个站的全量数据自己挑 ⇒ **挑不出「附近」**（它不知道车在哪）。
+# ⇒ 现在距离在**服务端**按车**最后一次位置**算（车与站同一套 GCJ-02 坐标 ⇒ 不差几百米）。
+@mcp.tool(annotations=RO)
+def teslamate_nearby_stations(radius_km: float = 30, sort: str = "distance") -> dict:
+    """查**我附近的充电桩**：哪个近、哪个快、我要等多久。
+
+    **什么时候用**：用户问「我现在附近的桩哪个快」「附近有没有快充」
+    「到下一个服务区还有多远」—— 都归它（**按车的最后一次位置**算距离 ⇒ 不用用户报位置）。
+
+    ⚠️ **车睡着时**位置不再更新 ⇒ 「附近」是**最后已知位置**的附近
+    ⇒ 返回里的「位置说明」会**明说**那是几小时前的位置（不装作是现在）。
+
+    ⚠️ `sort="power"` ⇒ 按**典型直流功率**从高到低（「哪个快」）；默认按**距离**。
+    """
+    q = "?radius_km=%s" % urllib.parse.quote(str(radius_km))
+    if str(sort).strip():
+        q += "&sort=" + urllib.parse.quote(str(sort).strip())
+    data = _get(f"/api/v1/cars/{CAR_ID}/nearby_stations{q}")
+    if not isinstance(data, dict):
+        return {"错误": "返回格式异常"}
+    pos = data.get("position") or {}
+    out = {
+        "半径(公里)": data.get("radius_km"),
+        "排序": data.get("sort"),
+        "位置说明": pos.get("note"),
+        "位置时刻": pos.get("at"),
+        "位置距今(小时)": pos.get("age_hours"),
+        "半径内站点数": data.get("station_count"),
+        "口径": data.get("note"),
+    }
+    stations = data.get("stations") or []
+    if stations:
+        out["站点"] = [
+            {
+                "站点": s.get("name"),
+                "place_key": s.get("place_key"),
+                "距离(公里)": s.get("distance_km"),
+                "地址": s.get("address"),
+                "典型功率(kW)": s.get("typical_power_kw"),
+                "直流典型功率(kW)": s.get("typical_power_dc_kw"),
+                "折算充到80%(分钟)": s.get("typical_minutes_to_80"),
+                "场次": s.get("sessions"),
+                **_station_last_session(s),
+            }
+            for s in stations
+        ]
+    return out
 @mcp.tool(annotations=RO)
 def teslamate_consumption_model() -> dict:
     """查**本车实测能耗模型**（车速 → Wh/km 档）。

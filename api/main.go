@@ -164,6 +164,8 @@ func main() {
 	mux.HandleFunc("GET /api/v1/cars/{id}/route_plans", auth(handleRoutePlans))
 	// ⚠️ v0.182.0：按站画像（这个桩快不快 / 要等多久）—— 聚合在服务端 ⇒ App 与飞书同一份。
 	mux.HandleFunc("GET /api/v1/cars/{id}/station_stats", auth(handleStationStats))
+	// ⚠️ **v0.186.0**：「我附近的桩哪个快」（按车最后一次位置算距离）。
+	mux.HandleFunc("GET /api/v1/cars/{id}/nearby_stations", auth(handleNearbyStations))
 	// ⚠️ v0.183.0：标定法实测能耗模型（客户端不再自己拟合 ⇒ App 与飞书同一个数）。
 	mux.HandleFunc("GET /api/v1/cars/{id}/consumption_model", auth(handleConsumptionModel))
 	// ⚠️ **v0.123.0**：保养 / 轮胎提醒（**基准与判定都在服务端**）。
