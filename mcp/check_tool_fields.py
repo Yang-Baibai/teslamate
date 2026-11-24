@@ -1292,37 +1292,6 @@ def check_consumption_model_contract() -> list:
             continue
         if abs(float(sv) - float(mv)) > 1e-9:
             bad.append("%s 两端不一致（服务端 %r / MCP %r）⇒ 有两套算法" % (key, sv, mv))
-    # ── 按名字查：必须**只回匹配的站**，且字段与服务端一致 ──
-    try:
-        allst = T._get("/api/v1/cars/%s/station_stats" % T.CAR_ID)
-    except Exception as e:
-        return bad + ["按名字查的契约异常 %r" % (e,)]
-    if isinstance(allst, dict) and (allst.get("stations") or []):
-        target = (allst["stations"] or [])[0]
-        nm = target.get("name") or ""
-        try:
-            one = T._get("/api/v1/cars/%s/station_stats?name=%s"
-                        % (T.CAR_ID, urllib.parse.quote(nm)))
-            m1 = T.teslamate_station_stats(nm)
-        except Exception as e:
-            return bad + ["按名字查的契约异常 %r" % (e,)]
-        if not isinstance(one, dict):
-            return bad + ["按名字查的端点返回异常：%r" % (one,)]
-        got = one.get("stations") or []
-        if len(got) != 1:
-            bad.append("按名字查「%s」应只回 1 个站，实际 %d 个" % (nm, len(got)))
-        elif got[0].get("place_key") != target.get("place_key"):
-            bad.append("按名字查「%s」回的站不对（服务端 %r / MCP %r）"
-                      % (nm, target.get("place_key"), got[0].get("place_key")))
-        else:
-            for k in ("typical_power_kw", "typical_minutes_to_80", "sessions"):
-                a = target.get(k)
-                b = got[0].get(k)
-                if a is None and b is None:
-                    continue
-                if a != b:
-                    bad.append("按名字查「%s」的 %s 两端不一致（服务端 %r / MCP %r）"
-                              % (nm, k, a, b))
     sb = rep.get("buckets") or []
     mb = m.get("档位") or []
     if len(sb) != len(mb):
@@ -1372,6 +1341,25 @@ def check_vehicle_data_absence_contract() -> list:
             if "采集于" not in m:
                 bad.append("%s：服务端有数据，MCP 却没给出「采集于」" % tool)
     return bad
+
+def _address_only_token(stations: list):
+    """挑一个「**只在地址里、不在任何站名里**」的片段。
+
+    ⚠️ **v0.185.0**：用来验「按地名/地址查」这条路真的通 ——
+    站名命中会走**另一条**分支（v0.184.0 的口径，优先）⇒
+    必须挑一个站名里**没有**的片段，才能证明地址检索没断。
+    """
+    names = " ".join((s.get("name") or "") for s in stations).lower()
+    for s in stations:
+        for addr in (s.get("addresses") or []):
+            for seg in str(addr).split(","):
+                seg = seg.strip().lower()
+                if len(seg) < 3 or seg in ("中国", "china", "市", "区", "省", "县"):
+                    continue
+                if seg in names:
+                    continue
+                return s.get("place_key"), seg
+    return None, None
 
 def check_station_stats_contract() -> list:
     """按站画像：MCP 的站必须与**服务端端点逐站相等**（同一份，不是两套算法）。
@@ -1425,6 +1413,80 @@ def check_station_stats_contract() -> list:
                               % (i, srv_key, sv, mv))
             elif sv != mv:
                 bad.append("站[%d] %s 两端不一致（服务端 %r / MCP %r）" % (i, srv_key, sv, mv))
+    # ── v0.184.0：按**名字**查：必须**只回匹配的站**，且字段与服务端一致 ──
+    # ⚠️ **v0.185.0 就地订正**：这段原先长在 `check_consumption_model_contract` 里
+    # （按站画像的检查住进了能耗模型的检查 ⇒ 报错也报在错的标签下）⇒ 现在挪回本函数。
+    try:
+        allst = T._get("/api/v1/cars/%s/station_stats" % T.CAR_ID)
+    except Exception as e:
+        return bad + ["按名字查的契约异常 %r" % (e,)]
+    if isinstance(allst, dict) and (allst.get("stations") or []):
+        target = (allst["stations"] or [])[0]
+        nm = target.get("name") or ""
+        try:
+            one = T._get("/api/v1/cars/%s/station_stats?name=%s"
+                        % (T.CAR_ID, urllib.parse.quote(nm)))
+            m1 = T.teslamate_station_stats(nm)
+        except Exception as e:
+            return bad + ["按名字查的契约异常 %r" % (e,)]
+        if not isinstance(one, dict):
+            return bad + ["按名字查的端点返回异常：%r" % (one,)]
+        got = one.get("stations") or []
+        if len(got) != 1:
+            bad.append("按名字查「%s」应只回 1 个站，实际 %d 个" % (nm, len(got)))
+        elif got[0].get("place_key") != target.get("place_key"):
+            bad.append("按名字查「%s」回的站不对（服务端 %r / MCP %r）"
+                      % (nm, target.get("place_key"), got[0].get("place_key")))
+        else:
+            for k in ("typical_power_kw", "typical_minutes_to_80", "sessions"):
+                a = target.get(k)
+                b = got[0].get(k)
+                if a is None and b is None:
+                    continue
+                if a != b:
+                    bad.append("按名字查「%s」的 %s 两项不一致（服务端 %r / MCP %r）"
+                              % (nm, k, a, b))
+            # ⚠️ **v0.185.0**：「**最近一次真充电**」也必须两端一致（MCP 只透传 ⇒ 应当逐项相等）。
+            ls = target.get("last_session") or {}
+            mls = (m1.get("站点") or [{}])[0] if isinstance(m1, dict) else {}
+            for srv_key, mcp_key in (("at", "最近一次(时间)"),
+                                     ("minutes", "最近一次(分钟)"),
+                                     ("energy_kwh", "最近一次(度数)"),
+                                     ("power_kw", "最近一次(功率kW)")):
+                sv = ls.get(srv_key)
+                mv = mls.get(mcp_key)
+                if sv is None and mv is None:
+                    continue
+                if sv != mv:
+                    bad.append("按名字查「%s」的「最近一次」%s 两端不一致（服务端 %r / MCP %r）"
+                              % (nm, srv_key, sv, mv))
+    # ── v0.185.0：按**地址/地名片段**查（挑一个只在地址里、不在站名里的片段）──
+    pk, tok = _address_only_token(allst.get("stations") or [])
+    if tok:
+        try:
+            hit = T._get("/api/v1/cars/%s/station_stats?name=%s"
+                         % (T.CAR_ID, urllib.parse.quote(tok)))
+            mhit = T.teslamate_station_stats(tok)
+        except Exception as e:
+            return bad + ["按地址片段查的契约异常 %r" % (e,)]
+        hk = [x.get("place_key") for x in (hit.get("stations") or [])] if isinstance(hit, dict) else []
+        if pk not in hk:
+            bad.append("按地址片段「%s」查不到那个站（place_key %r 不在 %r）⇒ 地址检索这条路断了"
+                       % (tok, pk, hk))
+        mhk = [x.get("place_key") for x in (mhit.get("站点") or [])] if isinstance(mhit, dict) else []
+        if pk not in mhk:
+            bad.append("MCP 按地址片段「%s」查不到那个站（place_key %r 不在 %r）"
+                       % (tok, pk, mhk))
+    # ── v0.185.0：`sort=recent` ⇒ 两端顺序必须一致（最近充过的排前面）──
+    try:
+        rs = T._get("/api/v1/cars/%s/station_stats?sort=recent" % T.CAR_ID)
+        mr = T.teslamate_station_stats(sort="recent")
+    except Exception as e:
+        return bad + ["按最近一次排序的契约异常 %r" % (e,)]
+    rk = [x.get("place_key") for x in (rs.get("stations") or [])] if isinstance(rs, dict) else []
+    mk = [x.get("place_key") for x in (mr.get("站点") or [])] if isinstance(mr, dict) else []
+    if rk[:len(mk)] != mk:
+        bad.append("按最近一次排序的两端顺序不一致（服务端 %r / MCP %r）" % (rk[:len(mk)], mk))
     return bad
 
 def check_maintenance_contract() -> list:

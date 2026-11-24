@@ -1177,12 +1177,40 @@ def teslamate_route_plans() -> dict:
 #
 # ⚠️ **别自己复算**：典型功率、折算耗时、实测样本都要按站聚合
 # —— 这里读服务端那份，别在这里另算一遍。
+def _station_last_session(s: dict) -> dict:
+    """按站画像的「**最近一次真充电**」⇒ 摊平成 MCP 的中文键。
+
+    ⚠️ **v0.185.0**：中位/折算说的是「这个桩**通常**多快」，
+    而车主问的是「**我上次**在这儿充了多久」⇒ 两个都得给。
+    """
+    ls = s.get("last_session") or {}
+    if not ls:
+        return {
+            "最近一次(时间)": None,
+            "最近一次(分钟)": None,
+            "最近一次(度数)": None,
+            "最近一次(功率kW)": None,
+            "最近一次(起止SOC)": None,
+        }
+    return {
+        "最近一次(时间)": ls.get("at"),
+        "最近一次(分钟)": ls.get("minutes"),
+        "最近一次(度数)": ls.get("energy_kwh"),
+        "最近一次(功率kW)": ls.get("power_kw"),
+        "最近一次(起止SOC)": "%s%%→%s%%" % (ls.get("from_soc"), ls.get("to_soc")),
+    }
+
 @mcp.tool(annotations=RO)
-def teslamate_station_stats(name: str = "") -> dict:
+def teslamate_station_stats(name: str = "", sort: str = "") -> dict:
     """查**按站画像**：某个充电桩/服务区到底快不快、我要等多久。
 
     ⚠️ **带 `name` 时按名字查**：用户问「金田服务区充到 80% 要多久」
     ⇒ 直接传 `name="金田服务区"` ⇒ 只回那个站（别让模型在 58 个站里自己挑）。
+
+    ⚠️ **v0.185.0**：`name` 现在也能是**地名/地址碎片**
+    （多个词用空格分隔，**每个词都要命中**）⇒ 用户问「深圳 宝安 那个服务区」也查得到。
+    ⚠️ **v0.185.0**：`sort="recent"` ⇒ 按**最近一次充电**倒序
+    （回答「我最近在哪些桩充过电」——按场次排会把这个答案埋在中间）。
 
     **什么时候用**：用户问「这个服务区充到 80% 要多久」「这个桩快不快」
     「我在 X 站充过电，那次用了多久」「这个站有没有一次没充到 80%」—— 都归它。
@@ -1197,6 +1225,8 @@ def teslamate_station_stats(name: str = "") -> dict:
     ⚠️ 站点数多时只列**场次最多**的前若干个 —— 想看别的站再说。
     """
     q = ("?name=" + urllib.parse.quote(str(name))) if str(name).strip() else ""
+    if str(sort).strip():
+        q += ("&" if q else "?") + "sort=" + urllib.parse.quote(str(sort).strip())
     data = _get(f"/api/v1/cars/{CAR_ID}/station_stats{q}")
     if not isinstance(data, dict):
         return {"错误": "返回格式异常"}
@@ -1207,16 +1237,23 @@ def teslamate_station_stats(name: str = "") -> dict:
         # ⚠️ 反推的**整包**容量（kWh）—— 折算耗时的分母。
         "实测可用容量(度)": data.get("capacity_kwh"),
     }
-    ranked = sorted(
-        stations,
-        key=lambda s: (-(s.get("sessions") or 0), s.get("place_key") or ""),
-    )
+    # ⚠️ **v0.185.0**：`sort="recent"` ⇒ **保留服务端的顺序**（按最近一次充电倒序）
+    # ⇒ 这里不许再按场次排（那会把「最近充过的」重新埋回中间）。
+    if str(sort).strip() == "recent":
+        ranked = list(stations)
+    else:
+        ranked = sorted(
+            stations,
+            key=lambda s: (-(s.get("sessions") or 0), s.get("place_key") or ""),
+        )
     top = ranked[:12]
     if top:
         out["站点"] = [
             {
                 "站点": s.get("name"),
                 "place_key": s.get("place_key"),
+                # ⚠️ **v0.185.0**：地址（**最新那条**）⇒ 飞书里能说「在哪儿」。
+                "地址": (s.get("addresses") or [None])[0],
                 "场次": s.get("sessions"),
                 "典型功率(kW)": s.get("typical_power_kw"),
                 "直流典型功率(kW)": s.get("typical_power_dc_kw"),
@@ -1225,6 +1262,8 @@ def teslamate_station_stats(name: str = "") -> dict:
                 "实测样本数": len(s.get("measured_samples") or []),
                 "没充到80%的次数": s.get("dc_never_reached_80"),
                 "其中很快离开的次数": s.get("dc_never_reached_80_short"),
+                # ⚠️ **v0.185.0**：**最近一次真充电**的实测（充入 ≥ 0.5 度才算一次充电）。
+                **_station_last_session(s),
             }
             for s in top
         ]

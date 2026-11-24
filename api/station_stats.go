@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ---------- 阈值（与客户端 buildStationStats 逐条对应） ----------
@@ -120,6 +121,38 @@ type StationStat struct {
 	DcNeverReached80 int `json:"dc_never_reached_80"`
 	// DcNeverReached80Short 其中停留 ≤20 分钟的次数（「人提前走了」）。
 	DcNeverReached80Short int `json:"dc_never_reached_80_short"`
+
+	// ⚠️ **v0.185.0**：这个站**最近一次真充电**的实测（不是中位）。
+	//
+	// 为什么加：中位/折算说的是「这个桩**通常**多快」，
+	// 而车主真正要问的是「**我上次**在这儿充的时候有多久」——
+	// 桩被限功率、被占位、被换设备时，**中位不会变，最近一次会变**。
+	LastSession *StationLastSession `json:"last_session"`
+
+	// ⚠️ **v0.185.0**：这个站出现过的**全部地址写法**（检索按它匹配）。
+	//
+	// 为什么加：同一个桩在不同场次里地址可能写法不同
+	// （「臣田社区, 西乡街道, 宝安区」 vs 「西乡街道, 宝安区, 深圳市」）
+	// ⇒ 只按最新那一条匹配会**漏**掉用户记得的那个地名。
+	// ⚠️ 第一条 = **最近一次**那个地址（list 按 start_date 倒序）。
+	Addresses []string `json:"addresses"`
+}
+
+// StationLastSession 这个站**最近一次真充电**的实测。
+type StationLastSession struct {
+	// At 那次充电的开始时间（RFC3339，UTC）。
+	At string `json:"at"`
+	// FromSoc / ToSoc 那次充电的起止电量（%）。
+	FromSoc *int `json:"from_soc"`
+	ToSoc   *int `json:"to_soc"`
+	// Minutes 实际停留了多少分钟。
+	Minutes *int `json:"minutes"`
+	// EnergyKwh 充入了多少度。
+	EnergyKwh *float64 `json:"energy_kwh"`
+	// PowerKw 那次充电的**实际平均功率**（kW）＝ 充入度数 ÷ 停留时间。
+	PowerKw *float64 `json:"power_kw"`
+	// IsDC 是不是直流桩。
+	IsDC bool `json:"is_dc"`
 }
 
 // StationStatsResponse 按站画像的完整结论。
@@ -322,9 +355,61 @@ func buildStationStats(charges []*Charge) (float64, []StationStat, bool) {
 			}
 		}
 
+		// ⚠️ **v0.185.0**：地址（该站出现过的全部写法）＋ **最近一次真充电**。
+		addresses := make([]string, 0, 2)
+		seenAddr := map[string]bool{}
+		for _, c := range list {
+			if c.Place == nil {
+				continue
+			}
+			p := strings.TrimSpace(*c.Place)
+			if p == "" || seenAddr[p] {
+				continue
+			}
+			seenAddr[p] = true
+			addresses = append(addresses, p)
+		}
+		// ⚠️ **v0.185.0**：最近一次**真充电** ⇒ 充入 ≥ 0.5 度才算一次充电
+		//（「插了一下没充上」那种 0.04 度的尾段不算）。
+		//
+		// ⚠️ list 是 **start_date 倒序**（sqlCharges 的顺序）⇒ 第一条就是最近的那次。
+		var lastReal *Charge
+		for _, c := range list {
+			added := 0.0
+			if c.EnergyAdded != nil {
+				added = *c.EnergyAdded
+			}
+			if added >= stationMinAddedKwh {
+				lastReal = c
+				break
+			}
+		}
+		var lastSession *StationLastSession
+		if lastReal != nil {
+			ls := &StationLastSession{
+				At:        lastReal.StartDate.UTC().Format(time.RFC3339),
+				FromSoc:   lastReal.StartSoc,
+				ToSoc:     lastReal.EndSoc,
+				Minutes:   lastReal.DurationMin,
+				EnergyKwh: lastReal.EnergyAdded,
+				IsDC:      lastReal.IsDC,
+			}
+			// 实际平均功率 = 充入度数 ÷ 停留分钟（拿不到就退回模型给的等效功率）。
+			if lastReal.EnergyAdded != nil && lastReal.DurationMin != nil && *lastReal.DurationMin > 0 {
+				p := *lastReal.EnergyAdded / float64(*lastReal.DurationMin) * 60.0
+				ls.PowerKw = &p
+			} else if kw := stationEffectivePowerKw(lastReal); kw != nil {
+				v := float64(*kw)
+				ls.PowerKw = &v
+			}
+			lastSession = ls
+		}
+
 		stats = append(stats, StationStat{
 			PlaceKey:              key,
 			Name:                  stationName(list[0]),
+			LastSession:           lastSession,
+			Addresses:             addresses,
 			Sessions:              len(list),
 			TypicalPowerKw:        typicalPower,
 			TypicalPowerDcKw:      typicalPowerDc,
@@ -355,6 +440,110 @@ func stationName(c *Charge) string {
 		return *seg
 	}
 	return "充电站"
+}
+
+// stationQueryTokens 把查询串切成**关键词**（空白 / 逗号 / 顿号 / 分号分隔）。
+//
+// ⚠️ **v0.185.0**：为什么要切词 —— 用户记得住的是「深圳 宝安」这种**地名碎片**，
+// 而站名只有「金田服务区」⇒ 不切词就没法用碎片找。
+func stationQueryTokens(q string) []string {
+	fields := strings.FieldsFunc(q, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', ',', '，', '、', '；', ';':
+			return true
+		}
+		return false
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		out = append(out, strings.ToLower(f))
+	}
+	return out
+}
+
+// stationFilter 按查询串过滤站点（**v0.185.0**：先站名、再地址）。
+//
+// ⚠️ **为什么要有优先级**：v0.184.0 的口径是「站名包含关键字」；
+// 现在把**地址**也纳入检索 ⇒ 若不排优先级，一个地名碎片可能同时命中
+// 「某个站的站名」与「别的站的地址」⇒ 结果变多 ⇒
+// 「按名字查只回 1 个站」那条老契约会被打破。
+// ⇒ **站名命中优先**（老口径一个字没变）；站名一个都没命中时，才按地址找。
+func stationFilter(stats []StationStat, query string) []StationStat {
+	raw := strings.TrimSpace(query)
+	tokens := stationQueryTokens(raw)
+	if len(tokens) == 0 {
+		return stats
+	}
+	// ① 站名命中（v0.184.0 的口径，优先）。
+	nameHit := make([]StationStat, 0, len(stats))
+	for _, s := range stats {
+		if s.PlaceKey == raw {
+			nameHit = append(nameHit, s)
+			continue
+		}
+		ln := strings.ToLower(s.Name)
+		all := true
+		for _, t := range tokens {
+			if !strings.Contains(ln, t) {
+				all = false
+				break
+			}
+		}
+		if all {
+			nameHit = append(nameHit, s)
+		}
+	}
+	if len(nameHit) > 0 {
+		return nameHit
+	}
+	// ② 站名没命中 ⇒ 按**地址**找（每个关键词都要在某条站名/地址里出现）。
+	addrHit := make([]StationStat, 0, len(stats))
+	for _, s := range stats {
+		hay := make([]string, 0, len(s.Addresses)+1)
+		hay = append(hay, strings.ToLower(s.Name))
+		for _, a := range s.Addresses {
+			hay = append(hay, strings.ToLower(a))
+		}
+		all := true
+		for _, t := range tokens {
+			hit := false
+			for _, h := range hay {
+				if strings.Contains(h, t) {
+					hit = true
+					break
+				}
+			}
+			if !hit {
+				all = false
+				break
+			}
+		}
+		if all {
+			addrHit = append(addrHit, s)
+		}
+	}
+	return addrHit
+}
+
+// stationSortRecent 按**最近一次充电**倒序（最近充过的排前面）。
+func stationSortRecent(stats []StationStat) {
+	sort.SliceStable(stats, func(i, j int) bool {
+		a, b := stats[i], stats[j]
+		if a.LastSession == nil {
+			return false
+		}
+		if b.LastSession == nil {
+			return true
+		}
+		if a.LastSession.At != b.LastSession.At {
+			return a.LastSession.At > b.LastSession.At
+		}
+		return a.PlaceKey < b.PlaceKey
+	})
 }
 
 // intsToFloats int 列表 → float64 列表（中位数用）。
@@ -424,15 +613,16 @@ func handleStationStats(w http.ResponseWriter, r *http.Request) {
 	out.Stations = stats
 	out.StationCount = len(stats)
 	// ⚠️ **v0.184.0**：按名字过滤时**只回匹配的站**，但**容量照给**（它是全车的一份）。
+	// ⚠️ **v0.185.0**：检索扩到「站名 **或** 地址」（多关键词），且**站名命中优先**。
 	if name != "" {
-		matched := make([]StationStat, 0, len(stats))
-		for _, s := range stats {
-			if s.PlaceKey == name || strings.Contains(strings.ToLower(s.Name), strings.ToLower(name)) {
-				matched = append(matched, s)
-			}
-		}
+		matched := stationFilter(stats, name)
 		out.Stations = matched
 		out.StationCount = len(matched)
+	}
+	// ⚠️ **v0.185.0**：`?sort=recent` ⇒ 按**最近一次充电**倒序
+	// （回答「我最近在哪些桩充过电」——按场次排会把这个答案埋在中间）。
+	if strings.TrimSpace(r.URL.Query().Get("sort")) == "recent" {
+		stationSortRecent(out.Stations)
 	}
 	writeJSON(w, out)
 }
