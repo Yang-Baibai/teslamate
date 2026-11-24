@@ -96,6 +96,17 @@ python mcp/check_tool_fields.py  # MCP 字段映射自检
 bash scripts/probe-run.sh hermes-gates.sh /path/to/probe.py  # 负向探针：在**隔离副本**里改坏 ⇒ 闸门必须精确报红
 ```
 
+**提交 ＋ 推送 ＋ 远端复扫**（公开仓库 ⇒ 每轮发版后都要扫）：
+
+```bash
+git add <逐个文件，别用 -A> && git commit -m "feat(scope): [CDO-Tesla-Hermes] 简述" && git push origin master
+python .git/scan_ref.py C:/tm-ws/.git/remote_scan<NN> HEAD   # 远端历史 blob 全量扫（须 ALL CLEAN）
+```
+
+⚠️ **`git push` 不带参数会失败**（v0.185.0 实测）：`master` **没有 upstream** ⇒
+报 `fatal: The current branch master has no upstream branch` ⇒ **必须写全 `git push origin master`**
+（远端 `upstream` 的 push 是 **DISABLED** ⇒ 别推错地方）。
+
 **构建 App 必须走 ASCII 路径**（Gradle 拒绝含非 ASCII 字符的项目路径）：
 
 ```powershell
