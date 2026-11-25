@@ -31,6 +31,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -266,25 +267,8 @@ fun RecordsScreen(
         }
             .onFailure { socProfile = null }
     }
-    // ⚠️ **v0.33.0（第 20 轮爬升能耗建模评审）：本车的爬升能耗系数。**
-    //
-    // 单独一个 LaunchedEffect，**每辆车只拉一次** ——
-    // 服务端首次算要扫 162 万个 positions（约 5 秒），之后缓存 30 分钟。
-    //
-    // 没有它就**不给**爬升修正（宁可少一个修正，也不能编一个系数）。
-    var climbModel by remember { mutableStateOf<com.teslamate.app.ClimbModel?>(null) }
-    var climbModelLoaded by remember { mutableStateOf(false) }
-    LaunchedEffect(api, settings.carId) {
-        if (api == null || climbModelLoaded) return@LaunchedEffect
-        runCatching {
-            withContext(Dispatchers.IO) { api.climbModel(settings.carId) }
-        }.onSuccess {
-            climbModel = it
-        }.onFailure {
-            climbModel = null
-        }
-        climbModelLoaded = true
-    }
+    // ⚠️ **v0.188.0**：爬升能耗系数**不用客户端拉了** —— 余量表的爬升修正在**服务端**算
+    // （api/route_margin.go）⇒ 这里那次「扫 162 万 positions」的请求也省掉了。
     // ⚠️ **v0.181.0（模拟器复核当场抓到）：`pickedTemplate` 必须在 remember 的键里。**
     //
     // 原来键是 (drives, charges, stationStats, selectedRouteKey, socProfile, consumption,
@@ -296,30 +280,37 @@ fun RecordsScreen(
     // 线路那条完全不见 —— 而且**编译、单测、闸门全绿**，只有版面才暴露）。
     //
     // ⇒ 现在把 `pickedTemplate` 加进键里：模板一变，余量表跟着重算。
-    val routePlan = remember(pickedTemplate, drives, charges, stationStats, selectedRouteKey, socProfile, consumption, batteryCapacityKwh, climbModel) {
-        val tpl = pickedTemplate
-        tpl?.let {
-            buildRoutePlan(
-                it, charges, stationStats, socProfile,
-                // ⚠️ v0.25.0：「到下一站剩多少电」要用**本车实测**能耗模型
-                // 与**可用**容量（官方标称比实测乐观 50%）。
-                consumption = consumption,
-                batteryCapacityKwh = batteryCapacityKwh,
-                // ⚠️ **v0.30.0（长途自驾党 P0-1）：计划车速不再硬编码 90 km/h。**
-                //
-                // 原来写死 `90.0` —— 「到下一站剩 34%」是按一个**跟这趟毫无关系**的速度算的。
-                // 现在用**这段线路历史的真实均速**：
-                // 6227 公里那条（川藏滇）**64 km/h**、616 公里那条 **42 km/h**。
-                // 车速决定用哪一档 Wh/km（90–110 档 183.0 vs 110–130 档 197.4，差 7.9%）。
-                planSpeedKph = it.avgSpeedKph ?: 90.0,
-                // ⚠️ **v0.33.0：爬升能耗系数**（服务端按 99 趟实测拟合）。
-                //
-                // 实测那条 206 公里、爬 4,186 米的那段：
-                // 修正 **+83.6 Wh/km（+49%）** → 折合 **−26 个电量百分点** ——
-                // 没有它，界面会说「到站剩 4%，看着够」，实际到不了。
-                climbModel = climbModel,
-            )
+    // ⚠️ **v0.188.0：余量表改成**服务端算的结论**（App 只渲染）⇒ 拉 /route_margin。
+    //
+    // ⚠️ **键里必须有 `marginTemplateKey`**（v0.181.0 的教训）：模板换了 ⇒ 余量表跟着换，
+    // 否则 remember 不会重算 ⇒ 卡片显示的还是上一条线。
+    var routeMargin by remember { mutableStateOf<com.teslamate.app.RouteMarginDto?>(null) }
+    val marginTemplateKey = pickedTemplate?.key
+    LaunchedEffect(marginTemplateKey, api, settings.carId) {
+        val key = marginTemplateKey
+        routeMargin = null
+        if (key == null || api == null) return@LaunchedEffect
+        runCatching {
+            withContext(Dispatchers.IO) { api.routeMargin(settings.carId, key) }
+        }.onSuccess {
+            routeMargin = it
         }
+            .onFailure { routeMargin = null }
+    }
+    // ⚠️ **v0.188.0（模拟器复核当场抓到）：「余量卡在不在」必须在 LazyColumn 的**内容里**读 state。**
+    //
+    // 原来把 `routePlan` 当成**被内容 lambda 捕获的 val** 传下去 ⇒ 内容 lambda 何时被重建，
+    // 卡片才何时出现；而 `/route_margin` 要 2.5 秒才回来 ⇒ **卡片整个不出现**
+    // （实测：编译、单测、闸门全绿，只有模拟器版面才暴露 —— 与 v0.181.0 那次同一个坑的另一个面）。
+    //
+    // 现在：结论放进一个**身份不变**的 state holder，由内容 lambda **在 provider 构建时读它**
+    // ⇒ derivedStateOf 依赖它 ⇒ 值一变，provider 重建 ⇒ 卡片出现。
+    val routePlanState = remember { mutableStateOf<RoutePlan?>(null) }
+    LaunchedEffect(routeMargin, pickedTemplate, charges, stationStats, socProfile, consumption, batteryCapacityKwh) {
+        val tpl = pickedTemplate
+        val m = routeMargin
+        val r = if (tpl == null || m == null) null else routePlanFromServer(m, tpl, charges, stationStats, socProfile, consumption, batteryCapacityKwh)
+        routePlanState.value = r
     }
     // ⚠️ v0.17.0（车队运营评审 P0-1）：**按线路分组的历史** ——
     // 「这趟比上趟好吗」的分组信息本来就该有（`buildRouteTemplates` 已经在按起止分组），
@@ -423,7 +414,7 @@ fun RecordsScreen(
                                     },
                                 )
                                 RecordTimeline(
-                    records, stationStats, routePlan, routeHistoryMap,
+                    records, stationStats, routePlanState, routeHistoryMap,
                     routeTemplates = routeTemplates,
                     selectedRouteKey = selectedRouteKey,
                     onSelectRouteKey = { selectedRouteKey = it },
@@ -441,7 +432,7 @@ fun RecordsScreen(
                                 SectionCard { Text("暂无充电或行程记录") }
                             }
                             else -> RecordTimeline(
-                                records, stationStats, routePlan, routeHistoryMap,
+                                records, stationStats, routePlanState, routeHistoryMap,
                                 fullChargeRange = store.fullChargeRange,
                                 routeTemplates = routeTemplates,
                                 selectedRouteKey = selectedRouteKey,
@@ -494,7 +485,8 @@ fun RecordsScreen(
 private fun RecordTimeline(
     records: List<RecordItem>,
     stationStats: Map<String, StationStat>,
-    routePlan: RoutePlan? = null,
+    /** ⚠️ v0.188.0：余量结论的**state holder**（内容里读它 ⇒ 卡片随数据出现）。 */
+    routePlanState: MutableState<RoutePlan?> = mutableStateOf(null),
     routeHistory: Map<RouteKey, List<Drive>> = emptyMap(),
     routeTemplates: List<RouteTemplate> = emptyList(),
     selectedRouteKey: String? = null,
@@ -506,7 +498,7 @@ private fun RecordTimeline(
      * ⚠️ **v0.174.0：实测满电续航 —— 服务端算好的结论。**
      *
      * ⚠️ 必须放在**最后** —— 这个函数的调用点是**位置参数**调用
-     * （`RecordTimeline(records, stationStats, routePlan, routeHistoryMap, …`），
+     * （`RecordTimeline(records, stationStats, routePlanState, routeHistoryMap, …`），
      * 插在中间会让后面所有位置参数**整体错位**。
      */
     fullChargeRange: FullChargeRange? = null,
@@ -515,7 +507,7 @@ private fun RecordTimeline(
         records = records,
         stationStats = stationStats,
         fullChargeRange = fullChargeRange,
-        routePlan = routePlan,
+        routePlanState = routePlanState,
         routeHistory = routeHistory,
         routeTemplates = routeTemplates,
         selectedRouteKey = selectedRouteKey,
@@ -581,7 +573,8 @@ private fun TimelineList(
      * 现在传服务端那份结论 ⇒ ① 飞书里也问得到；② 两端不会各算一套阈值。
      */
     fullChargeRange: FullChargeRange? = null,
-    routePlan: RoutePlan? = null,
+    /** ⚠️ v0.188.0：余量结论的**state holder**（内容里读它 ⇒ 卡片随数据出现）。 */
+    routePlanState: MutableState<RoutePlan?> = mutableStateOf(null),
     routeHistory: Map<RouteKey, List<Drive>> = emptyMap(),
     routeTemplates: List<RouteTemplate> = emptyList(),
     selectedRouteKey: String? = null,
@@ -629,7 +622,9 @@ private fun TimelineList(
         //
         // 现在：默认只显示**一行摘要 + 结论句**（「广昆高速 → 城东路 · 到达最低 16% ▸」），
         // 点一下才展开。既有「出发前要用的工具」的入口，又不抢历史记录的位置。
-        if (routePlan != null) {
+        // ⚠️ **v0.188.0**：在**内容里**读 state —— provider 构建时就建立依赖 ⇒ 数据到了卡片就出现。
+        val rp = routePlanState.value
+        if (rp != null) {
             item(key = "route-plan") {
                 var expanded by rememberSaveable { mutableStateOf(false) }
                 // ⚠️ **v0.44.0（第 25 轮车主复审 C2/D1）：「从哪一站出发」。**
@@ -641,7 +636,7 @@ private fun TimelineList(
                 var startFromIndex by rememberSaveable { mutableStateOf(-1) }
                 if (expanded) {
                     RoutePlanCard(
-                        routePlan,
+                        rp,
                         Modifier.animateItem(),
                         onCollapse = { expanded = false },
                         startFromIndex = startFromIndex,
@@ -649,7 +644,7 @@ private fun TimelineList(
                     )
                 } else {
                     RoutePlanSummaryRow(
-                        plan = routePlan,
+                        plan = rp,
                         onClick = { expanded = true },
                         modifier = Modifier.animateItem(),
                         templates = routeTemplates,

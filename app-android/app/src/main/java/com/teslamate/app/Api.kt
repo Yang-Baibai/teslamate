@@ -941,6 +941,53 @@ data class StationLastSessionDto(
     val note: String = "",
 )
 
+/**
+ * ⚠️ **v0.188.0**：路线余量表的一站（**服务端算的结论**，App 只渲染）。
+ */
+@Serializable
+data class RouteMarginStopDto(
+    val charge_id: Int = 0,
+    val name: String = "",
+    val km_along: Double = 0.0,
+    val is_endpoint: Boolean = false,
+    val is_start: Boolean = false,
+    val soc_before: Int? = null,
+    val soc_after: Int? = null,
+    val arrival_soc: Int? = null,
+    val gap_to_next_km: Double? = null,
+    val soc_at_next_stop: Int? = null,
+    val next_stop_real_soc: Int? = null,
+    val gap_need_pct: Int? = null,
+    val required_soc_here: Int? = null,
+    val gap_error_points: Int? = null,
+    val next_stop_name: String? = null,
+    val distance_to_end_km: Double? = null,
+    val est_soc_at_end: Int? = null,
+    val gap_ascent_m: Int? = null,
+    val gap_descent_m: Int? = null,
+    val gap_climb_wh_per_km: Double? = null,
+    val gap_bucket_label: String? = null,
+    val gap_speed_borrowed: Boolean = false,
+    val assumed_speed_kph: Double? = null,
+    val assumed_wh_per_km: Double? = null,
+    val assumed_wh_per_km_total: Double? = null,
+    val gap_climb_kwh: Double? = null,
+    val gap_climb_pct: Double? = null,
+)
+
+/** ⚠️ **v0.188.0**：路线余量表（服务端算的结论）。 */
+@Serializable
+data class RouteMarginDto(
+    val car_id: Int = 0,
+    val template_key: String = "",
+    val stops: List<RouteMarginStopDto> = emptyList(),
+    val endpoint_stops: List<RouteMarginStopDto> = emptyList(),
+    val climb_correction_applied: Boolean = false,
+    /** 保底电量（%）—— 服务端给的，客户端**不许**自己写死这个数。 */
+    val reserve_soc: Int = 20,
+    val note: String = "",
+)
+
 @Serializable
 data class StationStatDto(
     val place_key: String,
@@ -2160,6 +2207,11 @@ class Api private constructor(private val base: String, private val token: Strin
      */
     fun routePlans(carId: Int): List<RoutePlanTemplateDto> =
         get("/api/v1/cars/$carId/route_plans")
+    /**
+     * ⚠️ **v0.188.0**：路线余量表（**服务端算的结论** ⇒ App 只渲染，不自己算）。
+     */
+    fun routeMargin(carId: Int, templateKey: String): RouteMarginDto =
+        get("/api/v1/cars/$carId/route_margin?template=$templateKey")
     /**
      * ⚠️ **v0.182.0：按站画像（服务端算的结论）。**
      *

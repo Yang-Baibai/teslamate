@@ -1324,6 +1324,54 @@ def teslamate_nearby_stations(radius_km: float = 30, sort: str = "distance") -> 
             for s in stations
         ]
     return out
+# ⚠️ **v0.188.0**：路线余量表 —— Hermes 也能问「跑这条线到下一站还剩多少电」。
+#
+# 为什么加：余量表的判定原来在**客户端**算 ⇒ 飞书里问不出来
+# （docs/app-conclusions.json 的 route_plan_margin 那条 gap）⇒ 现在服务端算，这里只透传。
+@mcp.tool(annotations=RO)
+def teslamate_route_margin(template: str = "") -> dict:
+    """查**路线余量表**：跑这条线到下一站还剩多少电、够不够到 20% 保底。
+
+    **什么时候用**：用户问「跑这条长途到下一个服务区还剩多少电」「够不够到下一个桩」
+    「这条线最险的一段是哪」—— 都归它。
+
+    ⚠️ `template` 是线路的 key（如「journey-166-427」）；不给就用**最近走的那条**。
+    ⚠️ 保底电量由服务端给（`保底电量(%)`）⇒ **不要**自己另设阈值。
+    """
+    key = str(template).strip()
+    if not key:
+        plans = _get(f"/api/v1/cars/{CAR_ID}/route_plans")
+        if not isinstance(plans, list) or not plans:
+            return {"错误": "没有可用的长途线路"}
+        key = (plans[0] or {}).get("key") or ""
+        if not key:
+            return {"错误": "没有可用的长途线路"}
+    data = _get(f"/api/v1/cars/{CAR_ID}/route_margin?template={urllib.parse.quote(key)}")
+    if not isinstance(data, dict):
+        return {"错误": "返回格式异常"}
+    out = {
+        "线路": key,
+        "保底电量(%)": data.get("reserve_soc"),
+        "是否做了爬升修正": data.get("climb_correction_applied"),
+        "口径": data.get("note"),
+    }
+    stops = data.get("stops") or []
+    if stops:
+        out["沿途站"] = [
+            {
+                "站": s.get("name"),
+                "第几公里": s.get("km_along"),
+                "到下一站(公里)": s.get("gap_to_next_km"),
+                "这一跳要几个点": s.get("gap_need_pct"),
+                "到站估计剩(%)": s.get("soc_at_next_stop"),
+                "上次实际到站剩(%)": s.get("next_stop_real_soc"),
+                "至少充到(%)": s.get("required_soc_here"),
+                "这一跳的误差(点)": s.get("gap_error_points"),
+                "下一站": s.get("next_stop_name"),
+            }
+            for s in stops
+        ]
+    return out
 @mcp.tool(annotations=RO)
 def teslamate_consumption_model() -> dict:
     """查**本车实测能耗模型**（车速 → Wh/km 档）。

@@ -5067,6 +5067,74 @@ print('实测能耗模型的拟合在服务端一份（客户端只透传 ＋ �
 PYEOF
 if [ $? -eq 0 ]; then ok "实测能耗模型的拟合只在服务端一份"; else fail "实测能耗模型又在客户端拟合了一份"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 50：保底电量（RESERVE_SOC）两端不许漂 ───────────────────────────
+#
+# ⚠️ **v0.188.0**：余量表的**判定**搬到服务端了（api/route_margin.go）
+# ⇒ 「留 20% 保底」这个数由服务端定（routeMarginReserveSoc），
+#   客户端那份 `RESERVE_SOC` 现在只用来**显示**（哪几跳标黄、图表那条参考线、文案里的数）。
+#
+# ⚠️ **两份并存仍然会漂** ⇒ 这道闸门把两个数**钉成必须相等**：
+#   改一边 ⇒ 报红 ⇒ 不会出现「服务端按 20 判、客户端按 25 显示」的自相矛盾界面。
+#   （彻底收敛成一份要改 20 处渲染口径 ⇒ 留下一轮；这一轮先让漂**不可能**发生。）
+#
+# ⚠️ 判据**不依赖写法**：只认「标识符 = 纯整数」这一种形态；
+#   写成别的形态（表达式 / 常量引用）⇒ **报红**（不许悄悄放过）——
+#   那时候这道判据已经读不懂那个数了，钉住就是假的。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+SERVER = pathlib.Path('api/route_margin.go')
+CLIENT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/RoutePlan.kt')
+problems = []
+
+
+def const_int(path, ident):
+    """取 `ident = <纯整数>` 的值；找不到 / 不是纯整数 ⇒ (None, 原因)。"""
+    if not path.exists():
+        return None, '文件不存在：%s' % path
+    src = path.read_text(encoding='utf-8', errors='replace')
+    for raw in src.splitlines():
+        line = raw.strip()
+        if line.startswith('//') or line.startswith('*') or line.startswith('/*'):
+            continue
+        m = re.match(
+            r'^(?:const\s+)?(?:val\s+)?' + re.escape(ident)
+            + r'(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*=\s*(.+)$', line)
+        if m:
+            lit = re.sub(r'//.*$', '', m.group(1)).strip()
+            if not re.fullmatch(r'\d+', lit):
+                return None, '不是纯整数（写的是 %s）' % lit
+            return int(lit), None
+    return None, '找不到定义'
+
+
+srv, srv_why = const_int(SERVER, 'routeMarginReserveSoc')
+cli, cli_why = const_int(CLIENT, 'RESERVE_SOC')
+if srv is None:
+    problems.append('api/route_margin.go 的 routeMarginReserveSoc：%s' % srv_why)
+if cli is None:
+    problems.append('客户端 RoutePlan.kt 的 RESERVE_SOC：%s' % cli_why)
+if srv is not None and cli is not None and srv != cli:
+    problems.append('服务端保底 %d%% ≠ 客户端保底 %d%% ⇒ 界面会自相矛盾' % (srv, cli))
+
+# 护栏不许是空壳：服务端那个数必须真的用在**判定**里（requiredSocHere = need + 保底）。
+if SERVER.exists():
+    src = SERVER.read_text(encoding='utf-8', errors='replace')
+    if 'routeMarginReserveSoc' not in src:
+        problems.append('api/route_margin.go 里没有 routeMarginReserveSoc ⇒ 判据被删了')
+
+if problems:
+    print('保底电量两端对不上 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 「留 20% 保底」只能有一个数（判定在服务端，客户端显示同一个数）')
+    sys.exit(1)
+
+print('保底电量：服务端 %d%% / 客户端 %d%%，一致' % (srv, cli))
+PYEOF
+if [ $? -eq 0 ]; then ok "保底电量两端不许漂（判定在服务端，客户端显示同一个数）"; else fail "保底电量两端漂了（服务端判定与客户端显示不是一个数）"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

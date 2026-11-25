@@ -77,6 +77,8 @@ SPEC = [
     #    ⚠️ 「站点[0].场次」这种**列表元素**不进 SPEC（没站点时数组长度为 0 ⇒ 越界 ⇒ 假红）。
     #    那部分交给 check_station_stats_contract()（有数据才查）。
     ("teslamate_station_stats", {}, "站点数", "按站画像的站点数"),
+    # ⚠️ **v0.188.0**：路线余量表（判定收归服务端 ⇒ App 与飞书同一份）。
+    ("teslamate_route_margin", {}, "保底电量(%)", "余量表的保底电量"),
     # ⚠️ **v0.186.0**：「我附近的桩」（服务端按车最后一次位置算距离 ⇒ 坐标与距离都只一份）。
     ("teslamate_nearby_stations", {}, "半径内站点数", "附近的桩的站点数"),
     # ⚠️ **v0.183.0**：实测能耗模型（服务端拟合 ⇒ App 与飞书同一份）。
@@ -1557,6 +1559,56 @@ def check_nearby_stations_contract() -> list:
         bad.append("半径内站点数差太多（服务端 %d / MCP %d）" % (len(srv), len(got)))
     return bad
 
+def check_route_margin_contract() -> list:
+    """路线余量表：MCP 与服务端端点必须**逐站相等**（同一份判定，不是两套算法）。
+
+    ⚠️ **v0.188.0**：余量表的判定原来在客户端 ⇒ 飞书里问不出来
+    ⇒ 现在服务端算 ⇒ 这里把两边的每一跳**逐项**比对（距离 / 要几个点 / 到站剩 / 处方）。
+    """
+    bad = []
+    try:
+        plans = T._get("/api/v1/cars/%s/route_plans" % T.CAR_ID)
+        if not isinstance(plans, list) or not plans:
+            return []
+        key = (plans[0] or {}).get("key") or ""
+        rep = T._get("/api/v1/cars/%s/route_margin?template=%s"
+                     % (T.CAR_ID, urllib.parse.quote(key)))
+        m = T.teslamate_route_margin(key)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(rep, dict):
+        return ["余量表端点取不到：%r" % (rep,)]
+    if not isinstance(m, dict) or "错误" in m:
+        return ["MCP 的余量表工具取不到：%r" % (m,)]
+    if m.get("保底电量(%)") != rep.get("reserve_soc"):
+        bad.append("保底电量两端不一致（服务端 %r / MCP %r）"
+                   % (rep.get("reserve_soc"), m.get("保底电量(%)")))
+    srv = rep.get("stops") or []
+    got = m.get("沿途站") or []
+    if len(srv) != len(got):
+        bad.append("余量表的站数两端不一致（服务端 %d / MCP %d）" % (len(srv), len(got)))
+    for i, s in enumerate(srv):
+        if i >= len(got):
+            break
+        g = got[i]
+        for srv_key, mcp_key in (("name", "站"),
+                                 ("gap_to_next_km", "到下一站(公里)"),
+                                 ("gap_need_pct", "这一跳要几个点"),
+                                 ("soc_at_next_stop", "到站估计剩(%)"),
+                                 ("next_stop_real_soc", "上次实际到站剩(%)"),
+                                 ("required_soc_here", "至少充到(%)"),
+                                 ("gap_error_points", "这一跳的误差(点)")):
+            sv = s.get(srv_key)
+            mv = g.get(mcp_key)
+            if sv is None and mv is None:
+                continue
+            if isinstance(sv, (int, float)) and isinstance(mv, (int, float)):
+                if abs(float(sv) - float(mv)) > 1e-9:
+                    bad.append("站[%d] %s 两端不一致（服务端 %r / MCP %r）" % (i, srv_key, sv, mv))
+            elif sv != mv:
+                bad.append("站[%d] %s 两端不一致（服务端 %r / MCP %r）" % (i, srv_key, sv, mv))
+    return bad
+
 def check_maintenance_contract() -> list:
     """保养 / 轮胎提醒必须**与服务端同源**（不许模型自己减）。
 
@@ -1994,6 +2046,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 按站画像与服务端同一份聚合、逐站一致"
               % ("teslamate_station_stats", "按站画像契约"))
     bad.extend(ss_bad)
+
+    rm_bad = check_route_margin_contract()
+    for b in rm_bad:
+        print("  ✗ %s" % b)
+    if not rm_bad:
+        print("  ✓ %-26s %-24s 路线余量表与服务端同一份判定、逐跳一致"
+              % ("teslamate_route_margin", "余量表契约"))
+    bad.extend(rm_bad)
 
     nb_bad = check_nearby_stations_contract()
     for b in nb_bad:
