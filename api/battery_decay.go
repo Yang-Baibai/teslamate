@@ -205,6 +205,13 @@ type BatteryDecay struct {
 	// （「12 个 90~98% 未计入」—— 服务端的判据只是「没充到 100%」）
 	// ⇒ 现在文案与口径都在服务端（ADR #41 / ADR #86）。
 	Note string `json:"note"`
+	// ⚠️ **v0.190.0**：**结论那一句**（服务端渲染好的）—— 全局唯一一份。
+	//
+	// ⚠️ 原来这句话写在**客户端**（app-android/.../ui/BatteryDecay.kt 的 rateLine）
+	// ⇒ 两端各一份 ⇒ 改一边就漂（ADR #41：同一句话只能有一份）。
+	// ⇒ 现在由服务端渲染并下发；客户端**优先透传这一句**，
+	//   老服务端没这个字段时才回落到它本地那份（兼容，不报错）。
+	Headline string `json:"headline"`
 }
 
 // decayMinPoints 做阶跃检测至少需要的点数。
@@ -349,6 +356,17 @@ func meanTempOf(pts []decayPoint) float64 {
 // @param spanDays    数据覆盖的天数
 // @param droppedEmpty 没实际充电的场次数
 func analyzeBatteryDecay(strict []decayPoint, excluded int, excludedNearFull int, spanDays int, droppedEmpty int) *BatteryDecay {
+	out := analyzeBatteryDecayRaw(strict, excluded, excludedNearFull, spanDays, droppedEmpty)
+	// ⚠️ **v0.190.0**：结论那一句在**服务端**渲染（唯一一份）⇒ 客户端只透传。
+	out.Headline = decayHeadline(out)
+	return out
+}
+
+// analyzeBatteryDecayRaw 是判定主体（**不含**结论句渲染）。
+//
+// ⚠️ 拆出来是为了让 [analyzeBatteryDecay] 能在**判定全部字段都定下来之后**
+// 再渲染那一句（结论强度要等到最后才知道）。
+func analyzeBatteryDecayRaw(strict []decayPoint, excluded int, excludedNearFull int, spanDays int, droppedEmpty int) *BatteryDecay {
 	out := &BatteryDecay{
 		N:                 len(strict),
 		StrictN:           len(strict),
@@ -673,6 +691,46 @@ func decayCaveat(d *BatteryDecay) string {
 // （实测未计入场次的结束电量从 8% 到 99% 全都有 ⇒ 「90~98%」是**假的**）。
 //
 // ⇒ 现在：口径由服务端算（ExcludedNearFullN），文案由服务端给（这里）。
+//
+// decayHeadline 渲染**结论那一句**（服务端唯一一份，v0.190.0）。
+//
+// ⚠️ 措辞**照抄客户端 v0.41.0 的 rateLine**（逐字一致）——
+// 客户端现在**优先透传这一句** ⇒ 两端看到的是同一句话（ADR #41）。
+//
+// ⚠️ 「weak」不能写成「显著」，也不能只写「区间跨过 0」（那太技术，
+// 读者会以为是 App 没算出来）⇒ 正确说法是「**测到了，但和 0 区分不开**」。
+func decayHeadline(d *BatteryDecay) string {
+	if d == nil {
+		return ""
+	}
+	rate := d.NaivePer1000Km
+	lo := d.NaiveCiLo
+	hi := d.NaiveCiHi
+	if d.HasStep {
+		rate = d.UnderlyingPer1000Km
+		lo = d.UnderlyingCiLo
+		hi = d.UnderlyingCiHi
+	}
+	switch d.Conclusion {
+	case DecayDetectable:
+		return fmt.Sprintf("连续衰减 每 1000 公里 %s 度（95%% 区间 %s ~ %s）",
+			strconv.FormatFloat(rate, 'f', 3, 64),
+			strconv.FormatFloat(lo, 'f', 3, 64),
+			strconv.FormatFloat(hi, 'f', 3, 64))
+	case DecayWeak:
+		return fmt.Sprintf("连续衰减：与 0 区分不开（测到 %s 度/1000 公里，95%% 区间 %s ~ %s）",
+			strconv.FormatFloat(rate, 'f', 3, 64),
+			strconv.FormatFloat(lo, 'f', 3, 64),
+			strconv.FormatFloat(hi, 'f', 3, 64))
+	case DecayNotDetectable:
+		return fmt.Sprintf("连续衰减：检不出趋势（95%% 区间 %s ~ %s，跨过 0）",
+			strconv.FormatFloat(lo, 'f', 3, 64),
+			strconv.FormatFloat(hi, 'f', 3, 64))
+	default:
+		return "样本不足以判定衰减趋势"
+	}
+}
+
 func decayNote(d *BatteryDecay) string {
 	parts := make([]string, 0, 2)
 

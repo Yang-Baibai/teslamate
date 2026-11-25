@@ -154,6 +154,9 @@ func main() {
 	mux.HandleFunc("GET /api/v1/charges/{id}/curve", auth(handleChargeCurve))
 	mux.HandleFunc("GET /api/v1/cars/{id}/stats", auth(handleStats))
 	mux.HandleFunc("GET /api/v1/cars/{id}/battery", auth(handleBattery))
+	// ⚠️ **v0.190.0**：电池体检报告（**服务端渲染好的标题 + 正文**）——
+	// 与 /charge_brief 同一个套路：判定与文案都在服务端，App / MCP / 推送只转述（ADR #41）。
+	mux.HandleFunc("GET /api/v1/cars/{id}/battery_report", auth(handleBatteryReport))
 	mux.HandleFunc("GET /api/v1/cars/{id}/range_estimate", auth(handleRangeEstimate))
 	// ⚠️ **v0.174.0**：实测满电续航（**服务端算的结论**）。
 	//   原来 App 那个「实测满电续航」是**客户端自己折算**的

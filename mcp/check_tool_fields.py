@@ -112,6 +112,13 @@ SPEC = [
     # ⚠️ **v0.172.0**：那段说明也透传（服务端唯一一份）⇒ 飞书里问「电池衰减」
     #   拿到的与 App 卡片上的是**同一句**（ADR #41：文案只有一份）。
     ("teslamate_battery", {}, "说明", "电池衰减那段说明（服务端唯一一份）"),
+    # ⚠️ **v0.190.0**：电池体检报告（服务端渲染好的标题 + 正文）。
+    # 字段名与 teslamate_battery **逐字一致** ⇒ 模型看到的是同一套词汇。
+    ("teslamate_battery_report", {}, "标题", "电池体检报告标题（服务端原文）"),
+    ("teslamate_battery_report", {}, "正文", "电池体检报告正文（服务端原文）"),
+    ("teslamate_battery_report", {}, "健康度%(相对出厂可用容量)", "电池健康度"),
+    ("teslamate_battery_report", {}, "近期趋势%(相对首测)", "电池相对首测趋势"),
+    ("teslamate_battery_report", {}, "现在还能装(度)", "实测可用容量"),
     # ⚠️ **v0.163.0 订正**：「最近[0].地点」原来在这里断言「值不为 null」⇒
     #   **最新一条充电的地点还没解析出来**（新地点尚未进 TeslaMate 的 places 表）时**假红**，
     #   而「真红」（字段名写错）也是同一个红 ⇒ 分不开。
@@ -564,6 +571,49 @@ def check_brief_battery_contract() -> list:
         bad.append("简报正文里有电池段却没有「电池健康：当前」⇒ 窗口无关的 SOH 被说成了窗口内的")
     return bad
 
+
+
+def check_battery_report_contract() -> list:
+    """电池体检报告里的数必须与 /battery **是同一份**（ADR #38）。
+
+    ⚠️ 为什么比「有没有报告」更重要：报告与电池页是**两个出口**
+    ⇒ 健康度一旦各算各的 ⇒ 飞书里说「83.1%」而 App 上是 78%
+    ⇒ 用户以为数据在骗人（一个事实只能有一个说法）。
+
+    ⚠️ 另外断言**衰减结论那一句逐字相同**（v0.190.0）：
+    报告、App 卡片、飞书工具三处都必须是**服务端渲染的那一句**（ADR #41）。
+    """
+    bad = []
+    try:
+        rep = T.teslamate_battery_report()
+        raw = T._get("/api/v1/cars/%s/battery" % T.CAR_ID)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(rep, dict) or "错误" in rep:
+        return ["电池体检报告取不到：%r" % (rep,)]
+    if not isinstance(raw, dict) or "error" in raw:
+        return ["电池健康取不到：%r" % (raw,)]
+    if not rep.get("标题") or not rep.get("正文"):
+        bad.append("电池体检报告没有标题或正文 ⇒ 推出去就是一段空话")
+    for mk, sk in (("健康度%(相对出厂可用容量)", "health_percent"),
+                   ("近期趋势%(相对首测)", "health_percent_of_baseline"),
+                   ("现在还能装(度)", "current_capacity_kwh")):
+        a = rep.get(mk)
+        b = raw.get(sk)
+        if a is None or b is None:
+            bad.append("报告没有「%s」或 /battery 没有 %s（%r / %r）" % (mk, sk, a, b))
+        elif abs(float(a) - float(b)) > 0.01:
+            bad.append("报告的%s = %s，与 /battery 的 %s = %s 不一致 ⇒ 两个出口各算各的"
+                       % (mk, a, sk, b))
+    decay = raw.get("decay") or {}
+    if decay.get("headline"):
+        if rep.get("衰减结论句") != decay.get("headline"):
+            bad.append("报告的衰减结论句与 /battery 的 decay.headline 不是同一句"
+                       " ⇒ 两端各说各话（ADR #41）")
+        body = str(rep.get("正文") or "")
+        if decay["headline"] not in body:
+            bad.append("报告正文里没有衰减结论那一句 ⇒ 报告漏了最关键的那句")
+    return bad
 
 
 def check_battery_measurement_contract() -> list:
@@ -2086,6 +2136,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 保养 / 轮胎提醒与服务端同一个判定、同一句话"
               % ("teslamate_maintenance", "保养契约"))
     bad.extend(maint_bad)
+
+    rep_bad = check_battery_report_contract()
+    for b in rep_bad:
+        print("  ✗ %s" % b)
+    if not rep_bad:
+        print("  ✓ %-26s %-24s 电池体检报告与电池页是**同一份数、同一句话**"
+              % ("teslamate_battery_report", "体检报告契约"))
+    bad.extend(rep_bad)
 
     meas_bad = check_battery_measurement_contract()
     for b in meas_bad:

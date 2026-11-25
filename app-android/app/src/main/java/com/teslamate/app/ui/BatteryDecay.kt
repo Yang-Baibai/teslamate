@@ -47,7 +47,13 @@ object BatteryDecayText {
      * 样本量、那次落差、口径边界全是**补充说明** ⇒ 折进 ⓘ（v0.69.0）；
      * 其它推导（分裂半、R²、置信区间宽度）进「怎么算的」折叠区。
      */
-    fun headline(d: BatteryDecay): String = rateLine(d)
+    fun headline(d: BatteryDecay): String =
+        // ⚠️ **v0.190.0**：服务端给了**渲染好的那一句** ⇒ 优先用它。
+        //
+        // ⚠️ 为什么：这句话原来**只有客户端有一份**（本文件的 rateLine）⇒
+        // 飞书里的报告与 App 上的卡片会**各说各话**（ADR #41）⇒ 现在收归服务端。
+        // 老服务端没这个字段 ⇒ 回落到本地那份（兼容，不报错）。
+        d.headline.takeIf { it.isNotBlank() } ?: rateLine(d)
 
     /**
      * **补充说明** —— 折进结论行的 ⓘ（v0.69.0）。

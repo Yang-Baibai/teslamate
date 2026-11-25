@@ -875,6 +875,58 @@ def teslamate_battery() -> dict:
 
 
 @mcp.tool(annotations=RO)
+def teslamate_battery_report() -> dict:
+    """查**电池体检报告**：一段可以直接发给用户的短报告（标题 + 正文）+ 底下的结构化数字。
+
+    **什么时候用**：用户要「一份电池体检报告」「把电池情况总结一下」
+    「我的电池到底怎么样了」—— 要**一段能直接读、直接发的短报告**时用这个。
+
+    ⚠️ **标题与正文都是服务端的原文**（`/battery_report` 渲染好的）——
+    本工具**不自己拼**（同一句话只能有一份，见 ADR #41）。
+    ⇒ 要发出去就直接用「标题」+「正文」，**别自己改写数字**。
+
+    ⚠️ **分工**：
+    · 要**逐项数字**（健康度 % / 还能装多少度 / 满电标定续航 / 衰减速率）→ `teslamate_battery`；
+    · 要**一段能直接读的短报告** → 本工具（就是它）；
+    · 某一场充电的曲线 → `teslamate_charge_curve`。
+
+    ⚠️ 报告里的数与 `teslamate_battery` **完全一致**（同一个来源：服务端算一次，两处用）。
+    """
+    data = _get(f"/api/v1/cars/{CAR_ID}/battery_report")
+    if not isinstance(data, dict) or "error" in data:
+        return {"错误": "取不到电池体检报告", "详情": data}
+    meas = data.get("measurement") or {}
+    out = {
+        # ⚠️ **原样转述**（ADR #41）：标题与正文都是服务端写的。
+        "标题": data.get("title") or "",
+        "正文": data.get("body") or "",
+        "服务器时区": data.get("server_timezone") or "Asia/Shanghai",
+        # ⚠️ 字段名与 `teslamate_battery` **逐字一致** ⇒ 模型看到的是同一套词汇。
+        "健康度%(相对出厂可用容量)": data.get("health_percent"),
+        "近期趋势%(相对首测)": data.get("health_percent_of_baseline"),
+        "现在还能装(度)": data.get("current_capacity_kwh"),
+        "健康度测量于": meas.get("at"),
+        "健康度测量口径": meas.get("note"),
+        "覆盖天数": data.get("span_days"),
+        "覆盖里程km": data.get("odometer_span_km"),
+    }
+    decay = data.get("decay") or {}
+    if decay:
+        out["衰减结论"] = decay.get("conclusion")
+        # ⚠️ **v0.190.0**：结论那一句也透传（服务端唯一一份）——
+        # App 卡片上写着它，飞书这边说的必须是**同一句**（ADR #41）。
+        if decay.get("headline"):
+            out["衰减结论句"] = decay.get("headline")
+        if decay.get("note"):
+            out["说明"] = decay.get("note")
+        out["满充点数"] = decay.get("n")
+        if decay.get("step_date"):
+            out["落差日期"] = decay.get("step_date")
+            out["落差(度)"] = decay.get("step_kwh")
+    return out
+
+
+@mcp.tool(annotations=RO)
 def teslamate_range_estimate(to_km: float = 0) -> dict:
     """查「**真实可达续航**」：按**你自己跑出来的实测能耗**折算的里程、区间与依据。
 
