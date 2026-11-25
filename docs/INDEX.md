@@ -101,6 +101,10 @@ bash scripts/release.sh "更新说明一句话"
   - **周期性充电简报**（v0.111.0）：同一脚本里按 `.env` 的 `WATCH_BRIEF_WEEKDAY` /
     `WATCH_BRIEF_HOUR`（默认每周一 09:00）推一条简报；**正文由服务端渲染**
     （`/api/v1/cars/{id}/charge_brief`）⇒ 脚本只转述，同一周只推一次。
+  - **周期性电池体检报告**（v0.191.0）：同一脚本里按 `WATCH_BATTERY_BRIEF_DAY` /
+    `WATCH_BATTERY_BRIEF_HOUR`（默认**每月 1 号 09:00**）推一条体检报告；**正文由服务端渲染**
+    （`/api/v1/cars/{id}/battery_report`）⇒ 脚本只转述，同一月只推一次。
+    ⚠️ **月度**而不是周度：电池健康一个月才动一点 ⇒ 每周推是噪音（告警风暴同款）。
   ⚠️ 改了它 ⇒ 跑 `pwsh -File scripts/watch-car-selftest.ps1`（引擎有 69 条断言）。
 - 数据库备份：`scripts/backup-db.sh`（每天）/ `backup-weekly.sh`（每周）。
 - Tesla 授权过期（一次性 refresh_token）：`scripts/tesla-authorize.ps1`。

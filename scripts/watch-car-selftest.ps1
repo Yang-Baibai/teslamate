@@ -42,11 +42,16 @@ $StateFile  = Join-Path $Tmp 'state.json'
 $StatusFile = Join-Path $Tmp 'status.json'
 $LogFile    = Join-Path $Tmp 'watch.log'
 $BriefFile  = Join-Path $Tmp 'brief.json'
+# ⚠️ **v0.191.0**：电池体检报告的罐头（与服务端 JSON 同形）。
+$BatteryBriefFile = Join-Path $Tmp 'battery-brief.json'
 
 # ⚠️ **默认关掉简报**（v0.111.0）：否则「今天是周一 12 点」时它会自己到点，
 # 把下面 23 个场景的「只推了 N 条」断言全搅了
 # ⇒ 简报的场景（24 起）自己再打开。
 $env:WATCH_BRIEF_ENABLED = '0'
+# ⚠️ **v0.191.0**：电池体检报告也是**默认关掉**（同上 ——
+# 它默认「每月 1 号 09:00」，自测跑到那天就会自己到点 ⇒ 把下面的断言全搅了）。
+$env:WATCH_BATTERY_BRIEF_ENABLED = '0'
 
 # 一个**必然连不上**的本地端口：模拟「家里那台电脑/服务挂了」。
 $DeadApi = 'http://127.0.0.1:45999'
@@ -90,7 +95,7 @@ function Set-Status([hashtable]$fields) {
 # ⚠️ 这里**绝不能**删状态文件 ——
 #    引擎的价值全在「跨轮记住什么」，删了状态就等于每次都是首轮，
 #    测出来的东西毫无意义。要重置状态由各场景自己显式删。
-function Invoke-Watch([switch]$UseHttp, [switch]$BriefFail) {
+function Invoke-Watch([switch]$UseHttp, [switch]$BriefFail, [switch]$BatteryFail) {
   $argv = @('-NoProfile', '-File', $WatchCar,
             '-StateFile', $StateFile, '-LogFile', $LogFile,
             '-DryRun', '-CarName', '测试车')
@@ -107,6 +112,11 @@ function Invoke-Watch([switch]$UseHttp, [switch]$BriefFail) {
   if ($BriefFail) {
     # 模拟 Hermes 推送失败（没送到 = 没告知 ⇒ 不该记槽位）。
     $argv += @('-BriefPushFail')
+  }
+  # ⚠️ **v0.191.0**：电池报告同理（罐头 + 失败钩子）。
+  $argv += @('-BatteryBriefFile', $BatteryBriefFile)
+  if ($BatteryFail) {
+    $argv += @('-BatteryBriefPushFail')
   }
   # ⚠️ 子进程的 stderr 会被 2>&1 变成错误记录；ErrorActionPreference=Stop 下
   #    那可能被当成终止错误 —— 自测要的是「跑完」，不是「别出错」。
@@ -233,6 +243,34 @@ function Set-Brief([int]$count) {
     body            = "窗口：2026-10-27 00:00 → 2026-11-02 06:26（服务器时区 Asia/Shanghai）`n充电 $count 次 · 充入 55.4 度"
   }
   ($brief | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $BriefFile -Encoding utf8
+}
+
+# ⚠️ **v0.191.0**：喂一份**罐头的**电池体检报告（与服务端 JSON 同形）。
+#
+# ⚠️ $hasData = $false ⇒ 正文说「这台车还没有满充记录」
+#    ⇒ 脚本**不该推**（推了是噪音）⇒ 那一支要**记槽位**。
+function Set-BatteryBrief([bool]$hasData) {
+  $body = if ($hasData) {
+    "电池健康：当前 83.1% · 11-21 实测" + [char]10 + "相对首测 98.8%"
+  } else {
+    "这台车还没有满充记录，电池健康给不出数。"
+  }
+  $brief = @{
+    car_name        = '测试车'
+    server_timezone = 'Asia/Shanghai'
+    title           = '🔋 测试车 · 电池体检报告'
+    body            = $body
+    health_percent  = 83.14471301020407
+  }
+  ($brief | ConvertTo-Json -Depth 4) | Set-Content -LiteralPath $BatteryBriefFile -Encoding utf8
+}
+
+# 把状态文件里的**电池报告**槽位改成指定值（模拟「换了槽位」）。
+function Set-BatteryBriefSlot([string]$slot) {
+  $s = Read-StateJson
+  if ($null -eq $s) { $s = [pscustomobject]@{} }
+  $s | Add-Member -NotePropertyName 'last_battery_brief_slot' -NotePropertyValue $slot -Force
+  ($s | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $StateFile -Encoding utf8
 }
 
 # 把状态文件里的简报槽位改成指定值（模拟「换了槽位」/「上次是别的周」）。
@@ -697,6 +735,64 @@ $pushes = @(Get-Pushes)
 Assert-Eq 0 (Count-Push $pushes '充电简报') "取不到简报 ⇒ 不推"
 $s = Read-StateJson
 Assert-Eq '2000-01-01' (Get-JsonProp $s 'last_brief_slot') "取不到 ⇒ 不记槽位（下一轮再试）"
+
+# ═════════════════════════════════════════════════════════════════
+# 场景 31~35：周期性电池体检报告（v0.191.0）
+# ═════════════════════════════════════════════════════════════════
+#
+# 守的是**通知策略**那几条（与充电简报同款）：
+#   ① 到点只推一次（**月度**槽位）—— 告警风暴同款；
+#   ② 还没到点不推；
+#   ③ 推送失败**不记槽位** ⇒ 下一轮重试（没送到 = 没告知）；
+#   ④ 没有满充记录 ⇒ 不推，但**要记槽位**（否则每 5 分钟重试一次）。
+#
+# ⚠️ 电池报告内容用罐头的（-BatteryBriefFile）⇒ 断言不依赖真实数据。
+$monthSlot = (Get-Date).ToString('yyyy-MM')
+$todayDay  = (Get-Date).Day
+
+Write-Host "── 场景 31：电池报告到点 ⇒ 推 1 条"
+Set-BatteryBrief $true
+Reset-Log
+if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force }
+$env:WATCH_BATTERY_BRIEF_ENABLED = '1'
+$env:WATCH_BATTERY_BRIEF_DAY = "$todayDay"
+$env:WATCH_BATTERY_BRIEF_HOUR = '0'
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '电池体检报告') "到点了 ⇒ 推了 1 条电池报告"
+$lastBody = Get-LastBody
+Assert-True ($lastBody -match '83.1%') "电池报告正文带上了服务端给的那个数（钉具体值）"
+$s = Read-StateJson
+Assert-Eq $monthSlot (Get-JsonProp $s 'last_battery_brief_slot') "推完记住了月度槽位（同一月不再推）"
+
+Write-Host "── 场景 32：同一槽位再跑一轮 ⇒ 不重复推"
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 1 (Count-Push $pushes '电池体检报告') "同一槽位再跑 ⇒ 不会重复推（告警风暴同款）"
+
+Write-Host "── 场景 33：换了槽位 ⇒ 又推 1 条"
+Set-BatteryBriefSlot '2000-01'
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 2 (Count-Push $pushes '电池体检报告') "槽位变了 ⇒ 又推了 1 条"
+
+Write-Host "── 场景 34：推送失败 ⇒ 不记槽位 ⇒ 下一轮重试"
+Set-BatteryBrief $true
+Set-BatteryBriefSlot '2000-01'
+Reset-Log
+Invoke-Watch -BatteryFail | Out-Null
+$s = Read-StateJson
+Assert-Eq '2000-01' (Get-JsonProp $s 'last_battery_brief_slot') "推送失败 ⇒ 槽位没被更新（下一轮会重试）"
+
+Write-Host "── 场景 35：没有满充记录 ⇒ 不推，但记槽位"
+Set-BatteryBrief $false
+Set-BatteryBriefSlot '2000-01'
+Reset-Log
+Invoke-Watch | Out-Null
+$pushes = @(Get-Pushes)
+Assert-Eq 0 (Count-Push $pushes '电池体检报告') "没有满充记录 ⇒ 不推（推了是噪音）"
+$s = Read-StateJson
+Assert-Eq $monthSlot (Get-JsonProp $s 'last_battery_brief_slot') "没有记录也**记了槽位**（否则每 5 分钟重试一次）"
 
 # ═════════════════════════════════════════════════════════════════
 # 清理 + 汇总

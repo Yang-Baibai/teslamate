@@ -53,7 +53,9 @@ param(
   [int]$WindowTimeoutMinutes = 30,   # 车窗未关多久算问题
   [int]$FailThreshold = 3,            # 连续失败几轮才推「服务挂了」
   [string]$BriefFile = '',   # 从 JSON 文件读充电简报（自测用；不给就走 HTTP）
-  [switch]$BriefPushFail     # 测试钩子：模拟 Hermes 推送失败（自测用）
+  [switch]$BriefPushFail,    # 测试钩子：模拟 Hermes 推送失败（自测用）
+  [string]$BatteryBriefFile = '',   # 从 JSON 文件读电池体检报告（自测用；不给就走 HTTP）
+  [switch]$BatteryBriefPushFail    # 测试钩子：模拟电池报告推送失败（自测用）
 )
 
 $ErrorActionPreference = 'Stop'
@@ -99,6 +101,24 @@ if ($BriefWeekday -lt 1 -or $BriefWeekday -gt 7) { $BriefWeekday = 1 }
 $briefHourRaw = Get-EnvValue 'WATCH_BRIEF_HOUR' '9'
 if ($briefHourRaw -match '^\d+$') { $BriefHour = [int]$briefHourRaw }
 if ($BriefHour -lt 0 -or $BriefHour -gt 23) { $BriefHour = 9 }
+
+# ── 周期性电池体检报告（v0.191.0）────────────────────────────────
+#
+# ⚠️ **月度**，不是周度：电池健康**一个月才动一点** ⇒ 每周推是噪音
+# （告警风暴同款：用户会直接静音 ⇒ 通道作废）。
+#
+# ⚠️ **分工**与充电简报同款（ADR #41）：这里管「**什么时候发**」，
+#   服务端管「**正文怎么写**」（`/battery_report`）⇒ 脚本**只转述**。
+$BatteryBriefEnabled = Get-EnvValue 'WATCH_BATTERY_BRIEF_ENABLED' '1'
+$BatteryBriefDay = 1
+$batBriefDayRaw = Get-EnvValue 'WATCH_BATTERY_BRIEF_DAY' '1'
+if ($batBriefDayRaw -match '^\d+$') { $BatteryBriefDay = [int]$batBriefDayRaw }
+# ⚠️ 几号**钳到 1~28** ⇒ 每个月都有一天（29/30/31 号的月份会缺一天 ⇒ 少推一次）。
+if ($BatteryBriefDay -lt 1 -or $BatteryBriefDay -gt 28) { $BatteryBriefDay = 1 }
+$BatteryBriefHour = 9
+$batBriefHourRaw = Get-EnvValue 'WATCH_BATTERY_BRIEF_HOUR' '9'
+if ($batBriefHourRaw -match '^\d+$') { $BatteryBriefHour = [int]$batBriefHourRaw }
+if ($BatteryBriefHour -lt 0 -or $BatteryBriefHour -gt 23) { $BatteryBriefHour = 9 }
 
 # ⚠️ DryRun / 自测模式**不要求**令牌与 Hermes 可执行文件存在 ——
 # 自测就是要能在没有 Hermes 的机器上跑。
@@ -326,6 +346,23 @@ function Get-BriefSlot([datetime]$now, [int]$weekday, [int]$hour) {
   $weekStart = $now.Date.AddDays(-$delta)
   $dueAt = $weekStart.AddDays($weekday - 1).AddHours($hour)
   return [pscustomobject]@{ DueAt = $dueAt; Slot = $dueAt.ToString('yyyy-MM-dd') }
+}
+
+# 本槽位的「计划时刻」与槽位号（**周期性电池报告**用，月度）。
+#
+# 槽位 = 计划时刻那天的**年月**（yyyy-MM）⇒ 同一月里跑多少轮都撞同一个槽位
+# ⇒ 只推一次（告警风暴同款 —— v0.77.0 的洞 ①：旧版每轮都推，实测推了 97 次）。
+#
+# ⚠️ 计划时刻算的是**本月**里的那一天：
+#   没到点 ⇒ 不推；错过了点（机器当时关着）⇒ 补推一次
+#   （漏报比晚报好 —— 正文里带着测量时刻，晚一点也能核对）。
+function Get-MonthlySlot([datetime]$now, [int]$dayOfMonth, [int]$hour) {
+  # ⚠️ **必须先回到「本月 1 号」** ——
+  #    $now.Date 是**今天**（不是 1 号）⇒ 直接 AddDays(N-1) 会算成「今天 + N-1 天」
+  #    ⇒ 本月 26 号配「26 号」会算成**下个月 21 号** ⇒ 永远不到点（本轮实测踩到）。
+  $monthStart = $now.Date.AddDays(1 - $now.Day)
+  $dueAt = $monthStart.AddDays($dayOfMonth - 1).AddHours($hour)
+  return [pscustomobject]@{ DueAt = $dueAt; Slot = $dueAt.ToString('yyyy-MM') }
 }
 
 # ── 告警判定与推送（统一上升沿）──────────────────────────────────
@@ -763,6 +800,68 @@ try {
   }
 } catch {
   Write-LogQuiet "⚠️ 充电简报分支异常: $($_.Exception.Message)"
+}
+
+# ═════════════════════════════════════════════════════════════════
+# 五之三、周期性电池体检报告（v0.191.0）
+# ═════════════════════════════════════════════════════════════════
+#
+# 定时任务使命 §2.2 的另一半（「周期性健康报告：电池健康度（SOH）变化趋势」）：
+# 这里把它落地 —— **每月**到点就把一段电池体检报告推给用户。
+#
+# ⚠️ **脚本只转述**：标题与正文都是服务端给的（api/battery_report.go），
+#    这里**不自己拼**任何数字或文案（ADR #41）。
+try {
+  $batBriefOn = ($BatteryBriefEnabled -eq '1' -or $BatteryBriefEnabled -eq 'true' -or $BatteryBriefEnabled -eq 'yes')
+  if ($batBriefOn) {
+    $nowLocal = Get-Date
+    $slotInfo = Get-MonthlySlot $nowLocal $BatteryBriefDay $BatteryBriefHour
+    $lastSlot = [string](Get-Prop $prev 'last_battery_brief_slot' '')
+    if ($nowLocal -ge $slotInfo.DueAt -and $lastSlot -ne $slotInfo.Slot) {
+      $bat = $null
+      if ($BatteryBriefFile) {
+        try { $bat = Get-Content -LiteralPath $BatteryBriefFile -Raw -Encoding utf8 | ConvertFrom-Json }
+        catch { $bat = $null }
+      } else {
+        try {
+          $bat = Invoke-RestMethod -Uri "$ApiBase/api/v1/cars/$CarId/battery_report" `
+            -Headers @{ Authorization = "Bearer $ApiToken" } -TimeoutSec 20
+        } catch { $bat = $null }
+      }
+      if ($null -eq $bat) {
+        # 取不到 ⇒ **不推、也不记槽位** ⇒ 下一轮再试（没拿到就没告知）。
+        Write-LogQuiet "⏳ 电池体检报告取不到（下一轮再试）"
+      } else {
+        $bTitle = [string](Get-Prop $bat 'title' '')
+        $bBody  = [string](Get-Prop $bat 'body' '')
+        if ($bTitle -and $bBody) {
+          # ⚠️ **这台车还没有满充记录 ⇒ 不推**（推了是噪音）
+          #    ⇒ 但**要记槽位** —— 否则每 5 分钟重试一次（告警风暴同款）。
+          if ($bBody -match '还没有满充记录') {
+            Save-State @{ last_battery_brief_slot = $slotInfo.Slot }
+            Write-LogQuiet "ℹ️ 电池体检报告：这台车还没有满充记录 ⇒ 不推送（已记槽位）"
+          } else {
+            $pushed = $false
+            if ($BatteryBriefPushFail) {
+              # 测试钩子：模拟 Hermes 推送失败（自测用）。
+              Write-LogQuiet "⚠️ [测试钩子] 模拟电池报告推送失败"
+            } else {
+              $pushed = Send-Hermes $bTitle $bBody
+            }
+            if ($pushed) {
+              Save-State @{ last_battery_brief_slot = $slotInfo.Slot }
+              Write-LogQuiet "✅ 电池体检报告已推送（$($slotInfo.Slot)）"
+            }
+            # ⚠️ 推失败 ⇒ **不记槽位** ⇒ 下一轮重试（没送到 = 没告知）
+          }
+        } else {
+          Write-LogQuiet "⚠️ 电池体检报告缺标题或正文（服务端返回不完整）⇒ 不推送"
+        }
+      }
+    }
+  }
+} catch {
+  Write-LogQuiet "⚠️ 电池体检报告分支异常: $($_.Exception.Message)"
 }
 
 # ═════════════════════════════════════════════════════════════════
