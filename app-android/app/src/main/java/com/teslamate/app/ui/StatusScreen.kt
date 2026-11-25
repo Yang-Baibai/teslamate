@@ -194,6 +194,23 @@ fun StatusScreen(
         }.onSuccess { store.updateStayPoints(it, settings.carId) }
             .onFailure { store.failStayPoints() }
     }
+    // ⚠️ **v0.189.0：电池健康**（服务端算的结论 ⇒ 车况页直接可见）。
+    //
+    // ⚠️ **慢变量 ⇒ 单独拉一次，不跟 15 秒轮询**：
+    // 车况页每 15 秒刷一次（换挡、里程、续航都要跟着变）⇒
+    // 而电池健康**一个月也不变一次** ⇒ 每次都重扫充电历史纯属白费
+    // （线上实测 /battery 173 ms ⇒ 每 15 秒白扫一次，一年就是几百万次无效计算）。
+    // ⇒ 按车缓存（切 Tab 回来不重拉），跟「驾驶画像 / 常驻点」同一个套路。
+    LaunchedEffect(api, settings.carId) {
+        if (api == null) return@LaunchedEffect
+        if (store.batteryHealthLoadedFor == settings.carId) return@LaunchedEffect
+        runCatching {
+            withContext(Dispatchers.IO) { api.battery(settings.carId) }
+        }.onSuccess { store.updateBatteryHealth(it, settings.carId) }
+        // ⚠️ 取不到**不报错**：服务器挂掉不是车的问题 ⇒ 车况页不该弹红条；
+        //    这张卡不出现即可（宁可不说，也不说半句）。
+        //    ⚠️ 失败时**不写** loadedFor ⇒ 下次进页面会重试（可重试）。
+    }
     val drives = store.drives
     // ⚠️ v0.9.0：能耗模型改从 store 取（App 级 + **已落盘**），
     // 不用页面里的 `remember(drives) { ConsumptionModel.from(drives) }` ——
@@ -913,6 +930,13 @@ fun StatusScreen(
                         //    usable_battery_level），本车实测 100/100 恒等 —— 纯重复
                         // 省下 74dp，胎压卡就能完整露出首屏（现在要滑 170dp 才看得到四个胎压值）。
                         TpmsCard(st)
+
+                        // ⚠️ **v0.189.0：电池健康卡**（用户要求：车况页要能看到电池健康）。
+                        //
+                        // 位置：**胎压之后**（两个都是「这辆车的体检」⇒ 放在一起）；
+                        // ⚠️ **不挤占首屏**：电量环（44sp 主角）仍在最上面，
+                        // 而这张卡是**次级档 26sp** ⇒ 首屏层级不变（v0.8.1 的首屏承诺）。
+                        store.batteryHealth?.let { BatteryHealthCard(it) }
 
                         // ⚠️ **v0.156.0（用户反馈 #153）：车辆控制搬去「车控」页了。**
                         //

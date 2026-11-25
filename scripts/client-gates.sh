@@ -5135,6 +5135,104 @@ print('保底电量：服务端 %d%% / 客户端 %d%%，一致' % (srv, cli))
 PYEOF
 if [ $? -eq 0 ]; then ok "保底电量两端不许漂（判定在服务端，客户端显示同一个数）"; else fail "保底电量两端漂了（服务端判定与客户端显示不是一个数）"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 51：车况页的电池健康**不许客户端自己算** ─────────────────────────
+#
+# ⚠️ **v0.189.0**：车况页加了「电池健康」卡（用户要求：车况页要能看到电池健康）。
+#
+# ⚠️ 这张卡的**判定与口径全在服务端**（`GET /cars/{id}/battery` ⇒ `api/battery_decay.go`）
+# ⇒ 客户端**只做排版**。否则会出现「App 算一套、飞书读另一套」⇒ 两边数字打架（ADR #38）。
+#
+# ⚠️ 判据**不依赖写法**：
+#   ① 车况页**必须**调 `api.battery(`（真的去取服务端那份）；
+#   ② 卡片**必须**用服务端的 `health_percent`（那个数服务端已经算好）；
+#   ③ 服务端那份判定**不许被删**（护栏不许是空壳）；
+#   ④ 结论清单里 battery_health 的「界面」**必须**写「车况页」（这条结论确实在那儿能看到）；
+#   ⑤ 客户端**不许**出现「两个容量相除」的写法（自己算健康度 ⇒ 与服务端两套口径）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import json, pathlib, re, sys
+
+STATUS = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/StatusScreen.kt')
+CARD = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/BatteryHealthCard.kt')
+SERVER = pathlib.Path('api/handlers.go')
+DECAY = pathlib.Path('api/battery_decay.go')
+LIST = pathlib.Path('docs/app-conclusions.json')
+
+problems = []
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+
+
+# ① 车况页必须真的取服务端那份
+if not STATUS.exists():
+    problems.append('找不到 %s —— 车况页不见了？' % STATUS)
+else:
+    src = read(STATUS)
+    if 'api.battery(' not in src:
+        problems.append('StatusScreen.kt 里没有 api.battery( ⇒ 车况页没去取服务端的电池健康结论')
+
+# ② 卡片必须用服务端的 health_percent（不是自己算的）
+if not CARD.exists():
+    problems.append('找不到 %s —— 车况页的电池健康卡不见了？' % CARD)
+else:
+    card = read(CARD)
+    if 'health_percent' not in card:
+        problems.append('电池健康卡里没有 health_percent ⇒ 用的不是服务端算好的那个数')
+
+    # ⑤ 不许「两个容量相除」（自己算健康度）
+    for i, line in enumerate(card.splitlines()):
+        if '/' in line and 'current_capacity_kwh' in line and 'nominal_capacity_kwh' in line:
+            problems.append(
+                '电池健康卡第 %d 行同时用了两个容量并相除 ⇒ 客户端在自己算健康度' % (i + 1))
+
+# ③ 服务端那份判定不许被删
+if 'handleBattery' not in read(SERVER):
+    problems.append('api/handlers.go 里没有 handleBattery ⇒ 服务端的 /battery 端点被删了')
+if not DECAY.exists():
+    problems.append('api/battery_decay.go 不见了 ⇒ 电池衰减的判定没了')
+
+# ④ 清单里 battery_health 必须登记「车况页」
+if not LIST.exists():
+    problems.append('找不到 %s —— 结论清单不见了？' % LIST)
+else:
+    try:
+        data = json.loads(read(LIST))
+    except Exception as e:
+        problems.append('结论清单不是合法 JSON：%s' % e)
+        data = None
+    if data is not None:
+        items = data.get('结论清单') or []
+        hit = None
+        for it in items:
+            if it.get('id') == 'battery_health':
+                hit = it
+                break
+        if hit is None:
+            problems.append('结论清单里没有 battery_health 这条')
+        else:
+            ui = str(hit.get('界面') or '')
+            if '车况页' not in ui:
+                problems.append(
+                    '清单里 battery_health 的「界面」是「%s」⇒ 没登记车况页' % ui)
+            src_txt = str(hit.get('client_source') or '')
+            if not src_txt.startswith('服务端'):
+                problems.append(
+                    '清单里 battery_health 的 client_source 是「%s」'
+                    ' ⇒ 车况页这张卡必须只透传服务端的结论' % src_txt)
+
+if problems:
+    print('车况页的电池健康没有只透传服务端 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 判定与口径只在服务端一份（ADR #38 / ADR #41）')
+    sys.exit(1)
+
+print('车况页电池健康：取服务端那份 ＋ 用服务端的数 ＋ 服务端判定在 ＋ 清单已登记')
+PYEOF
+if [ $? -eq 0 ]; then ok "车况页的电池健康只透传服务端（不许客户端自己算）"; else fail "车况页的电池健康在客户端自己算了一份"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

@@ -141,6 +141,18 @@ class StatusStore(private val cache: StatusCache? = null) {
     var stayPointsLoading by mutableStateOf(false)
         private set
 
+    /**
+     * ⚠️ **v0.189.0：电池健康**（服务端算的结论，`GET /cars/{id}/battery`）。
+     *
+     * ⚠️ **慢变量** ⇒ 按车缓存（切 Tab 回来不重拉），跟驾驶画像 / 常驻点同一套路。
+     */
+    var batteryHealth by mutableStateOf<com.teslamate.app.BatteryHealth?>(null)
+        private set
+
+    /** 已经拉过电池健康的车 id。 */
+    var batteryHealthLoadedFor by mutableStateOf<Int?>(null)
+        private set
+
     /** 已有可用数据时为 true —— UI 据此决定是显示骨架屏还是直接显示旧数据。 */
     val hasData: Boolean get() = status != null
 
@@ -196,6 +208,10 @@ class StatusStore(private val cache: StatusCache? = null) {
         stayPoints = null
         stayPointsLoadedFor = null
         stayPointsLoading = false
+        // ⚠️ **v0.189.0**：电池健康也是**按车**的 ⇒ 换车必须作废
+        // （否则 B 车标题下显示 A 车的电池健康度）。
+        batteryHealth = null
+        batteryHealthLoadedFor = null
         hydrate(carId)
     }
 
@@ -221,6 +237,9 @@ class StatusStore(private val cache: StatusCache? = null) {
         stayPoints = null
         stayPointsLoadedFor = null
         stayPointsLoading = false
+        // ⚠️ **v0.189.0**：换服务器 = 全部重来，电池健康也要清。
+        batteryHealth = null
+        batteryHealthLoadedFor = null
         cache?.clearAll()
     }
 
@@ -353,5 +372,11 @@ class StatusStore(private val cache: StatusCache? = null) {
     /** 常驻点算失败了（保留旧值，只停掉 loading）。 */
     internal fun failStayPoints() {
         stayPointsLoading = false
+    }
+
+    /** ⚠️ **v0.189.0**：电池健康取到了（按车记住 ⇒ 同车不重拉）。 */
+    internal fun updateBatteryHealth(b: com.teslamate.app.BatteryHealth, carId: Int) {
+        batteryHealth = b
+        batteryHealthLoadedFor = carId
     }
 }

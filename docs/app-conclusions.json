@@ -146,22 +146,24 @@
     {
       "id": "battery_health",
       "结论": "电池健康度（还能装多少度 / 相对出厂 %）",
-      "界面": "用量页",
+      "界面": "用量页 ＋ 车况页",
       "服务端": "/battery",
       "mcp": [
         "teslamate_battery"
       ],
-      "状态": "covered"
+      "状态": "covered",
+      "client_source": "服务端 /battery"
     },
     {
       "id": "battery_decay",
       "结论": "电池衰减结论与依据（v0.172.0 起文案也在服务端）",
-      "界面": "用量页",
+      "界面": "用量页 ＋ 车况页",
       "服务端": "/battery decay",
       "mcp": [
         "teslamate_battery"
       ],
-      "状态": "covered"
+      "状态": "covered",
+      "client_source": "服务端 /battery decay"
     },
     {
       "id": "full_charge_range",
