@@ -101,6 +101,11 @@ bash scripts/probe-run.sh hermes-gates.sh /path/to/probe.py  # 负向探针：�
 ```bash
 git add <逐个文件，别用 -A> && git commit -m "feat(scope): [CDO-Tesla-Hermes] 简述" && git push origin master
 python .git/scan_ref.py C:/tm-ws/.git/remote_scan<NN> HEAD   # 远端历史 blob 全量扫（须 ALL CLEAN）
+
+⚠️ **v0.190.0 实测踩到**：把**线上原文里的车名**抄进 CHANGELOG（我把 `/battery_report` 的真实标题「🔋 <车名> · 电池体检报告」写进了文档）⇒ 远端扫描的「**车主昵称(旧)**」当场报红
+⇒ **车名 / 昵称是私有信息** ⇒ 文档里一律用占位符（「<车名>」），**不要**抄原文。
+⚠️ **已经推送过怎么办**：**不是**再补一个提交（旧 blob 仍在历史里，扫出来还是红）
+⇒ 要**改写历史**：改文件 → `git commit --amend` → `git push --force-with-lease origin master` → **重新克隆再扫**。
 ```
 
 ⚠️ **`git push` 不带参数会失败**（v0.185.0 实测）：`master` **没有 upstream** ⇒
