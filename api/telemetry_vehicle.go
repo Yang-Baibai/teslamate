@@ -631,15 +631,15 @@ func pickNewerTPMS(poll, tel TeslaTPMS, telOK bool) (TeslaTPMS, string) {
 //	选了轮询 ⇒ 轮询不是「断线前旧值」⇒ stale = false。
 func pickNewerLocked(
 	poll *bool, pollAt *time.Time,
-	tel *bool, telAt *time.Time, telStale bool,
-) (locked *bool, at *time.Time, source string, stale bool) {
+	tel *bool, telAt *time.Time,
+) (locked *bool, at *time.Time, source string) {
 	switch {
 	case poll == nil && tel == nil:
-		return nil, nil, "unknown", false
+		return nil, nil, "unknown"
 	case tel == nil:
-		return poll, pollAt, "poll", false
+		return poll, pollAt, "poll"
 	case poll == nil:
-		return tel, telAt, "telemetry", telStale
+		return tel, telAt, "telemetry"
 	}
 	// 两边都有 ⇒ 取采集时刻更晚的那个（有一边没有时刻就当它更旧）。
 	if *poll != *tel {
@@ -647,9 +647,9 @@ func pickNewerLocked(
 			*poll, *tel, pollAt, telAt)
 	}
 	if telAt != nil && (pollAt == nil || telAt.After(*pollAt)) {
-		return tel, telAt, "telemetry", telStale
+		return tel, telAt, "telemetry"
 	}
-	return poll, pollAt, "poll", false
+	return poll, pollAt, "poll"
 }
 
 // pickNewerWindows 在「轮询」与「遥测」两份车窗结论里挑一份。

@@ -225,6 +225,15 @@ type CarStatus struct {
 	// 语义与 OpenWindows 一致（三态：nil=不知道 / 空数组=全关 / 列表=开着这些）。
 	OpenWindowsSource string `json:"open_windows_source"`
 
+	// ⚠️ **v0.194.0**：车窗结论是不是「**车断线前的最后已知值**」。
+	//
+	// true ⇒ 车现在离线 ⇒ 这个值**可能已经变了**（用户后来关了窗，
+	// 而服务端还拿着断线前的「开着」当事实）⇒ **不许当现在的状态**。
+	//
+	// ⚠️ 与 LockedStale 同一族规矩（v0.193.0）⇒ 持续状态族统一由
+	// continuousStateStale 判（服务端唯一一份）。
+	OpenWindowsStale bool `json:"open_windows_stale"`
+
 	// ⚠️ **v0.82.0**：开着的门 / 舱盖。
 	//
 	// 三态与 OpenWindows 完全一致：

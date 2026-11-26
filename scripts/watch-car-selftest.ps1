@@ -826,6 +826,23 @@ $s = Read-StateJson
 Assert-Eq $before (Get-JsonProp $s 'unlocked_since') "状态转 stale ⇒ 计时器**保持不动**（读不到 ≠ 已经好了）"
 
 # ═════════════════════════════════════════════════════════════════
+# 场景 38：陈旧的车窗结论 ⇒ 当作「读不到」（用户反馈 #226 的同款风险）
+# ═════════════════════════════════════════════════════════════════
+#
+# ⚠ 守的是**车窗版**的同一条假告警：
+#   车离线时遥测给的是「断线前的最后已知值」（open_windows_stale=true）
+#   ⇒ 脚本若把它当事实 ⇒ 「车窗未关」计时器持续走 ⇒ 30 分钟后必推假告警。
+Write-Host "── 场景 38：陈旧的车窗结论 ⇒ 不启动计时器、不推"
+Set-Status @{ open_windows = @('左前窗'); open_windows_stale = $true }
+Reset-Log
+if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force }
+Invoke-Watch | Out-Null
+$s = Read-StateJson
+Assert-True ($null -eq (Get-JsonProp $s 'window_open_since')) "陈旧的车窗结论 ⇒ 不启动车窗计时（读不到 ≠ 开着）"
+$pushes = @(Get-Pushes)
+Assert-Eq 0 (Count-Push $pushes '车窗未关超过') "陈旧 ⇒ 不推车窗未关告警"
+
+# ═════════════════════════════════════════════════════════════════
 # 清理 + 汇总
 # ═════════════════════════════════════════════════════════════════
 try { Remove-Item -LiteralPath $Tmp -Recurse -Force -EA SilentlyContinue } catch { }

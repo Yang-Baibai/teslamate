@@ -65,6 +65,17 @@
       "client_source": "服务端 /status locked / locked_at / locked_stale"
     },
     {
+      "id": "window_state",
+      "结论": "车窗开没开（含「是不是旧值」—— 陈旧时显示「上次已知：…」，不当现状）",
+      "界面": "车况页",
+      "服务端": "/status open_windows / open_windows_stale",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered",
+      "client_source": "服务端 /status open_windows / open_windows_stale"
+    },
+    {
       "id": "tpms",
       "结论": "四轮胎压与异常轮",
       "界面": "车况页",

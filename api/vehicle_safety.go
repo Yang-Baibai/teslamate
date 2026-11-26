@@ -361,7 +361,8 @@ func telemetrySafetyForVIN(ctx context.Context, vin string) telemetrySafety {
 		}
 	}
 	out.Windows = telemetryOpenWindows(idx)
-	out.WindowsAt, _ = telemetryOldest(winGroup)
+	// ⚠️ **v0.194.0**：车窗这一组也把 stale 带出来（以前被下划线丢掉了）。
+	out.WindowsAt, out.WindowsStale = telemetryOldest(winGroup)
 
 	// ── 车门 ──────────────────────────────────────────────
 	// ⚠️ 时刻取 DoorState **这一个字段**的时刻（门是一个整体消息）。
@@ -429,6 +430,12 @@ func telemetrySentryStateToNormalized(code string) string {
 type telemetrySafety struct {
 	Windows   []string
 	WindowsAt *time.Time
+	// ⚠️ **v0.194.0**：车窗结论是不是「车断线前的最后已知值」。
+	//
+	// ⚠️ 以前**只有**车门与哨兵有 stale 标志 ⇒ 车窗是这一族里唯一的例外
+	// ⇒ 推送脚本会拿断线前的旧值给「车窗未关」计时 ⇒ 30 分钟后必推一条假告警
+	// （与锁车同型，用户反馈 #226 的同款风险）。
+	WindowsStale bool
 
 	Doors      []string
 	DoorsAt    *time.Time
@@ -473,6 +480,28 @@ func sameOpenSet(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// continuousStateStale **持续状态**（锁车 / 车窗 / 车门 / 哨兵）的「是不是旧值」。
+//
+// ⚠️ **v0.194.0**：这一族统一用这一条规矩（锁车是 v0.193.0 先做的，车窗是本轮补的）。
+//
+// 三步：
+//  1. 没有来源 ⇒ **不知道**（不是「旧值」）；
+//  2. 通用判据（时刻可不可信）说 stale ⇒ 是；
+//  3. 来源是**遥测** ＋ 车**离线** ⇒ 是
+//     ——「**时刻可信**」≠「**值是新的**」：车离线时遥测给的是断线前的最后已知值
+//     ⇒ 用户后来锁了车 / 关了窗，我们还拿着旧值当事实（用户反馈 #226 的根因之二）。
+//
+// ⚠ 轮询侧的值**不算**旧：它不是 broker 重发的 retained ⇒ 它就是上次成功拉取的值。
+func continuousStateStale(source string, freshnessStale bool, carOnline bool) bool {
+	if source == "" || source == "unknown" {
+		return false
+	}
+	if freshnessStale {
+		return true
+	}
+	return source == "telemetry" && !carOnline
 }
 
 // pickNewerDoors 在「轮询」与「遥测」两份车门结论里挑一份。

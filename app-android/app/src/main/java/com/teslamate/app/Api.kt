@@ -520,6 +520,13 @@ data class CarStatus(
      * 「车窗未关」的提醒也会凭空消失。
      */
     val open_windows: List<String>? = null,
+    /**
+     * ⚠️ **v0.194.0**：车窗结论是不是「**车断线前的最后已知值**」。
+     *
+     * true ⇒ 车现在离线 ⇒ 这个值**可能已经变了**（用户后来关了窗）
+     * ⇒ **不许当现在的状态显示**（与 [locked_stale] 同一族规矩）。
+     */
+    val open_windows_stale: Boolean? = null,
     /** 车窗结论的**数据来源**（telemetry / poll / 空 = 没读到） */
     val open_windows_source: String = "",
     /**

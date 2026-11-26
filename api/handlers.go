@@ -399,13 +399,19 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	var telBool *bool
 	var telAt *time.Time
 	var telStale bool
+	// ⚠️ **v0.193.0 / v0.194.0**：**持续状态族**（锁车 / 车窗）统一问一句「车此刻在线吗」
+	// ⇒ 车离线时，遥测来的值都是「断线前的最后已知值」⇒ **可能已经变了**。
+	// ⚠️ 读不到连接状态 ⇒ 保守当「离线」（宁可说旧，不说新）。
+	carOnline := true
 	if carVinErr == nil {
+		carOnline = telemetryCarOnlineNow(r.Context(), carVin)
 		if tel := telemetryLockState(r.Context(), carVin); tel != nil && tel.Bool != nil {
 			telBool, telAt, telStale = tel.Bool, tel.At, tel.Stale
 		}
 	}
-	s.Locked, s.LockedAt, s.LockedSource, s.LockedStale =
-		pickNewerLocked(s.Locked, s.LockedAt, telBool, telAt, telStale)
+	s.Locked, s.LockedAt, s.LockedSource =
+		pickNewerLocked(s.Locked, s.LockedAt, telBool, telAt)
+	s.LockedStale = continuousStateStale(s.LockedSource, telStale, carOnline)
 
 	// ⚠️ **v0.77.0：开着哪几扇窗**。
 	//
@@ -433,6 +439,10 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.OpenWindows, s.OpenWindowsSource = pickNewerWindows(
 		pollWin, pollWinAt, telSafety.Windows, telSafety.WindowsAt)
+	// ⚠️ **v0.194.0**：车窗结论是不是「车断线前的最后已知值」
+	// ⇒ 推送脚本读到它就不给「车窗未关」计时（读不到 ≠ 开着）。
+	s.OpenWindowsStale = continuousStateStale(
+		s.OpenWindowsSource, telSafety.WindowsStale, carOnline)
 
 	// ⚠️ **v0.82.0：车门 / 哨兵**（遥测 + 轮询双源）。
 	//

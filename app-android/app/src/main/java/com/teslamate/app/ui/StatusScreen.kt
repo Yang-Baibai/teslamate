@@ -1540,8 +1540,17 @@ private fun topStatusFacts(st: CarStatus): List<StatusFact> {
     val door = openState(st.open_doors, st.doors_source)
     val anyOpen = win == OpenState.OPEN || door == OpenState.OPEN
 
+    // ⚠️ **v0.194.0**：**陈旧的车窗结论不当现状** ——
+    // 车离线时遥测给的是「断线前的最后已知值」⇒ 用户后来关了窗，
+    // 而我们还拿着旧的「开着」当事实 ⇒ 印成琥珀色告警 = 一个**假的安全提示**。
+    // ⇒ 改成「上次已知：…」+ 中性色（与锁车 v0.193.0 同一套说法）。
+    val winStale = st.open_windows_stale == true
     if (win == OpenState.OPEN) {
-        facts += StatusFact(openPhrase(st.open_windows!!, "扇", "窗"), SafetyTone.WARN)
+        val text = openPhrase(st.open_windows!!, "扇", "窗")
+        facts += StatusFact(
+            if (winStale) "上次已知：" + text else text,
+            if (winStale) SafetyTone.NORMAL else SafetyTone.WARN,
+        )
     }
     if (door == OpenState.OPEN) {
         facts += StatusFact(openPhrase(st.open_doors!!, "个", "门"), SafetyTone.WARN)
@@ -1549,9 +1558,15 @@ private fun topStatusFacts(st: CarStatus): List<StatusFact> {
     if (!anyOpen) {
         when {
             win == OpenState.CLOSED && door == OpenState.CLOSED ->
-                facts += StatusFact("车窗车门已关", SafetyTone.NORMAL)
+                facts += StatusFact(
+                    if (winStale) "上次已知：车窗车门已关" else "车窗车门已关",
+                    SafetyTone.NORMAL,
+                )
             win == OpenState.CLOSED ->
-                facts += StatusFact("车窗已关", SafetyTone.NORMAL)
+                facts += StatusFact(
+                    if (winStale) "上次已知：车窗已关" else "车窗已关",
+                    SafetyTone.NORMAL,
+                )
             door == OpenState.CLOSED ->
                 facts += StatusFact("车门已关", SafetyTone.NORMAL)
         }

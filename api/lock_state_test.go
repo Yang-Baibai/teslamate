@@ -5,12 +5,14 @@ import (
 	"time"
 )
 
-// ⚠️ **v0.193.0（用户反馈 #226）：锁车状态的双源取舍。**
+// ⚠️ **v0.193.0 / v0.194.0（用户反馈 #226）：持续状态族（锁车 / 车窗）的双源取舍与 stale。**
 //
 // 守的是**这次真实误报**的形状：
 // 遥测 Locked=false（07:04，断线前 broker 重发的 retained 旧值）
 // 压过轮询 locked=true（07:14，新 9 分钟）
 // ⇒ 推送侧拿到陈旧的 false ⇒ 未锁车计时器持续走 ⇒ 30 分钟后必推「已解锁超过 30 分钟」。
+//
+// ⚠️ **v0.194.0**：车窗是这一族里唯一没有 stale 标志的 ⇒ 同样的假告警风险。
 
 func lockT_At(h int, m int) *time.Time {
 	t := time.Date(2026, 11, 26, 7, h, m, 0, time.UTC)
@@ -21,34 +23,28 @@ func lockT_At(h int, m int) *time.Time {
 func TestPickNewerLockedTakesNewerTimestamp(t *testing.T) {
 	poll := true
 	tel := false
-	locked, at, source, stale := pickNewerLocked(&poll, lockT_At(14, 9), &tel, lockT_At(4, 58), true)
+	locked, at, source := pickNewerLocked(&poll, lockT_At(14, 9), &tel, lockT_At(4, 58))
 	if locked == nil || *locked != true {
 		t.Fatalf("应取轮询的 true（07:14 比 07:04 新），实际 %v", locked)
 	}
 	if source != "poll" {
 		t.Errorf("来源应是 poll，实际 %q", source)
 	}
-	if stale {
-		t.Error("选了轮询的值 ⇒ 它不是「断线前的旧值」⇒ stale 应为 false")
-	}
 	if at == nil || !at.Equal(*lockT_At(14, 9)) {
 		t.Errorf("采集时刻应跟着被选中的那个（轮询 07:14），实际 %v", at)
 	}
 }
 
-// 遥测更新 ⇒ 取遥测，**并把它的 stale 原样带出**（断线前的旧值要如实标）。
+// 遥测更新 ⇒ 取遥测。
 func TestPickNewerLockedTelemetryWinsWhenNewer(t *testing.T) {
 	poll := false
 	tel := true
-	locked, _, source, stale := pickNewerLocked(&poll, lockT_At(4, 58), &tel, lockT_At(14, 9), true)
+	locked, _, source := pickNewerLocked(&poll, lockT_At(4, 58), &tel, lockT_At(14, 9))
 	if locked == nil || !*locked {
 		t.Fatalf("应取遥测的 true，实际 %v", locked)
 	}
 	if source != "telemetry" {
 		t.Errorf("来源应是 telemetry，实际 %q", source)
-	}
-	if !stale {
-		t.Error("遥测的 stale 必须原样带出（调用方据此不拿它当事实）")
 	}
 }
 
@@ -57,20 +53,17 @@ func TestPickNewerLockedThreeStates(t *testing.T) {
 	poll := true
 	tel := false
 	// 只有轮询
-	locked, at, source, stale := pickNewerLocked(&poll, lockT_At(14, 9), nil, nil, false)
-	if locked == nil || !*locked || source != "poll" || stale {
-		t.Errorf("只有轮询时应取轮询，实际 locked=%v source=%q stale=%v", locked, source, stale)
+	locked, _, source := pickNewerLocked(&poll, lockT_At(14, 9), nil, nil)
+	if locked == nil || !*locked || source != "poll" {
+		t.Errorf("只有轮询时应取轮询，实际 locked=%v source=%q", locked, source)
 	}
 	// 只有遥测
-	locked, at, source, stale = pickNewerLocked(nil, nil, &tel, lockT_At(4, 58), true)
-	if locked == nil || *locked {
-		t.Errorf("只有遥测时应取遥测，实际 %v", locked)
-	}
-	if source != "telemetry" || !stale {
-		t.Errorf("只有遥测时来源/stale 应如实带出，实际 source=%q stale=%v", source, stale)
+	locked, _, source = pickNewerLocked(nil, nil, &tel, lockT_At(4, 58))
+	if locked == nil || *locked || source != "telemetry" {
+		t.Errorf("只有遥测时应取遥测，实际 locked=%v source=%q", locked, source)
 	}
 	// 两边都没有 ⇒ 不知道（**不是「没锁」**）
-	locked, at, source, _ = pickNewerLocked(nil, nil, nil, nil, false)
+	locked, at, source := pickNewerLocked(nil, nil, nil, nil)
 	if locked != nil || at != nil || source != "unknown" {
 		t.Errorf("两边都没有时应是 unknown，实际 locked=%v at=%v source=%q", locked, at, source)
 	}
@@ -80,24 +73,37 @@ func TestPickNewerLockedThreeStates(t *testing.T) {
 func TestPickNewerLockedSameSemanticsTakesNewer(t *testing.T) {
 	poll := true
 	tel := true
-	_, _, source, _ := pickNewerLocked(&poll, lockT_At(14, 9), &tel, lockT_At(4, 58), true)
+	_, _, source := pickNewerLocked(&poll, lockT_At(14, 9), &tel, lockT_At(4, 58))
 	if source != "poll" {
 		t.Errorf("语义一致时也应取更新的那个（轮询 07:14），实际来源 %q", source)
 	}
 }
 
-// 锁车的 stale：「**时刻可信**」≠「**值是新的**」。
+// **持续状态族的 stale 统一规矩**（锁车与车窗共用，服务端唯一一份）。
 //
-// ⚠ 实测（用户反馈 #226）：车离线时遥测给的是「断线前的最后已知值」
-// ⇒ 通用判据说「时刻可信」⇒ stale=false ⇒ 推送侧把它当事实 ⇒ 假告警。
-func TestLockStaleOffline(t *testing.T) {
-	if !lockStaleOffline(false, false) {
-		t.Error("车离线时锁车状态必须标 stale（断线前的值可能已经变了）")
+// ⚠️ 「**时刻可信**」≠「**值是新的**」——
+// 车离线时遥测给的是断线前的最后已知值 ⇒ 拿它当「现在没锁 / 现在窗开着」的事实
+// ⇒ 推送侧会推出**假告警**（实测：车已锁好，却收到「已解锁超过 30 分钟」）。
+func TestContinuousStateStale(t *testing.T) {
+	cases := []struct {
+		name      string
+		source    string
+		freshness bool
+		carOnline bool
+		wantStale bool
+	}{
+		{"遥测 + 车离线 ⇒ 旧值", "telemetry", false, false, true},
+		{"遥测 + 车在线 ⇒ 新值", "telemetry", false, true, false},
+		{"轮询 + 车离线 ⇒ 不是旧值（它不是 retained）", "poll", false, false, false},
+		{"轮询 + 车在线 ⇒ 新值", "poll", false, true, false},
+		{"通用判据说 stale ⇒ 旧值", "telemetry", true, true, true},
+		{"没有来源 ⇒ 不知道（不是旧值）", "", false, false, false},
+		{"来源未知 ⇒ 不知道", "unknown", false, false, false},
 	}
-	if lockStaleOffline(false, true) {
-		t.Error("车在线时不该标 stale")
-	}
-	if !lockStaleOffline(true, true) {
-		t.Error("通用判据已说 stale（时刻不可信）⇒ 仍然 stale")
+	for _, c := range cases {
+		got := continuousStateStale(c.source, c.freshness, c.carOnline)
+		if got != c.wantStale {
+			t.Errorf("[%s] stale 应为 %v，实际 %v", c.name, c.wantStale, got)
+		}
 	}
 }

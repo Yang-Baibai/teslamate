@@ -5321,6 +5321,47 @@ print('锁车状态：车况页 ＋ 车控页都读 locked_stale（陈旧值不�
 PYEOF
 if [ $? -eq 0 ]; then ok "锁车状态：客户端不许把陈旧的值当现状（用户反馈 #226）"; else fail "客户端把陈旧的锁车状态当现状显示"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 54：车窗结论——陈旧的值**不许当现状** ───────────────────────────
+#
+# ⚠️ **v0.194.0（用户反馈 #226 的同款风险）**：车离线时，遥测给的车窗结论是
+# 「**车断线前的最后已知值**」⇒ 用户后来关了窗，我们还拿着旧的「开着」当事实
+# ⇒ 推送侧会推「车窗未关超过 30 分钟」的**假告警** ⇒ App 也会印一个假的安全提示。
+#
+# ⚠️ 判据**不依赖写法**：
+#   ① 车况页必须**用**服务端的 open_windows_stale（查字段名）；
+#   ② 推送脚本必须**读**它（查字段名）⇒ 读到就当「读不到」⇒ 不计时。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+STATUS = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/StatusScreen.kt')
+API = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/Api.kt')
+WATCH = pathlib.Path('scripts/watch-car.ps1')
+problems = []
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+
+
+if 'open_windows_stale' not in read(API):
+    problems.append('Api.kt 里没有 open_windows_stale ⇒ App 没声明这个字段（陈旧的车窗值会被当现状印）')
+if 'open_windows_stale' not in read(STATUS):
+    problems.append('StatusScreen.kt 里没有 open_windows_stale ⇒ 车况页不认陈旧的车窗结论')
+if 'open_windows_stale' not in read(WATCH):
+    problems.append('watch-car.ps1 里没有 open_windows_stale ⇒ 推送侧会拿陈旧的车窗值计时 ⇒ 假告警')
+
+if problems:
+    print('车窗结论：客户端/推送脚本把陈旧的值当现状 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 陈旧的车窗结论只能显示成「上次已知」，也不许当「开着」计时')
+    sys.exit(1)
+
+print('车窗结论：车况页 ＋ 推送脚本都读 open_windows_stale（陈旧值不当现状）')
+PYEOF
+if [ $? -eq 0 ]; then ok "车窗结论：陈旧的值不许当现状（用户反馈 #226 的同款风险）"; else fail "陈旧的车窗结论被当现状用了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
