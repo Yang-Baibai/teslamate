@@ -871,6 +871,22 @@ def teslamate_battery() -> dict:
             out["说明"] = decay.get("note")
         out["覆盖天数"] = b.get("series_span_days")
         out["覆盖里程km"] = b.get("odometer_span_km")
+    # ⚠️ **v0.192.0**：充电习惯与**累计等效满充循环**（服务端算的**事实**）。
+    #
+    # ⚠️ 「结论那一句」是**服务端渲染好的原文**（App 车况页的卡片印的是同一句）
+    #    ⇒ 这里**只透传**，不许自己改写（ADR #101）。
+    usage = b.get("usage") or {}
+    if usage:
+        out["累计循环次数"] = usage.get("efc")
+        out["累计循环次数·另一口径"] = usage.get("efc_by_charger")
+        out["充电场次"] = usage.get("sessions")
+        out["直流场次"] = usage.get("dc_sessions")
+        out["交流场次"] = usage.get("ac_sessions")
+        out["直流电量占比%"] = usage.get("dc_energy_ratio")
+        out["充入电池(度)"] = usage.get("battery_kwh")
+        out["充电习惯结论"] = usage.get("line")
+        if usage.get("note"):
+            out["累计循环口径"] = usage.get("note")
     return out
 
 

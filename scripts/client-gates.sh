@@ -5233,6 +5233,53 @@ print('车况页电池健康：取服务端那份 ＋ 用服务端的数 ＋ 服
 PYEOF
 if [ $? -eq 0 ]; then ok "车况页的电池健康只透传服务端（不许客户端自己算）"; else fail "车况页的电池健康在客户端自己算了一份"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 52：累计循环次数**不许客户端自己算** ─────────────────────────────
+#
+# ⚠️ **v0.192.0**：车况页的电池健康卡加了一行「累计等效满充循环 N 次」。
+# 那一句与那个数**都在服务端**（api/battery_usage.go）⇒ 客户端**只透传**
+# （App 卡片与飞书体检报告印**同一句**，ADR #101）。
+#
+# ⚠️ 判据**不依赖写法**：
+#   ① 卡片必须**用**服务端的 `usage.line`（查 usageLine）；
+#   ② 客户端**不许**把 efc 算出来（efc 与除法同行）⇒ 自己算 = 第二份口径。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+CARD = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/BatteryHealthCard.kt')
+CLIENT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+problems = []
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+
+
+if not CARD.exists():
+    problems.append('找不到 %s —— 车况页的电池健康卡不见了？' % CARD)
+else:
+    card = read(CARD)
+    if 'usageLine' not in card:
+        problems.append('电池健康卡里没有 usageLine ⇒ 没有印服务端渲染好的那一句')
+    # ② 客户端不许自己算 efc（efc 与除法/÷ 同行）
+    for p in CLIENT.rglob('*.kt'):
+        for i, line in enumerate(read(p).splitlines()):
+            low = line.lower()
+            if 'efc' in low and ('/' in line or '÷' in line):
+                problems.append('%s 第 %d 行把 efc 算出来了 ⇒ 客户端在自己算循环次数'
+                                % (p.name, i + 1))
+
+if problems:
+    print('累计循环次数没有只透传服务端 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 循环次数的口径只在服务端一份（ADR #38 / ADR #101）')
+    sys.exit(1)
+
+print('累计循环：卡片用服务端那一句 ＋ 客户端没有自己算')
+PYEOF
+if [ $? -eq 0 ]; then ok "累计循环次数只透传服务端（客户端不许自己算）"; else fail "客户端自己在算累计循环次数"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

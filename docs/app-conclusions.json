@@ -166,6 +166,17 @@
       "client_source": "服务端 /battery decay"
     },
     {
+      "id": "battery_cycles",
+      "结论": "累计等效满充循环（从空到满一次 = 1 循环）",
+      "界面": "车况页",
+      "服务端": "/battery usage",
+      "mcp": [
+        "teslamate_battery"
+      ],
+      "状态": "covered",
+      "client_source": "服务端 /battery usage"
+    },
+    {
       "id": "full_charge_range",
       "结论": "实测满电续航（折算中位，公里）",
       "界面": "记录页",

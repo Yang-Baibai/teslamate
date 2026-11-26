@@ -1703,7 +1703,9 @@ func handleBattery(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "car id 无效")
 		return
 	}
-	h, err := computeBatteryHealth(id)
+	// ⚠️ **v0.192.0**：用**带充电习惯与累计循环**的那份（/battery_report 共用同一个函数
+	// ⇒ 两处看到的数必然一致，ADR #38）。
+	h, err := computeBatteryHealthWithUsage(id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

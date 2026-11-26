@@ -924,6 +924,29 @@ LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
 WHERE cp.car_id = $1 AND cp.charge_energy_added > 0.01
 ORDER BY cp.start_date DESC`
 
+// 电池**充电习惯与累计循环**（v0.192.0）—— **事实**，不下方向性结论。
+//
+// ⚠️ 口径：
+//
+//	· 只取**真的充进电**的会话（charge_energy_added > 0.01，与充电统计同一口径）；
+//	· 直交流判据复用 [cteChargeDC] ⇒ 与充电列表、用电页**同一份**（不另写一套）；
+//	· **全历史**（不按窗口筛）⇒ 循环次数本来就是累计量。
+//
+// ⚠️ 为什么不用「充了多少度」直接除：
+//
+//	充电机送来的度数**含充电损耗** ⇒ 用它算循环会**偏大**；
+//	⇒ 两个口径（电池侧 / 电网侧）并排给，可互相印证（ADR #38：同一事实只留一处）。
+const sqlBatteryUsage = `
+WITH` + cteChargeDC + `
+SELECT cp.charge_energy_added,
+       cp.start_battery_level,
+       cp.end_battery_level,
+       COALESCE(cd.is_dc, false) AS is_dc
+FROM charging_processes cp
+LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
+WHERE cp.car_id = $1 AND cp.charge_energy_added > 0.01
+ORDER BY cp.start_date DESC`
+
 const sqlStatsCharges = `
 WITH` + cteChargeDC + `
 SELECT to_char(date_trunc($2, (cp.start_date AT TIME ZONE 'UTC') AT TIME ZONE $3), 'YYYY-MM-DD') AS bucket,

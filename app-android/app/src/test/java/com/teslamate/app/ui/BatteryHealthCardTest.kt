@@ -116,6 +116,30 @@ class BatteryHealthCardTest {
     }
 
     /**
+     * ⚠️ **累计循环那一句必须逐字取服务端**（App 卡片与飞书体检报告同一句）。
+     */
+    @Test
+    fun `累计循环那一句逐字取服务端`() {
+        val b = online().copy(
+            usage = com.teslamate.app.BatteryUsage(
+                sessions = 87,
+                dc_sessions = 79,
+                ac_sessions = 8,
+                efc = 27.071918556122444,
+                line = "累计等效满充循环 27.1 次（直流 79 / 交流 8 次充电）",
+                note = "循环次数 = 充入电池的度 ÷ 铭牌可用度（从空到满算 1 次）。",
+            )
+        )
+        val d = batteryHealthCardData(b)!!
+        assertEquals("累计等效满充循环 27.1 次（直流 79 / 交流 8 次充电）", d.usageLine)
+        assertNotNull("口径说明也要带过去", d.usageNote)
+        // 服务端没给（老服务端 / 没充电记录）⇒ **不显示**（宁可不说，也不说半句）。
+        val none = batteryHealthCardData(online().copy(usage = null))!!
+        assertNull(none.usageLine)
+        assertNull(none.usageNote)
+    }
+
+    /**
      * ⚠️ **覆盖范围与服务端一致**（不说清楚会被当成「电池的全部历史」）。
      */
     @Test

@@ -67,6 +67,10 @@ data class BatteryHealthCardData(
     val spanKm: Double?,
     /** 参与判定的满充点个数（服务端给的）。 */
     val strictPoints: Int?,
+    /** 累计循环那一句（**服务端渲染好的**，App 与飞书体检报告印同一句）。 */
+    val usageLine: String?,
+    /** 累计循环的口径说明（服务端唯一一份）。 */
+    val usageNote: String?,
 )
 
 /**
@@ -101,6 +105,9 @@ fun batteryHealthCardData(b: BatteryHealth): BatteryHealthCardData? {
         spanDays = b.series_span_days,
         spanKm = b.odometer_span_km,
         strictPoints = decay?.n,
+        // ⚠️ **v0.192.0**：那一句**逐字**取服务端（客户端一个字都不拼 ⇒ ADR #101）。
+        usageLine = b.usage?.line?.takeIf { it.isNotBlank() },
+        usageNote = b.usage?.note?.takeIf { it.isNotBlank() },
     )
 }
 
@@ -150,6 +157,27 @@ fun BatteryHealthCard(b: BatteryHealth, modifier: Modifier = Modifier) {
                 // ⚠️ 服务端没给依据（老服务端）⇒ **只印结论，不说半句**。
                 Text(
                     headline,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        // ⚠️ **v0.192.0：充电习惯与累计循环**（服务端算的**事实** ⇒ 客户端只印它那一句）。
+        //
+        // ⚠️ 印的是**服务端渲染好的那一句**（与飞书体检报告同一句）⇒ 两端不会各说各话。
+        // ⚠️ 服务端没给（老服务端 / 没充电记录）⇒ **不显示**（宁可不说，也不说半句）。
+        val usageNote = d.usageNote
+        d.usageLine?.let { line ->
+            if (usageNote != null) {
+                TextWithNote(
+                    text = line,
+                    note = usageNote,
+                    style = MaterialTheme.typography.labelSmall,
+                    a11yLabel = "累计循环的口径",
+                )
+            } else {
+                Text(
+                    line,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

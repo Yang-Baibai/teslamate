@@ -97,6 +97,10 @@ func renderBatteryReport(carName string, h *BatteryHealth) (string, string) {
 			}
 		}
 	}
+	// ⑥ 充电习惯与累计循环 —— **服务端渲染好的那一句**（App 卡片印的是同一句）。
+	if h.Usage != nil && h.Usage.Line != "" {
+		lines = append(lines, h.Usage.Line)
+	}
 	if len(lines) == 0 {
 		// ⚠️ 什么都没有 ⇒ **不编**（反幻觉）：只说清「还没有满充记录」。
 		return title, "这台车还没有满充记录，电池健康给不出数。"
@@ -115,7 +119,8 @@ func handleBatteryReport(w http.ResponseWriter, r *http.Request) {
 	}
 	// ⚠️ **必须**复用 [computeBatteryHealth] —— 与 /battery 端点、App 卡片、
 	// teslamate_battery **是同一个数**（ADR #38：同一事实只留一处）。
-	h, err := computeBatteryHealth(id)
+	// ⚠️ 与 /battery 端点**同一个函数** ⇒ 报告里的数与 App 卡片必然一致（ADR #38）。
+	h, err := computeBatteryHealthWithUsage(id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

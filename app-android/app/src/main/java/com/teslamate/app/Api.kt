@@ -1427,6 +1427,45 @@ data class BatteryHealth(
      * ⚠️ 文案由**服务端**生成（ADR #41：文案只有一份），App **只透传**。
      */
     val measurement: BatteryMeasurement? = null,
+    /**
+     * ⚠️ **v0.192.0**：充电习惯与**累计等效满充循环**（服务端算的**事实**）。
+     *
+     * ⚠️ 客户端**不许自己算**循环次数（那是服务端的口径，ADR #38）——
+     * 这里只**透传**服务端渲染好的那一句与那几句口径说明。
+     */
+    val usage: BatteryUsage? = null,
+)
+
+/**
+ * ⚠️ **v0.192.0**：充电习惯与累计等效满充循环（服务端唯一事实源）。
+ *
+ * ⚠️ **只给事实，不下方向性结论** —— 不写「快充伤电池」这类没有官方依据的断言。
+ */
+@Serializable
+data class BatteryUsage(
+    /** 充电场次（真的充进电的会话）。 */
+    val sessions: Int = 0,
+    /** 直流场次（判据与充电统计同一份）。 */
+    val dc_sessions: Int = 0,
+    /** 交流场次。 */
+    val ac_sessions: Int = 0,
+    /** 直流**电量**占比（%）。 */
+    val dc_energy_ratio: Double? = null,
+    /** 电网侧（充电机送来的）总度数。 */
+    val charger_kwh: Double? = null,
+    /** 电池侧充入（度）。 */
+    val battery_kwh: Double? = null,
+    /** 等效满充循环（电池侧口径）—— 服务端算的。 */
+    val efc: Double? = null,
+    /** 另一口径（电网侧，含充电损耗 ⇒ 偏大）—— 用来互证。 */
+    val efc_by_charger: Double? = null,
+    /**
+     * 结论的**一句话**（服务端渲染好的）——
+     * App 车况页的卡片与飞书体检报告**印的是同一句**（ADR #101）。
+     */
+    val line: String = "",
+    /** 口径说明（服务端唯一一份，ADR #41）。 */
+    val note: String = "",
 )
 
 /**

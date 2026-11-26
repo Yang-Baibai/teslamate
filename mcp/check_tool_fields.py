@@ -112,6 +112,10 @@ SPEC = [
     # ⚠️ **v0.172.0**：那段说明也透传（服务端唯一一份）⇒ 飞书里问「电池衰减」
     #   拿到的与 App 卡片上的是**同一句**（ADR #41：文案只有一份）。
     ("teslamate_battery", {}, "说明", "电池衰减那段说明（服务端唯一一份）"),
+    # ⚠️ **v0.192.0**：累计等效满充循环（服务端算的**事实**）。
+    ("teslamate_battery", {}, "累计循环次数", "累计等效满充循环次数"),
+    ("teslamate_battery", {}, "充电场次", "充电场次"),
+    ("teslamate_battery", {}, "充电习惯结论", "累计循环那一句（服务端原文）"),
     # ⚠️ **v0.190.0**：电池体检报告（服务端渲染好的标题 + 正文）。
     # 字段名与 teslamate_battery **逐字一致** ⇒ 模型看到的是同一套词汇。
     ("teslamate_battery_report", {}, "标题", "电池体检报告标题（服务端原文）"),
@@ -613,6 +617,36 @@ def check_battery_report_contract() -> list:
         body = str(rep.get("正文") or "")
         if decay["headline"] not in body:
             bad.append("报告正文里没有衰减结论那一句 ⇒ 报告漏了最关键的那句")
+    return bad
+
+
+def check_battery_usage_contract() -> list:
+    """体检报告里的**累计循环那一句**必须与 /battery 的 usage.line **逐字相同**。
+
+    ⚠️ 为什么比「有没有循环次数」更重要：App 车况页的电池健康卡与飞书体检报告
+    印的是**同一件事** ⇒ 两句措辞一旦各写各的 ⇒ 用户看到「卡片说 27 次、飞书说 26 次」
+    ⇒ 以为数据在骗人（ADR #38 / ADR #101）。
+
+    ⇒ 这里断言：**报告正文里含有** /battery 的 usage.line **原文**（不是「差不多」）。
+    """
+    bad = []
+    try:
+        rep = T.teslamate_battery_report()
+        raw = T._get("/api/v1/cars/%s/battery" % T.CAR_ID)
+    except Exception as e:
+        return ["调用异常 %r" % (e,)]
+    if not isinstance(rep, dict) or "错误" in rep:
+        return ["电池体检报告取不到：%r" % (rep,)]
+    if not isinstance(raw, dict) or "error" in raw:
+        return ["电池健康取不到：%r" % (raw,)]
+    usage = raw.get("usage") or {}
+    line = usage.get("line") or ""
+    if not line:
+        # 这台车没有充电记录 ⇒ 合法（服务端不给数）⇒ 不算不合规。
+        return []
+    body = str(rep.get("正文") or "")
+    if line not in body:
+        bad.append("报告正文里没有 usage.line 原文（%q）⇒ 两端各说各话（ADR #101）" % line)
     return bad
 
 
@@ -2144,6 +2178,14 @@ def main() -> int:
         print("  ✓ %-26s %-24s 电池体检报告与电池页是**同一份数、同一句话**"
               % ("teslamate_battery_report", "体检报告契约"))
     bad.extend(rep_bad)
+
+    usage_bad = check_battery_usage_contract()
+    for b in usage_bad:
+        print("  ✗ %s" % b)
+    if not usage_bad:
+        print("  ✓ %-26s %-24s 累计循环那一句：App 卡片与体检报告**逐字相同**"
+              % ("teslamate_battery", "累计循环契约"))
+    bad.extend(usage_bad)
 
     meas_bad = check_battery_measurement_contract()
     for b in meas_bad:
