@@ -1301,7 +1301,7 @@ private fun OdometerLine(st: CarStatus) {
 // ⚠️ **v0.170.0**：`Icons.Filled.HelpOutline` 在 material-icons-extended 1.7.6 里
 // **没有** AutoMirrored 变体（废弃提示指向的那个符号**不存在**）⇒ 只能继续用它。
 @Suppress("DEPRECATION")
-private fun LockStateChip(locked: Boolean?, fleetState: String? = null) {
+private fun LockStateChip(locked: Boolean?, stale: Boolean? = null, fleetState: String? = null) {
     val accents = LocalAccentColors.current
     val icon: androidx.compose.ui.graphics.vector.ImageVector
     val text: String
@@ -1318,6 +1318,16 @@ private fun LockStateChip(locked: Boolean?, fleetState: String? = null) {
     // （原话：「到底锁没锁？？能锁吗？」），
     // 而现在能直接告诉他**这是哪一种**，以及**要不要动手**。
     when {
+        // ⚠️ **v0.193.0（用户反馈 #226）**：**陈旧的值不能说成现在的状态**。
+        //
+        // stale=true ⇒ 这个值是「车断线前的最后已知值」⇒ 车可能早就锁好了
+        // ⇒ 印成「未上锁」（还带琥珀色告警）＝ **一个安全相关的假事实**。
+        // ⇒ 改成「上次已知：…」+ 中性色 ⇒ 不当现状、也不当告警。
+        stale == true && locked != null -> {
+            icon = if (locked) Icons.Filled.Lock else Icons.Filled.LockOpen
+            text = if (locked) "上次已知：已上锁" else "上次已知：未锁"
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        }
         locked == true -> {
             icon = Icons.Filled.Lock
             text = "已上锁"
@@ -1451,7 +1461,7 @@ private fun TopStatusLine(st: CarStatus, cachedAt: Instant?) {
         ) {
             // 锁车词条自带**后置**分隔符 —— 这样换行时不会在行首凭空多一个点。
             Row(verticalAlignment = Alignment.CenterVertically) {
-                LockStateChip(st.locked, st.fleet_state)
+                LockStateChip(st.locked, st.locked_stale, st.fleet_state)
                 if (facts.isNotEmpty()) {
                     Spacer(Modifier.width(6.dp))
                     Text(

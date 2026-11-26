@@ -348,7 +348,45 @@ func telemetryLockState(ctx context.Context, vin string) *telemetryFieldView {
 	if f == nil || f.Bool == nil {
 		return nil
 	}
+	// ⚠️ **v0.193.0（用户反馈 #226）**：锁车是**持续状态** ⇒
+	// 车离线时，任何遥测值都是「**断线前的最后已知值**」⇒ 它**可能已经变了**
+	//（用户后来锁了车，而服务端还拿着断线前的 false 当事实）
+	// ⇒ 锁车这一项的 stale 必须**如实**为 true。
+	//
+	// ⚠️ 为什么不动通用判据 [telemetryFieldFreshness]：
+	//   它回答的是「**采集时刻**可不可信」⇒ 别的字段用它没问题；
+	//   而锁车问的是「**值**是不是现在的」⇒ 断线前的值一律不算。
+	//   ⇒ 只在锁车这一处加规则（影响面最小）；通用判据留给各字段自己的语义。
+	f.Stale = lockStaleOffline(f.Stale, telemetryCarOnlineNow(ctx, vin))
 	return f
+}
+
+// lockStaleOffline 锁车的 stale 判定（纯函数，可单测）。
+//
+// ⚠️ 「**时刻可信**」≠「**值是新的**」——
+// 车离线时，遥测给的值是断线前的最后已知值 ⇒ 拿它当「现在没锁」的事实
+// ⇒ 推送侧会推出**假告警**（实测：车已锁好，却收到「已解锁超过 30 分钟」）。
+//
+// @param freshnessStale 通用判据说的 stale（时刻不可信）
+// @param carOnline       车此刻在线吗（读不到 ⇒ 保守当离线）
+func lockStaleOffline(freshnessStale bool, carOnline bool) bool {
+	if freshnessStale {
+		return true
+	}
+	return !carOnline
+}
+
+// telemetryCarOnlineNow 车此刻在线吗（按最近的 CONNECTED / DISCONNECTED 判定）。
+//
+// ⚠ 读不到连接状态 ⇒ 保守当成「**离线**」（值不可信）⇒ 别把旧值当事实。
+func telemetryCarOnlineNow(ctx context.Context, vin string) bool {
+	lastConnected, lastDisconnected, err := telemetryConnectivityTimes(ctx, vin)
+	if err != nil {
+		log.Printf("⚠️ 读遥测连接状态失败（按离线处理）：%v", err)
+		return false
+	}
+	return lastConnected != nil &&
+		(lastDisconnected == nil || lastConnected.After(*lastDisconnected))
 }
 
 // --------------------------------------------------------------------------

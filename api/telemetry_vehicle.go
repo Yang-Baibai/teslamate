@@ -607,6 +607,51 @@ func pickNewerTPMS(poll, tel TeslaTPMS, telOK bool) (TeslaTPMS, string) {
 	return poll, "poll"
 }
 
+// pickNewerLocked 在「轮询」与「遥测」两份锁车结论里挑一份。
+//
+// ⚠️ **v0.193.0（用户反馈 #226）**：锁车状态此前是**遥测无条件覆盖**轮询 ⇒ 实测误报：
+//
+//	遥测 Locked=false（07:04，断线前 broker 重发的 retained 旧值）
+//	压过轮询 vehicle_state.locked=true（07:14，新 9 分钟）
+//	⇒ 推送侧拿到一个**陈旧的 false** ⇒ 「未锁车」计时器持续走
+//	⇒ 30 分钟后必推「已解锁超过 30 分钟」—— 而车其实已经锁好了（用户现场确认）。
+//
+// ⚠️ **为什么锁车不学车窗/车门那样「冲突以遥测为准」**：
+//
+//	车窗/车门的两边**编码不同**（轮询 legacy 0/1/2 vs 遥测官方枚举 0..3）
+//	⇒ 冲突时只有**官方编码**那份配当裁判（ADR #24）。
+//	而**锁车两边同为布尔**（true/false，含义完全一样）⇒ **没有编码歧义**
+//	⇒ 与 [pickNewerSentry] / [pickNewerTPMS] 同口径：**取采集时刻更新的那个**。
+//
+// ⚠️ 三态：nil = **不知道**（不是「没锁」）⇒ 一边不知道时用另一边。
+//
+// ⚠️ 返回的 stale：**跟着被选中的那个来源**走 ——
+//
+//	选了遥测 ⇒ 它的 stale 原样带出（可能是断线前的旧值）；
+//	选了轮询 ⇒ 轮询不是「断线前旧值」⇒ stale = false。
+func pickNewerLocked(
+	poll *bool, pollAt *time.Time,
+	tel *bool, telAt *time.Time, telStale bool,
+) (locked *bool, at *time.Time, source string, stale bool) {
+	switch {
+	case poll == nil && tel == nil:
+		return nil, nil, "unknown", false
+	case tel == nil:
+		return poll, pollAt, "poll", false
+	case poll == nil:
+		return tel, telAt, "telemetry", telStale
+	}
+	// 两边都有 ⇒ 取采集时刻更晚的那个（有一边没有时刻就当它更旧）。
+	if *poll != *tel {
+		log.Printf("⚠️ 锁车口径冲突：轮询=%v 遥测=%v ⇒ 取采集时刻更新的那个（轮询 %v / 遥测 %v）",
+			*poll, *tel, pollAt, telAt)
+	}
+	if telAt != nil && (pollAt == nil || telAt.After(*pollAt)) {
+		return tel, telAt, "telemetry", telStale
+	}
+	return poll, pollAt, "poll", false
+}
+
 // pickNewerWindows 在「轮询」与「遥测」两份车窗结论里挑一份。
 //
 // ⚠️ **v0.83.0**：语义不一致时以**遥测**为准（同 pickNewerDoors，ADR #24）。

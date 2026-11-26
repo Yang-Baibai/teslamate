@@ -55,13 +55,14 @@
     },
     {
       "id": "lock_state",
-      "结论": "锁没锁（含「是不是旧值」）",
+      "结论": "锁没锁（含「是不是旧值」—— 陈旧时显示「上次已知：…」，不当现状）",
       "界面": "车况页 / 车控页",
-      "服务端": "/status locked / locked_at",
+      "服务端": "/status locked / locked_at / locked_stale",
       "mcp": [
         "teslamate_status"
       ],
-      "状态": "covered"
+      "状态": "covered",
+      "client_source": "服务端 /status locked / locked_at / locked_stale"
     },
     {
       "id": "tpms",

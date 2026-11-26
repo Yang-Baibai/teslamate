@@ -235,7 +235,10 @@ fun ControlScreen(
                 VehicleControlPanel(
                     api = api,
                     carId = settings.carId,
-                    locked = status?.locked,
+                    // ⚠️ **v0.193.0（用户反馈 #226）**：**陈旧的锁车状态当「未知」**
+                // ⇒ 磁贴上写「锁车状态未知」，不拿断线前的旧值当现状
+                // （车可能早就锁好了 ⇒ 印「未锁」是安全相关的假事实）。
+                locked = if (status?.locked_stale == true) null else status?.locked,
                     carAsleep = status?.fleet_state == "asleep",
                     refreshSignal = catalogRefresh,
                     // ⚠️ v0.76.0：命令之后立刻把车况读回来 ——

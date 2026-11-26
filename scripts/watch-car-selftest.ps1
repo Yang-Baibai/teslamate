@@ -795,6 +795,37 @@ $s = Read-StateJson
 Assert-Eq $monthSlot (Get-JsonProp $s 'last_battery_brief_slot') "没有记录也**记了槽位**（否则每 5 分钟重试一次）"
 
 # ═════════════════════════════════════════════════════════════════
+# 场景 36~37：锁车状态 stale ⇒ 当作「读不到」（用户反馈 #226）
+# ═════════════════════════════════════════════════════════════════
+#
+# ⚠ 守的是**那条假告警**的形状：
+#   车其实已经锁好了，但服务端给的是「车断线前的最后已知值」（locked_stale=true）
+#   ⇒ 脚本若把它当**事实** ⇒ 未锁车计时器持续走 ⇒ 30 分钟后必推一条假告警。
+#   （实测：车已锁好，却收到「已解锁超过 30 分钟」。）
+Write-Host "── 场景 36：stale 的锁车状态 ⇒ 不启动计时器、不推"
+Set-Status @{ locked = $false; locked_stale = $true }
+Reset-Log
+if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force }
+Invoke-Watch | Out-Null
+$s = Read-StateJson
+Assert-True ($null -eq (Get-JsonProp $s 'unlocked_since')) "stale 的锁车状态 ⇒ 不启动未锁车计时（读不到 ≠ 没锁）"
+$pushes = @(Get-Pushes)
+Assert-Eq 0 (Count-Push $pushes '已解锁超过') "stale ⇒ 不推未锁车告警"
+
+Write-Host "── 场景 37：已经在计时 ⇒ 状态转 stale ⇒ 计时器保持不动"
+Set-Status @{ locked = $false }
+Reset-Log
+if (Test-Path -LiteralPath $StateFile) { Remove-Item -LiteralPath $StateFile -Force }
+Invoke-Watch | Out-Null
+$s = Read-StateJson
+$before = Get-JsonProp $s 'unlocked_since'
+Assert-True ($null -ne $before) "先正常计时一轮（stale=false）"
+Set-Status @{ locked = $false; locked_stale = $true }
+Invoke-Watch | Out-Null
+$s = Read-StateJson
+Assert-Eq $before (Get-JsonProp $s 'unlocked_since') "状态转 stale ⇒ 计时器**保持不动**（读不到 ≠ 已经好了）"
+
+# ═════════════════════════════════════════════════════════════════
 # 清理 + 汇总
 # ═════════════════════════════════════════════════════════════════
 try { Remove-Item -LiteralPath $Tmp -Recurse -Force -EA SilentlyContinue } catch { }

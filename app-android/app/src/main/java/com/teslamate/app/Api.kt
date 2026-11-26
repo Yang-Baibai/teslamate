@@ -496,6 +496,16 @@ data class CarStatus(
      * 「没取到数据」说成「车没锁」，这是危险的假信息。
      */
     val locked: Boolean? = null,
+    /**
+     * ⚠️ **v0.193.0（用户反馈 #226）**：这个锁车状态是不是「**车断线前的最后已知值**」。
+     *
+     * true ⇒ 车现在离线 ⇒ 这个值**可能已经变了**（用户后来锁了车，
+     * 而服务端还拿着断线前的 false 当事实）⇒ **不许当现在的状态显示**。
+     *
+     * ⚠️ 以前 App **没声明**这个字段（它属于「服务端给了但客户端还没声明」的 5 个键）
+     * ⇒ App 把一个**陈旧的值**当事实印成「未上锁」（琥珀色告警）。
+     */
+    val locked_stale: Boolean? = null,
     /** 锁车状态的采集时刻（用于判断新鲜度） */
     @Serializable(with = InstantSer::class) val locked_at: Instant? = null,
 

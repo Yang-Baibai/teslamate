@@ -388,24 +388,24 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		s.LockedSource = "unknown"
 	}
 
-	// ⚠️ **v0.80.0：遥测优先**。
-	//
-	// 旧版只有**一条**路：Fleet API 后台轮询的缓存。
-	// ⇒ **车睡着时那个缓存是空的** —— 车停在家里的那 9 个小时，
-	//   「锁没锁」一直是**未知**（locked = null），而这是车主第一诉求。
-	//
-	// 现在多一条路：Fleet Telemetry 的 `Locked` 字段（**车主动推**）。
+	// ⚠️ **v0.80.0：多一条路** —— Fleet Telemetry 的 `Locked` 字段（**车主动推**）。
 	// 车断线后 broker 上仍留着**断线前的最后已知值** ⇒ 车睡着也有答案。
 	//
-	// ⚠️ **来源必须标出来**：遥测给的是「断线前的最后已知值」，
-	// 可能已经过了 9 小时；不说清楚，调用方就会把它当现在的样子报出去。
+	// ⚠️ **v0.193.0（用户反馈 #226）：不再是「遥测无条件覆盖」** ——
+	// 遥测给的值可能是**断线前的旧值**（broker 重发的 retained），
+	// 而轮询值可能更新 ⇒ 旧值压新值 ⇒ 推送侧拿到**陈旧的 false**
+	// ⇒ 「未锁车」计时器持续走 ⇒ 30 分钟后必推「已解锁超过 30 分钟」（实测误报）。
+	// ⇒ 改成**双源取舍：取采集时刻更新的那个**（锁车两边同为布尔 ⇒ 无编码歧义）。
+	var telBool *bool
+	var telAt *time.Time
+	var telStale bool
 	if carVinErr == nil {
 		if tel := telemetryLockState(r.Context(), carVin); tel != nil && tel.Bool != nil {
-			s.Locked, s.LockedAt = tel.Bool, tel.At
-			s.LockedSource = "telemetry"
-			s.LockedStale = tel.Stale
+			telBool, telAt, telStale = tel.Bool, tel.At, tel.Stale
 		}
 	}
+	s.Locked, s.LockedAt, s.LockedSource, s.LockedStale =
+		pickNewerLocked(s.Locked, s.LockedAt, telBool, telAt, telStale)
 
 	// ⚠️ **v0.77.0：开着哪几扇窗**。
 	//

@@ -498,6 +498,16 @@ if (-not $CarName) { $CarName = "车辆" }
 # $null = **不知道**（没配凭据 / 拉取失败），**不等于**「没锁」。
 $lockedRaw = Get-Prop $st 'locked' $null
 
+# ⚠️ **v0.193.0（用户反馈 #226）**：**stale 的锁车状态当作「读不到」**。
+#
+# 服务端给 stale=true ⇒ 这个值是「车断线前的最后已知值」⇒ 可能早就锁好了
+# ⇒ 拿它当**事实**会让「未锁车」计时器持续走 ⇒ 30 分钟后必推一条**假告警**
+# （实测：车已锁好，却收到「已解锁超过 30 分钟」）。
+#
+# ⇒ stale 时**既不启动、也不清零**计时器（读不到 ≠ 已经好了 —— 这条规矩
+#    原本就写在下面「三态处理」里，只是**锁车**这一项漏了）。
+$lockedStale = [bool](Get-Prop $st 'locked_stale' $false)
+
 # ── 车窗状态：三态 ────────────────────────────────────────────────
 # ⚠️ 数组要显式 @() 包一层：PowerShell 函数返回空数组会被**解包成 $null**，
 #    「全关」会被误判成「不知道」—— 那样计时器永远不结束。
@@ -522,7 +532,8 @@ if ($null -ne $owProp -and $null -ne $owProp.Value) {
 #   读不到    → **计时保持不动**（读不到 ≠ 已经好了）
 
 $unlockedSince = Get-Prop $prev 'unlocked_since' $null
-if ($null -ne $lockedRaw) {
+# ⚠️ **v0.193.0**：stale ⇒ 当作「读不到」⇒ 计时器**保持不动**。
+if ($null -ne $lockedRaw -and -not $lockedStale) {
   if ([bool]$lockedRaw) {
     $unlockedSince = $null                      # 锁好了 → 计时清零
   } elseif (-not $unlockedSince) {

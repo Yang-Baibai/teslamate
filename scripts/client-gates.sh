@@ -5280,6 +5280,47 @@ print('累计循环：卡片用服务端那一句 ＋ 客户端没有自己算')
 PYEOF
 if [ $? -eq 0 ]; then ok "累计循环次数只透传服务端（客户端不许自己算）"; else fail "客户端自己在算累计循环次数"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 53：锁车状态——陈旧的值**不许当现状显示** ───────────────────────
+#
+# ⚠️ **v0.193.0（用户反馈 #226）**：车已经锁好了，服务端给的却是「车断线前的最后已知值」
+# （stale=true）⇒ 客户端若把它当事实 ⇒ 印出**「未上锁」＋琥珀色告警**
+# ⇒ 那是一个**安全相关的假事实**（推送侧同款：误推「已解锁超过 30 分钟」）。
+#
+# ⚠️ 判据**不依赖写法**：
+#   ① 车况页的锁车芯片必须**用**服务端的 locked_stale（查字段名）；
+#   ② 车控页的锁车磁贴也必须**用**它（查字段名）⇒ 同一份事实、两个出口。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+STATUS = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/StatusScreen.kt')
+CONTROL = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/ControlScreen.kt')
+API = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/Api.kt')
+problems = []
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+
+
+if 'locked_stale' not in read(API):
+    problems.append('Api.kt 里没有 locked_stale ⇒ App 没声明这个字段（陈旧的值会被当事实印）')
+if 'locked_stale' not in read(STATUS):
+    problems.append('StatusScreen.kt 里没有 locked_stale ⇒ 车况页的锁车芯片不认陈旧值')
+if 'locked_stale' not in read(CONTROL):
+    problems.append('ControlScreen.kt 里没有 locked_stale ⇒ 车控页的锁车磁贴不认陈旧值')
+
+if problems:
+    print('锁车状态：客户端把陈旧的值当现状 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 陈旧的锁车状态只能显示成「上次已知」，不许当现在的状态（用户反馈 #226）')
+    sys.exit(1)
+
+print('锁车状态：车况页 ＋ 车控页都读 locked_stale（陈旧值不当现状）')
+PYEOF
+if [ $? -eq 0 ]; then ok "锁车状态：客户端不许把陈旧的值当现状（用户反馈 #226）"; else fail "客户端把陈旧的锁车状态当现状显示"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
