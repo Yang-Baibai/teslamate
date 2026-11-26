@@ -247,6 +247,12 @@ type CarStatus struct {
 	// 语义与 OpenWindowsSource 一致。
 	DoorsSource string `json:"doors_source"`
 
+	// ⚠️ **v0.195.0**：车门结论是不是「**车断线前的最后已知值**」。
+	//
+	// true ⇒ 车现在离线 ⇒ 这个值**可能已经变了**（用户后来关了门）
+	// ⇒ **不许当现在的状态**（与 OpenWindowsStale / LockedStale 同一族规矩）。
+	OpenDoorsStale bool `json:"open_doors_stale"`
+
 	// ⚠️ **v0.82.0**：哨兵模式。
 	//
 	// SentryState 是**归一化状态词**：
@@ -264,6 +270,11 @@ type CarStatus struct {
 	SentryText string `json:"sentry_text"`
 	// SentrySource 这批结论的来源（telemetry / poll / 空）。
 	SentrySource string `json:"sentry_source"`
+	// ⚠️ **v0.195.0**：哨兵结论是不是「**车断线前的最后已知值**」。
+	//
+	// true ⇒ 车现在离线 ⇒ 这个值**可能已经变了**（车睡着时可能被人动过）
+	// ⇒ **不许当现在的状态**（与 LockedStale / OpenWindowsStale 同一族规矩）。
+	SentryStale bool `json:"sentry_stale"`
 	// SentryAt 这批结论的**采集时刻**（两个来源里更晚的那个）。
 	SentryAt *time.Time `json:"sentry_at"`
 	// ⚠️ **v0.168.0**：哨兵**警报**是否触发（true = 有人在动车 / 车被撬）。

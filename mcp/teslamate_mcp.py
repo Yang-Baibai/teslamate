@@ -773,8 +773,12 @@ def teslamate_status() -> dict:
         # ⇒ 报给用户时**不能**把 null 说成「都关着」。
         "开着哪几扇窗": s.get("open_windows"),
         "车窗数据来源": _source_cn(s.get("open_windows_source")),
+        # ⚠️ **v0.195.0**：陈旧的结论要**能说出来**（与 App 同一套说法）。
+        #   true = 这个值是「车断线前的最后已知值」⇒ 可能已经变了 ⇒ 别当成现状报。
+        "车窗状态是旧的": bool(s.get("open_windows_stale")),
         "开着哪几个门": s.get("open_doors"),
         "车门数据来源": _source_cn(s.get("doors_source")),
+        "车门状态是旧的": bool(s.get("open_doors_stale")),
         # ⚠️ 哨兵是**归一化状态词 + 中文**：
         #   未开启 / 待命 / 已布防 / 感知中 / 警报触发 / 静默 / 已开启 / 状态未知
         # 「警报触发」是唯一需要**立刻行动**的（红色）。
@@ -782,6 +786,8 @@ def teslamate_status() -> dict:
         "哨兵状态": s.get("sentry_state"),
         "哨兵数据来源": _source_cn(s.get("sentry_source")),
         "哨兵采集于": s.get("sentry_at"),
+        # ⚠️ **v0.195.0**：同上（陈旧的哨兵状态要说得出是旧的）。
+        "哨兵状态是旧的": bool(s.get("sentry_stale")),
         # ⚠️ **v0.168.0**：哨兵**警报**是否触发（服务端判定：官方枚举里的 panic）。
         #   true = 有人在动车 / 车被撬 ⇒ 哨兵唯一需要**立刻行动**的状态。
         "哨兵警报": bool(s.get("sentry_alarm")),

@@ -5362,6 +5362,45 @@ print('车窗结论：车况页 ＋ 推送脚本都读 open_windows_stale（陈�
 PYEOF
 if [ $? -eq 0 ]; then ok "车窗结论：陈旧的值不许当现状（用户反馈 #226 的同款风险）"; else fail "陈旧的车窗结论被当现状用了"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 55：车门 / 哨兵的 stale —— 陈旧的值**不许当现状** ──────────────────
+#
+# ⚠️ **v0.195.0**：持续状态族（锁车 / 车窗 / 车门 / 哨兵）统一收口。
+# 车门与哨兵的服务端 stale 字段**一直都有**（DoorsStale / SentryStale），
+# 但**没下发到 /status** ⇒ 客户端无从知道 ⇒ 只能当现状显示。
+#
+# ⚠️ 判据**不依赖写法**：查字段名（客户端必须声明 ＋ 必须用）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, sys
+
+STATUS = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/StatusScreen.kt')
+API = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/Api.kt')
+problems = []
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+
+
+api = read(API)
+status = read(STATUS)
+for field in ('open_doors_stale', 'sentry_stale'):
+    if field not in api:
+        problems.append('Api.kt 里没有 %s ⇒ App 没声明这个字段（陈旧值会被当现状印）' % field)
+    if field not in status:
+        problems.append('StatusScreen.kt 里没有 %s ⇒ 车况页不认这个陈旧结论' % field)
+
+if problems:
+    print('车门 / 哨兵的陈旧结论被当现状用了 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 陈旧的门窗/哨兵结论只能显示成「上次已知」，不许当现在的状态')
+    sys.exit(1)
+
+print('车门 / 哨兵：都读 stale（陈旧值不当现状）')
+PYEOF
+if [ $? -eq 0 ]; then ok "车门 / 哨兵的 stale：客户端不许把陈旧值当现状"; else fail "陈旧的车门 / 哨兵结论被当现状用了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

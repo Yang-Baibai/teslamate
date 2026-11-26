@@ -66,14 +66,14 @@
     },
     {
       "id": "window_state",
-      "结论": "车窗开没开（含「是不是旧值」—— 陈旧时显示「上次已知：…」，不当现状）",
+      "结论": "车窗 / 车门 / 哨兵开没开（含「是不是旧值」—— 陈旧时显示「上次已知：…」，不当现状）",
       "界面": "车况页",
-      "服务端": "/status open_windows / open_windows_stale",
+      "服务端": "/status open_windows / open_doors / sentry_state ＋ 各自的 stale",
       "mcp": [
         "teslamate_status"
       ],
       "状态": "covered",
-      "client_source": "服务端 /status open_windows / open_windows_stale"
+      "client_source": "服务端 /status 的持续状态结论 ＋ stale"
     },
     {
       "id": "tpms",

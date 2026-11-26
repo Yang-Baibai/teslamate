@@ -462,6 +462,10 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	s.OpenDoors, s.DoorsSource = pickNewerDoors(
 		pollDoors, pollRawAt, telSafety.Doors, telSafety.DoorsAt)
+	// ⚠️ **v0.195.0**：车门结论是不是「车断线前的最后已知值」
+	// ⇒ 与锁车 / 车窗同一族规矩（服务端唯一一份）。
+	s.OpenDoorsStale = continuousStateStale(
+		s.DoorsSource, telSafety.DoorsStale, carOnline)
 	// ⚠️ 旧固件陷阱（官方 DoorState 原文）：
 	// 「passenger front and driver rear doors swapped in firmware versions
 	//  prior to 2024.44.32」⇒ 副驾前门与主驾后门的名字要对调。
@@ -476,6 +480,10 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.SentryText = sentryText(sentryState)
 	s.SentrySource = sentrySource
 	s.SentryAt = sentryAt
+	// ⚠️ **v0.195.0**：哨兵结论是不是「车断线前的最后已知值」
+	// ⇒ 与锁车 / 车窗 / 车门同一族规矩（服务端唯一一份）。
+	s.SentryStale = continuousStateStale(
+		sentrySource, telSafety.SentryStale, carOnline)
 	// ⚠️ **v0.168.0**：哨兵**警报**的判定（服务端一份，ADR #38）。
 	//   官方枚举里的 panic（警报触发）才是「有人在动车」。
 	s.SentryAlarm = EvaluateSentryAlert(sentryState)

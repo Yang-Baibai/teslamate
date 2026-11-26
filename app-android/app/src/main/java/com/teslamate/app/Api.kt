@@ -535,6 +535,13 @@ data class CarStatus(
     val open_doors: List<String>? = null,
     /** 车门结论的**数据来源**（telemetry / poll / 空 = 没读到） */
     val doors_source: String = "",
+    /**
+     * ⚠️ **v0.195.0**：车门结论是不是「**车断线前的最后已知值**」。
+     *
+     * true ⇒ 车现在离线 ⇒ 这个值**可能已经变了** ⇒ **不许当现在的状态显示**
+     * （与 [locked_stale] / [open_windows_stale] 同一族规矩）。
+     */
+    val open_doors_stale: Boolean? = null,
 
     /**
      * ⚠️ **v0.82.0**：哨兵模式的**归一化状态**（服务端给，App 不自己翻译）。
@@ -549,6 +556,13 @@ data class CarStatus(
     val sentry_text: String = "",
     /** 哨兵结论的**数据来源**（telemetry / poll / 空 = 没读到） */
     val sentry_source: String = "",
+    /**
+     * ⚠️ **v0.195.0**：哨兵结论是不是「**车断线前的最后已知值**」。
+     *
+     * true ⇒ 车现在离线 ⇒ 这个值**可能已经变了** ⇒ **不许当现在的状态显示**
+     * （与 [locked_stale] / [open_windows_stale] 同一族规矩）。
+     */
+    val sentry_stale: Boolean? = null,
 
     /**
      * ⚠️ **v0.82.0**：这一组安全状态（车窗 / 车门 / 哨兵）里**最旧**的采集时刻。

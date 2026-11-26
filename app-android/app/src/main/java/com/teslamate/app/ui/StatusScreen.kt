@@ -1552,14 +1552,20 @@ private fun topStatusFacts(st: CarStatus): List<StatusFact> {
             if (winStale) SafetyTone.NORMAL else SafetyTone.WARN,
         )
     }
+    // ⚠️ **v0.195.0**：**陈旧的车门结论不当现状**（与车窗 / 锁车同一族规矩）。
+    val doorStale = st.open_doors_stale == true
     if (door == OpenState.OPEN) {
-        facts += StatusFact(openPhrase(st.open_doors!!, "个", "门"), SafetyTone.WARN)
+        val text = openPhrase(st.open_doors!!, "个", "门")
+        facts += StatusFact(
+            if (doorStale) "上次已知：" + text else text,
+            if (doorStale) SafetyTone.NORMAL else SafetyTone.WARN,
+        )
     }
     if (!anyOpen) {
         when {
             win == OpenState.CLOSED && door == OpenState.CLOSED ->
                 facts += StatusFact(
-                    if (winStale) "上次已知：车窗车门已关" else "车窗车门已关",
+                    if (winStale || doorStale) "上次已知：车窗车门已关" else "车窗车门已关",
                     SafetyTone.NORMAL,
                 )
             win == OpenState.CLOSED ->
@@ -1568,14 +1574,27 @@ private fun topStatusFacts(st: CarStatus): List<StatusFact> {
                     SafetyTone.NORMAL,
                 )
             door == OpenState.CLOSED ->
-                facts += StatusFact("车门已关", SafetyTone.NORMAL)
+                facts += StatusFact(
+                    if (doorStale) "上次已知：车门已关" else "车门已关",
+                    SafetyTone.NORMAL,
+                )
         }
     }
     // ⚠️ 哨兵：只看**归一化状态词**（服务端给的），不猜。
+    // ⚠️ **v0.195.0**：**陈旧的哨兵结论不当现状**（与锁车 / 车窗 / 车门同一族规矩）。
+    //
+    // ⚠️ 「警报触发」即使陈旧**也要报**（它发生过 ⇒ 用户该知道）⇒ 只是标明是旧值。
+    val sentryStale = st.sentry_stale == true
+    val sentryPrefix = if (sentryStale) "上次已知：" else ""
     when (st.sentry_state) {
-        "panic" -> facts += StatusFact("哨兵" + st.sentry_text.ifBlank { "警报触发" }, SafetyTone.DANGER)
+        "panic" -> facts += StatusFact(
+            sentryPrefix + "哨兵" + st.sentry_text.ifBlank { "警报触发" },
+            SafetyTone.DANGER,
+        )
         "armed", "aware", "on" ->
-            st.sentry_text.takeIf { it.isNotBlank() }?.let { facts += StatusFact("哨兵$it", SafetyTone.NORMAL) }
+            st.sentry_text.takeIf { it.isNotBlank() }?.let {
+                facts += StatusFact(sentryPrefix + "哨兵$it", SafetyTone.NORMAL)
+            }
     }
     return facts
 }
