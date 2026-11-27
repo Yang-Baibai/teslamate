@@ -355,6 +355,16 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	readingStale := !cabinReadingCurrent(pollState)
 	s.CabinHeat = cabinHeat(s.InsideTemp, s.OutsideTemp, s.InsideTempAt, readingStale)
 
+	// ⚠️ **v0.198.0**：**当前充电状态**（官方 charge_state）——
+	//
+	// 用户的方向是「电池健康 **＋ 电池状态**」⇒ 这一块之前是**空的**：
+	// 车况页看不出「在不在充 / 充到多少 / 上限多少 / 还差多久」。
+	//
+	// ⚠️ 新鲜度用**同一条**判据（[cabinReadingCurrent]：车醒着没有）——
+	//   同一份轮询数据，「是不是当前的」只能有一个答案（ADR #38）：
+	//   车睡着 ⇒ 缓存停更 ⇒ 值是「断线前的最后已知值」⇒ Stale=true。
+	s.ChargeStatus = currentChargeStatus(pollState)
+
 	// ⚠️ **v0.137.0**：顶层 `inside_temp` 收窄为「**当前**读到的车内温度」。
 	// 读数不是当前的 ⇒ 置 null ⇒ App 的「车内温度」格显示「—」（既有 `?:` 兜底，
 	// **App 零改动**）；「上次读到多少、什么时候」另给 inside_temp_last / inside_temp_at。

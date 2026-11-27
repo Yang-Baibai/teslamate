@@ -396,6 +396,53 @@ data class CabinHeat(
 )
 
 /**
+ * ⚠️ **v0.198.0**：**当前充电状态**（服务端判定的**事实**）。
+ *
+ * 数据源是车端 `charge_state`（Fleet API 官方字段）⇒
+ * **枚举的解释与措辞全在服务端**（ADR #41）⇒ App 只透传，一个字都不自己拼。
+ *
+ * ⚠️ **官方枚举只认已核验的那几个**
+ * （Charging / Complete / Stopped / NoPower / Disconnected / Unknown）⇒
+ * 服务端不认识的**一律当「充电状态不明」** ⇒ App 也就不会自己猜。
+ */
+@Serializable
+data class ChargeStatus(
+    /** 车端 `charging_state` 的**官方原值**（排查用；解释看 [conclusion]）。 */
+    val state: String = "",
+    /** 状态结论（**服务端渲染的那一句**，App 与飞书同一句）。 */
+    val conclusion: String = "",
+    /** 数字明细（电量 · 上限 · 功率 · 还差几分钟；**服务端拼好的一行**）。 */
+    val detail: String = "",
+    /**
+     * ⚠️ **读到了**真实的当前状态吗？
+     *
+     * false = 车端现在**没有任何实时数据**（离线 / 休眠 / 还没拿到过）
+     * ⇒ [conclusion] 是「为什么读不到」的那句，**不是**状态本身
+     * ⇒ App 据此降级排版（小字 ＋ 中性色 ⇒ 别把「读不到」说得像结论）。
+     */
+    val available: Boolean = false,
+    /** 当前电量（%，官方 `battery_level`）。 */
+    val soc: Int? = null,
+    /** 充电上限（%，官方 `charge_limit_soc`）。 */
+    val limit_soc: Int? = null,
+    /** 当前充电功率（kW，官方 `charger_power`）。 */
+    val power_kw: Double? = null,
+    /** 充到上限还差多少分钟（官方 `minutes_to_full_charge`）。 */
+    val minutes_to_full: Int? = null,
+    /** 电池加热是否开着（官方 `battery_heater_on`）。 */
+    val battery_heater_on: Boolean? = null,
+    /** 本次充入（kWh，官方 `charge_energy_added`）。 */
+    val energy_added_kwh: Double? = null,
+    /**
+     * ⚠️ 这份读数**不是当前的**（车睡着 ⇒ 轮询缓存停更 ⇒ 断线前的最后已知值）
+     * ⇒ 界面显示「**上次已知**：…」（不当现状、不当告警）。
+     */
+    val stale: Boolean = false,
+    /** 这份读数的**车端时刻**（官方 `charge_state.timestamp`）。 */
+    @Serializable(with = InstantSer::class) val at: Instant? = null,
+)
+
+/**
  * 一次响应：**解析出来的对象** ＋ **服务端给的原始 JSON 文本**。
  *
  * ⚠️ **v0.158.0**：落盘缓存要存**原文**（见 [StatusCache]）⇒ 取数层必须把原文带上来。
@@ -621,6 +668,11 @@ data class CarStatus(
      * null = 没读到 / 车况数据太旧 ⇒ **不知道**（不是「不闷热」）。
      */
     val cabin_heat: CabinHeat? = null,
+    /**
+     * ⚠️ **v0.198.0**：**当前充电状态**（官方 `charge_state`）——
+     *   车睡着 ⇒ 这份读数是「断线前的最后已知值」⇒ [ChargeStatus.stale] 为 true。
+     */
+    val charge_status: ChargeStatus? = null,
     /**
      * ⚠️ v0.21.0：**服务端是否配置了 Fleet API 凭据**。
      *

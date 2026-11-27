@@ -80,6 +80,59 @@ const appCopyDecayCiCrossZeroTmpl = "95%% 区间 %s ~ %s，跨过 0"
 
 const appCopyDecayWeakEvidenceTmpl = "测到 %s 度/1000 公里 · 95%% 区间 %s ~ %s"
 
+// ── ⚠️ **v0.198.0**：当前充电状态（官方 charge_state）的文案零件 ───────────────
+//
+// ⚠️ 枚举**只认官方列出来的**（与 api/charge_outcome.go 同一份：
+//
+//	Charging / Complete / Stopped / NoPower / Disconnected / Unknown）
+//	⇒ 不认识的**一律当 unknown**，**不猜**（反幻觉，ADR #46）。
+//
+// ⚠️ 「枪还插着」不是猜的：官方枚举里 Stopped / NoPower 说的就是
+//
+//	「枪还插着但没在充」（车端亲口说的）⇒ 写进文案里，用户才知道
+//	**不是自己拔了枪**。
+const appCopyChargeStateCharging = "正在充电"
+
+const appCopyChargeStateComplete = "充电完成"
+
+const appCopyChargeStateStopped = "已停止充电（枪还插着）"
+
+const appCopyChargeStateNoPower = "充电桩没供电（枪还插着）"
+
+const appCopyChargeStateDisconnected = "未插枪"
+
+const appCopyChargeStateUnknown = "充电状态不明"
+
+// 数字零件（拼成**明细行** ⇒ 整行 ≤ noteLineWidthLimit = 96）。
+const appCopyChargeSocTmpl = "当前 %d%%"
+
+// ⚠️ 车睡着时（读数是「断线前的最后已知值」）⇒ **不许说「当前」** ——
+//
+//	那是**事实错误**（用户会以为这是此刻的电量）。
+const appCopyChargeSocLastTmpl = "上次 %d%%"
+
+const appCopyChargeLimitTmpl = "上限 %d%%"
+
+const appCopyChargePowerTmpl = "%s kW"
+
+const appCopyChargeRemainTmpl = "剩 %d 分钟"
+
+// ── ⚠️ **v0.198.0**：**读不到**时的那一句 ──────────────────────────────────
+//
+// ⚠️ 为什么要有这三句（而不是「整张卡不出现」）：
+//
+//	车离线 / 休眠时，车端**确实**没有任何实时数据（实测：Tesla 连 wake_up
+//	都发不出去，vehicle_data 直接 408）⇒ 那是**真实状态**，不是故障。
+//	⇒ 但如果界面**什么都不显示**，用户会以为「这个功能坏了」或者
+//	「App 没装好」⇒ 不如明说「现在读不到，因为车在离线」。
+//
+//	⇒ 措辞在**服务端**（ADR #41）⇒ App 与飞书同一句。
+const appCopyChargeUnavailableAsleep = "车在休眠，读不到充电状态"
+
+const appCopyChargeUnavailableOffline = "车离线，读不到充电状态"
+
+const appCopyChargeUnavailableNoData = "还没拿到实时数据"
+
 // copyVisualWidth 视觉宽度（与客户端 vwidth 同一口径：汉字/全角=2，半角=1，空格不计）。
 func copyVisualWidth(s string) int {
 	w := 0

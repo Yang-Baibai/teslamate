@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -117,6 +118,15 @@ type FleetCharge struct {
 	LimitSoc     *int     // charge_limit_soc：充电上限（%）
 	BatteryLevel *int     // battery_level：当前电量（%）
 	EnergyAdded  *float64 // charge_energy_added：本次充入（kWh）
+	// ── ⚠️ **v0.198.0**：「当前充电状态」还要用的三个官方字段 ──────────────
+	PowerKw         *float64 // charger_power：当前充电功率（kW）
+	MinutesToFull   *int     // minutes_to_full_charge：充到上限还差多少分钟
+	BatteryHeaterOn *bool    // battery_heater_on：电池加热是否开着
+	// At 这份 charge_state 的**车端时刻**（官方 charge_state.timestamp，毫秒）。
+	//
+	// ⚠️ 车睡着时轮询缓存停更 ⇒ 这个时刻就是「停更的那一刻」⇒
+	//   界面能说清「这是多久前的读数」（时间诚实性，ADR #41）。
+	At *time.Time
 }
 
 // ---------- 收尾曲线 ----------
@@ -443,8 +453,27 @@ func chargeContextFromRaw(raw map[string]any) (FleetCharge, bool) {
 	fc.LimitSoc = numIntField(cs, "charge_limit_soc")
 	fc.BatteryLevel = numIntField(cs, "battery_level")
 	fc.EnergyAdded = numFloatField(cs, "charge_energy_added")
+	// ⚠️ **v0.198.0**：当前充电状态要用的三个官方字段。
+	fc.PowerKw = numFloatField(cs, "charger_power")
+	// ⚠️ 官方给了两个：minutes_to_full_charge（分钟）与 time_to_full_charge（小时）
+	//   ⇒ **优先用分钟那个**；没有才从小时换算（乘 60 后四舍五入）。
+	if m := numIntField(cs, "minutes_to_full_charge"); m != nil {
+		fc.MinutesToFull = m
+	} else if h := numFloatField(cs, "time_to_full_charge"); h != nil {
+		mins := int(math.Round(*h * 60))
+		fc.MinutesToFull = &mins
+	}
+	if v, ok := cs["battery_heater_on"].(bool); ok {
+		fc.BatteryHeaterOn = &v
+	}
+	// 车端时刻（官方 charge_state.timestamp，**毫秒**）。
+	if ts, ok := cs["timestamp"].(float64); ok && ts > 0 {
+		t := time.UnixMilli(int64(ts)).UTC()
+		fc.At = &t
+	}
 	// 一个字段都没读到 ⇒ 当作「不知道」。
-	if fc.State == "" && fc.LimitSoc == nil && fc.BatteryLevel == nil && fc.EnergyAdded == nil {
+	if fc.State == "" && fc.LimitSoc == nil && fc.BatteryLevel == nil && fc.EnergyAdded == nil &&
+		fc.PowerKw == nil && fc.MinutesToFull == nil && fc.BatteryHeaterOn == nil {
 		return FleetCharge{}, false
 	}
 	return fc, true

@@ -5581,6 +5581,51 @@ print('折叠区：每个都自己给了容器（多个子项不会重叠）')
 PYEOF
 if [ $? -eq 0 ]; then ok "折叠区的多个子项自己给容器（不许重叠）"; else fail "折叠区的子项会重叠（糊字）"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 58：客户端不许自己解释充电状态（官方枚举只许在服务端）────────────────
+#
+# ⚠️ **v0.198.0**：车端 charge_state 的 charging_state 是**官方枚举**
+#   （Charging / Complete / Stopped / NoPower / Disconnected / Unknown）。
+#   ⇒ 谁来解释它？**服务端**（api/charge_status.go）—— 判定与措辞在那里一份。
+#   ⇒ 客户端**只透传**结论（ADR #38 / ADR #41）。
+#
+# 判据（形态无关）：客户端**字符串字面量**里不许出现这些官方枚举值 ——
+#   客户端要自己解释枚举，就一定得把枚举值写死 ⇒ 抄一份就是两份解释。
+#   ⚠️ 只扫**字面量**：注释里提一句枚举名是文档（Api.kt 就有一行清单），
+#     import 路径（BatteryChargingFull）也不是字面量 ⇒ 都不算。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('app-android/app/src/main/java')
+ENUM = re.compile(r'\b(Charging|Complete|Stopped|NoPower|Disconnected|NotConnected|Scheduled)\b')
+LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+problems = []
+for p in sorted(ROOT.rglob('*.kt')):
+    src = p.read_text(encoding='utf-8', errors='replace')
+    for i, line in enumerate(src.splitlines(), 1):
+        s = line.strip()
+        if s.startswith('//') or s.startswith('*') or s.startswith('/*'):
+            continue
+        for lit in LIT.findall(line):
+            m = ENUM.search(lit)
+            if m:
+                problems.append('%s 第 %d 行的字符串字面量里出现了官方枚举 %s ⇒ '
+                                '客户端自己解释充电状态了（应只透传服务端结论）'
+                                % (p.name, i, m.group(1)))
+                break
+
+if problems:
+    print('客户端自己解释充电状态 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 官方枚举的解释只在服务端一份（ADR #38 / ADR #41）')
+    sys.exit(1)
+
+print('充电状态：客户端只透传服务端结论（没有自己写死官方枚举）')
+PYEOF
+if [ $? -eq 0 ]; then ok "充电状态：客户端只透传（不许自己解释官方枚举）"; else fail "客户端自己解释充电状态了"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

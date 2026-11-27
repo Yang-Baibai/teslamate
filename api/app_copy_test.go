@@ -111,6 +111,22 @@ func TestBatteryResidentLinesWithinWidth(t *testing.T) {
 		appCopyDecayCiTmpl,
 		appCopyDecayCiCrossZeroTmpl,
 		appCopyDecayWeakEvidenceTmpl,
+		// ⚠️ **v0.198.0**：当前充电状态的文案零件（状态结论 + 数字零件）。
+		appCopyChargeStateCharging,
+		appCopyChargeStateComplete,
+		appCopyChargeStateStopped,
+		appCopyChargeStateNoPower,
+		appCopyChargeStateDisconnected,
+		appCopyChargeStateUnknown,
+		appCopyChargeSocTmpl,
+		appCopyChargeSocLastTmpl,
+		appCopyChargeLimitTmpl,
+		appCopyChargePowerTmpl,
+		appCopyChargeRemainTmpl,
+		// ⚠️ **v0.198.0**：**读不到**时的那三句（车在休眠 / 车离线 / 还没拿到过）。
+		appCopyChargeUnavailableAsleep,
+		appCopyChargeUnavailableOffline,
+		appCopyChargeUnavailableNoData,
 	} {
 		if w := copyVisualWidth(s); w > appCopyWidthLimit {
 			t.Errorf("常驻句子的骨架宽度 %d > %d：%q", w, appCopyWidthLimit, s)

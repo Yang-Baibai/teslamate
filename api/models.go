@@ -163,6 +163,10 @@ type CarStatus struct {
 	// 阈值与中文文案都在服务端（ADR #38 / #41），App 与 Hermes 只透传。
 	// nil = 没读到 / 车况数据太旧 ⇒ **不知道**（不是「不闷热」）。
 	CabinHeat *CabinHeat `json:"cabin_heat"`
+	// ⚠️ **v0.198.0**：**当前充电状态**（官方 charge_state）——
+	//   车睡着 ⇒ 轮询缓存停更 ⇒ Stale=true ⇒ 值是「断线前的最后已知值」
+	//   ⇒ App 显示「**上次已知**：…」（不当现状、不当告警）。
+	ChargeStatus *ChargeStatus `json:"charge_status"`
 
 	// ⚠️ **v0.164.0**：天气的判定（**服务端一份**：ADR #38 / #41 / #79）。
 	// nil = 没取到（没配 AMAP_KEY / API 失败 / 车没有位置）

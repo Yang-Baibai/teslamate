@@ -200,6 +200,17 @@
       "client_source": "服务端 /battery usage"
     },
     {
+      "id": "battery_charge_state",
+      "结论": "当前充电状态（在不在充 / 上限 / 功率 / 还差多久）",
+      "界面": "车况页",
+      "服务端": "/status charge_status",
+      "mcp": [
+        "teslamate_status"
+      ],
+      "状态": "covered",
+      "client_source": "服务端 /status charge_status"
+    },
+    {
       "id": "full_charge_range",
       "结论": "实测满电续航（折算中位，公里）",
       "界面": "记录页",
