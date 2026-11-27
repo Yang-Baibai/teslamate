@@ -5626,6 +5626,61 @@ print('充电状态：客户端只透传服务端结论（没有自己写死官�
 PYEOF
 if [ $? -eq 0 ]; then ok "充电状态：客户端只透传（不许自己解释官方枚举）"; else fail "客户端自己解释充电状态了"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 59：趋势图里客户端不许自己挑点（哪些点算数 = 口径）─────────────────
+#
+# ⚠️ **v0.199.0**：电池健康卡里那条「实测容量趋势」曲线的点，
+#   是**服务端挑好的那批严格档点**（与判定衰减**同一批**）
+#   ⇒ 图上看到的形状 **就是** 结论依据的形状（界面与结论不会自相矛盾）。
+#
+# ⇒ 「哪些点算数」是**口径**（ADR #38）⇒ 趋势图这边客户端**只画**。
+#
+# ⚠️ **判据为什么是「文件级」**（而不是全局扫 end_soc）：
+#   实测：客户端**本来**就在别处读 end_soc
+#   （用量页那张「电池健康度」曲线自 v0.22.0 起就自己按 end_soc >= 100 挑点，
+#   StatsScreen.kt / RouteJourney.kt / RouteMargin.kt / StatusScreen.kt 都有）——
+#   ⇒ 全局禁 end_soc 会把**既有**代码判红（假红）⇒ 那是**另一个口径**，留下一轮。
+#   ⇒ 这里只钉**趋势图这条链**（两个文件）：它们不许再从 series / end_soc 自己挑点。
+#
+# ⚠️ 判据仍按**属性读取**这个事实来判（与闸门 43 同款）⇒ 与写法无关。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+FILES = [
+    'app-android/app/src/main/java/com/teslamate/app/ui/BatteryTrendChart.kt',
+    'app-android/app/src/main/java/com/teslamate/app/ui/BatteryHealthCard.kt',
+]
+# 读取点（前面带点）；data class 里的**声明**（前面没有点）不算。
+PAT = re.compile(r'\.\??(series|end_soc)\b')
+
+problems = []
+for f in FILES:
+    p = pathlib.Path(f)
+    if not p.exists():
+        problems.append('找不到 %s' % f)
+        continue
+    for i, line in enumerate(p.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+        s = line.strip()
+        if s.startswith('//') or s.startswith('*') or s.startswith('/*'):
+            continue
+        m = PAT.search(line)
+        if m:
+            problems.append('%s 第 %d 行读了 %s ⇒ 趋势图自己挑点了（哪些点算数是口径，'
+                            '服务端给的是与判定衰减同一批的 strict 点）'
+                            % (p.name, i, m.group(1)))
+
+if problems:
+    print('趋势图自己挑点了 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 趋势图的点由服务端给（trend_points），客户端只画')
+    sys.exit(1)
+
+print('趋势图：客户端只画服务端挑好的点（没有自己挑）')
+PYEOF
+if [ $? -eq 0 ]; then ok "趋势图：客户端只画（不许自己挑点）"; else fail "趋势图自己挑点了"; cat "$TMP"; fi
+rm -f "$TMP"
+
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"

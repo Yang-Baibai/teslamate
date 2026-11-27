@@ -79,6 +79,12 @@ data class BatteryHealthCardData(
      * **常驻层**印它（宽度受服务端的 44 上限管 ⇒ 不折行）；全文在「更多明细」里。
      */
     val usageHabitHeadline: String?,
+    /**
+     * ⚠️ **v0.199.0**：**趋势图的那批点**（服务端挑好的严格档点 ⇒ 客户端只画）。
+     */
+    val trendPoints: List<com.teslamate.app.BatteryTrendPoint>,
+    /** ⚠️ **v0.199.0**：趋势图的**口径说明**（服务端唯一一份，ⓘ 里印）。 */
+    val seriesNote: String?,
 )
 
 /**
@@ -120,6 +126,9 @@ fun batteryHealthCardData(b: BatteryHealth): BatteryHealthCardData? {
         usageHabitLine = b.usage?.usage_line?.takeIf { it.isNotBlank() },
         // ⚠️ **v0.197.0**：短句（常驻层印它）—— 逐字取服务端。
         usageHabitHeadline = b.usage?.usage_headline?.takeIf { it.isNotBlank() },
+        // ⚠️ **v0.199.0**：趋势图的数据**逐字透传**（客户端不挑点、不排序）。
+        trendPoints = b.trend_points,
+        seriesNote = b.series_note.takeIf { it.isNotBlank() },
     )
 }
 
@@ -171,6 +180,23 @@ fun BatteryHealthCard(b: BatteryHealth, modifier: Modifier = Modifier) {
                     headline,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        // ⚠️ **v0.199.0：实测容量趋势迷你图**（服务端挑好的那批点 ⇒ 客户端只画）。
+        //
+        // 位置：**容量行之后、结论之前** ⇒ 它是「容量」这件事的形状，
+        // 而紧跟着的结论句是它的判语（两者相邻 ⇒ 眼睛一趟看完）。
+        //
+        // ⚠️ 图里**不印任何文字**（数字卡上已有）⇒ 只给形状（Apple 式克制）。
+        if (d.trendPoints.size >= 2) {
+            BatteryTrendChart(d.trendPoints)
+            // ⚠️ 口径说明（**服务端唯一一份**）⇒ 走 ⓘ，不铺在表层。
+            d.seriesNote?.let { note ->
+                InfoNote(
+                    text = note,
+                    label = "趋势图的口径",
+                    a11yLabel = "趋势图的口径说明",
                 )
             }
         }

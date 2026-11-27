@@ -1197,6 +1197,17 @@ type BatteryHealth struct {
 	// 真正需要担心的不是这个数，而是它的**分子依赖 `cars.efficiency`**（见下）。
 	HealthPercent *float64        `json:"health_percent"` // 当前实测可用容量 ÷ 出厂标称可用容量 × 100 ＝ 电池健康度 SOH
 	Series        []*BatteryPoint `json:"series"`
+	// ⚠️ **v0.199.0**：**趋势图上的那批点**（服务端挑好，App 只画）。
+	//
+	// ⚠️ **与服务端判定用的是同一批点**（严格档：充到 100%、有容量、有里程）
+	//   ⇒ 图上看到的形状 **就是** 判定依据的形状 ⇒ 界面与结论**不会自相矛盾**。
+	//
+	// ⚠️ 客户端**不许自己挑点**（客户端闸门 59 钉住）——
+	//   「哪些点算数」是**口径**（ADR #38），不是排版。
+	TrendPoints []*BatteryTrendPoint `json:"trend_points"`
+	// SeriesNote 趋势图的**口径说明**（服务端唯一一份，ADR #41）。
+	// ⚠️ 走 ⓘ 通道（上限 96）⇒ 不是常驻文案 ⇒ 定义在 api/battery_trend.go。
+	SeriesNote string `json:"series_note"`
 
 	// ⚠️ **v0.35.0（第 21 轮数据口径审计 P1-D + 独立复算）：电池容量衰减的判定。**
 	//
@@ -1306,6 +1317,17 @@ type BatteryMeasurement struct {
 	NoteShort string `json:"note_short"`
 	// Stale 这个数是不是已经**偏旧**（超过新鲜期）。
 	Stale bool `json:"stale"`
+}
+
+// BatteryTrendPoint 趋势图上的一个点（**满充点**，由服务端挑好）。
+//
+// ⚠️ 只有两个数：**里程**（横轴）与**实测可用容量**（纵轴）——
+// 图里不印任何文字（数字卡上已有）⇒ 客户端只画形状。
+type BatteryTrendPoint struct {
+	// Km 该次满充实测时的里程表（km）。
+	Km float64 `json:"km"`
+	// Kwh 该次满充实测的**实测可用容量**（度）。
+	Kwh float64 `json:"kwh"`
 }
 
 type BatteryPoint struct {

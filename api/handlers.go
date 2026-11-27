@@ -1903,6 +1903,10 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 	}
 	h.CurrentCapacityKwh = last
 	h.MaxCapacityKwhStrict = strictMax
+	// ⚠️ **v0.199.0**：**趋势图的那批点** = 判定用的**同一批**严格档点
+	//   ⇒ 图上看到的形状就是结论依据的形状（界面与结论不会自相矛盾）。
+	h.TrendPoints = batteryTrendPoints(strictPts)
+	h.SeriesNote = batterySeriesNote
 	// ⚠️ **时间诚实性**：这个数是**哪一次充电**测的（+ 有多旧）。
 	//
 	// 为什么要在这里挂：「现在还能装 X 度」这句话在 App 与简报里都出现过，

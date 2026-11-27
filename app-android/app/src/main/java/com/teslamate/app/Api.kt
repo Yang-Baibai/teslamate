@@ -1290,6 +1290,20 @@ data class ChargeStatsLastFull(
     val to_soc: Int? = null,
 )
 
+/**
+ * ⚠️ **v0.199.0**：趋势图上的一个点（**满充点**，由服务端挑好）。
+ *
+ * ⚠️ 只有两个数：**里程**（横轴）与**实测可用容量**（纵轴）——
+ * 图里不印任何文字（数字卡上已有）⇒ App 只画形状。
+ */
+@Serializable
+data class BatteryTrendPoint(
+    /** 该次满充实测时的里程表（km）。 */
+    val km: Double = 0.0,
+    /** 该次满充实测的**实测可用容量**（度）。 */
+    val kwh: Double = 0.0,
+)
+
 @Serializable
 data class BatteryPoint(
     @Serializable(with = InstantSer::class) val date: Instant,
@@ -1476,6 +1490,21 @@ data class BatteryHealth(
      * 这里再兜一层：万一服务端是旧版，也只是「没有曲线」，不是崩溃。
      */
     val series: List<BatteryPoint>? = null,
+    /**
+     * ⚠️ **v0.199.0**：**趋势图上的那批点**（服务端挑好，App 只画）。
+     *
+     * ⚠️ 与服务端判定衰减用的是**同一批**严格档点 ⇒ 图上看到的形状
+     * **就是**结论依据的形状 ⇒ 界面与结论不会自相矛盾。
+     *
+     * ⚠️ 客户端**不许自己挑点**（客户端闸门 59 钉住）——「哪些点算数」是口径。
+     */
+    val trend_points: List<BatteryTrendPoint> = emptyList(),
+    /**
+     * ⚠️ **v0.199.0**：趋势图的**口径说明**（服务端唯一一份，ADR #41）。
+     *
+     * ⚠️ 走 **ⓘ 通道**（上限 96）⇒ 不是常驻文案。
+     */
+    val series_note: String = "",
     /**
      * ⚠️ **v0.35.0：电池容量衰减的判定**（服务端唯一事实源，客户端只显示）。
      *
