@@ -704,6 +704,39 @@ func decayHeadline(d *BatteryDecay) string {
 		return ""
 	}
 	rate := d.NaivePer1000Km
+	if d.HasStep {
+		rate = d.UnderlyingPer1000Km
+	}
+	// ⚠️ **v0.197.0**：**结论与依据分层** —— headline 只说结论（短），
+	//   依据（95% 区间 / 测到的值）挪进 note ⇒
+	//   App 常驻印出来**不折行**（实测 55 宽 ⇒ 折成两行，还留下「过 0)」的孤字尾行）。
+	//   ⇒ 依据在 [decayEvidenceLine]，ⓘ 与体检报告都印它 ⇒ **事实不丢**。
+	switch d.Conclusion {
+	case DecayDetectable:
+		return fmt.Sprintf(appCopyDecayDetectableTmpl, strconv.FormatFloat(rate, 'f', 3, 64))
+	case DecayWeak:
+		return appCopyDecayWeak
+	case DecayNotDetectable:
+		return appCopyDecayNotDetectable
+	default:
+		return appCopyDecayNoSamples
+	}
+}
+
+// decayEvidenceLine 衰减判定的**依据**（v0.197.0：从 headline 挪到这里）。
+//
+// ⚠️ headline 收短是为了**常驻层不折行** ⇒ 依据必须挪过来，**不许丢**
+//
+//	（App 的 ⓘ 与体检报告正文都印它 ⇒ 事实不丢）。
+//
+// ⚠️ 这一行是 **ⓘ / 报告正文**里的行 ⇒ 受 noteLineWidthLimit（96）管，
+//
+//	不是常驻层的 44 ⇒ 措辞可以长一点（但仍是一行一个事实）。
+func decayEvidenceLine(d *BatteryDecay) string {
+	if d == nil {
+		return ""
+	}
+	rate := d.NaivePer1000Km
 	lo := d.NaiveCiLo
 	hi := d.NaiveCiHi
 	if d.HasStep {
@@ -713,26 +746,31 @@ func decayHeadline(d *BatteryDecay) string {
 	}
 	switch d.Conclusion {
 	case DecayDetectable:
-		return fmt.Sprintf("连续衰减 每 1000 公里 %s 度（95%% 区间 %s ~ %s）",
-			strconv.FormatFloat(rate, 'f', 3, 64),
+		return fmt.Sprintf(appCopyDecayCiTmpl,
 			strconv.FormatFloat(lo, 'f', 3, 64),
 			strconv.FormatFloat(hi, 'f', 3, 64))
 	case DecayWeak:
-		return fmt.Sprintf("连续衰减：与 0 区分不开（测到 %s 度/1000 公里，95%% 区间 %s ~ %s）",
+		return fmt.Sprintf(appCopyDecayWeakEvidenceTmpl,
 			strconv.FormatFloat(rate, 'f', 3, 64),
 			strconv.FormatFloat(lo, 'f', 3, 64),
 			strconv.FormatFloat(hi, 'f', 3, 64))
 	case DecayNotDetectable:
-		return fmt.Sprintf("连续衰减：检不出趋势（95%% 区间 %s ~ %s，跨过 0）",
+		return fmt.Sprintf(appCopyDecayCiCrossZeroTmpl,
 			strconv.FormatFloat(lo, 'f', 3, 64),
 			strconv.FormatFloat(hi, 'f', 3, 64))
 	default:
-		return "样本不足以判定衰减趋势"
+		return ""
 	}
 }
 
 func decayNote(d *BatteryDecay) string {
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 3)
+
+	// ── **v0.197.0：依据（95% 区间 / 测到的值）** ────────────────────
+	//   headline 收短后，依据挪到这里（ⓘ 与体检报告都印 ⇒ 事实不丢）。
+	if ev := decayEvidenceLine(d); ev != "" {
+		parts = append(parts, ev)
+	}
 
 	// ── 样本与覆盖 ───────────────────────────────────────────────
 	sample := fmt.Sprintf("%d 个 100%% 满充点", d.N)

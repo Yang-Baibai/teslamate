@@ -31,30 +31,54 @@ package main
 //	**不在本轮范围内** ⇒ 已记进 CHANGELOG v0.144.0 段的「已知未收口」。
 const appCopyWidthLimit = 44
 
-// staleOutsideTempCaveat 车外温度读数**不是当前的**时，续航口径那句。
-//
-// ⚠️ **v0.144.0**：原来是 78 宽度的长句（还夹着「positions 里的读数停在停车那一刻」
-//
-//	这种只有开发者看得懂的实现细节）⇒ 现在只留三件事实：
-//	现在读不到 / 没按气温修正 / 所以可能偏乐观。
-//	⇒ 「上次读到多少、什么时候」**不丢**：在 outside_temp_last / outside_temp_at
-//	  与飞书里（App 侧还没显示 ⇒ 记进已知未收口，下一个 App 版本补）。
-const staleOutsideTempCaveat = "车外温度读不到 ⇒ 未按气温修正 · 可能偏乐观"
+// ⚠️ **v0.197.0**：**车外温度那三条口径**搬去了 **app_copy_temp.go** ——
+//   客户端有一份**逐字副本**（TempCaveatCopy.kt）⇒ 客户端闸门 35 比对的是
+//   「有副本的那一份」⇒ 服务端那一份必须**只装**它们 ⇒ 拆文件
+//   （结构上精确，不依赖按名字筛选）。
+// ⚠️ 其余常驻界面文案仍在本文件；宽度上限 appCopyWidthLimit 也在本文件
+//   （Hermes 闸门 26 的判据②**两个文件一起扫**）。
 
-// tempCaveatLowUntrustedTmpl 低温（≤10°C）且样本不足时那句（%d = 该温度档的样本条数）。
+// ── ⚠️ **v0.197.0**：App **常驻**印的服务端句子（骨架搬进这里）──────────────────
 //
-// ⚠️ **v0.146.0**：这两条原先在 range_estimate.go 里拼 ⇒ 违反「服务端文案一律进 app_copy.go」
-// （AGENTS.md 的通则 + ADR #41）⇒ 本轮搬进来，让「服务端文案的唯一定义处」名副其实。
+// ⚠️ **为什么这批骨架要进 app_copy.go**：
 //
-// ⚠️ **客户端有一份逐字副本**（app-android/.../TempCaveatCopy.kt）—— 那是**本地兜底**：
-// 服务端挂掉时 App 要自己把口径说出来，不能哑着。
-// ⚠️ **v0.146.0 修掉的缺陷**：本地兜底原来在「车外温度读不到」时**返回 null**
-// ⇒ 界面一句口径提示都没有 ⇒ 用户以为那个续航数是按气温修正过的 ⇒ **假安全**。
-// 两份不许漂 ⇒ **客户端闸门 35 跨文件逐字比对**。
-const tempCaveatLowUntrustedTmpl = "低温未修正：≤10°C 只有 %d 条样本，这个数不可信"
+//	v0.196.0 实测（模拟器 1440×3200@600，车况页电池卡）：
+//	「充电习惯：平均从 36% 开始充 · 12 次从 10% 以下开始充 · 上次充电是今天」
+//	视觉宽度 **60** ⇒ App 用独立 Text(...) 常驻印出来 ⇒ **折成两行**；
+//	同一张卡上的衰减结论（**55** 宽）折行后还留下「过 0)」的**孤字尾行**。
+//
+//	⇒ 根因：**服务端拼出来的句子没人管宽度** ——
+//	  Hermes 闸门 26 的判据②只查 app_copy.go 里**声明的常量**，
+//	  而 fmt.Sprintf 拼出来的句子（充电习惯 / 累计循环 / 衰减结论）
+//	  **一个判据都没有**（ADR #83 的盲区）。
+//
+//	⇒ 修法（三件事）：
+//	  ① **结论与依据分层** —— headline 只说结论（短）；
+//	    依据（95% 区间 / 测到的值）挪进 note
+//	    （ⓘ 与体检报告都印它 ⇒ **事实不丢**）；
+//	  ② **短句另给一个字段**（usage_headline）⇒ App 常驻印短句、全文折进明细；
+//	  ③ **骨架搬进 app_copy.go** ⇒ 闸门 26 的判据②**自动盖住**这些句子
+//	    （它扫的就是这个文件里的中文文案 ⇒ 不依赖拼法）。
+//
+// ⚠️ **宽度按「最坏情况」留余量**：数字位数会变
+//
+//	（场次 88 → 9999、百分比 36 → 100、速率 -0.052 → -99.999）⇒
+//	骨架留了余量，并由 api/app_copy_test.go 用**极端值**渲染一遍钉死。
+const appCopyUsageHeadlineTmpl = "充电习惯：平均从 %d%% 开始充"
 
-// tempCaveatNoLowCorrectionTmpl 低温区间（10~22°C）不做低温修正时那句（%d = 样本条数）。
-const tempCaveatNoLowCorrectionTmpl = "未做低温修正（≤10°C 样本 %d 条）"
+const appCopyDecayDetectableTmpl = "连续衰减：每 1000 公里 %s 度"
+
+const appCopyDecayWeak = "连续衰减：与 0 区分不开"
+
+const appCopyDecayNotDetectable = "连续衰减：检不出趋势"
+
+const appCopyDecayNoSamples = "样本不足以判定衰减趋势"
+
+const appCopyDecayCiTmpl = "95%% 区间 %s ~ %s"
+
+const appCopyDecayCiCrossZeroTmpl = "95%% 区间 %s ~ %s，跨过 0"
+
+const appCopyDecayWeakEvidenceTmpl = "测到 %s 度/1000 公里 · 95%% 区间 %s ~ %s"
 
 // copyVisualWidth 视觉宽度（与客户端 vwidth 同一口径：汉字/全角=2，半角=1，空格不计）。
 func copyVisualWidth(s string) int {

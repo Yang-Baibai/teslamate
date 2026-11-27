@@ -48,8 +48,9 @@ func brT_Health() *BatteryHealth {
 		UnderlyingCiHi:      0.055,
 	}
 	decay.Headline = decayHeadline(decay)
-	decay.Note = "20 个 100% 满充点 · 另有 15 场充到 90% 以上但没充满 · 11559 公里 / 104 天 · 剔除 1 场没实际充电的\n\n" +
-		"有一次 -0.77 度落差，已扣除（车机重新标定还是电池变化，分不清）。"
+	// ⚠️ **v0.197.0**：note 用**真函数**生成（别再手写）⇒
+	//   结论与依据分层之后，note 的内容自动跟着变（依据行也在里面）。
+	decay.Note = decayNote(decay)
 	return &BatteryHealth{
 		CurrentCapacityKwh:      &cap,
 		HealthPercent:           &hp,
@@ -79,7 +80,11 @@ func TestBatteryReportTitleAndBody(t *testing.T) {
 		"电池健康：当前 83.1% · 11-21 实测",
 		"相对首测 98.8%",
 		"现在还能装 65.2 度",
-		"连续衰减：检不出趋势（95% 区间 -0.052 ~ 0.055，跨过 0）",
+		// ⚠️ **v0.197.0**：结论与依据**分层**了 ——
+		//   headline 只说结论（短 ⇒ App 常驻印不折行），
+		//   依据（95% 区间）挪进 note ⇒ 但**照样印在报告正文里**（事实不丢）。
+		"连续衰减：检不出趋势",
+		"95% 区间 -0.052 ~ 0.055，跨过 0",
 		"20 个 100% 满充点",
 		"有一次 -0.77 度落差，已扣除",
 	}
@@ -143,12 +148,14 @@ func TestDecayHeadlineWording(t *testing.T) {
 		d    *BatteryDecay
 		want string
 	}{
+		// ⚠️ **v0.197.0**：headline **只说结论**（短 ⇒ App 常驻印出来不折行）；
+		//   依据（区间 / 测到的值）在 [decayEvidenceLine] ⇒ 见 TestDecayEvidenceKeepsFacts。
 		{"检不出", &BatteryDecay{Conclusion: DecayNotDetectable, UnderlyingCiLo: -0.052, UnderlyingCiHi: 0.055, HasStep: true},
-			"连续衰减：检不出趋势（95% 区间 -0.052 ~ 0.055，跨过 0）"},
+			"连续衰减：检不出趋势"},
 		{"区分不开", &BatteryDecay{Conclusion: DecayWeak, NaivePer1000Km: -0.054, NaiveCiLo: -0.09, NaiveCiHi: 0.018},
-			"连续衰减：与 0 区分不开（测到 -0.054 度/1000 公里，95% 区间 -0.090 ~ 0.018）"},
+			"连续衰减：与 0 区分不开"},
 		{"检得出", &BatteryDecay{Conclusion: DecayDetectable, NaivePer1000Km: -0.12, NaiveCiLo: -0.2, NaiveCiHi: -0.04},
-			"连续衰减 每 1000 公里 -0.120 度（95% 区间 -0.200 ~ -0.040）"},
+			"连续衰减：每 1000 公里 -0.120 度"},
 		{"样本不够", &BatteryDecay{Conclusion: DecayInsufficient},
 			"样本不足以判定衰减趋势"},
 	}
@@ -157,6 +164,42 @@ func TestDecayHeadlineWording(t *testing.T) {
 		if got != c.want {
 			t.Errorf("[%s] 措辞不符：\n got %q\nwant %q", c.name, got, c.want)
 		}
+	}
+}
+
+// ⚠️ **v0.197.0：结论收短了，依据不许丢** ——
+//
+//	headline 为了「App 常驻层不折行」收短 ⇒ 依据（95% 区间 / 测到的值）
+//	挪进了 note ⇒ 这条单测钉住「区间还在、且 note 里带着它」。
+func TestDecayEvidenceKeepsFacts(t *testing.T) {
+	// ① 检不出趋势 ⇒ 区间（含「跨过 0」）
+	ev := decayEvidenceLine(&BatteryDecay{
+		Conclusion: DecayNotDetectable, UnderlyingCiLo: -0.052, UnderlyingCiHi: 0.055, HasStep: true})
+	for _, must := range []string{"95% 区间", "-0.052", "0.055", "跨过 0"} {
+		if !strings.Contains(ev, must) {
+			t.Errorf("依据行里丢了 %q：%q", must, ev)
+		}
+	}
+	// ② 与 0 区分不开 ⇒ 区间**和**测到的值都要在
+	ev = decayEvidenceLine(&BatteryDecay{
+		Conclusion: DecayWeak, NaivePer1000Km: -0.054, NaiveCiLo: -0.09, NaiveCiHi: 0.018})
+	for _, must := range []string{"-0.054", "95% 区间", "-0.090", "0.018"} {
+		if !strings.Contains(ev, must) {
+			t.Errorf("依据行里丢了 %q：%q", must, ev)
+		}
+	}
+	// ③ 检得出衰减 ⇒ 区间在
+	ev = decayEvidenceLine(&BatteryDecay{
+		Conclusion: DecayDetectable, NaiveCiLo: -0.2, NaiveCiHi: -0.04})
+	if !strings.Contains(ev, "95% 区间") || !strings.Contains(ev, "-0.200") {
+		t.Errorf("依据行里丢了区间：%q", ev)
+	}
+	// ④ 依据**必须真的进了 note**（否则 App 的 ⓘ 与报告正文都看不到它）
+	note := decayNote(&BatteryDecay{
+		Conclusion: DecayNotDetectable, N: 20, SpanDays: 104, SpanKm: 11559,
+		UnderlyingCiLo: -0.052, UnderlyingCiHi: 0.055, HasStep: true})
+	if !strings.Contains(note, "95% 区间") {
+		t.Errorf("note 里没有依据行 ⇒ 区间在界面与报告里都消失了：%q", note)
 	}
 }
 

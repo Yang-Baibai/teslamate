@@ -894,6 +894,8 @@ def teslamate_battery() -> dict:
         # ⚠️ **v0.196.0**：充电习惯（**事实**）—— 服务端给什么就是什么。
         #   ⚠️ **只报事实**：模型不许由这些数字自己推「伤电池」这类结论（没有官方依据）。
         out["充电习惯"] = usage.get("usage_line")
+        # ⚠️ **v0.197.0**：短句（App **常驻层**印它）—— 也透传 ⇒ 飞书里能说同一句。
+        out["充电习惯短句"] = usage.get("usage_headline")
         out["平均插枪前电量%"] = usage.get("avg_start_soc")
         out["10%以下开始充(次)"] = usage.get("deep_discharge_n")
         out["距上次充电(天)"] = usage.get("days_since_last_charge")

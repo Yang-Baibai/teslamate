@@ -1655,6 +1655,18 @@ if not COPY.exists():
 src = COPY.read_text(encoding='utf-8', errors='replace')
 code = strip_go_comments(src)
 
+# ⚠️ **v0.197.0**：服务端常驻文案现在有**两个**定义处：
+#   · api/app_copy.go       —— 其余常驻界面文案（宽度上限 appCopyWidthLimit 也在这）；
+#   · api/app_copy_temp.go  —— 车外温度那三条（**客户端有逐字副本**的那一份）。
+# ⇒ 判据②③**两个文件一起扫**（拆文件是为了让客户端闸门 35 的「集合相等」精确，不是为了少扫）。
+COPY_TEMP = COPY.parent / 'app_copy_temp.go'
+if COPY_TEMP.exists():
+    codes = [('api/app_copy.go', code),
+             ('api/app_copy_temp.go', strip_go_comments(COPY_TEMP.read_text(encoding='utf-8', errors='replace')))]
+else:
+    problems.append('找不到 api/app_copy_temp.go —— 温度口径那一份不见了？')
+    codes = [('api/app_copy.go', code)]
+
 m = re.search('appCopyWidthLimit *= *([0-9]+)', code)
 if not m:
     problems.append('api/app_copy.go 里找不到 appCopyWidthLimit 的数值')
@@ -1679,13 +1691,14 @@ else:
         else:
             print('宽度上限 = %d（服务端与客户端棘轮同一个数）' % limit)
 
-# ② app_copy.go 里的中文文案不许超宽
-for lit in re.findall('"([^"]*)"', code):
-    if not has_cjk(lit):
-        continue
-    w = vwidth(lit)
-    if w > limit:
-        problems.append('api/app_copy.go 里有一条文案宽度 %d 超过 %d：%s' % (w, limit, lit[:60]))
+# ② **两个定义处**里的中文文案不许超宽
+for fname, fcode in codes:
+    for lit in re.findall('"([^"]*)"', fcode):
+        if not has_cjk(lit):
+            continue
+        w = vwidth(lit)
+        if w > limit:
+            problems.append('%s 里有一条文案宽度 %d 超过 %d：%s' % (fname, w, limit, lit[:60]))
 
 # ③ 护栏不许是空壳
 if not TEST.exists():
@@ -1694,11 +1707,12 @@ else:
     tsrc = TEST.read_text(encoding='utf-8', errors='replace')
     if 'appCopyWidthLimit' not in tsrc:
         problems.append('api/app_copy_test.go 没有断言 appCopyWidthLimit ⇒ 护栏是空壳')
-    for name, lit in re.findall('const +([A-Za-z_][A-Za-z0-9_]*) *= *"([^"]*)"', code):
-        if not has_cjk(lit):
-            continue
-        if name not in tsrc:
-            problems.append('api/app_copy.go 里的文案常量 %s 没有出现在单测里（定义了但不测 ⇒ 空壳）' % name)
+    for fname, fcode in codes:
+        for name, lit in re.findall('const +([A-Za-z_][A-Za-z0-9_]*) *= *"([^"]*)"', fcode):
+            if not has_cjk(lit):
+                continue
+            if name not in tsrc:
+                problems.append('%s 里的文案常量 %s 没有出现在单测里（定义了但不测 ⇒ 空壳）' % (fname, name))
 
 if problems:
     print('服务端「常驻界面文案」的长度没被管住 ——')

@@ -3652,7 +3652,12 @@ rm -f "$TMP"
 # ⚠️ **v0.146.0**：本地兜底那条路（服务端挂掉 / 还没取到）原来在「车外温度读不到」时
 #   **直接返回 null** ⇒ 界面一句口径提示都没有 ⇒ 用户以为那个续航数是按气温修正过的
 #   ⇒ **假安全**（服务端那条路一直会说「未按气温修正 · 可能偏乐观」）。
-# ⇒ 修法：客户端有一份**逐字副本**（TempCaveatCopy.kt），服务端那份在 api/app_copy.go。
+# ⇒ 修法：客户端有一份**逐字副本**（TempCaveatCopy.kt），服务端那份在 **api/app_copy_temp.go**。
+#
+# ⚠️ **v0.197.0**：为什么单独一个文件 ——
+#   判据是「两边的文案集合必须相等」⇒ 服务端那一份必须**只装**「客户端有副本的那些文案」
+#   ⇒ 否则把别的常驻文案也放进来（电池那几句就在 app_copy.go）⇒ 闸门会误判成「客户端漏了」。
+#   ⇒ 拆文件 ⇒ **结构上精确**（不依赖按名字筛选）。⚠️ 宽度判据两个文件一起扫（Hermes 闸门 26）。
 #
 # ⚠️ 判据按「**两边的文案集合必须相等**」写 —— 两个方向都盖住：
 #   · 客户端多了一句 ⇒ 服务端没有 ⇒ 离线兜底会讲一句飞书不会讲的话；
@@ -3664,7 +3669,7 @@ import pathlib, sys
 
 ROOT = pathlib.Path('.')
 CLIENT = ROOT / 'app-android/app/src/main/java/com/teslamate/app/TempCaveatCopy.kt'
-SERVER = ROOT / 'api/app_copy.go'
+SERVER = ROOT / 'api/app_copy_temp.go'   # ⚠️ v0.197.0：只装「客户端有逐字副本」的那些文案
 MODEL = ROOT / 'app-android/app/src/main/java/com/teslamate/app/ConsumptionModel.kt'
 
 BS = chr(92)
@@ -5464,6 +5469,117 @@ if problems:
 print('充电习惯：卡片用服务端那句 ＋ 客户端没有自己写第二份')
 PYEOF
 if [ $? -eq 0 ]; then ok "充电习惯：只透传服务端（客户端不许自己算/自己写）"; else fail "客户端自己写了一份充电习惯"; cat "$TMP"; fi
+rm -f "$TMP"
+# ── 闸门 57：折叠区的多个子项**必须自己给容器**（不许重叠）─────────────────
+#
+# ⚠️ **v0.197.0 实测（线上可见的糊字）**：
+#   车况页电池卡的「更多明细」展开后，两行**叠成一块乱码** ——
+#   「相对首测 98.8%」与「111 天 / 11936 公里 · 20 个满充点」互相压着，
+#   屏幕上读出来是「相菏實測19.86 公里 · 20 个满充点」这种糊字。
+#   ⇒ 根因：CollapsibleSection 的内容槽是**单个槽位**（AnimatedVisibility 把
+#     多个子项**叠放在同一个位置**）⇒ 内容里放多个子项**必须自己给 Column**。
+#   ⇒ 而编译 / JVM 单测 / 全部闸门**都绿** ⇒ 只有版面才暴露。
+#
+# 判据（形态无关）：扫所有 CollapsibleSection( 调用的 lambda 体，
+#   把内容按「语句」切开（括号配平 ⇒ 多行调用算一条）⇒
+#   **顶层子项 ≥ 2** ⇒ 它们会互相重叠 ⇒ 必须自己给容器（Column）。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+ROOT = pathlib.Path('app-android/app/src/main/java')
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace')
+
+
+def strip_comments(src):
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    src = re.sub(r'//[^\n]*', '', src)
+    return src
+
+
+def fold_bodies(lines):
+    """找出所有 CollapsibleSection( 调用，返回 (行号, lambda 体的行列表)。"""
+    out = []
+    i = 0
+    while i < len(lines):
+        if 'CollapsibleSection(' in lines[i] and 'fun CollapsibleSection' not in lines[i]:
+            j = i
+            depth = 0
+            started = False
+            body = []
+            while j < len(lines):
+                ln = lines[j]
+                if not started:
+                    if '{' in ln:
+                        started = True
+                        depth = ln.count('{') - ln.count('}')
+                        body.append(ln)
+                    j += 1
+                    continue
+                body.append(ln)
+                depth += ln.count('{') - ln.count('}')
+                if depth <= 0:
+                    break
+                j += 1
+            if len(body) >= 2:
+                out.append((i + 1, body))
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+
+def top_statements(body):
+    """把 lambda 体切成顶层语句。
+
+    ⚠️ 括号/花括号配平才算一条 ⇒ 多行调用（Text(\n  参数\n)）算**一条**，
+    不然会把参数行误当成子项（v0.197.0 开发期踩过：StatusScreen 那处误报）。
+    """
+    inner = body[1:-1]
+    stmts = []
+    buf = []
+    depth = 0
+    for ln in inner:
+        s = ln.strip()
+        if not buf and (not s or s.startswith('//') or s.startswith('*') or s.startswith('/*')):
+            continue
+        buf.append(ln)
+        depth += ln.count('(') - ln.count(')') + ln.count('{') - ln.count('}')
+        if depth <= 0 and not s.endswith(','):
+            stmts.append('\n'.join(buf))
+            buf = []
+            depth = 0
+    if buf:
+        stmts.append('\n'.join(buf))
+    return stmts
+
+
+problems = []
+for p in sorted(ROOT.rglob('*.kt')):
+    src = strip_comments(read(p))
+    lines = src.splitlines()
+    for ln, body in fold_bodies(lines):
+        stmts = top_statements(body)
+        if len(stmts) >= 2:
+            problems.append(
+                '%s 第 %d 行的折叠区有 %d 个顶层子项却没给容器（Column）⇒ '
+                '它们会**全部重叠**在同一个位置（实测：糊成一团乱码）'
+                % (p.name, ln, len(stmts)))
+
+if problems:
+    print('折叠区的子项会互相重叠 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 折叠区（CollapsibleSection / InfoNote …）的内容槽是**单个槽位**')
+    print('      ⇒ 多个子项必须自己给 Column（纵向排布）')
+    sys.exit(1)
+
+print('折叠区：每个都自己给了容器（多个子项不会重叠）')
+PYEOF
+if [ $? -eq 0 ]; then ok "折叠区的多个子项自己给容器（不许重叠）"; else fail "折叠区的子项会重叠（糊字）"; cat "$TMP"; fi
 rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"

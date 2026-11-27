@@ -1,5 +1,6 @@
 package com.teslamate.app.ui
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
@@ -73,6 +74,11 @@ data class BatteryHealthCardData(
     val usageNote: String?,
     /** 充电习惯的**一句话**（服务端渲染好的，App 与体检报告同一句）。 */
     val usageHabitLine: String?,
+    /**
+     * ⚠️ **v0.197.0**：充电习惯的**短句**（服务端渲染好的）——
+     * **常驻层**印它（宽度受服务端的 44 上限管 ⇒ 不折行）；全文在「更多明细」里。
+     */
+    val usageHabitHeadline: String?,
 )
 
 /**
@@ -112,6 +118,8 @@ fun batteryHealthCardData(b: BatteryHealth): BatteryHealthCardData? {
         usageNote = b.usage?.note?.takeIf { it.isNotBlank() },
         // ⚠️ **v0.196.0**：充电习惯那一句**逐字**取服务端（App 与体检报告同一句）。
         usageHabitLine = b.usage?.usage_line?.takeIf { it.isNotBlank() },
+        // ⚠️ **v0.197.0**：短句（常驻层印它）—— 逐字取服务端。
+        usageHabitHeadline = b.usage?.usage_headline?.takeIf { it.isNotBlank() },
     )
 }
 
@@ -166,30 +174,13 @@ fun BatteryHealthCard(b: BatteryHealth, modifier: Modifier = Modifier) {
                 )
             }
         }
-        // ⚠️ **v0.192.0：充电习惯与累计循环**（服务端算的**事实** ⇒ 客户端只印它那一句）。
+        // ⚠️ **v0.197.0：充电习惯的短句**（服务端渲染好的，宽度受服务端的 44 上限管）
+        //   ⇒ 常驻层印它 ⇒ **不折行**；**全文**折进「更多明细」。
         //
-        // ⚠️ 印的是**服务端渲染好的那一句**（与飞书体检报告同一句）⇒ 两端不会各说各话。
+        // ⚠️ 常驻层为什么只留短句：全文实测 **60 宽**
+        //   （模拟器 1440×3200@600 车况页实测）⇒ 常驻印出来**折成两行** ⇒ 一堵字墙。
         // ⚠️ 服务端没给（老服务端 / 没充电记录）⇒ **不显示**（宁可不说，也不说半句）。
-        val usageNote = d.usageNote
-        d.usageLine?.let { line ->
-            if (usageNote != null) {
-                TextWithNote(
-                    text = line,
-                    note = usageNote,
-                    style = MaterialTheme.typography.labelSmall,
-                    a11yLabel = "累计循环的口径",
-                )
-            } else {
-                Text(
-                    line,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        // ⚠️ **v0.196.0**：充电习惯（**事实**）—— 服务端渲染好的那一句。
-        // 折进「更多明细」⇒ 常驻层不多话。
-        d.usageHabitLine?.let { habit ->
+        d.usageHabitHeadline?.let { habit ->
             Text(
                 habit,
                 style = MaterialTheme.typography.labelSmall,
@@ -213,23 +204,61 @@ fun BatteryHealthCard(b: BatteryHealth, modifier: Modifier = Modifier) {
                 append(" 个满充点")
             }
         }
-        if (d.baselinePercent != null || cover.isNotEmpty()) {
+        // ⚠️ **v0.197.0**：明细区现在装得下三样东西了
+        //   （累计循环 ＋ 充电习惯全文 ＋ 相对首测 ＋ 覆盖范围）⇒ 入口的显隐跟着它们走。
+        val hasDetail = d.baselinePercent != null || cover.isNotEmpty() ||
+            d.usageLine != null || d.usageHabitLine != null
+        if (hasDetail) {
             CollapsibleSection(label = "更多明细") {
-                d.baselinePercent?.let {
-                    // ⚠️ 「相对首测」是**趋势**（有没有在持续掉）⇒ 折进明细。
-                    TextWithNote(
-                        text = "相对首测 ${it.fmt(1)}%",
-                        note = d.baselineNote,
-                        style = MaterialTheme.typography.labelSmall,
-                        a11yLabel = "相对首测的口径",
-                    )
-                }
-                if (cover.isNotEmpty()) {
-                    Text(
-                        cover,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                // ⚠️ **v0.197.0**：折叠区的内容槽是**单个槽位** ⇒
+                //   多个子项**必须自己给 Column** ⇒ 否则它们会**全部重叠**在同一个位置。
+                //
+                // ⚠️ **实测（App 170 · 车况页电池卡 · 模拟器 1440×3200@600）**：
+                //   没给 Column 时，「相对首测 98.8%」与「111 天 / 11936 公里 · 20 个满充点」
+                //   **叠成一块乱码** ⇒ 而编译 / 单测 / 闸门**全绿** ⇒ 只有版面才暴露。
+                Column {
+                    // 累计等效满充循环（服务端那一句 ＋ 它的口径说明）
+                    val usageNote = d.usageNote
+                    d.usageLine?.let { line ->
+                        if (usageNote != null) {
+                            TextWithNote(
+                                text = line,
+                                note = usageNote,
+                                style = MaterialTheme.typography.labelSmall,
+                                a11yLabel = "累计循环的口径",
+                            )
+                        } else {
+                            Text(
+                                line,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    // 充电习惯**全文**（短句在常驻层 ⇒ 这里是详情）
+                    d.usageHabitLine?.let { habit ->
+                        Text(
+                            habit,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    d.baselinePercent?.let {
+                        // ⚠️ 「相对首测」是**趋势**（有没有在持续掉）⇒ 折进明细。
+                        TextWithNote(
+                            text = "相对首测 ${it.fmt(1)}%",
+                            note = d.baselineNote,
+                            style = MaterialTheme.typography.labelSmall,
+                            a11yLabel = "相对首测的口径",
+                        )
+                    }
+                    if (cover.isNotEmpty()) {
+                        Text(
+                            cover,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }

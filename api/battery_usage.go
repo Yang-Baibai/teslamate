@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -71,6 +72,13 @@ type BatteryUsage struct {
 	// UsageLine 充电习惯的**一句话**（服务端渲染好的）——
 	// App 卡片与体检报告印**同一句**（与 ADR #105 同一套做法）。
 	UsageLine string `json:"usage_line"`
+	// ── ⚠️ **v0.197.0**：充电习惯的**短句**（App **常驻层**印它）──────
+	//
+	// ⚠️ **为什么要短句**：UsageLine 那句实测 **60 宽** ⇒
+	//   App 用独立 Text(...) 常驻印出来会**折成两行**（模拟器实测）⇒
+	//   ⇒ 常驻层印**短句**（宽度受 appCopyWidthLimit = 44 管），
+	//   **全文**折进「更多明细」⇒ 详情一点不丢。
+	UsageHeadline string `json:"usage_headline"`
 }
 
 // computeBatteryUsage 算充电习惯与累计等效满充循环（纯事实）。
@@ -148,6 +156,8 @@ func computeBatteryUsage(carID int, usableKwh, nominalKwh *float64, now time.Tim
 		u.DaysSinceLastCharge = &d
 	}
 	u.UsageLine = batteryUsageLine(u)
+	// ⚠️ **v0.197.0**：短句（App 常驻层）—— 骨架在 api/app_copy.go（闸门 26 盖住宽度）。
+	u.UsageHeadline = batteryUsageHeadline(u)
 	if chargerKwh > 0 {
 		v := dcKwh / chargerKwh * 100
 		u.DcEnergyRatio = &v
@@ -201,6 +211,19 @@ func batteryUsageLine(u *BatteryUsage) string {
 		}
 	}
 	return "充电习惯：" + strings.Join(parts, " · ")
+}
+
+// batteryUsageHeadline 充电习惯的**短句**（服务端唯一一份）。
+//
+// ⚠️ **v0.197.0**：App 常驻层只印这句 ⇒ 它的宽度**必须** ≤ appCopyWidthLimit
+//
+//	（骨架在 api/app_copy.go ⇒ Hermes 闸门 26 的判据②自动盖住）。
+//	全文在 [batteryUsageLine]（体检报告正文与 App 的「更多明细」里印它）。
+func batteryUsageHeadline(u *BatteryUsage) string {
+	if u == nil || u.AvgStartSoc == nil {
+		return ""
+	}
+	return fmt.Sprintf(appCopyUsageHeadlineTmpl, int(math.Round(*u.AvgStartSoc)))
 }
 
 // batteryUsageNote 这段说明（**服务端唯一一份**，ADR #41）。

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 )
@@ -55,6 +56,82 @@ func TestAppVisibleCopyWithinWidthLimit(t *testing.T) {
 	cav := m.tempCaveat(&low)
 	if w := copyVisualWidth(cav); w > appCopyWidthLimit {
 		t.Fatalf("低温口径宽度 %d > %d：%q", w, appCopyWidthLimit, cav)
+	}
+}
+
+// TestBatteryResidentLinesWithinWidth App **常驻**印的电池句子：渲染出来也不许超宽。
+//
+// ⚠️ **v0.197.0 的实测**（模拟器 1440×3200@600，车况页电池卡）：
+//
+//	「充电习惯：平均从 36% 开始充 · 12 次从 10% 以下开始充 · 上次充电是今天」= **60 宽**
+//	⇒ App 用独立 Text(...) 常驻印出来 ⇒ **折成两行**；
+//	衰减结论（**55 宽**）折行后还留下「过 0)」的**孤字尾行**。
+//
+// ⇒ 根因：**服务端拼出来的句子没人管宽度** —— Hermes 闸门 26 的判据②
+//
+//	只查 app_copy.go 里**声明的常量**，fmt.Sprintf 拼出来的句子一个判据都没有
+//	（ADR #83 的盲区）⇒ v0.197.0 把骨架搬进 app_copy.go（判据②自动盖住），
+//	**这条单测**管的是「**填上数字之后**」的那一步。
+//
+// ⚠️ 数字位数会变（场次 88 → 9999、百分比 36 → 100、速率 -0.052 → -99.999）
+// ⇒ 这里一律用**极端值**渲染一遍 ⇒ 宽度留足了余量。
+func TestBatteryResidentLinesWithinWidth(t *testing.T) {
+	// ① 充电习惯短句（App 常驻层印它）
+	for _, v := range []float64{0, 36, 100} {
+		s := fmt.Sprintf(appCopyUsageHeadlineTmpl, int(math.Round(v)))
+		if w := copyVisualWidth(s); w > appCopyWidthLimit {
+			t.Errorf("充电习惯短句（%v%%）宽度 %d > %d：%q", v, w, appCopyWidthLimit, s)
+		}
+	}
+	// ② 衰减结论的三种分支 + 兜底（headline 只说结论）
+	for _, c := range []struct {
+		name string
+		d    *BatteryDecay
+	}{
+		{"检得出衰减", &BatteryDecay{Conclusion: DecayDetectable, NaivePer1000Km: -99.999}},
+		{"与 0 区分不开", &BatteryDecay{Conclusion: DecayWeak, UnderlyingPer1000Km: -99.999}},
+		{"检不出趋势", &BatteryDecay{Conclusion: DecayNotDetectable}},
+		{"样本不足", &BatteryDecay{Conclusion: DecayInsufficient}},
+	} {
+		s := decayHeadline(c.d)
+		if s == "" {
+			t.Fatalf("[%s] 衰减结论不该为空", c.name)
+		}
+		if w := copyVisualWidth(s); w > appCopyWidthLimit {
+			t.Errorf("[%s] 衰减结论宽度 %d > %d：%q", c.name, w, appCopyWidthLimit, s)
+		}
+	}
+	// ③ 骨架逐条点名（app_copy.go 的每条文案都得过宽度；这里也算一份「不许空壳」）
+	for _, s := range []string{
+		appCopyUsageHeadlineTmpl,
+		appCopyDecayDetectableTmpl,
+		appCopyDecayWeak,
+		appCopyDecayNotDetectable,
+		appCopyDecayNoSamples,
+		appCopyDecayCiTmpl,
+		appCopyDecayCiCrossZeroTmpl,
+		appCopyDecayWeakEvidenceTmpl,
+	} {
+		if w := copyVisualWidth(s); w > appCopyWidthLimit {
+			t.Errorf("常驻句子的骨架宽度 %d > %d：%q", w, appCopyWidthLimit, s)
+		}
+	}
+	// ④ 依据行（ⓘ / 体检报告正文）⇒ 受 noteLineWidthLimit 管（不是常驻层的 44）
+	for _, c := range []struct {
+		name string
+		d    *BatteryDecay
+	}{
+		{"检得出衰减", &BatteryDecay{Conclusion: DecayDetectable, NaiveCiLo: -99.999, NaiveCiHi: -99.999}},
+		{"与 0 区分不开", &BatteryDecay{Conclusion: DecayWeak, UnderlyingPer1000Km: -99.999, UnderlyingCiLo: -99.999, UnderlyingCiHi: 99.999}},
+		{"检不出趋势", &BatteryDecay{Conclusion: DecayNotDetectable, NaiveCiLo: -99.999, NaiveCiHi: 99.999}},
+	} {
+		ev := decayEvidenceLine(c.d)
+		if ev == "" {
+			t.Fatalf("[%s] 依据行不该为空", c.name)
+		}
+		if w := copyVisualWidth(ev); w > noteLineWidthLimit {
+			t.Errorf("[%s] 依据行宽度 %d > %d：%q", c.name, w, noteLineWidthLimit, ev)
+		}
 	}
 }
 
