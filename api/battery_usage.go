@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ── 电池充电习惯与累计循环（v0.192.0）────────────────────────────
@@ -55,25 +56,49 @@ type BatteryUsage struct {
 	Line string `json:"line"`
 	// Note 口径说明（**服务端唯一一份**，ADR #41）。
 	Note string `json:"note"`
+
+	// ── ⚠️ **v0.196.0**：充电习惯（**事实**，不下方向性结论）────────────
+	//
+	// ⚠️ **只给事实**：不说「这样伤电池」「那样伤电池」——
+	//   那类断言**没有官方依据**（Tesla 官方 Service Mode 的 Battery Health Test
+	//   看的是**容量与循环**，不是「你的充电习惯好不好」）⇒ 说了就是编（ADR #46 反幻觉）。
+	// AvgStartSoc 平均**插枪前**的电量（%）—— 车主平时把电放到多低才充。
+	AvgStartSoc *float64 `json:"avg_start_soc"`
+	// DeepDischargeN 从 **10% 以下**才开始充的场次（项目自己的口径，写在文案里）。
+	DeepDischargeN int `json:"deep_discharge_n"`
+	// DaysSinceLastCharge 距**上次充电**多少天（nil = 从来没充过 / 取不到）。
+	DaysSinceLastCharge *int `json:"days_since_last_charge"`
+	// UsageLine 充电习惯的**一句话**（服务端渲染好的）——
+	// App 卡片与体检报告印**同一句**（与 ADR #105 同一套做法）。
+	UsageLine string `json:"usage_line"`
 }
 
 // computeBatteryUsage 算充电习惯与累计等效满充循环（纯事实）。
 //
 // @param usableKwh 最近一次满充实测的可用容量（nil ⇒ 给不出循环次数）
 // @param nominalKwh 铭牌可用容量（循环次数的分母；nil ⇒ 给不出）
-func computeBatteryUsage(carID int, usableKwh, nominalKwh *float64) (*BatteryUsage, error) {
+// batteryUsageDeepSocPct 「放得很低」的门槛（%）：从 **10% 以下**开始充。
+//
+// ⚠️ 这是**本项目自己的口径**（写进文案里）⇒ 不是官方定义 ⇒
+// **不许**由它推出「伤电池」这类结论（反幻觉，ADR #46）。
+const batteryUsageDeepSocPct = 10
+
+func computeBatteryUsage(carID int, usableKwh, nominalKwh *float64, now time.Time) (*BatteryUsage, error) {
 	rows, err := db.Query(context.Background(), sqlBatteryUsage, carID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	u := &BatteryUsage{}
-	var chargerKwh, dcKwh, socPoints float64
+	var chargerKwh, dcKwh, socPoints, startSum float64
+	var startN, deepN int
+	var lastEnd time.Time
 	for rows.Next() {
 		var energy float64
 		var startSoc, endSoc *int
 		var isDC bool
-		if err := rows.Scan(&energy, &startSoc, &endSoc, &isDC); err != nil {
+		var endDate time.Time
+		if err := rows.Scan(&energy, &startSoc, &endSoc, &isDC, &endDate); err != nil {
 			return nil, err
 		}
 		u.Sessions++
@@ -88,6 +113,18 @@ func computeBatteryUsage(carID int, usableKwh, nominalKwh *float64) (*BatteryUsa
 		if startSoc != nil && endSoc != nil && *endSoc > *startSoc {
 			socPoints += float64(*endSoc - *startSoc)
 		}
+		// ⚠️ **v0.196.0**：插枪前电量（平均）与「放得很低」的场次。
+		if startSoc != nil {
+			startSum += float64(*startSoc)
+			startN++
+			if *startSoc <= batteryUsageDeepSocPct {
+				deepN++
+			}
+		}
+		// 「最近一次」按**充电结束时刻**取最大（SQL 排序按开始时刻 ⇒ 不影响这里）。
+		if endDate.After(lastEnd) {
+			lastEnd = endDate
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -97,6 +134,20 @@ func computeBatteryUsage(carID int, usableKwh, nominalKwh *float64) (*BatteryUsa
 		return nil, nil
 	}
 	u.ChargerKwh = &chargerKwh
+	// ── ⚠️ **v0.196.0**：充电习惯（**事实**）──────────────────────────
+	if startN > 0 {
+		v := startSum / float64(startN)
+		u.AvgStartSoc = &v
+	}
+	u.DeepDischargeN = deepN
+	if !lastEnd.IsZero() {
+		d := int(now.Sub(lastEnd).Hours() / 24)
+		if d < 0 {
+			d = 0
+		}
+		u.DaysSinceLastCharge = &d
+	}
+	u.UsageLine = batteryUsageLine(u)
 	if chargerKwh > 0 {
 		v := dcKwh / chargerKwh * 100
 		u.DcEnergyRatio = &v
@@ -108,19 +159,48 @@ func computeBatteryUsage(carID int, usableKwh, nominalKwh *float64) (*BatteryUsa
 		u.Efc = &efc
 		efcCharger := chargerKwh / *nominalKwh
 		u.EfcByCharger = &efcCharger
-		u.Line = batteryUsageLine(u)
+		u.Line = batteryCycleLine(u)
 		u.Note = batteryUsageNote(u)
 	}
 	return u, nil
 }
 
-// batteryUsageLine 结论的**一句话**（服务端唯一一份 ⇒ App 卡片与报告印同一句）。
-func batteryUsageLine(u *BatteryUsage) string {
+// batteryCycleLine 累计循环的**一句话**（服务端唯一一份 ⇒ App 卡片与报告印同一句）。
+//
+// ⚠️ **v0.196.0 改名**：原来叫 batteryUsageLine，与「充电习惯」那句撞名了
+// ⇒ 两个用途不同的句子必须**各自有名**（一个说循环、一个说习惯）。
+func batteryCycleLine(u *BatteryUsage) string {
 	if u == nil || u.Efc == nil {
 		return ""
 	}
 	return fmt.Sprintf("累计等效满充循环 %.1f 次（直流 %d / 交流 %d 次充电）",
 		*u.Efc, u.DcSessions, u.AcSessions)
+}
+
+// batteryUsageLine 充电习惯的**一句话**（服务端唯一一份 ⇒ App 与报告印同一句）。
+//
+// ⚠️ **只报事实**，不下方向性结论（不说「这样伤电池」—— 没有官方依据）。
+func batteryUsageLine(u *BatteryUsage) string {
+	if u == nil || u.Sessions == 0 {
+		return ""
+	}
+	parts := []string{}
+	if u.AvgStartSoc != nil {
+		parts = append(parts, fmt.Sprintf("平均从 %.0f%% 开始充", *u.AvgStartSoc))
+	}
+	parts = append(parts, fmt.Sprintf("%d 次从 %d%% 以下开始充",
+		u.DeepDischargeN, batteryUsageDeepSocPct))
+	if u.DaysSinceLastCharge != nil {
+		switch *u.DaysSinceLastCharge {
+		case 0:
+			parts = append(parts, "上次充电是今天")
+		case 1:
+			parts = append(parts, "上次充电是昨天")
+		default:
+			parts = append(parts, fmt.Sprintf("上次充电在 %d 天前", *u.DaysSinceLastCharge))
+		}
+	}
+	return "充电习惯：" + strings.Join(parts, " · ")
 }
 
 // batteryUsageNote 这段说明（**服务端唯一一份**，ADR #41）。
@@ -150,7 +230,7 @@ func computeBatteryHealthWithUsage(carID int) (*BatteryHealth, error) {
 	if err != nil {
 		return nil, err
 	}
-	usage, err := computeBatteryUsage(carID, h.CurrentCapacityKwh, h.NominalCapacityKwh)
+	usage, err := computeBatteryUsage(carID, h.CurrentCapacityKwh, h.NominalCapacityKwh, time.Now())
 	if err != nil {
 		return nil, err
 	}

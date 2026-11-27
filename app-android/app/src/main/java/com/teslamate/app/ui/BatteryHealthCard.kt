@@ -71,6 +71,8 @@ data class BatteryHealthCardData(
     val usageLine: String?,
     /** 累计循环的口径说明（服务端唯一一份）。 */
     val usageNote: String?,
+    /** 充电习惯的**一句话**（服务端渲染好的，App 与体检报告同一句）。 */
+    val usageHabitLine: String?,
 )
 
 /**
@@ -108,6 +110,8 @@ fun batteryHealthCardData(b: BatteryHealth): BatteryHealthCardData? {
         // ⚠️ **v0.192.0**：那一句**逐字**取服务端（客户端一个字都不拼 ⇒ ADR #101）。
         usageLine = b.usage?.line?.takeIf { it.isNotBlank() },
         usageNote = b.usage?.note?.takeIf { it.isNotBlank() },
+        // ⚠️ **v0.196.0**：充电习惯那一句**逐字**取服务端（App 与体检报告同一句）。
+        usageHabitLine = b.usage?.usage_line?.takeIf { it.isNotBlank() },
     )
 }
 
@@ -182,6 +186,15 @@ fun BatteryHealthCard(b: BatteryHealth, modifier: Modifier = Modifier) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+        }
+        // ⚠️ **v0.196.0**：充电习惯（**事实**）—— 服务端渲染好的那一句。
+        // 折进「更多明细」⇒ 常驻层不多话。
+        d.usageHabitLine?.let { habit ->
+            Text(
+                habit,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
         // ⚠️ **v0.29.0**：默认态只留**一个**折叠入口 ⇒ 其余都折进去。
         val cover = buildString {

@@ -1497,6 +1497,20 @@ data class BatteryUsage(
     val line: String = "",
     /** 口径说明（服务端唯一一份，ADR #41）。 */
     val note: String = "",
+    /**
+     * ⚠️ **v0.196.0**：充电习惯（**事实**）——
+     * 平均插枪前的电量、从 10% 以下开始充的场次、距上次充电的天数。
+     *
+     * ⚠️ 服务端**只给事实**，App 不自己算、也不下「伤电池」这类结论。
+     */
+    val avg_start_soc: Double? = null,
+    val deep_discharge_n: Int = 0,
+    val days_since_last_charge: Int? = null,
+    /**
+     * 充电习惯的**一句话**（服务端渲染好的）——
+     * App 卡片与飞书体检报告印**同一句**（ADR #41）。
+     */
+    val usage_line: String = "",
 )
 
 /**

@@ -189,6 +189,17 @@
       "client_source": "服务端 /battery usage"
     },
     {
+      "id": "battery_habit",
+      "结论": "充电习惯（平均从多少电开始充 / 10% 以下开始充几次 / 距上次充电几天）",
+      "界面": "车况页",
+      "服务端": "/battery usage",
+      "mcp": [
+        "teslamate_battery"
+      ],
+      "状态": "covered",
+      "client_source": "服务端 /battery usage"
+    },
+    {
       "id": "full_charge_range",
       "结论": "实测满电续航（折算中位，公里）",
       "界面": "记录页",

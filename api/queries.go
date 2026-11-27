@@ -941,7 +941,10 @@ WITH` + cteChargeDC + `
 SELECT cp.charge_energy_added,
        cp.start_battery_level,
        cp.end_battery_level,
-       COALESCE(cd.is_dc, false) AS is_dc
+       COALESCE(cd.is_dc, false) AS is_dc,
+       -- ⚠️ **v0.196.0**：再取一次**充电结束时刻** ⇒「距上次充电多少天」用得上。
+       --   （排序仍按开始时刻；「最近一次」在 Go 里按 end_date 取最大 ⇒ 不受排序影响。）
+       cp.end_date
 FROM charging_processes cp
 LEFT JOIN charge_dc cd ON cd.charging_process_id = cp.id
 WHERE cp.car_id = $1 AND cp.charge_energy_added > 0.01

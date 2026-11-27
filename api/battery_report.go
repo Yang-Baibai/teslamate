@@ -101,6 +101,10 @@ func renderBatteryReport(carName string, h *BatteryHealth) (string, string) {
 	if h.Usage != nil && h.Usage.Line != "" {
 		lines = append(lines, h.Usage.Line)
 	}
+	// ⑦ **充电习惯**（v0.196.0）—— 也是服务端那一句（App 卡片与体检报告同一句）。
+	if h.Usage != nil && h.Usage.UsageLine != "" {
+		lines = append(lines, h.Usage.UsageLine)
+	}
 	if len(lines) == 0 {
 		// ⚠️ 什么都没有 ⇒ **不编**（反幻觉）：只说清「还没有满充记录」。
 		return title, "这台车还没有满充记录，电池健康给不出数。"

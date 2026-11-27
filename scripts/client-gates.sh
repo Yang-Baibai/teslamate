@@ -5401,6 +5401,70 @@ print('车门 / 哨兵：都读 stale（陈旧值不当现状）')
 PYEOF
 if [ $? -eq 0 ]; then ok "车门 / 哨兵的 stale：客户端不许把陈旧值当现状"; else fail "陈旧的车门 / 哨兵结论被当现状用了"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 56：充电习惯——客户端**不许自己算、也不许自己写那句话** ──────────────
+#
+# ⚠️ **v0.196.0**：平均插枪前电量 / 从 10% 以下开始充的场次 / 距上次充电的天数
+# **全在服务端算**（api/battery_usage.go）⇒ 客户端只透传。
+#
+# ⚠️ 判据**不依赖写法**：
+#   ① 卡片必须**用**服务端那句（查 usageHabitLine，**带词边界**——
+#      改名成 usageHabitLineX 不算「用了」）；
+#   ② 客户端**字符串字面量**里不许出现「开始充」⇒ 抄一份就是两份措辞。
+#
+# ⚠️ **v0.196.0 实测踩到（假红）**：判据 ② 原来是**全文 grep**「开始充」，
+#   于是把三条**正常注释**也判成违规 ——
+#     Api.kt:「…从 10% 以下开始充的场次…」（讲字段的 KDoc）、
+#     CommandGrid.kt：「开始充电／停止充电」两个**按钮**（车控动作，别的意思）、
+#     VehicleControlCard.kt：「开始充电」点两次有副作用（讲车控），
+#   ⇒ **闸门在干净仓库上也是红的**（判据比它要抓的东西宽 ⇒ 假红）。
+#   ⇒ 改成**先剥注释、再只看字符串字面量** ⇒
+#     注释里讨论「开始充电」不算抄措辞，只有**真会印给用户**的字符串才算。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+CARD = pathlib.Path('app-android/app/src/main/java/com/teslamate/app/ui/BatteryHealthCard.kt')
+CLIENT = pathlib.Path('app-android/app/src/main/java/com/teslamate/app')
+LIT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+problems = []
+
+
+def read(p):
+    return p.read_text(encoding='utf-8', errors='replace') if p.exists() else ''
+
+
+def strip_kt_comments(src):
+    """剥掉 Kotlin 注释 —— 说明文字里提到被禁的写法不算违规（否则假红）。"""
+    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
+    src = re.sub(r'//[^\n]*', '', src)
+    return src
+
+
+card = read(CARD)
+# ① **词边界**匹配：usageHabitLineX / usageHabitLineOld 这类改名不算「用了」
+if not re.search(r'\busageHabitLine\b', card):
+    problems.append('电池健康卡里没有 usageHabitLine ⇒ 没有印服务端渲染好的「充电习惯」那句')
+# ② 客户端**字符串字面量**里不许出现「开始充」（注释不算 ⇒ 见上面「假红」那条）
+for p in sorted(CLIENT.rglob('*.kt')):
+    src = strip_kt_comments(read(p))
+    for i, line in enumerate(src.splitlines()):
+        for lit in LIT.findall(line):
+            if '开始充' in lit:
+                problems.append('%s 第 %d 行的**字符串字面量**出现了「开始充」⇒ '
+                                '客户端自己写了一份充电习惯的措辞（应只透传服务端那句）'
+                                % (p.name, i + 1))
+
+if problems:
+    print('充电习惯：客户端自己算/自己写了一份 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 充电习惯的数与那句话都在服务端一份（ADR #38 / ADR #41）')
+    sys.exit(1)
+
+print('充电习惯：卡片用服务端那句 ＋ 客户端没有自己写第二份')
+PYEOF
+if [ $? -eq 0 ]; then ok "充电习惯：只透传服务端（客户端不许自己算/自己写）"; else fail "客户端自己写了一份充电习惯"; cat "$TMP"; fi
+rm -f "$TMP"
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"
 exit "$FAIL"
