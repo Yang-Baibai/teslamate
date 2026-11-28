@@ -1,6 +1,34 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// ⚠️ **v0.202.0**：体检报告正文里的**趋势行**（首末两个实测点）。
+func TestBatteryTrendLine(t *testing.T) {
+	// 少于两个点 ⇒ 不给这行（一个点说明不了趋势 —— 与「图不画」同一套规矩）
+	if line := batteryTrendLine(nil); line != "" {
+		t.Errorf("没有点就不该给趋势行：%q", line)
+	}
+	if line := batteryTrendLine([]*BatteryTrendPoint{{Km: 1000, Kwh: 66.2}}); line != "" {
+		t.Errorf("只有一个点就不该给趋势行：%q", line)
+	}
+	pts := []*BatteryTrendPoint{
+		{Km: 91791.31536, Kwh: 66.1891},
+		{Km: 104167.016948, Kwh: 65.6489},
+	}
+	line := batteryTrendLine(pts)
+	for _, must := range []string{"66.2", "65.6", "91791", "104167"} {
+		if !strings.Contains(line, must) {
+			t.Errorf("趋势行里少了 %q：%q", must, line)
+		}
+	}
+	// ⚠️ 正文行 ⇒ 行宽 ≤ noteLineWidthLimit（96）
+	if w := copyVisualWidth(line); w > noteLineWidthLimit {
+		t.Errorf("趋势行宽度 %d > %d：%q", w, noteLineWidthLimit, line)
+	}
+}
 
 // ⚠️ **v0.199.0**：趋势图的点 = 判定用的**同一批**严格档点，且**按里程升序**。
 func TestBatteryTrendPointsSortedByKm(t *testing.T) {

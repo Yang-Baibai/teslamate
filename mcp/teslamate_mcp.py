@@ -966,6 +966,12 @@ def teslamate_battery_report() -> dict:
         # ⚠️ **原样转述**（ADR #41）：标题与正文都是服务端写的。
         "标题": data.get("title") or "",
         "正文": data.get("body") or "",
+        # ⚠️ **v0.202.0**：报告正文里的**趋势行**（首末两个实测点，服务端渲染的原文）。
+        #   ⇒ 每月推给用户的那条消息**也带趋势**，而不只是几个数字
+        #   （使命书 §2.2「周期性健康报告：电池健康度（SOH）变化趋势」）。
+        #   ⚠️ **只报事实**：这行是起点与终点两个实测值，不是「掉了多少」。
+        "趋势": data.get("trend_line") or "",
+        "趋势点数": data.get("trend_points"),
         "服务器时区": data.get("server_timezone") or "Asia/Shanghai",
         # ⚠️ 字段名与 `teslamate_battery` **逐字一致** ⇒ 模型看到的是同一套词汇。
         "健康度%(相对出厂可用容量)": data.get("health_percent"),

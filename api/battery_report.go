@@ -48,6 +48,12 @@ type BatteryReport struct {
 	Decay                   *BatteryDecay       `json:"decay"`
 	SpanDays                *int                `json:"span_days"`
 	SpanKm                  *float64            `json:"odometer_span_km"`
+	// ⚠️ **v0.202.0**：报告正文里的**趋势行**（服务端渲染的原文）＋**点数**。
+	//
+	// ⚠️ 为什么结构化字段里**不放整个序列**：趋势点已经在 /battery 里
+	//   （MCP 的 teslamate_battery 直接透传）⇒ 报告这里只留**一行**与**点数**。
+	TrendLine   string `json:"trend_line"`
+	TrendPoints int    `json:"trend_points"`
 }
 
 // renderBatteryReport 渲染体检报告的标题与正文（纯函数，可单测）。
@@ -105,6 +111,15 @@ func renderBatteryReport(carName string, h *BatteryHealth) (string, string) {
 	if h.Usage != nil && h.Usage.UsageLine != "" {
 		lines = append(lines, h.Usage.UsageLine)
 	}
+	// ⑧ **v0.202.0**：**趋势行**（首末两个实测点）——
+	//
+	// ⚠️ 使命书 §2.2 的「周期性健康报告」原文就写着「电池健康度（SOH）**变化趋势**」
+	//   ⇒ 每月推给用户的那条消息**本来就该带趋势**，而不是只有几个数字。
+	// ⚠️ **只报事实**：起点与终点两个实测值 ⇒ 不写「掉了多少」「该不该换」
+	//   （那类判断只有服务端的衰减结论能说，见上面第 ④ 行）。
+	if line := batteryTrendLine(h.TrendPoints); line != "" {
+		lines = append(lines, line)
+	}
 	if len(lines) == 0 {
 		// ⚠️ 什么都没有 ⇒ **不编**（反幻觉）：只说清「还没有满充记录」。
 		return title, "这台车还没有满充记录，电池健康给不出数。"
@@ -144,6 +159,9 @@ func handleBatteryReport(w http.ResponseWriter, r *http.Request) {
 		Decay:                   h.Decay,
 		SpanDays:                h.SeriesSpanDays,
 		SpanKm:                  h.OdometerSpanKm,
+		// ⚠️ **v0.202.0**：报告正文里的趋势行（首末两个实测点）＋点数。
+		TrendLine:   batteryTrendLine(h.TrendPoints),
+		TrendPoints: len(h.TrendPoints),
 	})
 }
 

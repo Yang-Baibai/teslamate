@@ -144,6 +144,9 @@ SPEC = [
     # ⚠️ **v0.190.0**：电池体检报告（服务端渲染好的标题 + 正文）。
     # 字段名与 teslamate_battery **逐字一致** ⇒ 模型看到的是同一套词汇。
     ("teslamate_battery_report", {}, "标题", "电池体检报告标题（服务端原文）"),
+    # ⚠️ **v0.202.0**：报告正文里的**趋势行**（每月推送的那条消息也带趋势）。
+    ("teslamate_battery_report", {}, "趋势", "报告正文里的趋势行（首末两个实测点，服务端原文）"),
+    ("teslamate_battery_report", {}, "趋势点数", "趋势用了多少个满充点"),
     ("teslamate_battery_report", {}, "正文", "电池体检报告正文（服务端原文）"),
     ("teslamate_battery_report", {}, "健康度%(相对出厂可用容量)", "电池健康度"),
     ("teslamate_battery_report", {}, "近期趋势%(相对首测)", "电池相对首测趋势"),

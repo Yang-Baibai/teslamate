@@ -1,6 +1,10 @@
 package main
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+	"strconv"
+)
 
 // ---------- 电池趋势图（v0.199.0） ----------
 //
@@ -22,6 +26,30 @@ import "sort"
 // 图里**不印任何文字**（数字卡上已有）⇒ 只有一条 ⓘ 口径说明
 // ⇒ 它是 **ⓘ 文案**（上限 noteLineWidthLimit = 96）
 // ⇒ 定义在本模块（与 [decayMethodTmpl] 同一套做法：ⓘ 文案放模块里，不放 app_copy.go）。
+
+// batteryTrendLineTmpl 体检报告正文里的**趋势行**（服务端渲染的原文）。
+//
+// ⚠️ 这是**飞书正文**里的一行（不是 App 常驻文案）⇒ 上限取 noteLineWidthLimit（96）。
+// ⇒ 定义在**模块里**（与 [decayMethodTmpl] 同一套做法：ⓘ / 报告正文文案放模块，
+//
+//	不放 app_copy.go —— 那里只放「App 用独立 Text(...) 直接印的常驻文案」）。
+//
+// ⚠️ 措辞**只报事实**：起点与终点两个实测值，不写「掉了多少」「该不该换」。
+const batteryTrendLineTmpl = "实测容量：%s 度（%d 公里）→ %s 度（%d 公里）"
+
+// batteryTrendLine 渲染体检报告正文里的**趋势行**（纯函数，可单测）。
+//
+// ⚠️ 少于 2 个点 ⇒ **不给这行**（一个点说明不了趋势 —— 与「图不画」同一套规矩）。
+func batteryTrendLine(points []*BatteryTrendPoint) string {
+	if len(points) < 2 {
+		return ""
+	}
+	first := points[0]
+	last := points[len(points)-1]
+	return fmt.Sprintf(batteryTrendLineTmpl,
+		strconv.FormatFloat(first.Kwh, 'f', 1, 64), int(first.Km),
+		strconv.FormatFloat(last.Kwh, 'f', 1, 64), int(last.Km))
+}
 
 // batterySeriesNote 趋势图的**口径说明**（ⓘ 文案；服务端唯一一份，ADR #41）。
 //
