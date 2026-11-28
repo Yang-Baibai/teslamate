@@ -1779,14 +1779,18 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 	var lastCapAt *time.Time
 	// ⚠️ v0.22.0（电池健康专家 P1-5 / P1-1 / P0-3）：下面这些累加器。
 	var (
-		lastOdo          *float64
-		firstOdo         *float64
-		firstDate        time.Time
-		lastDate         time.Time
-		haveDate         bool
-		strictMax        *float64
-		energyCaps       []float64
-		baselineCaps     []float64
+		lastOdo      *float64
+		firstOdo     *float64
+		firstDate    time.Time
+		lastDate     time.Time
+		haveDate     bool
+		strictMax    *float64
+		energyCaps   []float64
+		baselineCaps []float64
+		// ⚠️ **v0.200.0**：基线那**一次测量**（值 ＋ 时刻）与满充点候选。
+		//   ⇒ 「基线容量」与「基线日期」必须是**同一个点**（原来两边各挑各的）。
+		baselineSamples  []baselineSample
+		fullCands        []fullChargeCandidate
 		strictPts        []decayPoint
 		scaleRatios      []float64
 		excludedPts      int
@@ -1815,6 +1819,8 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 			// 只取第一次的话，首测当天若气温异常就会把整条基线锚歪。
 			if len(baselineCaps) < 3 {
 				baselineCaps = append(baselineCaps, *p.CapacityKwh)
+				// ⚠️ **v0.200.0**：**同一批点**也要记时刻 ⇒ 基线日期与基线容量同源。
+				baselineSamples = append(baselineSamples, baselineSample{kwh: *p.CapacityKwh, at: p.Date})
 			}
 			last = p.CapacityKwh
 			// ⚠️ 与 last 同一个点（不许另取）—— 时间口径要指向的就是这个数。
@@ -1855,6 +1861,11 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 		}
 		lastDate = p.Date
 		h.Series = append(h.Series, p)
+		// ⚠️ **v0.200.0**：**满充点候选**（结束电量 100% 且车机给了满电标定续航）
+		//   ⇒ 「最近一次满充点的续航」由服务端挑（原来客户端自己挑）。
+		if p.EndSoc != nil && *p.EndSoc >= 100 && p.RatedRangeKm != nil {
+			fullCands = append(fullCands, fullChargeCandidate{at: p.Date, ratedKm: p.RatedRangeKm})
+		}
 		// ⚠️ **v0.35.0（第 21 轮数据口径审计 P1-D + 独立复算）：电池衰减判定。**
 		//
 		// 只收**严格档**（`end_soc == 100`，真正充满）的点 ——
@@ -1941,6 +1952,16 @@ func computeBatteryHealth(carID int) (*BatteryHealth, error) {
 	if len(baselineCaps) > 0 {
 		base := medianOfFloats(baselineCaps)
 		h.BaselineCapacityKwh = &base
+		// ⚠️ **v0.200.0**：基线**日期**与基线**容量**同一个点（服务端一份）。
+		if bs, ok := pickBaselineSample(baselineSamples); ok {
+			at := bs.at
+			h.BaselineAt = &at
+		}
+		// ⚠️ **v0.200.0**：最近一次满充点的车机满电续航（原来客户端自己挑）。
+		if km, at, ok := pickLatestFullCharge(fullCands); ok {
+			h.LatestFullRatedKm = &km
+			h.LatestFullAt = &at
+		}
 		if last != nil && base > 0 {
 			v := *last * 100 / base
 			h.HealthPercentOfBaseline = &v

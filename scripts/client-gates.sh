@@ -5626,35 +5626,49 @@ print('充电状态：客户端只透传服务端结论（没有自己写死官�
 PYEOF
 if [ $? -eq 0 ]; then ok "充电状态：客户端只透传（不许自己解释官方枚举）"; else fail "客户端自己解释充电状态了"; cat "$TMP"; fi
 rm -f "$TMP"
-# ── 闸门 59：趋势图里客户端不许自己挑点（哪些点算数 = 口径）─────────────────
+# ── 闸门 59：客户端不许自己挑「满充点」（哪些点算数 = 口径）─────────────────
 #
-# ⚠️ **v0.199.0**：电池健康卡里那条「实测容量趋势」曲线的点，
-#   是**服务端挑好的那批严格档点**（与判定衰减**同一批**）
-#   ⇒ 图上看到的形状 **就是** 结论依据的形状（界面与结论不会自相矛盾）。
+# ⚠️ **v0.199.0 / v0.200.0**：电池健康这条链上，服务端已经给好了
+#   「**满充点**」（充到 100%、有容量、有里程、剔除空会话）
+#   ⇒ 趋势图（trend_points）、基线日期、基线容量、最近满充点的续航
+#   **全是服务端挑的那一批** ⇒ 图与结论**同源**（界面不会自相矛盾）。
 #
-# ⇒ 「哪些点算数」是**口径**（ADR #38）⇒ 趋势图这边客户端**只画**。
+# ⇒ 「哪些点算数」是**口径**（ADR #38）⇒ 客户端**只透传**。
 #
-# ⚠️ **判据为什么是「文件级」**（而不是全局扫 end_soc）：
-#   实测：客户端**本来**就在别处读 end_soc
-#   （用量页那张「电池健康度」曲线自 v0.22.0 起就自己按 end_soc >= 100 挑点，
-#   StatsScreen.kt / RouteJourney.kt / RouteMargin.kt / StatusScreen.kt 都有）——
-#   ⇒ 全局禁 end_soc 会把**既有**代码判红（假红）⇒ 那是**另一个口径**，留下一轮。
-#   ⇒ 这里只钉**趋势图这条链**（两个文件）：它们不许再从 series / end_soc 自己挑点。
-#
-# ⚠️ 判据仍按**属性读取**这个事实来判（与闸门 43 同款）⇒ 与写法无关。
+# 判据（两条，都按**事实**判，与写法无关）：
+#   ① **客户端不许拿 end_soc 与 100 比较** ——
+#      100 = 「充到 100%」= **满充的定义** ⇒ 谁拿它比较，谁就在自己挑点。
+#      ⚠️ 只咬 **100**：行程那边比的是 end_soc <= 15（到站电量偏低）⇒ **另一个口径**，不管。
+#   ② **趋势图那两个文件**不许读 series / end_soc ——
+#      趋势图的点只能来自服务端给的 trend_points。
 TMP=$(mktemp)
 "$PY" - > "$TMP" <<'PYEOF'
 import pathlib, re, sys
 
-FILES = [
+# ⚠️ 反斜杠用 chr(92) 拼（源码里不写出来 ⇒ 任何一层转义都吃不掉它）。
+BS = chr(92)
+
+ROOT = pathlib.Path('app-android/app/src/main/java')
+TREND_FILES = [
     'app-android/app/src/main/java/com/teslamate/app/ui/BatteryTrendChart.kt',
     'app-android/app/src/main/java/com/teslamate/app/ui/BatteryHealthCard.kt',
 ]
-# 读取点（前面带点）；data class 里的**声明**（前面没有点）不算。
-PAT = re.compile(r'\.\??(series|end_soc)\b')
+# ① end_soc 与 100 比较（两个方向都盖住）
+CMP100 = re.compile('end_soc[^' + BS + 'n]{0,60}>=[ ]*100|100[^' + BS + 'n]{0,60}>=[ ]*end_soc')
+# ② 读取点（前面带点）；data class 里的**声明**（前面没有点）不算。
+READ = re.compile('r' + BS + '.' + BS + '??(series|end_soc)' + BS + 'b')
 
 problems = []
-for f in FILES:
+for p in sorted(ROOT.rglob('*.kt')):
+    src = p.read_text(encoding='utf-8', errors='replace')
+    for i, line in enumerate(src.splitlines(), 1):
+        s = line.strip()
+        if s.startswith('//') or s.startswith('*') or s.startswith('/*'):
+            continue
+        if CMP100.search(line):
+            problems.append('%s 第 %d 行拿 end_soc 与 100 比较 ⇒ 客户端自己挑「满充点」了'
+                            '（哪些点算数是口径，服务端给的是严格档那批）' % (p.name, i))
+for f in TREND_FILES:
     p = pathlib.Path(f)
     if not p.exists():
         problems.append('找不到 %s' % f)
@@ -5663,23 +5677,24 @@ for f in FILES:
         s = line.strip()
         if s.startswith('//') or s.startswith('*') or s.startswith('/*'):
             continue
-        m = PAT.search(line)
+        m = READ.search(line)
         if m:
-            problems.append('%s 第 %d 行读了 %s ⇒ 趋势图自己挑点了（哪些点算数是口径，'
-                            '服务端给的是与判定衰减同一批的 strict 点）'
+            problems.append('%s 第 %d 行读了 %s ⇒ 趋势图自己挑点了（点只能来自 trend_points）'
                             % (p.name, i, m.group(1)))
 
 if problems:
-    print('趋势图自己挑点了 ——')
+    print('客户端自己挑「满充点」了 ——')
     for pr in problems:
         print('   ', pr)
-    print('   ⇒ 趋势图的点由服务端给（trend_points），客户端只画')
+    print('   ⇒ 满充点由服务端挑（trend_points / decay.n / baseline_at），客户端只透传')
     sys.exit(1)
 
-print('趋势图：客户端只画服务端挑好的点（没有自己挑）')
+print('电池链：客户端只透传服务端挑好的点（没有自己挑满充点）')
 PYEOF
-if [ $? -eq 0 ]; then ok "趋势图：客户端只画（不许自己挑点）"; else fail "趋势图自己挑点了"; cat "$TMP"; fi
+if [ $? -eq 0 ]; then ok "电池链：客户端只透传（不许自己挑满充点）"; else fail "客户端自己挑满充点了"; cat "$TMP"; fi
 rm -f "$TMP"
+
+
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ 客户端闸门通过" || echo "❌ 客户端闸门失败"

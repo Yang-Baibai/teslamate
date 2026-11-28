@@ -1506,6 +1506,24 @@ data class BatteryHealth(
      */
     val series_note: String = "",
     /**
+     * ⚠️ **v0.200.0**：**首测基线**的那一次测量（时刻）。
+     *
+     * ⚠️ 原来客户端自己按「序列前 3 个排序取中位数」算这个日期，
+     * 而服务端算「相对首测」用的是「前 3 个**有容量**的点」⇒ 两边可能不是同一个点。
+     * ⇒ 现在**基线容量与基线日期同源**（服务端一份，ADR #38）⇒ 客户端只透传。
+     */
+    @Serializable(with = InstantSer::class) val baseline_at: Instant? = null,
+    /**
+     * ⚠️ **v0.200.0**：**最近一次满充点**的车机满电标定续航（km）。
+     *
+     * ⚠️ 原来也是客户端自己挑的（按结束电量 100% 过滤再取最新）⇒ 「哪些点算数」是口径 ⇒ 搬回服务端。
+     */
+    val latest_full_rated_km: Double? = null,
+    /**
+     * ⚠️ **v0.200.0**：那个**满充点**的时刻（与上面的续航是**同一个点**）。
+     */
+    @Serializable(with = InstantSer::class) val latest_full_at: Instant? = null,
+    /**
      * ⚠️ **v0.35.0：电池容量衰减的判定**（服务端唯一事实源，客户端只显示）。
      *
      * 判定用**严格档**（充到 100%）+ **t 检验** + **阶跃检测**，

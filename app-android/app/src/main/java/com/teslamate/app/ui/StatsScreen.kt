@@ -1008,14 +1008,16 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                         // 而 e_soc 90~98 的点**系统性偏高 0.56%**
                         // （从 94% 线性外推到 100% 会高估 —— 车机的续航-电量曲线顶部是平的）。
                         // 实测那个 66.7 度正是一个 e_soc=96 的点。
-                        val baselineDate = b.series.orEmpty()
-                            .take(3)
-                            .sortedBy { it.capacity_kwh }
-                            .getOrNull(1)?.date?.fmtDate()
-                        val latestFullPoint = b.series.orEmpty()
-                            .filter { it.end_soc != null && it.end_soc!! >= 100 && it.rated_range_km != null }
-                            .maxByOrNull { it.date }
-                        val nowRatedKm = latestFullPoint?.rated_range_km
+                        // ⚠️ **v0.200.0**：**基线日期**与**最近满充点**都由服务端给。
+                        //
+                        // 原来这里客户端自己挑：
+                        // ① 基线日期 = series 前 3 个排序取中位数那点的日期 ——
+                        //    而服务端的基线取的是「前 3 个**有容量**的点」⇒ 两边**可能不是同一个点**
+                        //    ⇒ 界面显示的日期与结论依据对不上（口径漂移）。
+                        // ② 最近满充点 = 客户端按 end_soc >= 100 过滤再取最新。
+                        // ⇒ 「哪些点算数」是**口径**（ADR #38）⇒ 都搬回服务端，客户端只透传。
+                        val baselineDate = b.baseline_at?.fmtDate()
+                        val nowRatedKm = b.latest_full_rated_km
                         val factoryKm = b.factory_rated_range_km
 
                         // ── 表层：一个主角 + 一行副标题 ──────────────────────────
@@ -1237,7 +1239,7 @@ LaunchedEffect(settings, apiPeriod, costPeriod) { load() }
                                             // 而**下面那行**就写着「满电续航（按出厂折算）538 km」
                                             // ⇒ **同一个数说两遍 = 噪音**。
                                             note = noteFullChargeRange(
-                                                latestFullPoint?.date?.fmtDate(),
+                                                b.latest_full_at?.fmtDate(),
                                                 // ⚠️ **用「两行的显示值之差」**，不是原始值之差 ——
                                                 // 下面那行显示 538 km、这行显示 448 km，
                                                 // 用户一眼能验的差是 **90** ⇒ ⓘ 必须写同一个数。
