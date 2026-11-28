@@ -2440,6 +2440,53 @@ print('清单的 covered 名副其实（%d 条已核 client_source；%d 条 cove
 PYEOF
 if [ $? -eq 0 ]; then ok "清单的 covered 名副其实（客户端本地算的不许标 covered）"; else fail "清单里有假 covered（客户端本地算的却标 covered）"; cat "$TMP"; fi
 rm -f "$TMP"
+# ── 闸门 60：MCP 不许自己挑「满充点」（哪些点算数 = 口径）────────────────────
+#
+# ⚠️ **v0.201.0**：服务端已经给好了「最近一次满充点」（v0.200.0 的 latest_full_rated_km /
+#   latest_full_at）⇒ MCP **直接用**。
+#
+# ⚠️ 实测（v0.201.0 改之前）：MCP 侧**自己**从 series 里挑
+#   （按「结束电量 ≥ 100」过滤再取日期最新）⇒ 与服务端、与 App **各挑各的**
+#   ⇒ 同一件事**两份口径**（本仓库的老账，ADR #38）。
+#
+# 判据（按**事实**判，与写法无关）：MCP 源码里不许出现
+#   「结束电量 与 100 比较」—— 100 = 「充到 100%」= **满充的定义**
+#   ⇒ 谁拿它比较，谁就在自己挑点。
+#   ⚠️ 只咬 **100**：别处读「结束电量」是**显示**（某场充电充到多少），不是挑点。
+TMP=$(mktemp)
+"$PY" - > "$TMP" <<'PYEOF'
+import pathlib, re, sys
+
+# ⚠️ 反斜杠用 chr(92) 拼（源码里不写出来 ⇒ 任何一层转义都吃不掉它）。
+BS = chr(92)
+
+MCP = pathlib.Path('mcp/teslamate_mcp.py')
+CMP100 = re.compile('end_soc[^' + BS + 'n]{0,80}>=[ ]*100|100[^' + BS + 'n]{0,80}>=[ ]*end_soc')
+
+problems = []
+if not MCP.exists():
+    print('找不到 mcp/teslamate_mcp.py')
+    sys.exit(1)
+for i, line in enumerate(MCP.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+    s = line.strip()
+    if s.startswith('#'):
+        continue
+    if CMP100.search(line):
+        problems.append('mcp/teslamate_mcp.py 第 %d 行拿「结束电量」与 100 比较 ⇒ 自己在挑满充点'
+                        '（哪些点算数是口径，服务端给的是严格档那批）' % i)
+
+if problems:
+    print('MCP 自己挑满充点了 ——')
+    for pr in problems:
+        print('   ', pr)
+    print('   ⇒ 满充点由服务端挑（latest_full_rated_km / latest_full_at），MCP 只透传')
+    sys.exit(1)
+
+print('MCP：满充点只用服务端那份（没有自己挑）')
+PYEOF
+if [ $? -eq 0 ]; then ok "MCP：满充点只透传服务端那份（不许自己挑）"; else fail "MCP 自己挑满充点了"; cat "$TMP"; fi
+rm -f "$TMP"
+
 
 echo "══ 结果：$PASS 过 / $FAIL 败 ══"
 [ "$FAIL" -eq 0 ] && echo "✅ Hermes 链路闸门通过" || echo "❌ Hermes 链路闸门失败"

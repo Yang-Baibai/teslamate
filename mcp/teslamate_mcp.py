@@ -854,6 +854,11 @@ def teslamate_battery() -> dict:
 
     ⚠️ 「健康度」是**相对出厂可用容量**的百分比（不是「还剩多少」）；
     「近期趋势」是**相对首测**，不是相对出厂 —— 两件事，别混。
+
+    ⚠️ **v0.201.0**：现在还给了**趋势点**（每次满充实测的里程 ＋ 可用容量，
+    服务端挑好的、按里程升序）⇒ 回答「电池容量一路上怎么变的」用**它**；
+    ⚠️ **只报事实**，别由这些点自己下「伤电池 / 该换电池」这类结论
+    （没有官方依据）⇒ 「有没有在衰减」看「衰减结论」（服务端判的）。
     """
     b = _get(f"/api/v1/cars/{CAR_ID}/battery")
     if not isinstance(b, dict) or "error" in b:
@@ -877,15 +882,27 @@ def teslamate_battery() -> dict:
         "历史最好时(度)": b.get("max_capacity_kwh_strict"),
         "近期趋势%(相对首测)": b.get("health_percent_of_baseline"),
         "首测容量(度)": b.get("baseline_capacity_kwh"),
-        "满电标定续航·现在(km)": None,
         "满电标定续航·出厂折算(km)": b.get("factory_rated_range_km"),
     }
-    series = b.get("series") or []
-    full = [p for p in series if (p.get("end_soc") or 0) >= 100 and p.get("rated_range_km")]
-    if full:
-        last = max(full, key=lambda p: p.get("date") or "")
-        out["满电标定续航·现在(km)"] = last.get("rated_range_km")
-        out["最近一次满充"] = last.get("date")
+    # ⚠️ **v0.201.0**：**满充点由服务端挑** —— 原来这里自己从 series 里挑
+    #   （按「结束电量 ≥ 100」过滤再取日期最新）⇒ 与服务端、与 App **各挑各的**
+    #   ⇒ 同一件事**两份口径**（本仓库的老账，ADR #38）。
+    #   ⇒ 现在直接用服务端那份（与 App 车况页 / 用量页**同源**）。
+    out["满电标定续航·现在(km)"] = b.get("latest_full_rated_km")
+    out["最近一次满充"] = b.get("latest_full_at")
+    # ⚠️ **v0.201.0**：**首测基线的那一次**（与上面的「首测容量」是**同一个点**）。
+    out["首测基线于"] = b.get("baseline_at")
+    # ⚠️ **v0.201.0**：**趋势点**（服务端挑好的严格档满充点，按里程升序）
+    #   ⇒ 飞书里能回答「电池容量一路上怎么变的」「有没有在掉」。
+    #   ⚠️ **只报事实**：模型**不许**由这些点自己推「伤电池」这类结论
+    #   （没有官方依据 —— Tesla 官方看的是容量与循环，不是充电习惯）。
+    #   ⚠️ **别自己算斜率**：服务端已经判过衰减（见「衰减结论」）。
+    out["趋势点"] = [
+        {"里程km": p.get("km"), "可用容量(度)": p.get("kwh")}
+        for p in (b.get("trend_points") or [])
+    ]
+    if b.get("series_note"):
+        out["趋势口径"] = b.get("series_note")
     decay = b.get("decay") or {}
     if decay:
         out["衰减结论"] = decay.get("conclusion")

@@ -200,6 +200,17 @@
       "client_source": "服务端 /battery usage"
     },
     {
+      "id": "battery_trend",
+      "结论": "电池容量趋势（每次满充实测的里程 ＋ 可用容量）",
+      "界面": "车况页",
+      "服务端": "/battery trend_points",
+      "mcp": [
+        "teslamate_battery"
+      ],
+      "状态": "covered",
+      "client_source": "服务端 /battery trend_points"
+    },
+    {
       "id": "battery_charge_state",
       "结论": "当前充电状态（在不在充 / 上限 / 功率 / 还差多久）",
       "界面": "车况页",
